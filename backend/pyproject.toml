@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pkmn-vgc-core"
+version = "0.1.0"
+description = "Núcleo Python y persistencia SQLite para Like No One Ever Was"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9.0", "httpx>=0.28,<1.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pkmn_vgc"]

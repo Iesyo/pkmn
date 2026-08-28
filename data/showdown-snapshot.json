@@ -1,0 +1,20 @@
+{
+  "source": "https://github.com/smogon/pokemon-showdown/tree/master/data",
+  "captured": "2026-08-28",
+  "scope": "bootstrap-vgc",
+  "notes": "Snapshot compacto inicial. El MVP ampliará este archivo antes de admitir análisis exhaustivo de especies fuera del catálogo base.",
+  "species": [
+    "Kleavor",
+    "Miraidon",
+    "Incineroar",
+    "Ogerpon-Wellspring",
+    "Farigiraf",
+    "Urshifu-Rapid-Strike",
+    "Koraidon",
+    "Flutter Mane",
+    "Rillaboom",
+    "Raging Bolt",
+    "Amoonguss",
+    "Chi-Yu"
+  ]
+}
