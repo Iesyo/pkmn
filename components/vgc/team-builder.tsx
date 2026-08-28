@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -73,13 +73,24 @@ function SlotCard({ pokemon, selected, onClick }: { pokemon: PokemonSet; selecte
 function PasteDialog({ mode, paste, onImport }: { mode: "import" | "export"; paste: string; onImport?: (paste: string) => void }) {
   const [value, setValue] = useState(paste);
   const [copied, setCopied] = useState(false);
+  const action = mode === "import" ? (
+    <Button onClick={() => onImport?.(value)} className="w-full shrink-0 gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200 sm:w-auto">
+      <Download className="size-4" />Cargar equipo
+    </Button>
+  ) : (
+    <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="w-full shrink-0 gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200 sm:w-auto">
+      {copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}{copied ? "Copiado" : "Copiar paste"}
+    </Button>
+  );
   return (
     <Dialog onOpenChange={(open) => { if (open) { setValue(paste); setCopied(false); } }}>
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4">{mode === "import" ? <Download className="size-4" /> : <Upload className="size-4" />}{mode === "import" ? "Importar" : "Exportar"}</Button></DialogTrigger>
       <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
-        <DialogHeader><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
-        <Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="my-4 min-h-96 border-white/10 bg-black/35 font-mono text-[11px] leading-5" />
-        <DialogFooter>{mode === "import" ? <Button onClick={() => onImport?.(value)} className="bg-cyan-300 text-slate-950 hover:bg-cyan-200">Cargar equipo</Button> : <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}{copied ? "Copiado" : "Copiar paste"}</Button>}</DialogFooter>
+        <div className="flex flex-col gap-4 border-b border-white/8 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <DialogHeader className="min-w-0 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
+          {action}
+        </div>
+        <Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="mt-4 min-h-96 border-white/10 bg-black/35 font-mono text-[11px] leading-5" />
       </DialogContent>
     </Dialog>
   );

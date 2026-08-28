@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Check, Link2, Loader2, Plus, Save, Swords, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -313,6 +313,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
 }
 
 export function ReplayQuickEntry({ version, onCreated }: { version: TeamVersion; onCreated?: () => void }) {
+  const replayInputId = useId();
   const [replayUrl, setReplayUrl] = useState("");
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
@@ -330,20 +331,25 @@ export function ReplayQuickEntry({ version, onCreated }: { version: TeamVersion;
 
   return (
     <div className="w-full">
-      <form onSubmit={continueEntry} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="relative">
-          <Link2 className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-600" />
-          <Input
-            aria-label="Enlace del replay de Showdown"
-            type="url"
-            value={replayUrl}
-            onChange={(event) => setReplayUrl(event.target.value)}
-            disabled={disabled}
-            placeholder="https://replay.pokemonshowdown.com/gen9vgc..."
-            className="h-11 border-white/10 bg-black/25 pl-10 font-mono text-[11px] text-slate-200 placeholder:text-slate-700"
-          />
+      <form onSubmit={continueEntry} className="grid gap-3 rounded-2xl border border-cyan-300/20 bg-cyan-300/[0.045] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="grid gap-1.5">
+          <Label htmlFor={replayInputId} className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-100">URL del replay de Showdown</Label>
+          <div className="relative">
+            <span className="pointer-events-none absolute inset-y-1.5 left-1.5 flex w-9 items-center justify-center rounded-lg border border-cyan-300/15 bg-cyan-300/8">
+              <Link2 className="size-4 text-cyan-300" />
+            </span>
+            <Input
+              id={replayInputId}
+              type="url"
+              value={replayUrl}
+              onChange={(event) => setReplayUrl(event.target.value)}
+              disabled={disabled}
+              placeholder="https://replay.pokemonshowdown.com/gen9vgc..."
+              className="replay-url-field h-12 border-cyan-300/35 bg-[#101c30] pl-12 font-mono text-xs text-white placeholder:text-slate-500"
+            />
+          </div>
         </div>
-        <Button type="submit" disabled={disabled || !replayUrl} className="h-11 gap-2 bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200"><Plus className="size-4" />Agregar replay</Button>
+        <Button type="submit" disabled={disabled || !replayUrl} className="h-12 gap-2 self-end bg-cyan-300 px-5 font-black text-slate-950 shadow-[0_8px_24px_rgba(34,211,238,0.14)] hover:bg-cyan-200"><Plus className="size-4" />Agregar replay</Button>
       </form>
       <div className="mt-1.5 flex items-center justify-between gap-3 text-[9px]">
         <span className={error ? "text-rose-300" : "text-slate-600"}>{error || (disabled ? "Guarda un equipo real para habilitar el registro." : "El enlace se conserva al abrir los detalles de la partida.")}</span>

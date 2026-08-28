@@ -1,4 +1,7 @@
-import { Activity, Clipboard, Database, Gauge, Layers3, Trophy } from "lucide-react";
+"use client";
+
+import { useState } from "react";
+import { Activity, Check, Clipboard, Database, Gauge, Layers3, Trophy } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +48,24 @@ function SummaryMetric({ icon: Icon, label, value, detail, className }: { icon: 
   );
 }
 
+function CopyPasteButton({ paste }: { paste: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <Button
+      type="button"
+      onClick={async () => {
+        await navigator.clipboard.writeText(paste);
+        setCopied(true);
+      }}
+      className="w-full shrink-0 gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200 sm:w-auto"
+    >
+      {copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}
+      {copied ? "Copiado" : "Copiar paste"}
+    </Button>
+  );
+}
+
 export function TeamPanel({
   version,
   accent,
@@ -77,7 +98,13 @@ export function TeamPanel({
           <div className="flex flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4"><Clipboard className="size-4" />Ver paste</Button></DialogTrigger>
-              <DialogContent className="max-h-[86vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl"><DialogHeader><DialogTitle>{version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Copia exacta del paste asociado a esta versión.</DialogDescription></DialogHeader><pre className="mt-3 overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-4 font-mono text-[11px] leading-5 text-slate-300">{version.paste}</pre></DialogContent>
+              <DialogContent className="max-h-[86vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
+                <div className="flex flex-col gap-4 border-b border-white/8 pb-4 sm:flex-row sm:items-start sm:justify-between">
+                  <DialogHeader className="min-w-0 text-left"><DialogTitle>{version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Copia exacta del paste asociado a esta versión.</DialogDescription></DialogHeader>
+                  <CopyPasteButton paste={version.paste} />
+                </div>
+                <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-4 font-mono text-[11px] leading-5 text-slate-300">{version.paste}</pre>
+              </DialogContent>
             </Dialog>
             {extraAction}
           </div>
