@@ -74,3 +74,16 @@ test("uses Showdown's complete static sprite catalog for modern species and form
     "https://play.pokemonshowdown.com/sprites/gen5/chiyu.png",
   );
 });
+
+test("filters held items by the selected Showdown format", async () => {
+  const snapshot = await readSnapshot();
+  const { getLegalItems, isItemLegal } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+
+  assert.ok(getLegalItems(snapshot, "champions").includes("Charizardite X"));
+  assert.equal(isItemLegal(snapshot, "Charizardite X", "champions"), true);
+  assert.equal(isItemLegal(snapshot, "Firium Z", "gen7"), true);
+  assert.equal(isItemLegal(snapshot, "Firium Z", "gen9"), false);
+  assert.equal(isItemLegal(snapshot, "Booster Energy", "gen9"), true);
+  assert.equal(isItemLegal(snapshot, "Booster Energy", "champions"), false);
+  assert.equal(isItemLegal(snapshot, "", "champions"), true);
+});

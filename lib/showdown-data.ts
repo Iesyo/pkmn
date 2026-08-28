@@ -20,6 +20,10 @@ export interface ShowdownMove {
   category: "Physical" | "Special" | "Status";
 }
 
+export interface ShowdownItem {
+  name: string;
+}
+
 export interface ShowdownSnapshot {
   metadata: {
     source: string;
@@ -28,12 +32,14 @@ export interface ShowdownSnapshot {
     urls: Record<string, string>;
   };
   formats: Record<string, string[]>;
+  itemFormats: Record<string, string[]>;
   species: Record<string, ShowdownSpecies>;
   moves: Record<string, ShowdownMove>;
+  items: Record<string, ShowdownItem>;
 }
 
 export async function loadShowdownSnapshot() {
-  const response = await fetch("/data/showdown-dex.json.gz", { cache: "force-cache" });
+  const response = await fetch("/data/showdown-dex.json.gz?schema=2", { cache: "force-cache" });
   if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) throw new Error("La Pokédex de Pokémon Showdown llegó vacía.");
@@ -103,6 +109,16 @@ export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName
   return getSpecies(snapshot, speciesName)?.abilities ?? [];
 }
 
+export function getLegalItems(snapshot: ShowdownSnapshot | null, format: string) {
+  if (!snapshot) return [];
+  const itemFormats = snapshot.itemFormats ?? {};
+  const items = snapshot.items ?? {};
+  return (itemFormats[format] ?? itemFormats.custom ?? [])
+    .map((id) => items[id]?.name)
+    .filter((name): name is string => Boolean(name))
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string): MoveSet {
   const move = snapshot?.moves[toId(name)];
   return {
@@ -130,4 +146,9 @@ export function isSpeciesAvailable(snapshot: ShowdownSnapshot, speciesName: stri
 
 export function isMoveLegal(snapshot: ShowdownSnapshot, speciesName: string, moveName: string, format: string) {
   return getLegalMoveIds(snapshot, speciesName, format).includes(toId(moveName));
+}
+
+export function isItemLegal(snapshot: ShowdownSnapshot, itemName: string, format: string) {
+  const itemFormats = snapshot.itemFormats ?? {};
+  return !itemName || (itemFormats[format] ?? itemFormats.custom ?? []).includes(toId(itemName));
 }

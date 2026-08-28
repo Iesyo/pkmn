@@ -7,7 +7,7 @@ histórico de equipos de Pokémon VGC.
 
 - Teams con Pokepaste y versiones inmutables.
 - Team Builder con seis slots, Pokémon Champions y formatos Gen 6–9, mecánicas especiales y cobertura en vivo.
-- Pokédex local generada desde Pokémon Showdown/Smogon: tipos y stats base oficiales, habilidades ligadas a la especie y movimientos filtrados por learnset/formato.
+- Pokédex local generada desde Pokémon Showdown/Smogon: tipos y stats base oficiales, habilidades ligadas a la especie, movimientos filtrados por learnset y objetos disponibles por formato.
 - Selector de Stat Points de Champions (32 por stat, 66 totales) con cálculo final a nivel 50; los formatos clásicos conservan EVs 252/510.
 - Comparador simétrico Team A vs Team B.
 - Fichas de seis Pokémon con set, uso y rendimiento.

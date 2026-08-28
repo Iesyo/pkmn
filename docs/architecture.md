@@ -25,7 +25,7 @@ flowchart TD
 - `lib/`: contrato común de datos, estadísticas descriptivas y análisis de
   tipos.
 - `public/data/showdown-dex.json.gz`: snapshot reproducible y comprimido de especies, stats,
-  habilidades, movimientos y learnsets de Champions/VGC.
+  habilidades, movimientos, learnsets y objetos disponibles de Champions/VGC.
 - `scripts/update-showdown-data.mjs`: generador del snapshot desde las tablas
   públicas oficiales de Pokémon Showdown.
 
@@ -39,8 +39,8 @@ flowchart TD
    métricas independientes.
 5. El análisis de tipos separa la defensa base, la vista Tera y los efectos
    condicionales de habilidad/objeto.
-6. Tipos y stats base son metadatos de especie de solo lectura; habilidades y
-   movimientos se validan contra el snapshot del formato seleccionado.
+6. Tipos y stats base son metadatos de especie de solo lectura; habilidades,
+   movimientos y objetos se validan contra el snapshot del formato seleccionado.
 7. Champions usa Stat Points (32 por stat, 66 totales) y su fórmula propia;
    Gen 6–9 conserva el modelo tradicional de EVs.
 

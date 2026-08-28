@@ -5,6 +5,7 @@ import { gzipSync } from "node:zlib";
 const SOURCES = {
   pokedex: "https://play.pokemonshowdown.com/data/pokedex.json",
   moves: "https://play.pokemonshowdown.com/data/moves.json",
+  items: "https://play.pokemonshowdown.com/data/items.js",
   teambuilder: "https://play.pokemonshowdown.com/data/teambuilder-tables.js",
 };
 
@@ -40,6 +41,15 @@ function readTeambuilderTable(source) {
   return sandbox.exports.BattleTeambuilderTable;
 }
 
+function readItemTable(source) {
+  const sandbox = { exports: {} };
+  vm.runInNewContext(source, sandbox, { timeout: 10_000 });
+  if (!sandbox.exports.BattleItems) {
+    throw new Error("El catálogo de Showdown no contiene objetos.");
+  }
+  return sandbox.exports.BattleItems;
+}
+
 function inheritedLearnset(table, pokedex, speciesId) {
   let current = speciesId;
   const visited = new Set();
@@ -52,14 +62,16 @@ function inheritedLearnset(table, pokedex, speciesId) {
   return {};
 }
 
-const [pokedexSource, movesSource, teambuilderSource] = await Promise.all([
+const [pokedexSource, movesSource, itemsSource, teambuilderSource] = await Promise.all([
   download(SOURCES.pokedex),
   download(SOURCES.moves),
+  download(SOURCES.items),
   download(SOURCES.teambuilder),
 ]);
 
 const pokedex = JSON.parse(pokedexSource);
 const moves = JSON.parse(movesSource);
+const itemData = readItemTable(itemsSource);
 const tables = readTeambuilderTable(teambuilderSource);
 const champions = tables.champions;
 const speciesIds = new Set();
@@ -80,6 +92,28 @@ for (const [format, tableName] of Object.entries(FORMAT_TABLES)) {
 
 formats.custom = [...new Set(Object.values(formats).flat())];
 formats.custom.forEach((id) => speciesIds.add(id));
+
+const itemTableByFormat = {
+  champions: champions.items,
+  gen9: tables.items,
+  gen8: tables.gen8.items,
+  gen7: tables.gen7.items,
+  gen6: tables.gen6.items,
+};
+const itemFormats = Object.fromEntries(
+  Object.entries(itemTableByFormat).map(([format, entries]) => [
+    format,
+    entries.filter((entry) => typeof entry === "string" && itemData[entry]),
+  ]),
+);
+itemFormats.custom = [...new Set(Object.values(itemFormats).flat())];
+
+const referencedItemIds = new Set(Object.values(itemFormats).flat());
+const itemCatalog = Object.fromEntries(
+  [...referencedItemIds]
+    .sort()
+    .map((id) => [id, { name: itemData[id].name }]),
+);
 
 const referencedMoveIds = new Set();
 const species = {};
@@ -122,8 +156,10 @@ const snapshot = {
     urls: SOURCES,
   },
   formats,
+  itemFormats,
   species,
   moves: moveCatalog,
+  items: itemCatalog,
 };
 
 await mkdir(new URL("../public/data/", import.meta.url), { recursive: true });
@@ -133,5 +169,5 @@ await writeFile(
 );
 
 console.log(
-  `Snapshot creado: ${Object.keys(species).length} especies, ${Object.keys(moveCatalog).length} movimientos.`,
+  `Snapshot creado: ${Object.keys(species).length} especies, ${Object.keys(moveCatalog).length} movimientos y ${Object.keys(itemCatalog).length} objetos.`,
 );
