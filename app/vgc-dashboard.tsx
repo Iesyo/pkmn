@@ -104,7 +104,7 @@ export function VgcDashboard() {
   }
 
   return (
-    <Tabs value={activeView} onValueChange={setActiveView} className="min-h-screen">
+    <Tabs value={activeView} onValueChange={setActiveView} className="vgc-app min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/7 bg-[#070b14]/88 backdrop-blur-2xl">
         <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
