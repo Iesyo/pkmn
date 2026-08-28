@@ -15,6 +15,13 @@
       "when": 1787931404629,
       "tag": "0001_slim_nick_fury",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787937728778,
+      "tag": "0002_awesome_satana",
+      "breakpoints": true
     }
   ]
 }

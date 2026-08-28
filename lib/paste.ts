@@ -51,12 +51,16 @@ export function parseShowdownPaste(paste: string): PokemonSet[] {
     let teraType: PokemonType | null = null;
     let evs = "";
     let nature = "";
+    let dynamaxLevel = 10;
+    let gigantamax = false;
     const moves = [] as PokemonSet["moves"];
 
     for (const line of lines.slice(1)) {
       if (line.startsWith("Ability:")) ability = line.slice(8).trim();
       else if (line.startsWith("Level:")) level = Number(line.slice(6).trim()) || 50;
       else if (line.startsWith("Tera Type:")) teraType = line.slice(10).trim() as PokemonType;
+      else if (line.startsWith("Dynamax Level:")) dynamaxLevel = Number(line.slice(14).trim()) || 10;
+      else if (line === "Gigantamax: Yes") gigantamax = true;
       else if (line.startsWith("EVs:")) evs = line.slice(4).trim();
       else if (line.endsWith(" Nature")) nature = line.slice(0, -7).trim();
       else if (line.startsWith("- ")) {
@@ -82,6 +86,7 @@ export function parseShowdownPaste(paste: string): PokemonSet[] {
       ability,
       level,
       teraType,
+      mechanics: { dynamaxLevel, gigantamax, megaEvolution: false, zMove: false },
       evs,
       nature,
       moves,

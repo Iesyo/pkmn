@@ -39,10 +39,14 @@ app.add_middleware(
 class TeamBody(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     paste: str = Field(min_length=20)
+    format: str = "gen9"
+    mechanics: list[str] = Field(default_factory=lambda: ["tera"])
 
 
 class VersionBody(BaseModel):
     paste: str = Field(min_length=20)
+    format: str | None = None
+    mechanics: list[str] | None = None
 
 
 class MatchBody(BaseModel):
@@ -97,7 +101,7 @@ def update_settings(body: SettingsBody) -> dict[str, object]:
 @app.post("/api/teams", status_code=201)
 def create_team(body: TeamBody) -> dict[str, object]:
     try:
-        return {"version": repository.create_team(body.name, body.paste)}
+        return {"version": repository.create_team(body.name, body.paste, format=body.format, mechanics=body.mechanics)}
     except Exception as error:
         raise _http_error(error) from error
 
@@ -105,7 +109,7 @@ def create_team(body: TeamBody) -> dict[str, object]:
 @app.post("/api/teams/{team_id}/versions", status_code=201)
 def create_version(team_id: str, body: VersionBody) -> dict[str, object]:
     try:
-        return {"version": repository.create_version(team_id, body.paste)}
+        return {"version": repository.create_version(team_id, body.paste, format=body.format, mechanics=body.mechanics)}
     except Exception as error:
         raise _http_error(error) from error
 

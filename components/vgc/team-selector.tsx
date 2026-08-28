@@ -11,6 +11,7 @@ import {
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import { winRate } from "@/lib/team-stats";
 import type { TeamVersion } from "@/lib/types";
+import { formatVersion } from "@/lib/team-builder";
 import { cn } from "@/lib/utils";
 
 export function TeamSelector({
@@ -44,7 +45,7 @@ export function TeamSelector({
                     <Image key={pokemon.id} src={getSpriteUrl(pokemon.species)} alt="" width={34} height={34} unoptimized className="h-8 w-8 rounded-full border border-slate-700 bg-slate-900 object-contain" />
                   ))}
                 </div>
-                <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-white">{current.name}</p><p className="text-[10px] text-slate-500">Versión {current.version} {current.demo ? "· muestra" : "· guardada"}</p></div>
+                <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-white">{current.name}</p><p className="text-[10px] text-slate-500">Versión {formatVersion(current)} {current.demo ? "· muestra" : "· guardada"}</p></div>
                 <ChevronDown className="size-4 text-slate-500" />
               </div>
             ) : "Seleccionar equipo"}
@@ -53,7 +54,7 @@ export function TeamSelector({
         <SelectContent className="border-white/10 bg-slate-950 text-slate-200">
           {versions.map((version) => (
             <SelectItem key={version.id} value={version.id} className="py-2.5 focus:bg-white/8 focus:text-white">
-              <div className="flex items-center gap-2"><span className="font-semibold">{version.name}</span><span className="text-[10px] text-slate-500">v{version.version} · {version.games} G</span></div>
+              <div className="flex items-center gap-2"><span className="font-semibold">{version.name}</span><span className="text-[10px] text-slate-500">v{formatVersion(version)} · {version.games} G</span></div>
             </SelectItem>
           ))}
         </SelectContent>

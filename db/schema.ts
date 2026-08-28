@@ -28,6 +28,9 @@ export const teamVersions = sqliteTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     versionNumber: integer("version_number").notNull(),
+    minorVersion: integer("minor_version").notNull().default(0),
+    format: text("format").notNull().default("gen9"),
+    mechanicsJson: text("mechanics_json").notNull().default('["tera"]'),
     paste: text("paste").notNull(),
     pasteHash: text("paste_hash").notNull(),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -36,6 +39,7 @@ export const teamVersions = sqliteTable(
     uniqueIndex("team_versions_team_version_idx").on(
       table.teamId,
       table.versionNumber,
+      table.minorVersion,
     ),
     uniqueIndex("team_versions_team_hash_idx").on(
       table.teamId,
@@ -58,6 +62,7 @@ export const pokemonSets = sqliteTable(
     ability: text("ability").notNull().default(""),
     level: integer("level").notNull().default(50),
     teraType: text("tera_type"),
+    mechanicsJson: text("mechanics_json").notNull().default("{}"),
     evs: text("evs").notNull().default(""),
     nature: text("nature").notNull().default(""),
     movesJson: text("moves_json").notNull(),

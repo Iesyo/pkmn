@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { winRate } from "@/lib/team-stats";
 import type { TeamVersion } from "@/lib/types";
+import { formatVersion } from "@/lib/team-builder";
 import { cn } from "@/lib/utils";
 import { LeadsPanel } from "./leads-panel";
 import { MatchHistory } from "./match-history";
@@ -67,7 +68,8 @@ export function TeamPanel({
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-black tracking-[-0.03em] text-white">{version.name}</h2>
-              <Badge variant="outline" className={style.badge}>v{version.version}</Badge>
+              <Badge variant="outline" className={style.badge}>v{formatVersion(version)}</Badge>
+              <Badge variant="outline" className="border-white/8 bg-white/3 text-slate-500">{version.format ?? "gen9"}</Badge>
               {version.demo ? <Badge variant="outline" className="border-white/10 bg-white/4 text-slate-500">Muestra</Badge> : <Badge variant="outline" className="border-emerald-300/15 bg-emerald-300/7 text-emerald-300"><Database className="mr-1 size-3" />SQLite</Badge>}
             </div>
             <p className="mt-1 text-xs text-slate-500">Versión inmutable · {version.pokemon.length} sets competitivos</p>
@@ -75,7 +77,7 @@ export function TeamPanel({
           <div className="flex flex-wrap gap-2">
             <Dialog>
               <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4"><Clipboard className="size-4" />Ver paste</Button></DialogTrigger>
-              <DialogContent className="max-h-[86vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl"><DialogHeader><DialogTitle>{version.name} v{version.version}</DialogTitle><DialogDescription className="text-slate-500">Copia exacta del paste asociado a esta versión.</DialogDescription></DialogHeader><pre className="mt-3 overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-4 font-mono text-[11px] leading-5 text-slate-300">{version.paste}</pre></DialogContent>
+              <DialogContent className="max-h-[86vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl"><DialogHeader><DialogTitle>{version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Copia exacta del paste asociado a esta versión.</DialogDescription></DialogHeader><pre className="mt-3 overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-4 font-mono text-[11px] leading-5 text-slate-300">{version.paste}</pre></DialogContent>
             </Dialog>
             {extraAction}
           </div>
@@ -94,7 +96,7 @@ export function TeamPanel({
           {version.pokemon.map((pokemon) => <PokemonCard key={pokemon.id} pokemon={pokemon} accent={accent} />)}
         </div>
         <LeadsPanel leads={version.leads} />
-        <TypeAnalysis pokemon={version.pokemon} />
+        <TypeAnalysis pokemon={version.pokemon} allowTera={(version.mechanics ?? ["tera"]).includes("tera")} />
         <MatchupAttendance matches={version.matches} />
         <MatchHistory version={version} onMatchCreated={onMatchCreated} />
       </div>

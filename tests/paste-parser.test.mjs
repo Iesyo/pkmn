@@ -75,6 +75,13 @@ test("computes base and Tera defensive views separately", async () => {
   assert.ok(base.coverage.some((entry) => entry.count > 0));
 });
 
+test("formats major and minor team versions without decimal ambiguity", async () => {
+  const { formatVersion } = await vite.ssrLoadModule("/lib/team-builder.ts");
+  assert.equal(formatVersion({ version: 1, minorVersion: 0 }), "1");
+  assert.equal(formatVersion({ version: 1, minorVersion: 1 }), "1.01");
+  assert.equal(formatVersion({ version: 1, minorVersion: 10 }), "1.10");
+});
+
 test("computes matchup and attendance stats from opposing Pokémon", async () => {
   const { calculateOpponentPokemonStats } = await vite.ssrLoadModule("/lib/team-stats.ts");
   const matches = [

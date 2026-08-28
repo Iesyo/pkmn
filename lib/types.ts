@@ -21,6 +21,14 @@ export const POKEMON_TYPES = [
 
 export type PokemonType = (typeof POKEMON_TYPES)[number];
 export type MatchResult = "win" | "loss";
+export type BattleMechanic = "tera" | "dynamax" | "mega" | "zmove";
+
+export interface PokemonMechanics {
+  dynamaxLevel?: number;
+  gigantamax?: boolean;
+  megaEvolution?: boolean;
+  zMove?: boolean;
+}
 
 export interface MoveSet {
   name: string;
@@ -46,6 +54,7 @@ export interface PokemonSet {
   ability: string;
   level: number;
   teraType: PokemonType | null;
+  mechanics?: PokemonMechanics;
   evs: string;
   nature: string;
   moves: MoveSet[];
@@ -78,6 +87,9 @@ export interface TeamVersion {
   teamId: string;
   name: string;
   version: number;
+  minorVersion?: number;
+  format?: string;
+  mechanics?: BattleMechanic[];
   paste: string;
   createdAt: string;
   pokemon: PokemonSet[];

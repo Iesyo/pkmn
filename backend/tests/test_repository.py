@@ -34,9 +34,10 @@ class RepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual(first.version, 1)
-        self.assertEqual(second.version, 2)
+        self.assertEqual(second.version, 1)
+        self.assertEqual(second.minor_version, 1)
         self.assertEqual(match["team_version_id"], first.id)
-        self.assertEqual([item["version_number"] for item in self.repository.list_teams()[0]["versions"]], [2, 1])
+        self.assertEqual([(item["version_number"], item["minor_version"]) for item in self.repository.list_teams()[0]["versions"]], [(1, 1), (1, 0)])
 
         with self.repository.connect() as connection:
             with self.assertRaises(sqlite3.IntegrityError):
@@ -49,6 +50,22 @@ class RepositoryTests(unittest.TestCase):
         first = self.repository.create_team("Aurora Protocol", TEAM_PASTE)
         with self.assertRaisesRegex(ValueError, "ya existe como v1"):
             self.repository.create_version(first.team_id, TEAM_PASTE)
+
+    def test_species_or_format_change_creates_major_version(self) -> None:
+        first = self.repository.create_team("Aurora Protocol", TEAM_PASTE)
+        species_change = self.repository.create_version(
+            first.team_id,
+            TEAM_PASTE.replace("Kleavor @ Choice Scarf", "Groudon @ Choice Scarf", 1),
+        )
+        self.assertEqual((species_change.version, species_change.minor_version), (2, 0))
+
+        format_change = self.repository.create_version(
+            first.team_id,
+            TEAM_PASTE.replace("Choice Scarf", "Focus Sash", 1).replace("Kleavor", "Groudon", 1),
+            format="gen8",
+            mechanics=("dynamax",),
+        )
+        self.assertEqual((format_change.version, format_change.minor_version), (3, 0))
 
     def test_persists_and_normalizes_showdown_names(self) -> None:
         saved = self.repository.save_showdown_names([" Roku4523 ", "Iesyo", "Roku4523"])

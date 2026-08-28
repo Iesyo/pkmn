@@ -27,7 +27,8 @@ flowchart TD
 ## Invariantes
 
 1. Un equipo tiene una o más versiones.
-2. Un cambio de paste crea una versión nueva; nunca modifica la anterior.
+2. Un cambio de especie o formato incrementa la versión mayor; un cambio de set
+   incrementa la versión menor. Nunca se modifica la anterior.
 3. Cada partida referencia una versión exacta mediante `team_version_id`.
 4. Los resultados se recalculan desde partidas persistidas, no se escriben como
    métricas independientes.
@@ -39,7 +40,7 @@ flowchart TD
 | Tabla | Responsabilidad |
 |---|---|
 | `teams` | Identidad y nombre estable del equipo |
-| `team_versions` | Paste inmutable, hash y número v1/v2/v3 |
+| `team_versions` | Paste inmutable, formato, mecánicas y versión mayor/menor |
 | `pokemon_sets` | Los seis sets parseados de cada versión |
 | `matches` | Resultado, replay, picks, leads, rival y notas |
 

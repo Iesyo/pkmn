@@ -45,6 +45,25 @@ const speciesTypes: Record<string, PokemonType[]> = {
   kyogre: ["Water"],
 };
 
+const catalogLabels: Record<string, string> = {
+  kleavor: "Kleavor", miraidon: "Miraidon", incineroar: "Incineroar",
+  ogerponwellspring: "Ogerpon-Wellspring", farigiraf: "Farigiraf",
+  urshifurapidstrike: "Urshifu-Rapid-Strike", koraidon: "Koraidon",
+  fluttermane: "Flutter Mane", rillaboom: "Rillaboom", ragingbolt: "Raging Bolt",
+  amoonguss: "Amoonguss", chiyu: "Chi-Yu", calyrexshadow: "Calyrex-Shadow",
+  calyrexice: "Calyrex-Ice", ironhands: "Iron Hands", tornadus: "Tornadus",
+  landorustherian: "Landorus-Therian", whimsicott: "Whimsicott", pelipper: "Pelipper",
+  archaludon: "Archaludon", chienpao: "Chien-Pao", dragonite: "Dragonite",
+  gholdengo: "Gholdengo", indeedeef: "Indeedee-F", indeedee: "Indeedee",
+  ursalunabloodmoon: "Ursaluna-Bloodmoon", ironcrown: "Iron Crown", terapagos: "Terapagos",
+  zamazentacrowned: "Zamazenta-Crowned", groudon: "Groudon", kyogre: "Kyogre",
+};
+
+export const POKEMON_CATALOG = Object.keys(speciesTypes).map((id) => ({
+  name: catalogLabels[id] ?? id,
+  types: speciesTypes[id],
+}));
+
 const moveTypes: Record<string, PokemonType> = {
   stoneaxe: "Rock",
   xscissor: "Bug",
@@ -92,6 +111,27 @@ const moveTypes: Record<string, PokemonType> = {
   dazzlinggleam: "Fairy",
   expandingforce: "Psychic",
 };
+
+const moveLabels: Record<string, string> = {
+    stoneaxe: "Stone Axe", xscissor: "X-Scissor", closecombat: "Close Combat", uturn: "U-turn",
+    electrodrift: "Electro Drift", dracometeor: "Draco Meteor", voltswitch: "Volt Switch",
+    fakeout: "Fake Out", flareblitz: "Flare Blitz", knockoff: "Knock Off", partingshot: "Parting Shot",
+    ivycudgel: "Ivy Cudgel", hornleech: "Horn Leech", followme: "Follow Me", spikyshield: "Spiky Shield",
+    trickroom: "Trick Room", helpinghand: "Helping Hand", surgingstrikes: "Surging Strikes",
+    aquajet: "Aqua Jet", collisioncourse: "Collision Course", flamecharge: "Flame Charge",
+    dragonclaw: "Dragon Claw", moonblast: "Moonblast", shadowball: "Shadow Ball", icywind: "Icy Wind",
+    grassyglide: "Grassy Glide", woodhammer: "Wood Hammer", thunderclap: "Thunderclap",
+    ragepowder: "Rage Powder", pollenpuff: "Pollen Puff", heatwave: "Heat Wave",
+    darkpulse: "Dark Pulse", bodypress: "Body Press", heavyslam: "Heavy Slam",
+    behemothbash: "Behemoth Bash", earthpower: "Earth Power", hypervoice: "Hyper Voice",
+    dazzlinggleam: "Dazzling Gleam", expandingforce: "Expanding Force",
+};
+
+export const MOVE_CATALOG = Object.keys(moveTypes).map((id) => {
+  const spaced = id.replace(/([a-z])([A-Z])/g, "$1 $2");
+  const known = moveLabels[id];
+  return known ?? spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}).sort();
 
 const statusMoves = new Set([
   "protect",

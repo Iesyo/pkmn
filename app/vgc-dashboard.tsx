@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, BookOpen, Database, Flame, Library, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
+import { TeamBuilder } from "@/components/vgc/team-builder";
 import { AddTeamDialog, NewVersionDialog, ShowdownNamesDialog } from "@/components/vgc/team-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DEFAULT_LEFT_VERSION_ID, DEFAULT_RIGHT_VERSION_ID, DEMO_GROUPS } from "@/lib/demo-data";
 import type { TeamGroup, TeamVersion } from "@/lib/types";
+import { formatVersion } from "@/lib/team-builder";
 
 type ConnectionState = "checking" | "ready" | "demo";
 
@@ -26,6 +28,7 @@ export function VgcDashboard() {
   const [rightId, setRightId] = useState(DEFAULT_RIGHT_VERSION_ID);
   const [libraryTeamId, setLibraryTeamId] = useState(DEMO_GROUPS[0].id);
   const [libraryVersionId, setLibraryVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
+  const [builderVersionId, setBuilderVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
 
   const refresh = useCallback(async () => {
     try {
@@ -85,9 +88,19 @@ export function VgcDashboard() {
     setLibraryVersionId(version.id);
   }
 
+  function handleBuilderTeamCreated(team: TeamGroup) {
+    setStoredGroups((current) => [team, ...current.filter((entry) => entry.id !== team.id)]);
+    setConnection("ready");
+  }
+
   function selectLibraryTeam(team: TeamGroup) {
     setLibraryTeamId(team.id);
     setLibraryVersionId(team.versions[0]?.id ?? "");
+  }
+
+  function openInBuilder(version: TeamVersion) {
+    setBuilderVersionId(version.id);
+    setActiveView("builder");
   }
 
   return (
@@ -102,6 +115,7 @@ export function VgcDashboard() {
           <TabsList className="h-10 rounded-full border border-white/8 bg-white/4 p-1">
             <TabsTrigger value="compare" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><ArrowLeftRight className="size-3.5" /><span className="hidden sm:inline">Comparador</span></TabsTrigger>
             <TabsTrigger value="library" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Library className="size-3.5" /><span className="hidden sm:inline">Teams</span></TabsTrigger>
+            <TabsTrigger value="builder" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Hammer className="size-3.5" /><span className="hidden sm:inline">Team Builder</span></TabsTrigger>
           </TabsList>
 
           <div className="hidden items-center gap-2 lg:flex">
@@ -115,7 +129,7 @@ export function VgcDashboard() {
       <main className="relative mx-auto max-w-[1920px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(circle_at_18%_12%,rgba(34,211,238,0.10),transparent_34%),radial-gradient(circle_at_82%_8%,rgba(217,70,239,0.09),transparent_34%)]" />
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div><div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300"><ShieldCheck className="size-3.5" />Scouting personal · histórico real</div><h1 className="max-w-4xl text-3xl font-black tracking-[-0.045em] text-white sm:text-4xl">Compara decisiones, no predicciones.</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Dos equipos, sus versiones exactas y el rendimiento que ya ocurrió. Sin simulaciones ni cajas negras.</p></div>
+          <div><div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300"><ShieldCheck className="size-3.5" />{activeView === "builder" ? "Construcción competitiva · versión controlada" : "Scouting personal · histórico real"}</div><h1 className="max-w-4xl text-3xl font-black tracking-[-0.045em] text-white sm:text-4xl">{activeView === "builder" ? "Construye el plan, conserva cada evolución." : "Compara decisiones, no predicciones."}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{activeView === "builder" ? "Edita seis sets, revisa la cobertura y deja que el sistema decida si corresponde v1.01 o v2." : "Dos equipos, sus versiones exactas y el rendimiento que ya ocurrió. Sin simulaciones ni cajas negras."}</p></div>
           <div className="flex flex-wrap gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
         </div>
 
@@ -135,9 +149,13 @@ export function VgcDashboard() {
               <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2"><div className="space-y-2">{groups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />)}</div></ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="w-36 border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {version.version} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{libraryVersion.version}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} /></> : null}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="w-36 border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="builder" className="mt-0 outline-none">
+          <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId) ?? left} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
         </TabsContent>
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · datos de tipos basados en un snapshot local de Pokémon Showdown · análisis descriptivo</footer>

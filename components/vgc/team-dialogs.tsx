@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl } from "@/lib/pokemon-data";
+import { formatVersion } from "@/lib/team-builder";
 import type { MatchResult, TeamGroup, TeamVersion } from "@/lib/types";
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -155,7 +156,6 @@ export function NewVersionDialog({ team, onCreated }: { team: TeamGroup; onCreat
   const [paste, setPaste] = useState(team.versions[0]?.paste ?? "");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const nextVersion = (team.versions[0]?.version ?? 0) + 1;
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) setPaste(team.versions[0]?.paste ?? "");
@@ -171,7 +171,7 @@ export function NewVersionDialog({ team, onCreated }: { team: TeamGroup; onCreat
         await fetch(`/api/teams/${team.id}/versions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ paste }),
+          body: JSON.stringify({ paste, format: team.versions[0]?.format ?? "gen9", mechanics: team.versions[0]?.mechanics ?? ["tera"] }),
         }),
       );
       onCreated(payload.version);
@@ -188,9 +188,9 @@ export function NewVersionDialog({ team, onCreated }: { team: TeamGroup; onCreat
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4"><Plus className="size-4" />Nueva versión</Button></DialogTrigger>
       <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
         <form onSubmit={submit}>
-          <DialogHeader><DialogTitle>Crear {team.name} v{nextVersion}</DialogTitle><DialogDescription className="text-slate-500">La versión anterior no se modifica. Las partidas ya guardadas seguirán vinculadas a su versión exacta.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Crear una versión de {team.name}</DialogTitle><DialogDescription className="text-slate-500">Si cambia una especie subirá la versión mayor; si solo cambia el set se guardará como versión menor. El historial anterior permanece intacto.</DialogDescription></DialogHeader>
           <div className="my-5 grid gap-2"><Label htmlFor="version-paste">Nuevo Pokepaste</Label><Textarea id="version-paste" value={paste} onChange={(event) => setPaste(event.target.value)} className="min-h-80 border-white/10 bg-black/30 font-mono text-xs leading-5" />{error ? <p role="alert" className="rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}</div>
-          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving} className="gap-2 bg-violet-300 text-slate-950 hover:bg-violet-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar v{nextVersion}</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving} className="gap-2 bg-violet-300 text-slate-950 hover:bg-violet-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar versión</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
@@ -286,7 +286,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
       {!hideTrigger ? <DialogTrigger asChild><Button className="gap-2 rounded-full bg-white text-slate-950 hover:bg-slate-200"><Swords className="size-4" />Registrar partida</Button></DialogTrigger> : null}
       <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-xl">
         <form onSubmit={submit}>
-          <DialogHeader><DialogTitle>Nueva partida · {version.name} v{version.version}</DialogTitle><DialogDescription className="text-slate-500">Guarda el resultado y la selección real. Las métricas se recalculan desde el historial.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Nueva partida · {version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Guarda el resultado y la selección real. Las métricas se recalculan desde el historial.</DialogDescription></DialogHeader>
           <div className="my-5 grid gap-4">
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-2"><Label>Resultado</Label><Select value={result} onValueChange={(value) => setResult(value as MatchResult)}><SelectTrigger className="w-full border-white/10 bg-white/5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="win">Victoria</SelectItem><SelectItem value="loss">Derrota</SelectItem></SelectContent></Select></div>

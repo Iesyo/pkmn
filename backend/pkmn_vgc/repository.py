@@ -68,7 +68,7 @@ class Repository:
                 )
         return normalized
 
-    def create_team(self, name: str, paste: str) -> TeamVersion:
+    def create_team(self, name: str, paste: str, *, format: str = "gen9", mechanics: Sequence[str] = ("tera",)) -> TeamVersion:
         clean_name = name.strip()
         if not 2 <= len(clean_name) <= 80:
             raise ValueError("El nombre debe tener entre 2 y 80 caracteres.")
@@ -77,7 +77,9 @@ class Repository:
         now = _now()
         team_id = str(uuid4())
         version_id = str(uuid4())
-        paste_hash = hashlib.sha256(normalized.encode()).hexdigest()
+        normalized_mechanics = tuple(sorted(mechanics))
+        signature = f"{normalized}\n#{format}\n#{json.dumps(normalized_mechanics, separators=(',', ':'))}"
+        paste_hash = hashlib.sha256(signature.encode()).hexdigest()
 
         with self.connect() as connection:
             with connection:
@@ -86,17 +88,16 @@ class Repository:
                     (team_id, clean_name, now, now),
                 )
                 connection.execute(
-                    "INSERT INTO team_versions (id, team_id, version_number, paste, paste_hash, created_at) VALUES (?, ?, 1, ?, ?, ?)",
-                    (version_id, team_id, normalized, paste_hash, now),
+                    "INSERT INTO team_versions (id, team_id, version_number, minor_version, format, mechanics_json, paste, paste_hash, created_at) VALUES (?, ?, 1, 0, ?, ?, ?, ?, ?)",
+                    (version_id, team_id, format, json.dumps(list(normalized_mechanics)), normalized, paste_hash, now),
                 )
                 self._insert_pokemon(connection, version_id, pokemon)
 
-        return TeamVersion(version_id, team_id, clean_name, 1, normalized, now, pokemon)
+        return TeamVersion(version_id, team_id, clean_name, 1, 0, format, normalized_mechanics, normalized, now, pokemon)
 
-    def create_version(self, team_id: str, paste: str) -> TeamVersion:
+    def create_version(self, team_id: str, paste: str, *, format: str | None = None, mechanics: Sequence[str] | None = None) -> TeamVersion:
         normalized = _normalize_paste(paste)
         pokemon = parse_showdown_paste(normalized)
-        paste_hash = hashlib.sha256(normalized.encode()).hexdigest()
         now = _now()
         version_id = str(uuid4())
 
@@ -106,23 +107,34 @@ class Repository:
             ).fetchone()
             if team is None:
                 raise LookupError("No encontramos ese equipo.")
+            latest = connection.execute(
+                "SELECT id, version_number, minor_version, format, mechanics_json FROM team_versions WHERE team_id = ? ORDER BY version_number DESC, minor_version DESC LIMIT 1",
+                (team_id,),
+            ).fetchone()
+            if latest is None:
+                raise LookupError("No encontramos una versión base.")
+            current_species = sorted(row[0].lower() for row in connection.execute("SELECT species FROM pokemon_sets WHERE team_version_id = ?", (latest["id"],)).fetchall())
+            next_species = sorted(set_.species.lower() for set_ in pokemon)
+            next_format = format or str(latest["format"])
+            current_mechanics = tuple(json.loads(str(latest["mechanics_json"])))
+            next_mechanics = tuple(sorted(mechanics)) if mechanics is not None else tuple(sorted(current_mechanics))
+            signature = f"{normalized}\n#{next_format}\n#{json.dumps(sorted(next_mechanics), separators=(',', ':'))}"
+            paste_hash = hashlib.sha256(signature.encode()).hexdigest()
             duplicate = connection.execute(
-                "SELECT version_number FROM team_versions WHERE team_id = ? AND paste_hash = ?",
-                (team_id, paste_hash),
+                "SELECT version_number, minor_version FROM team_versions WHERE team_id = ? AND (paste_hash = ? OR (paste = ? AND format = ? AND mechanics_json = ?))",
+                (team_id, paste_hash, normalized, next_format, json.dumps(list(next_mechanics))),
             ).fetchone()
             if duplicate is not None:
                 raise ValueError(
-                    f"Este Pokepaste ya existe como v{duplicate['version_number']}."
+                    f"Esta configuración ya existe como v{duplicate['version_number']}{'.' + str(duplicate['minor_version']).zfill(2) if duplicate['minor_version'] else ''}."
                 )
-            latest = connection.execute(
-                "SELECT COALESCE(MAX(version_number), 0) FROM team_versions WHERE team_id = ?",
-                (team_id,),
-            ).fetchone()[0]
-            version_number = int(latest) + 1
+            major_change = current_species != next_species or next_format != latest["format"] or sorted(next_mechanics) != sorted(current_mechanics)
+            version_number = int(latest["version_number"]) + 1 if major_change else int(latest["version_number"])
+            minor_version = 0 if major_change else int(latest["minor_version"]) + 1
             with connection:
                 connection.execute(
-                    "INSERT INTO team_versions (id, team_id, version_number, paste, paste_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (version_id, team_id, version_number, normalized, paste_hash, now),
+                    "INSERT INTO team_versions (id, team_id, version_number, minor_version, format, mechanics_json, paste, paste_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (version_id, team_id, version_number, minor_version, next_format, json.dumps(list(next_mechanics)), normalized, paste_hash, now),
                 )
                 self._insert_pokemon(connection, version_id, pokemon)
                 connection.execute(
@@ -134,6 +146,9 @@ class Repository:
             team_id,
             str(team["name"]),
             version_number,
+            minor_version,
+            next_format,
+            next_mechanics,
             normalized,
             now,
             pokemon,
@@ -211,7 +226,7 @@ class Repository:
             result: list[dict[str, Any]] = []
             for team in teams:
                 versions = connection.execute(
-                    "SELECT id, version_number, paste, created_at FROM team_versions WHERE team_id = ? ORDER BY version_number DESC",
+                    "SELECT id, version_number, minor_version, format, mechanics_json, paste, created_at FROM team_versions WHERE team_id = ? ORDER BY version_number DESC, minor_version DESC",
                     (team["id"],),
                 ).fetchall()
                 result.append(
@@ -232,7 +247,8 @@ class Repository:
             """INSERT INTO pokemon_sets (
                 id, team_version_id, slot, nickname, species, item, ability,
                 level, tera_type, evs, nature, moves_json, types_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                , mechanics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     str(uuid4()),
@@ -248,6 +264,7 @@ class Repository:
                     set_.nature,
                     json.dumps([asdict(move) for move in set_.moves]),
                     json.dumps(list(set_.types)),
+                    json.dumps(set_.mechanics),
                 )
                 for set_ in pokemon
             ],

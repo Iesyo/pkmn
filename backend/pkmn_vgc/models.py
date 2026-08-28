@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 MatchResult = Literal["win", "loss"]
 
@@ -23,6 +23,7 @@ class PokemonSet:
     ability: str
     level: int
     tera_type: str | None
+    mechanics: dict[str, Any]
     evs: str
     nature: str
     moves: tuple[MoveSet, ...]
@@ -35,6 +36,9 @@ class TeamVersion:
     team_id: str
     team_name: str
     version: int
+    minor_version: int
+    format: str
+    mechanics: tuple[str, ...]
     paste: str
     created_at: str
     pokemon: tuple[PokemonSet, ...] = field(default_factory=tuple)

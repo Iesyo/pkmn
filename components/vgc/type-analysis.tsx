@@ -11,9 +11,9 @@ import { analyzeTypes } from "@/lib/team-stats";
 import type { PokemonSet } from "@/lib/types";
 import { TypeBadge } from "./type-badge";
 
-export function TypeAnalysis({ pokemon }: { pokemon: PokemonSet[] }) {
+export function TypeAnalysis({ pokemon, allowTera = true }: { pokemon: PokemonSet[]; allowTera?: boolean }) {
   const [useTera, setUseTera] = useState(false);
-  const analysis = useMemo(() => analyzeTypes(pokemon, useTera), [pokemon, useTera]);
+  const analysis = useMemo(() => analyzeTypes(pokemon, allowTera && useTera), [pokemon, allowTera, useTera]);
   const weaknesses = analysis.defense.filter((entry) => entry.count > 0);
 
   return (
@@ -25,11 +25,11 @@ export function TypeAnalysis({ pokemon }: { pokemon: PokemonSet[] }) {
           </div>
           <p className="mt-1 text-[10px] text-slate-500">{SHOWDOWN_SNAPSHOT.label} · base defensiva del equipo</p>
         </div>
-        <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 px-3 py-1.5">
+        {allowTera ? <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 px-3 py-1.5">
           <Sparkles className="size-3 text-amber-300" />
           <Label htmlFor="tera-view" className="text-[10px] font-semibold text-slate-300">Vista Tera</Label>
           <Switch id="tera-view" checked={useTera} onCheckedChange={setUseTera} aria-label="Alternar análisis con tipos Tera" />
-        </div>
+        </div> : null}
       </div>
 
       <div className="mt-4">

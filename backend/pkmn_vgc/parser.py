@@ -111,6 +111,7 @@ def parse_showdown_paste(paste: str) -> tuple[PokemonSet, ...]:
         ability = ""
         level = 50
         tera_type: str | None = None
+        mechanics: dict[str, object] = {"dynamaxLevel": 10, "gigantamax": False, "megaEvolution": False, "zMove": False}
         evs = ""
         nature = ""
         moves: list[MoveSet] = []
@@ -125,6 +126,13 @@ def parse_showdown_paste(paste: str) -> tuple[PokemonSet, ...]:
                     level = 50
             elif line.startswith("Tera Type:"):
                 tera_type = line.removeprefix("Tera Type:").strip()
+            elif line.startswith("Dynamax Level:"):
+                try:
+                    mechanics["dynamaxLevel"] = int(line.removeprefix("Dynamax Level:").strip())
+                except ValueError:
+                    mechanics["dynamaxLevel"] = 10
+            elif line == "Gigantamax: Yes":
+                mechanics["gigantamax"] = True
             elif line.startswith("EVs:"):
                 evs = line.removeprefix("EVs:").strip()
             elif line.endswith(" Nature"):
@@ -154,6 +162,7 @@ def parse_showdown_paste(paste: str) -> tuple[PokemonSet, ...]:
                 ability=ability,
                 level=level,
                 tera_type=tera_type,
+                mechanics=mechanics,
                 evs=evs,
                 nature=nature,
                 moves=tuple(moves),

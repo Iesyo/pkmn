@@ -6,6 +6,7 @@ histórico de equipos de Pokémon VGC.
 ## Primera entrega
 
 - Teams con Pokepaste y versiones inmutables.
+- Team Builder con seis slots, formatos Gen 6–9, mecánicas especiales y cobertura en vivo.
 - Comparador simétrico Team A vs Team B.
 - Fichas de seis Pokémon con set, uso y rendimiento.
 - Leads frecuentes y mejores leads.
@@ -71,5 +72,6 @@ ruta.
 ## Principio del producto
 
 La aplicación describe lo que ya ocurrió. No predice resultados ni sustituye
-el criterio de juego. Una modificación del equipo crea `v2`, `v3`, etc.; jamás
-reescribe la versión utilizada por una partida anterior.
+el criterio de juego. Cambiar una especie o el formato crea `v2`, `v3`, etc.;
+ajustar únicamente un set crea `v1.01`, `v1.02`, etc. Jamás se reescribe la
+versión utilizada por una partida anterior.

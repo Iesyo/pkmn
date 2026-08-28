@@ -18,10 +18,13 @@ CREATE TABLE IF NOT EXISTS team_versions (
     id TEXT PRIMARY KEY,
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     version_number INTEGER NOT NULL CHECK (version_number > 0),
+    minor_version INTEGER NOT NULL DEFAULT 0 CHECK (minor_version >= 0),
+    format TEXT NOT NULL DEFAULT 'gen9',
+    mechanics_json TEXT NOT NULL DEFAULT '["tera"]',
     paste TEXT NOT NULL,
     paste_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE (team_id, version_number),
+    UNIQUE (team_id, version_number, minor_version),
     UNIQUE (team_id, paste_hash)
 );
 
@@ -35,6 +38,7 @@ CREATE TABLE IF NOT EXISTS pokemon_sets (
     ability TEXT NOT NULL DEFAULT '',
     level INTEGER NOT NULL DEFAULT 50,
     tera_type TEXT,
+    mechanics_json TEXT NOT NULL DEFAULT '{}',
     evs TEXT NOT NULL DEFAULT '',
     nature TEXT NOT NULL DEFAULT '',
     moves_json TEXT NOT NULL,
