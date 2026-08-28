@@ -38,8 +38,9 @@ export interface ShowdownSnapshot {
   items: Record<string, ShowdownItem>;
 }
 
-export async function loadShowdownSnapshot() {
-  const response = await fetch("/data/showdown-dex.json.gz?schema=2", { cache: "force-cache" });
+export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean } = {}) {
+  const query = fresh ? `schema=2&refresh=${Date.now()}` : "schema=2";
+  const response = await fetch(`/data/showdown-dex.json.gz?${query}`, { cache: fresh ? "no-store" : "force-cache" });
   if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) throw new Error("La Pokédex de Pokémon Showdown llegó vacía.");

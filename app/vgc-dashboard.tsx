@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, Sparkles } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { TeamPanel } from "@/components/vgc/team-panel";
@@ -128,10 +128,7 @@ export function VgcDashboard() {
 
       <main className="relative mx-auto max-w-[1920px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(circle_at_18%_12%,rgba(34,211,238,0.10),transparent_34%),radial-gradient(circle_at_82%_8%,rgba(217,70,239,0.09),transparent_34%)]" />
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div><div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300"><ShieldCheck className="size-3.5" />{activeView === "builder" ? "Construcción competitiva · versión controlada" : "Scouting personal · histórico real"}</div><h1 className="max-w-4xl text-3xl font-black tracking-[-0.045em] text-white sm:text-4xl">{activeView === "builder" ? "Construye el plan, conserva cada evolución." : "Compara decisiones, no predicciones."}</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{activeView === "builder" ? "Edita seis sets, revisa la cobertura y deja que el sistema decida si corresponde v1.01 o v2." : "Dos equipos, sus versiones exactas y el rendimiento que ya ocurrió. Sin simulaciones ni cajas negras."}</p></div>
-          <div className="flex flex-wrap gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
-        </div>
+        <div className="mb-4 flex flex-wrap justify-end gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
 
         <TabsContent value="compare" className="mt-0 outline-none">
           <section aria-label="Selección de equipos" className="relative mb-5 grid items-center gap-3 xl:grid-cols-[minmax(0,1fr)_72px_minmax(0,1fr)]">
