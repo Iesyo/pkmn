@@ -149,7 +149,7 @@ export function getMoveData(move: string) {
 export function getSpriteUrl(species: string) {
   const id = toId(species);
   const slug = spriteAliases[id] ?? species.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-  return `https://play.pokemonshowdown.com/sprites/gen5/${slug}.png`;
+  return `https://play.pokemonshowdown.com/sprites/ani/${slug}.gif`;
 }
 
 export function getConditionalEffect(ability: string, item: string) {
