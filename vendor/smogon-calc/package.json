@@ -3,6 +3,14 @@
   "version": "0.11.0-champions.2c50a89",
   "description": "Vendored build of the official Pokémon Showdown damage calculator with Champions support.",
   "main": "dist/index.js",
+  "module": "dist/browser-entry.mjs",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/browser-entry.mjs",
+      "require": "./dist/index.js"
+    }
+  },
   "license": "MIT"
 }
