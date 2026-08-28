@@ -69,6 +69,30 @@ export class DomainError extends Error {
   }
 }
 
+export async function getShowdownNames(): Promise<string[]> {
+  const db = await getDatabase();
+  const row = await db
+    .prepare("SELECT value FROM app_settings WHERE key = 'showdown_names'")
+    .first<{ value: string }>();
+  return row ? parseArray<string>(row.value) : [];
+}
+
+export async function saveShowdownNames(names: string[]): Promise<string[]> {
+  const normalized = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+  if (!normalized.length) {
+    throw new DomainError("Agrega al menos un nombre de Showdown.");
+  }
+  if (normalized.length > 10 || normalized.some((name) => name.length > 30)) {
+    throw new DomainError("Puedes guardar hasta 10 nombres de 30 caracteres cada uno.");
+  }
+  const db = await getDatabase();
+  await db
+    .prepare("INSERT INTO app_settings (key, value, updated_at) VALUES ('showdown_names', ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP")
+    .bind(JSON.stringify(normalized))
+    .run();
+  return normalized;
+}
+
 function parseArray<T>(value: string, fallback: T[] = []) {
   try {
     const parsed = JSON.parse(value);

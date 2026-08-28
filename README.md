@@ -5,7 +5,7 @@ histórico de equipos de Pokémon VGC.
 
 ## Primera entrega
 
-- Biblioteca de equipos con Pokepaste y versiones inmutables.
+- Teams con Pokepaste y versiones inmutables.
 - Comparador simétrico Team A vs Team B.
 - Fichas de seis Pokémon con set, uso y rendimiento.
 - Leads frecuentes y mejores leads.

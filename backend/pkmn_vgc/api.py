@@ -24,7 +24,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Like No One Ever Was API",
     version="0.1.0",
-    description="API personal para biblioteca, versiones y partidas de Pokémon VGC.",
+    description="API personal para teams, versiones y partidas de Pokémon VGC.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -59,6 +59,10 @@ class MatchBody(BaseModel):
     played_at: str | None = None
 
 
+class SettingsBody(BaseModel):
+    showdown_names: list[str] = Field(min_length=1, max_length=10)
+
+
 def _http_error(error: Exception) -> HTTPException:
     if isinstance(error, LookupError):
         return HTTPException(status_code=404, detail=str(error))
@@ -75,6 +79,19 @@ def health() -> dict[str, str]:
 @app.get("/api/teams")
 def list_teams() -> dict[str, object]:
     return {"teams": repository.list_teams()}
+
+
+@app.get("/api/settings")
+def get_settings() -> dict[str, object]:
+    return {"showdown_names": repository.get_showdown_names()}
+
+
+@app.put("/api/settings")
+def update_settings(body: SettingsBody) -> dict[str, object]:
+    try:
+        return {"showdown_names": repository.save_showdown_names(body.showdown_names)}
+    except Exception as error:
+        raise _http_error(error) from error
 
 
 @app.post("/api/teams", status_code=201)

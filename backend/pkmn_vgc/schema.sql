@@ -8,6 +8,12 @@ CREATE TABLE IF NOT EXISTS teams (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS team_versions (
     id TEXT PRIMARY KEY,
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,

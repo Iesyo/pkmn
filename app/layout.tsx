@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Like No One Ever Was · VGC Performance Lab",
   description:
-    "Biblioteca y comparador personal de rendimiento histórico para equipos Pokémon VGC.",
+    "Teams y comparador personal de rendimiento histórico para equipos Pokémon VGC.",
   other: {
     "codex-preview": "development",
   },

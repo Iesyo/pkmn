@@ -6,7 +6,7 @@ import { ArrowLeftRight, BookOpen, Database, Flame, Library, RefreshCw, ShieldCh
 import { LibraryCard } from "@/components/vgc/library-card";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
-import { AddTeamDialog, NewVersionDialog } from "@/components/vgc/team-dialogs";
+import { AddTeamDialog, NewVersionDialog, ShowdownNamesDialog } from "@/components/vgc/team-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,6 +19,7 @@ type ConnectionState = "checking" | "ready" | "demo";
 
 export function VgcDashboard() {
   const [storedGroups, setStoredGroups] = useState<TeamGroup[]>([]);
+  const [showdownNames, setShowdownNames] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [activeView, setActiveView] = useState("compare");
   const [leftId, setLeftId] = useState(DEFAULT_LEFT_VERSION_ID);
@@ -40,15 +41,20 @@ export function VgcDashboard() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/teams", { cache: "no-store" })
-      .then(async (response) => {
-        const payload = (await response.json()) as { teams?: TeamGroup[] };
-        if (!response.ok) throw new Error("Persistence unavailable");
-        return payload.teams ?? [];
+    Promise.all([
+      fetch("/api/teams", { cache: "no-store" }),
+      fetch("/api/settings", { cache: "no-store" }),
+    ])
+      .then(async ([teamsResponse, settingsResponse]) => {
+        const teamsPayload = (await teamsResponse.json()) as { teams?: TeamGroup[] };
+        const settingsPayload = (await settingsResponse.json()) as { showdownNames?: string[] };
+        if (!teamsResponse.ok || !settingsResponse.ok) throw new Error("Persistence unavailable");
+        return { teams: teamsPayload.teams ?? [], showdownNames: settingsPayload.showdownNames ?? [] };
       })
-      .then((teams) => {
+      .then(({ teams, showdownNames: savedNames }) => {
         if (!active) return;
         setStoredGroups(teams);
+        setShowdownNames(savedNames);
         setConnection("ready");
       })
       .catch(() => {
@@ -95,10 +101,11 @@ export function VgcDashboard() {
 
           <TabsList className="h-10 rounded-full border border-white/8 bg-white/4 p-1">
             <TabsTrigger value="compare" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><ArrowLeftRight className="size-3.5" /><span className="hidden sm:inline">Comparador</span></TabsTrigger>
-            <TabsTrigger value="library" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Library className="size-3.5" /><span className="hidden sm:inline">Biblioteca</span></TabsTrigger>
+            <TabsTrigger value="library" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Library className="size-3.5" /><span className="hidden sm:inline">Teams</span></TabsTrigger>
           </TabsList>
 
           <div className="hidden items-center gap-2 lg:flex">
+            <ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} />
             <Badge variant="outline" className={connection === "ready" ? "gap-1.5 border-emerald-300/15 bg-emerald-300/7 text-emerald-300" : "gap-1.5 border-amber-300/15 bg-amber-300/7 text-amber-200"}>{connection === "checking" ? <RefreshCw className="size-3 animate-spin" /> : connection === "ready" ? <Database className="size-3" /> : <Sparkles className="size-3" />}{connection === "checking" ? "Conectando" : connection === "ready" ? "SQLite listo" : "Modo muestra"}</Badge>
             <AddTeamDialog onCreated={handleTeamCreated} />
           </div>
@@ -109,7 +116,7 @@ export function VgcDashboard() {
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(circle_at_18%_12%,rgba(34,211,238,0.10),transparent_34%),radial-gradient(circle_at_82%_8%,rgba(217,70,239,0.09),transparent_34%)]" />
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div><div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300"><ShieldCheck className="size-3.5" />Scouting personal · histórico real</div><h1 className="max-w-4xl text-3xl font-black tracking-[-0.045em] text-white sm:text-4xl">Compara decisiones, no predicciones.</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Dos equipos, sus versiones exactas y el rendimiento que ya ocurrió. Sin simulaciones ni cajas negras.</p></div>
-          <div className="flex gap-2 lg:hidden"><AddTeamDialog onCreated={handleTeamCreated} /></div>
+          <div className="flex flex-wrap gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
         </div>
 
         <TabsContent value="compare" className="mt-0 outline-none">
@@ -124,7 +131,7 @@ export function VgcDashboard() {
         <TabsContent value="library" className="mt-0 outline-none">
           <div className="grid items-start gap-5 lg:grid-cols-[310px_minmax(0,1fr)]">
             <aside className="rounded-[24px] border border-white/8 bg-slate-900/40 p-3 backdrop-blur-xl lg:sticky lg:top-24">
-              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Biblioteca</h2><p className="mt-1 text-[10px] text-slate-600">{groups.length} equipos · historial inmutable</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
+              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{groups.length} equipos · historial inmutable</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
               <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2"><div className="space-y-2">{groups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />)}</div></ScrollArea>
             </aside>
             <div className="min-w-0">

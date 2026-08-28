@@ -50,6 +50,11 @@ class RepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ya existe como v1"):
             self.repository.create_version(first.team_id, TEAM_PASTE)
 
+    def test_persists_and_normalizes_showdown_names(self) -> None:
+        saved = self.repository.save_showdown_names([" Roku4523 ", "Iesyo", "Roku4523"])
+        self.assertEqual(saved, ["Roku4523", "Iesyo"])
+        self.assertEqual(self.repository.get_showdown_names(), saved)
+
 
 if __name__ == "__main__":
     unittest.main()

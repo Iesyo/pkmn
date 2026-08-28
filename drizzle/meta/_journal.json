@@ -8,6 +8,13 @@
       "when": 1787903124386,
       "tag": "0000_light_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787931404629,
+      "tag": "0001_slim_nick_fury",
+      "breakpoints": true
     }
   ]
 }

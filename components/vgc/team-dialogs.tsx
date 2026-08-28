@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import { Check, Link2, Loader2, Plus, Save, Swords } from "lucide-react";
+import { Check, Link2, Loader2, Plus, Save, Swords, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +31,61 @@ async function readResponse<T>(response: Response): Promise<T> {
   const payload = (await response.json()) as T & { error?: string };
   if (!response.ok) throw new Error(payload.error || "No pudimos guardar los cambios.");
   return payload;
+}
+
+export function ShowdownNamesDialog({ names, onSaved }: { names: string[]; onSaved: (names: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(names.join("\n"));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setValue(names.join("\n"));
+      setError("");
+    }
+    setOpen(nextOpen);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const showdownNames = [...new Set(value.split(/[\n,]/).map((name) => name.trim()).filter(Boolean))];
+      const payload = await readResponse<{ showdownNames: string[] }>(
+        await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ showdownNames }),
+        }),
+      );
+      onSaved(payload.showdownNames);
+      setOpen(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos guardar los nombres.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="h-10 max-w-64 gap-2 rounded-full border-white/10 bg-white/4 px-3 text-left">
+          <UserRound className="size-4 shrink-0 text-cyan-300" />
+          <span className="min-w-0"><span className="block text-[8px] font-black uppercase tracking-[0.16em] text-slate-600">Trainer</span><span className="block truncate text-xs text-slate-200">{names.length ? names.join(" · ") : "Añadir Showdown name"}</span></span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="border-white/10 bg-slate-950 text-slate-100 sm:max-w-md">
+        <form onSubmit={submit}>
+          <DialogHeader><DialogTitle>Showdown Name(s)</DialogTitle><DialogDescription className="text-slate-500">Escribe los nombres con los que juegas, igual que en el Excel. Usa una línea por nombre.</DialogDescription></DialogHeader>
+          <div className="my-5 grid gap-2"><Label htmlFor="showdown-names">Nombre(s) de entrenador</Label><Textarea id="showdown-names" value={value} onChange={(event) => setValue(event.target.value)} placeholder={"Roku4523\nOtroNombre"} className="min-h-28 border-white/10 bg-white/5" autoFocus />{error ? <p role="alert" className="rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}</div>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar nombres</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function AddTeamDialog({ onCreated }: { onCreated: (team: TeamGroup) => void }) {

@@ -42,6 +42,32 @@ class Repository:
         with self.connect() as connection:
             connection.executescript(schema)
 
+    def get_showdown_names(self) -> list[str]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_settings WHERE key = 'showdown_names'"
+            ).fetchone()
+        if row is None:
+            return []
+        value = json.loads(str(row["value"]))
+        return [str(name) for name in value] if isinstance(value, list) else []
+
+    def save_showdown_names(self, names: Sequence[str]) -> list[str]:
+        normalized = list(dict.fromkeys(name.strip() for name in names if name.strip()))
+        if not normalized:
+            raise ValueError("Agrega al menos un nombre de Showdown.")
+        if len(normalized) > 10 or any(len(name) > 30 for name in normalized):
+            raise ValueError("Puedes guardar hasta 10 nombres de 30 caracteres cada uno.")
+        with self.connect() as connection:
+            with connection:
+                connection.execute(
+                    """INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('showdown_names', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                    (json.dumps(normalized), _now()),
+                )
+        return normalized
+
     def create_team(self, name: str, paste: str) -> TeamVersion:
         clean_name = name.strip()
         if not 2 <= len(clean_name) <= 80:
