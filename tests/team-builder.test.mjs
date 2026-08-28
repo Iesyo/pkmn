@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
+import test, { after } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { createServer } from "vite";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const vite = await createServer({
+  appType: "custom",
+  configFile: false,
+  root,
+  resolve: { alias: { "@": root } },
+  server: { middlewareMode: true },
+});
+
+async function readSnapshot() {
+  const compressed = await readFile(new URL("../public/data/showdown-dex.json.gz", import.meta.url));
+  return JSON.parse(gunzipSync(compressed).toString("utf8"));
+}
+
+after(async () => {
+  await vite.close();
+});
+
+test("reproduces the Pokémon Champions Stat Points formula", async () => {
+  const { calculateStat } = await vite.ssrLoadModule("/lib/team-builder.ts");
+  const baseStats = { hp: 80, atk: 160, def: 80, spa: 130, spd: 80, spe: 100 };
+
+  assert.equal(calculateStat(baseStats, "HP", 2, 50, "Adamant", "champions"), 157);
+  assert.equal(calculateStat(baseStats, "Atk", 31, 50, "Adamant", "champions"), 232);
+  assert.equal(calculateStat(baseStats, "Def", 1, 50, "Adamant", "champions"), 101);
+  assert.equal(calculateStat(baseStats, "SpA", 0, 50, "Adamant", "champions"), 135);
+  assert.equal(calculateStat(baseStats, "SpD", 0, 50, "Adamant", "champions"), 100);
+  assert.equal(calculateStat(baseStats, "Spe", 32, 50, "Adamant", "champions"), 152);
+});
+
+test("uses the official Showdown Champions types, abilities and learnsets", async () => {
+  const snapshot = await readSnapshot();
+  const { getLegalAbilities, getLegalMoves, getSpecies } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+
+  const charizard = getSpecies(snapshot, "Charizard");
+  assert.deepEqual(charizard.types, ["Fire", "Flying"]);
+  assert.deepEqual(charizard.baseStats, { hp: 78, atk: 84, def: 78, spa: 109, spd: 85, spe: 100 });
+  assert.deepEqual(getLegalAbilities(snapshot, "Charizard"), ["Blaze", "Solar Power"]);
+  assert.ok(getLegalMoves(snapshot, "Charizard", "champions").includes("Dragon Claw"));
+});
+
+test("inherits a Champions learnset for Mega formes", async () => {
+  const snapshot = await readSnapshot();
+  const { getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+
+  assert.ok(getLegalMoves(snapshot, "Charizard-Mega-X", "champions").includes("Dragon Claw"));
+});
+
+test("uses Showdown's complete static sprite catalog for modern species and forms", async () => {
+  const { getSpriteUrl } = await vite.ssrLoadModule("/lib/pokemon-data.ts");
+
+  assert.equal(
+    getSpriteUrl("Miraidon"),
+    "https://play.pokemonshowdown.com/sprites/gen5/miraidon.png",
+  );
+  assert.equal(
+    getSpriteUrl("Ogerpon-Wellspring"),
+    "https://play.pokemonshowdown.com/sprites/gen5/ogerpon-wellspring.png",
+  );
+  assert.equal(
+    getSpriteUrl("Flutter Mane"),
+    "https://play.pokemonshowdown.com/sprites/gen5/fluttermane.png",
+  );
+  assert.equal(
+    getSpriteUrl("Chi-Yu"),
+    "https://play.pokemonshowdown.com/sprites/gen5/chiyu.png",
+  );
+});

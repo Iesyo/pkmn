@@ -1,7 +1,9 @@
 import { getMoveData, getSpeciesTypes } from "./pokemon-data";
+import type { BaseStats, StatId } from "./showdown-data";
 import type { BattleMechanic, PokemonSet, PokemonType, TeamVersion } from "./types";
 
 export const BATTLE_FORMATS = [
+  { id: "champions", label: "Pokémon Champions · Mega Evolution", mechanics: ["mega"] },
   { id: "gen9", label: "Gen 9 · Terastallization", mechanics: ["tera"] },
   { id: "gen8", label: "Gen 8 · Dynamax", mechanics: ["dynamax"] },
   { id: "gen7", label: "Gen 7 · Mega + Z-Moves", mechanics: ["mega", "zmove"] },
@@ -16,8 +18,55 @@ export const MECHANIC_LABELS: Record<BattleMechanic, string> = {
   zmove: "Z-Move",
 };
 
-export const NATURES = ["Adamant", "Bold", "Brave", "Calm", "Careful", "Impish", "Jolly", "Modest", "Quiet", "Relaxed", "Sassy", "Timid"];
+export const NATURES = [
+  "Adamant", "Bashful", "Bold", "Brave", "Calm", "Careful", "Docile", "Gentle", "Hardy",
+  "Hasty", "Impish", "Jolly", "Lax", "Lonely", "Mild", "Modest", "Naive", "Naughty",
+  "Quiet", "Quirky", "Rash", "Relaxed", "Sassy", "Serious", "Timid",
+];
 export const EV_STATS = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"] as const;
+
+export const STAT_IDS: Record<(typeof EV_STATS)[number], StatId> = {
+  HP: "hp", Atk: "atk", Def: "def", SpA: "spa", SpD: "spd", Spe: "spe",
+};
+
+const NATURE_EFFECTS: Record<string, { plus?: StatId; minus?: StatId }> = {
+  Adamant: { plus: "atk", minus: "spa" }, Bold: { plus: "def", minus: "atk" },
+  Brave: { plus: "atk", minus: "spe" }, Calm: { plus: "spd", minus: "atk" },
+  Careful: { plus: "spd", minus: "spa" }, Gentle: { plus: "spd", minus: "def" },
+  Hasty: { plus: "spe", minus: "def" }, Impish: { plus: "def", minus: "spa" },
+  Jolly: { plus: "spe", minus: "spa" }, Lax: { plus: "def", minus: "spd" },
+  Lonely: { plus: "atk", minus: "def" }, Mild: { plus: "spa", minus: "def" },
+  Modest: { plus: "spa", minus: "atk" }, Naive: { plus: "spe", minus: "spd" },
+  Naughty: { plus: "atk", minus: "spd" }, Quiet: { plus: "spa", minus: "spe" },
+  Rash: { plus: "spa", minus: "spd" }, Relaxed: { plus: "def", minus: "spe" },
+  Sassy: { plus: "spd", minus: "spe" }, Timid: { plus: "spe", minus: "atk" },
+};
+
+export function getStatRules(format: string) {
+  return format === "champions"
+    ? { label: "Stat Points", shortLabel: "SP", perStatMax: 32, totalMax: 66, step: 1 }
+    : { label: "EVs", shortLabel: "EV", perStatMax: 252, totalMax: 510, step: 4 };
+}
+
+export function calculateStat(baseStats: BaseStats, stat: (typeof EV_STATS)[number], allocation: number, level: number, nature: string, format: string) {
+  const id = STAT_IDS[stat];
+  const contribution = format === "champions"
+    ? Math.max(2 * allocation - 1, 0)
+    : Math.floor(allocation / 4);
+  const core = Math.floor((2 * baseStats[id] + 31 + contribution) * level / 100);
+  if (id === "hp") return core + level + 10;
+  const neutral = core + 5;
+  const effect = NATURE_EFFECTS[nature] ?? {};
+  if (effect.plus === id) return Math.floor(neutral * 1.1);
+  if (effect.minus === id) return Math.floor(neutral * 0.9);
+  return neutral;
+}
+
+export function getNatureEffect(nature: string, stat: (typeof EV_STATS)[number]) {
+  const id = STAT_IDS[stat];
+  const effect = NATURE_EFFECTS[nature] ?? {};
+  return effect.plus === id ? "plus" : effect.minus === id ? "minus" : "neutral";
+}
 
 export function formatVersion(version: Pick<TeamVersion, "version" | "minorVersion">) {
   return version.minorVersion ? `${version.version}.${String(version.minorVersion).padStart(2, "0")}` : String(version.version);

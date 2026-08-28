@@ -149,17 +149,11 @@ const spriteAliases: Record<string, string> = {
   urshifurapidstrike: "urshifu-rapidstrike",
   urshifurapid: "urshifu-rapidstrike",
   ogerponwellspring: "ogerpon-wellspring",
-  fluttermane: "flutter-mane",
-  ragingbolt: "raging-bolt",
-  chiyu: "chi-yu",
   calyrexshadow: "calyrex-shadow",
   calyrexice: "calyrex-ice",
-  ironhands: "iron-hands",
   landorustherian: "landorus-therian",
-  chienpao: "chien-pao",
   indeedeef: "indeedee-f",
   ursalunabloodmoon: "ursaluna-bloodmoon",
-  ironcrown: "iron-crown",
   zamazentacrowned: "zamazenta-crowned",
 };
 
@@ -188,8 +182,11 @@ export function getMoveData(move: string) {
 
 export function getSpriteUrl(species: string) {
   const id = toId(species);
-  const slug = spriteAliases[id] ?? species.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-  return `https://play.pokemonshowdown.com/sprites/ani/${slug}.gif`;
+  const slug = spriteAliases[id] ?? id;
+  // The animated catalog is incomplete for several modern species and forms.
+  // Showdown's Gen 5-style static catalog is uniform and includes those entries,
+  // which keeps every dashboard and Builder sprite visually consistent.
+  return `https://play.pokemonshowdown.com/sprites/gen5/${slug}.png`;
 }
 
 export function getConditionalEffect(ability: string, item: string) {

@@ -6,7 +6,9 @@ histórico de equipos de Pokémon VGC.
 ## Primera entrega
 
 - Teams con Pokepaste y versiones inmutables.
-- Team Builder con seis slots, formatos Gen 6–9, mecánicas especiales y cobertura en vivo.
+- Team Builder con seis slots, Pokémon Champions y formatos Gen 6–9, mecánicas especiales y cobertura en vivo.
+- Pokédex local generada desde Pokémon Showdown/Smogon: tipos y stats base oficiales, habilidades ligadas a la especie y movimientos filtrados por learnset/formato.
+- Selector de Stat Points de Champions (32 por stat, 66 totales) con cálculo final a nivel 50; los formatos clásicos conservan EVs 252/510.
 - Comparador simétrico Team A vs Team B.
 - Fichas de seis Pokémon con set, uso y rendimiento.
 - Leads frecuentes y mejores leads.
@@ -47,6 +49,14 @@ Para generar una migración después de cambiar `db/schema.ts`:
 ```bash
 npm run db:generate
 ```
+
+Para actualizar el snapshot de Pokémon Showdown usado por el Team Builder:
+
+```bash
+npm run data:showdown
+```
+
+El snapshot se guarda comprimido en `public/data/showdown-dex.json.gz`, por lo que la interfaz sigue funcionando sin consultar servicios externos durante cada edición y descarga menos de 400 KB.
 
 ## Núcleo Python
 

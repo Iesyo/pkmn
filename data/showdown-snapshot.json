@@ -1,8 +1,8 @@
 {
   "source": "https://github.com/smogon/pokemon-showdown/tree/master/data",
   "captured": "2026-08-28",
-  "scope": "bootstrap-vgc",
-  "notes": "Snapshot compacto inicial. El MVP ampliará este archivo antes de admitir análisis exhaustivo de especies fuera del catálogo base.",
+  "scope": "legacy-bootstrap-vgc",
+  "notes": "Referencia histórica del MVP. El Team Builder usa ahora public/data/showdown-dex.json.gz, generado con npm run data:showdown desde las tablas oficiales de Showdown para Champions y VGC Gen 6-9.",
   "species": [
     "Kleavor",
     "Miraidon",

@@ -11,6 +11,7 @@ automáticas.
 ```mermaid
 flowchart TD
     UI[Interfaz VGC] --> API[Contrato REST]
+    DEX[Snapshot Showdown] --> UI
     API --> PY[Núcleo Python]
     PY --> SQL[(SQLite local)]
     API --> D1[(D1 / SQLite alojado)]
@@ -23,6 +24,10 @@ flowchart TD
   SQLite.
 - `lib/`: contrato común de datos, estadísticas descriptivas y análisis de
   tipos.
+- `public/data/showdown-dex.json.gz`: snapshot reproducible y comprimido de especies, stats,
+  habilidades, movimientos y learnsets de Champions/VGC.
+- `scripts/update-showdown-data.mjs`: generador del snapshot desde las tablas
+  públicas oficiales de Pokémon Showdown.
 
 ## Invariantes
 
@@ -34,6 +39,10 @@ flowchart TD
    métricas independientes.
 5. El análisis de tipos separa la defensa base, la vista Tera y los efectos
    condicionales de habilidad/objeto.
+6. Tipos y stats base son metadatos de especie de solo lectura; habilidades y
+   movimientos se validan contra el snapshot del formato seleccionado.
+7. Champions usa Stat Points (32 por stat, 66 totales) y su fórmula propia;
+   Gen 6–9 conserva el modelo tradicional de EVs.
 
 ## Modelo inicial
 
@@ -47,6 +56,5 @@ flowchart TD
 ## Próximos cortes
 
 - Importador de replays de Showdown.
-- Snapshot completo y automatizado de datos de Pokémon Showdown.
-- Matchups y asistencia derivados del historial.
+- Actualización programada del snapshot de Pokémon Showdown.
 - Importación opcional de las hojas PASRS existentes.
