@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Minus, Plus, RefreshCw, Save, Shield, Sparkles, Upload, WandSparkles } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Calculator, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Minus, Plus, RefreshCw, Save, Shield, Sparkles, Upload, WandSparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,11 @@ import { BATTLE_FORMATS, EV_STATS, MECHANIC_LABELS, NATURES, calculateStat, clon
 import { POKEMON_TYPES, type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { TypeBadge } from "./type-badge";
+
+const DamageCalculatorDialog = lazy(async () => {
+  const calculator = await import("./damage-calculator");
+  return { default: calculator.DamageCalculatorDialog };
+});
 
 type BuilderProps = {
   groups: TeamGroup[];
@@ -224,6 +229,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [dex, setDex] = useState<ShowdownSnapshot | null>(null);
   const [dexError, setDexError] = useState("");
   const [refreshingDex, setRefreshingDex] = useState(false);
+  const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -375,7 +381,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
         <div className="min-w-0 space-y-4">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} />)}</div>
           <div className="overflow-hidden rounded-[26px] border border-white/8 bg-[#0b1220]/92 shadow-[0_28px_90px_rgba(0,0,0,0.30)]">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5"><div className="flex items-center gap-3">{selected.species ? <Image src={getSpriteUrl(selected.species)} alt={selected.species} width={60} height={60} unoptimized className="size-12 object-contain" /> : <div className="flex size-12 items-center justify-center rounded-xl bg-white/4"><WandSparkles className="size-5 text-slate-600" /></div>}<div><h2 className="text-lg font-black text-white">{selected.species || "Nuevo Pokémon"}</h2><div className="mt-1.5 flex flex-wrap items-center gap-1">{selected.types.map((type) => <TypeBadge key={type} type={type} className="text-[8px]">{type}</TypeBadge>)}{selected.species ? <span className="ml-1 text-[9px] text-slate-600">Tipos oficiales · solo lectura</span> : <span className="text-[10px] text-slate-600">Elige una especie para empezar.</span>}</div></div></div></div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5"><div className="flex items-center gap-3">{selected.species ? <Image src={getSpriteUrl(selected.species)} alt={selected.species} width={60} height={60} unoptimized className="size-12 object-contain" /> : <div className="flex size-12 items-center justify-center rounded-xl bg-white/4"><WandSparkles className="size-5 text-slate-600" /></div>}<div><h2 className="text-lg font-black text-white">{selected.species || "Nuevo Pokémon"}</h2><div className="mt-1.5 flex flex-wrap items-center gap-1">{selected.types.map((type) => <TypeBadge key={type} type={type} className="text-[8px]">{type}</TypeBadge>)}{selected.species ? <span className="ml-1 text-[9px] text-slate-600">Tipos oficiales · solo lectura</span> : <span className="text-[10px] text-slate-600">Elige una especie para empezar.</span>}</div></div></div><Button type="button" variant="outline" size="icon" disabled={!selected.species || !dex} onClick={() => setCalculatorOpen(true)} aria-label={`Calcular daño de ${selected.species || "este Pokémon"}`} title="Abrir calculadora de daño" className="size-11 shrink-0 rounded-2xl border-cyan-300/20 bg-cyan-300/7 text-cyan-200 shadow-[0_0_24px_rgba(103,232,249,0.08)] hover:border-cyan-300/40 hover:bg-cyan-300/12"><Calculator className="size-5" /></Button></div>
             <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-[1.05fr_1fr_1fr]">
               <div className="space-y-4">
                 <div className="grid gap-2"><Label>Pokémon</Label><Combobox items={speciesOptions} value={selected.species || null} onValueChange={chooseSpecies}><ComboboxInput placeholder={dex ? "Buscar especie..." : "Cargando Pokédex..."} disabled={!dex} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
@@ -398,6 +404,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
               <div className="space-y-3 lg:col-span-2 2xl:col-span-1"><StatEditor pokemon={selected} format={format} baseStats={selectedSpecies?.baseStats ?? null} onChange={updateSelected} /></div>
             </div>
           </div>
+          {dex && calculatorOpen ? <Suspense fallback={null}><DamageCalculatorDialog open onOpenChange={setCalculatorOpen} source={selected} format={format} dex={dex} /></Suspense> : null}
         </div>
       </div>
     </section>

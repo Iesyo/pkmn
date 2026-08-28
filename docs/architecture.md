@@ -2,9 +2,9 @@
 
 ## Objetivo
 
-Aplicación personal para guardar equipos VGC, conservar sus versiones y comparar
-rendimiento histórico. No hace predicciones, simulaciones ni recomendaciones
-automáticas.
+Aplicación personal para guardar equipos VGC, conservar sus versiones, comparar
+rendimiento histórico y simular daño entre dos sets. No hace predicciones ni
+recomendaciones automáticas.
 
 ## Componentes
 
@@ -12,6 +12,7 @@ automáticas.
 flowchart TD
     UI[Interfaz VGC] --> API[Contrato REST]
     DEX[Snapshot Showdown] --> UI
+    CALC[Motor de daño Showdown] --> UI
     API --> PY[Núcleo Python]
     PY --> SQL[(SQLite local)]
     API --> D1[(D1 / SQLite alojado)]
@@ -24,6 +25,8 @@ flowchart TD
   SQLite.
 - `lib/`: contrato común de datos, estadísticas descriptivas y análisis de
   tipos.
+- `vendor/smogon-calc/`: compilación reproducible del motor oficial de daño de
+  Pokémon Showdown, fijada a un commit con soporte de Pokémon Champions.
 - `public/data/showdown-dex.json.gz`: snapshot reproducible y comprimido de especies, stats,
   habilidades, movimientos, learnsets y objetos disponibles de Champions/VGC.
 - `scripts/update-showdown-data.mjs`: generador del snapshot desde las tablas
@@ -43,6 +46,8 @@ flowchart TD
    movimientos y objetos se validan contra el snapshot del formato seleccionado.
 7. Champions usa Stat Points (32 por stat, 66 totales) y su fórmula propia;
    Gen 6–9 conserva el modelo tradicional de EVs.
+8. La calculadora trabaja con copias de los sets: sus ajustes no modifican el
+   equipo ni crean una versión nueva.
 
 ## Modelo inicial
 
