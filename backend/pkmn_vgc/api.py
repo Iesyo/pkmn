@@ -52,7 +52,7 @@ class MatchBody(BaseModel):
     opponent_paste: str = ""
     replay_url: str = ""
     selected: list[str] = Field(default_factory=list, max_length=4)
-    opponent_selected: list[str] = Field(default_factory=list, max_length=4)
+    opponent_selected: list[str] = Field(default_factory=list, max_length=6)
     lead: list[str] = Field(default_factory=list, max_length=2)
     rating: int | None = None
     notes: str = ""

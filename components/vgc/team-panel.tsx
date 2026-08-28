@@ -1,6 +1,5 @@
 import { Activity, Clipboard, Database, Gauge, Layers3, Trophy } from "lucide-react";
 
-import { AddMatchDialog } from "@/components/vgc/team-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +15,7 @@ import type { TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { LeadsPanel } from "./leads-panel";
 import { MatchHistory } from "./match-history";
+import { MatchupAttendance } from "./matchup-attendance";
 import { PokemonCard } from "./pokemon-card";
 import { TypeAnalysis } from "./type-analysis";
 
@@ -78,7 +78,6 @@ export function TeamPanel({
               <DialogContent className="max-h-[86vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl"><DialogHeader><DialogTitle>{version.name} v{version.version}</DialogTitle><DialogDescription className="text-slate-500">Copia exacta del paste asociado a esta versión.</DialogDescription></DialogHeader><pre className="mt-3 overflow-x-auto rounded-2xl border border-white/8 bg-black/35 p-4 font-mono text-[11px] leading-5 text-slate-300">{version.paste}</pre></DialogContent>
             </Dialog>
             {extraAction}
-            {!version.demo && onMatchCreated ? <AddMatchDialog version={version} onCreated={onMatchCreated} /> : null}
           </div>
         </div>
 
@@ -96,7 +95,8 @@ export function TeamPanel({
         </div>
         <LeadsPanel leads={version.leads} />
         <TypeAnalysis pokemon={version.pokemon} />
-        <MatchHistory matches={version.matches} />
+        <MatchupAttendance matches={version.matches} />
+        <MatchHistory version={version} onMatchCreated={onMatchCreated} />
       </div>
     </section>
   );

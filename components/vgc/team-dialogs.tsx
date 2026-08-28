@@ -147,6 +147,7 @@ export function AddMatchDialog({ version, onCreated }: { version: TeamVersion; o
   const [replayUrl, setReplayUrl] = useState("");
   const [rating, setRating] = useState("");
   const [notes, setNotes] = useState("");
+  const [opponentTeam, setOpponentTeam] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [lead, setLead] = useState<string[]>([]);
   const [error, setError] = useState("");
@@ -167,16 +168,25 @@ export function AddMatchDialog({ version, onCreated }: { version: TeamVersion; o
     setSaving(true);
     setError("");
     try {
+      const opponentSelected = [...new Set(
+        opponentTeam
+          .split(/[\n,]/)
+          .map((species) => species.trim())
+          .filter(Boolean),
+      )];
+      if (opponentSelected.length > 6) {
+        throw new Error("El equipo rival puede contener como máximo 6 Pokémon.");
+      }
       await readResponse(
         await fetch("/api/matches", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, lead }),
+          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead }),
         }),
       );
       onCreated();
       setOpen(false);
-      setOpponentName(""); setReplayUrl(""); setRating(""); setNotes(""); setSelected([]); setLead([]);
+      setOpponentName(""); setReplayUrl(""); setRating(""); setNotes(""); setOpponentTeam(""); setSelected([]); setLead([]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No pudimos registrar la partida.");
     } finally {
@@ -196,6 +206,11 @@ export function AddMatchDialog({ version, onCreated }: { version: TeamVersion; o
               <div className="grid gap-2"><Label htmlFor="match-rating">Rating final</Label><Input id="match-rating" inputMode="numeric" value={rating} onChange={(event) => setRating(event.target.value)} placeholder="1428" className="border-white/10 bg-white/5" /></div>
             </div>
             <div className="grid gap-2"><Label htmlFor="opponent-name">Rival / arquetipo</Label><Input id="opponent-name" value={opponentName} onChange={(event) => setOpponentName(event.target.value)} placeholder="Ej. Rain Balance" className="border-white/10 bg-white/5" /></div>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3"><Label htmlFor="opponent-team">Equipo rival visto</Label><span className="text-[10px] text-slate-600">Hasta 6 · separados por comas</span></div>
+              <Input id="opponent-team" value={opponentTeam} onChange={(event) => setOpponentTeam(event.target.value)} placeholder="Pelipper, Archaludon, Rillaboom, ..." className="border-white/10 bg-white/5" />
+              <p className="text-[10px] leading-4 text-slate-600">Este campo alimenta Best/Worst Matchups y Attendance, igual que en tus hojas.</p>
+            </div>
             <div className="grid gap-2"><Label htmlFor="replay-url">Replay de Showdown</Label><Input id="replay-url" type="url" value={replayUrl} onChange={(event) => setReplayUrl(event.target.value)} placeholder="https://replay.pokemonshowdown.com/..." className="border-white/10 bg-white/5" /></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 4 picks</Label><span className="text-[10px] text-slate-600">{selected.length}/4</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleSelected(pokemon.species)} className={selected.includes(pokemon.species) ? "flex items-center justify-between rounded-xl border border-cyan-300/35 bg-cyan-300/10 px-3 py-2 text-left text-xs text-cyan-100" : "flex items-center justify-between rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-left text-xs text-slate-400"}><span className="truncate">{pokemon.species}</span>{selected.includes(pokemon.species) ? <Check className="size-3" /> : null}</button>)}</div></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 2 leads</Label><span className="text-[10px] text-slate-600">{lead.length}/2</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.filter((pokemon) => selected.includes(pokemon.species)).map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleLead(pokemon.species)} className={lead.includes(pokemon.species) ? "rounded-xl border border-violet-300/35 bg-violet-300/10 px-3 py-2 text-left text-xs text-violet-100" : "rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-left text-xs text-slate-400"}>{pokemon.species}</button>)}</div></div>

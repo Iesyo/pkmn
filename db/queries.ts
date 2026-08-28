@@ -298,6 +298,9 @@ export async function createMatch(input: CreateMatchInput) {
   ) {
     throw new DomainError("El replay debe pertenecer a replay.pokemonshowdown.com.");
   }
+  if ((input.opponentSelected?.length ?? 0) > 6) {
+    throw new DomainError("El equipo rival puede contener como máximo 6 Pokémon.");
+  }
 
   const db = await getDatabase();
   const version = await db

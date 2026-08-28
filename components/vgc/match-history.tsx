@@ -1,6 +1,8 @@
-import { ExternalLink, History, Trophy } from "lucide-react";
+import Image from "next/image";
+import { ExternalLink, History, LockKeyhole, Trophy } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -9,19 +11,45 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { MatchRecord } from "@/lib/types";
+import { AddMatchDialog } from "@/components/vgc/team-dialogs";
+import { getSpriteUrl } from "@/lib/pokemon-data";
+import type { TeamVersion } from "@/lib/types";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", {
   day: "2-digit",
   month: "short",
 });
 
-export function MatchHistory({ matches }: { matches: MatchRecord[] }) {
+function OpponentTeam({ species }: { species: string[] }) {
+  if (!species.length) return <span className="text-slate-700">Sin registrar</span>;
+
+  return (
+    <span className="flex min-w-32 items-center gap-0.5" aria-label={`Equipo rival: ${species.join(", ")}`}>
+      {species.slice(0, 6).map((name) => (
+        <Image key={name} src={getSpriteUrl(name)} alt={name} title={name} width={24} height={24} unoptimized className="size-6 object-contain" />
+      ))}
+    </span>
+  );
+}
+
+export function MatchHistory({ version, onMatchCreated }: { version: TeamVersion; onMatchCreated?: () => void }) {
+  const matches = version.matches;
   return (
     <section className="overflow-hidden rounded-2xl border border-white/8 bg-slate-950/65">
       <div className="flex items-center justify-between border-b border-white/7 px-4 py-3">
         <h3 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><History className="size-3.5 text-violet-300" />Historial reciente</h3>
         <span className="text-[10px] text-slate-600">Últimas {Math.min(matches.length, 5)}</span>
+      </div>
+      <div className="flex flex-col gap-3 border-b border-white/7 bg-white/[0.018] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs font-bold text-slate-300">Agregar partida</p>
+          <p className="mt-0.5 text-[10px] text-slate-600">Resultado, replay, tus picks y los seis Pokémon vistos del rival.</p>
+        </div>
+        {!version.demo && onMatchCreated ? (
+          <AddMatchDialog version={version} onCreated={onMatchCreated} />
+        ) : (
+          <Button disabled variant="outline" className="gap-2 rounded-full border-white/8 bg-white/3 text-slate-600"><LockKeyhole className="size-3.5" />Guarda un equipo para registrar</Button>
+        )}
       </div>
       {matches.length ? (
         <div className="overflow-x-auto">
@@ -30,6 +58,7 @@ export function MatchHistory({ matches }: { matches: MatchRecord[] }) {
               <TableRow className="border-white/7 hover:bg-transparent">
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Partida</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Rival</TableHead>
+                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Equipo rival</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
@@ -48,6 +77,7 @@ export function MatchHistory({ matches }: { matches: MatchRecord[] }) {
                     </div>
                   </TableCell>
                   <TableCell className="max-w-36 truncate font-medium text-slate-300">{match.opponentName}</TableCell>
+                  <TableCell><OpponentTeam species={match.opponentSelected} /></TableCell>
                   <TableCell className="max-w-52 truncate text-slate-500">{match.selected.length ? match.selected.join(" · ") : "Sin selección"}</TableCell>
                   <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
                   <TableCell className="text-right">

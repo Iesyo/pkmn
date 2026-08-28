@@ -136,6 +136,8 @@ class Repository:
             raise ValueError("La selección debe contener exactamente 4 Pokémon.")
         if len(lead) not in (0, 2):
             raise ValueError("Los leads deben contener exactamente 2 Pokémon.")
+        if len(opponent_selected) > 6:
+            raise ValueError("El equipo rival puede contener como máximo 6 Pokémon.")
 
         match_id = str(uuid4())
         timestamp = played_at or _now()

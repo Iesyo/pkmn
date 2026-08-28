@@ -74,3 +74,24 @@ test("computes base and Tera defensive views separately", async () => {
   assert.notDeepEqual(base.defense, tera.defense);
   assert.ok(base.coverage.some((entry) => entry.count > 0));
 });
+
+test("computes matchup and attendance stats from opposing Pokémon", async () => {
+  const { calculateOpponentPokemonStats } = await vite.ssrLoadModule("/lib/team-stats.ts");
+  const matches = [
+    { result: "win", opponentSelected: ["Rillaboom", "Incineroar"] },
+    { result: "loss", opponentSelected: ["Rillaboom", "Rillaboom", "Calyrex-Ice"] },
+  ];
+
+  const stats = calculateOpponentPokemonStats(matches);
+  const rillaboom = stats.find((entry) => entry.species === "Rillaboom");
+  const incineroar = stats.find((entry) => entry.species === "Incineroar");
+
+  assert.deepEqual(rillaboom, {
+    species: "Rillaboom",
+    games: 2,
+    wins: 1,
+    winRate: 50,
+    attendanceRate: 100,
+  });
+  assert.equal(incineroar.attendanceRate, 50);
+});

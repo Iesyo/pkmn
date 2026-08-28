@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { Activity, Crosshair, ShieldCheck, Sparkles } from "lucide-react";
+import { Activity, Crosshair, Gauge, ShieldCheck, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -78,7 +78,8 @@ export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: 
       <div className="relative space-y-2.5 p-3">
         <div className="grid gap-1 text-[10px] leading-4 text-slate-400">
           <p className="flex items-center gap-1.5"><ShieldCheck className="size-3 text-slate-500" /><span className="text-slate-500">Ability</span><strong className="font-semibold text-slate-200">{pokemon.ability || "—"}</strong></p>
-          <p className="flex items-center gap-1.5"><Activity className="size-3 text-slate-500" /><span className="text-slate-500">Nivel {pokemon.level}</span><strong className="truncate font-mono font-medium text-slate-300">{pokemon.evs || "EVs no indicados"}</strong></p>
+          <p className="flex items-center gap-1.5"><Gauge className="size-3 text-slate-500" /><span className="text-slate-500">Nivel</span><strong className="font-mono font-medium text-slate-200">{pokemon.level}</strong></p>
+          <p className="flex items-start gap-1.5"><Activity className="mt-0.5 size-3 shrink-0 text-slate-500" /><span className="shrink-0 text-slate-500">EVs</span><strong className="font-mono font-medium text-slate-300">{pokemon.evs || "No indicados"}</strong></p>
           <p className="flex items-center gap-1.5"><Crosshair className="size-3 text-slate-500" /><strong className="font-semibold text-slate-200">{pokemon.nature || "Naturaleza no indicada"}</strong></p>
         </div>
 

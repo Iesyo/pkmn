@@ -11,7 +11,8 @@ histórico de equipos de Pokémon VGC.
 - Leads frecuentes y mejores leads.
 - Cobertura, debilidades, resistencias, inmunidades y puntos ciegos.
 - Vista defensiva base y Tera separadas.
-- Registro de partidas con replay, cuatro picks y dos leads.
+- Registro de partidas con replay, cuatro picks, dos leads y el equipo rival visto.
+- Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - Núcleo Python + SQLite para uso personal.
 - Adaptador D1 (SQLite-compatible) para la versión alojada.

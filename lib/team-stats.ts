@@ -7,6 +7,14 @@ import type {
   MatchRecord,
 } from "./types";
 
+export interface OpponentPokemonStat {
+  species: string;
+  games: number;
+  wins: number;
+  winRate: number;
+  attendanceRate: number;
+}
+
 export function winRate(wins: number, games: number) {
   return games === 0 ? 0 : Math.round((wins / games) * 1000) / 10;
 }
@@ -51,6 +59,32 @@ export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
   return [...grouped.values()].sort(
     (a, b) => b.games - a.games || b.wins - a.wins,
   );
+}
+
+export function calculateOpponentPokemonStats(
+  matches: MatchRecord[],
+): OpponentPokemonStat[] {
+  const grouped = new Map<string, { species: string; games: number; wins: number }>();
+
+  for (const match of matches) {
+    const seen = new Set(
+      match.opponentSelected.map((species) => species.trim()).filter(Boolean),
+    );
+
+    for (const species of seen) {
+      const key = species.toLocaleLowerCase();
+      const current = grouped.get(key) ?? { species, games: 0, wins: 0 };
+      current.games += 1;
+      if (match.result === "win") current.wins += 1;
+      grouped.set(key, current);
+    }
+  }
+
+  return [...grouped.values()].map((entry) => ({
+    ...entry,
+    winRate: winRate(entry.wins, entry.games),
+    attendanceRate: winRate(entry.games, matches.length),
+  }));
 }
 
 export function analyzeTypes(
