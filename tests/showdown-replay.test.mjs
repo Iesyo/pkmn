@@ -146,3 +146,52 @@ test("accepts only canonical public Showdown replay URLs", async () => {
   );
   assert.throws(() => normalizeShowdownReplayUrl("https://example.com/gen9vgc-123"), /debe pertenecer/);
 });
+
+test("extracts rival reveals and direct damage evidence for scouting", async () => {
+  const { collectScoutingReplayEvidence } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const evidence = collectScoutingReplayEvidence(
+    {
+      log: `${log.replace("|win|IesYo", "")}
+|turn|2
+|-terastallize|p2a: Miraidon|Electric
+|-ability|p2a: Miraidon|Hadron Engine
+|-item|p2a: Miraidon|Choice Specs
+|move|p1b: Pelipper|Hurricane|p2a: Miraidon
+|-damage|p2a: Miraidon|65/100
+|move|p2a: Miraidon|Electro Drift|p1b: Pelipper
+|-damage|p1b: Pelipper|90/135
+|-crit|p1b: Pelipper
+|win|IesYo`,
+    },
+    { showdownNames: ["IesYo"], teamSpecies: p1Team },
+  );
+
+  assert.equal(evidence.opponentName, "Opponent");
+  const miraidon = evidence.pokemon.find((pokemon) => pokemon.species === "Miraidon");
+  assert.equal(miraidon.item, "Choice Specs");
+  assert.equal(miraidon.ability, "Hadron Engine");
+  assert.equal(miraidon.teraType, "Electric");
+  assert.deepEqual(miraidon.moves, ["Electro Drift"]);
+  assert.deepEqual(evidence.observations.slice(-2), [
+    {
+      turn: 2,
+      attacker: "Pelipper",
+      defender: "Miraidon",
+      move: "Hurricane",
+      direction: "outgoing",
+      damagePercent: 35,
+      tolerance: 1.25,
+      critical: false,
+    },
+    {
+      turn: 2,
+      attacker: "Miraidon",
+      defender: "Pelipper",
+      move: "Electro Drift",
+      direction: "incoming",
+      damagePercent: 33.33,
+      tolerance: 0.74,
+      critical: true,
+    },
+  ]);
+});

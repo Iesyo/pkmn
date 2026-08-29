@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch, Sparkles } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
 import { TeamBuilder } from "@/components/vgc/team-builder";
+import { ScoutingView } from "@/components/vgc/scouting-view";
 import { AddTeamDialog, NewVersionDialog, ShowdownNamesDialog } from "@/components/vgc/team-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DEFAULT_LEFT_VERSION_ID, DEFAULT_RIGHT_VERSION_ID, DEMO_GROUPS } from "@/lib/demo-data";
-import type { TeamGroup, TeamVersion } from "@/lib/types";
+import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
 
 type ConnectionState = "checking" | "ready" | "demo";
@@ -29,6 +30,8 @@ export function VgcDashboard() {
   const [libraryTeamId, setLibraryTeamId] = useState(DEMO_GROUPS[0].id);
   const [libraryVersionId, setLibraryVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
   const [builderVersionId, setBuilderVersionId] = useState("");
+  const [scoutingMatchId, setScoutingMatchId] = useState("");
+  const [runningScoutingIds, setRunningScoutingIds] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -80,6 +83,43 @@ export function VgcDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    fetch("/api/scouting", { cache: "no-store" })
+      .then(async (response) => response.ok ? (await response.json()) as { analyses?: ScoutingAnalysis[] } : { analyses: [] })
+      .then((payload) => {
+        if (active) setRunningScoutingIds(payload.analyses?.map((analysis) => analysis.matchId) ?? []);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!runningScoutingIds.length) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      const finished = new Set<string>();
+      await Promise.all(runningScoutingIds.map(async (matchId) => {
+        try {
+          const response = await fetch("/api/scouting", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ matchId, action: "step" }),
+          });
+          const payload = (await response.json()) as { analysis?: ScoutingAnalysis };
+          if (response.ok && payload.analysis && (payload.analysis.status === "complete" || payload.analysis.status === "error")) finished.add(matchId);
+        } catch {
+          // A transient network failure leaves the persisted job available for the next pass.
+        }
+      }));
+      if (active) setRunningScoutingIds((current) => current.filter((matchId) => !finished.has(matchId)));
+    }, 650);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [runningScoutingIds]);
+
   const groups = useMemo(() => [...storedGroups, ...DEMO_GROUPS], [storedGroups]);
   const versions = useMemo(() => groups.flatMap((group) => group.versions), [groups]);
   const left = versions.find((version) => version.id === leftId) ?? versions[0];
@@ -115,6 +155,15 @@ export function VgcDashboard() {
     setActiveView("builder");
   }
 
+  function openScouting(_version: TeamVersion, match: MatchRecord) {
+    setScoutingMatchId(match.id);
+    setActiveView("scouting");
+  }
+
+  function runScouting(matchId: string) {
+    setRunningScoutingIds((current) => current.includes(matchId) ? current : [...current, matchId]);
+  }
+
   return (
     <Tabs value={activeView} onValueChange={setActiveView} className="vgc-app min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/7 bg-[#070b14]/88 backdrop-blur-2xl">
@@ -128,6 +177,7 @@ export function VgcDashboard() {
             <TabsTrigger value="compare" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><ArrowLeftRight className="size-3.5" /><span className="hidden sm:inline">Comparador</span></TabsTrigger>
             <TabsTrigger value="library" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Library className="size-3.5" /><span className="hidden sm:inline">Teams</span></TabsTrigger>
             <TabsTrigger value="builder" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Hammer className="size-3.5" /><span className="hidden sm:inline">Team Builder</span></TabsTrigger>
+            <TabsTrigger value="scouting" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><ScanSearch className="size-3.5" /><span className="hidden sm:inline">Scouting</span></TabsTrigger>
           </TabsList>
 
           <div className="hidden items-center gap-2 lg:flex">
@@ -148,7 +198,7 @@ export function VgcDashboard() {
             <div className="mx-auto hidden size-14 items-center justify-center rounded-full border border-white/10 bg-slate-950 text-sm font-black italic tracking-tight text-white shadow-[0_0_35px_rgba(255,255,255,0.08)] xl:flex">VS</div>
             <TeamSelector label="Team B" value={right?.id ?? ""} versions={versions} onChange={setRightId} accent="violet" />
           </section>
-          {left && right ? <div className="grid items-start gap-5 xl:grid-cols-2"><TeamPanel version={left} accent="cyan" onMatchCreated={refresh} /><TeamPanel version={right} accent="violet" onMatchCreated={refresh} /></div> : null}
+          {left && right ? <div className="grid items-start gap-5 xl:grid-cols-2"><TeamPanel version={left} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} /><TeamPanel version={right} accent="violet" onMatchCreated={refresh} onScoutingRequested={openScouting} /></div> : null}
         </TabsContent>
 
         <TabsContent value="library" className="mt-0 outline-none">
@@ -158,13 +208,17 @@ export function VgcDashboard() {
               <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2"><div className="space-y-2">{groups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />)}</div></ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="w-36 border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="w-36 border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
             </div>
           </div>
         </TabsContent>
 
         <TabsContent value="builder" className="mt-0 outline-none">
           <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
+        </TabsContent>
+
+        <TabsContent value="scouting" className="mt-0 outline-none">
+          <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} />
         </TabsContent>
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · datos de tipos basados en un snapshot local de Pokémon Showdown · análisis descriptivo</footer>

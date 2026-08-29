@@ -2,12 +2,16 @@ import { getMoveData, getSpeciesTypes } from "@/lib/pokemon-data";
 import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
+import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
+import { collectScoutingReplayEvidence, fetchShowdownReplay, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
 import type {
   MatchRecord,
   MatchResult,
   MoveSet,
   PokemonSet,
   PokemonType,
+  ScoutingAnalysis,
+  ScoutingResult,
   TeamGroup,
   TeamVersion,
 } from "@/lib/types";
@@ -107,6 +111,19 @@ function parseArray<T>(value: string, fallback: T[] = []) {
   } catch {
     return fallback;
   }
+}
+
+interface ScoutingRow {
+  id: string;
+  match_id: string;
+  status: ScoutingAnalysis["status"];
+  progress: number;
+  stage: string;
+  checkpoint_json: string;
+  result_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 function parseMovesUsed(value: string | null | undefined) {
@@ -470,6 +487,144 @@ export async function createMatch(input: CreateMatchInput) {
     .run();
 
   return match;
+}
+
+function parseObject<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value) as T;
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toScoutingAnalysis(row: ScoutingRow): ScoutingAnalysis {
+  return {
+    id: row.id,
+    matchId: row.match_id,
+    status: row.status,
+    progress: row.progress,
+    stage: row.stage,
+    result: parseObject<ScoutingResult | null>(row.result_json, null),
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const SCOUTING_COLUMNS = "id, match_id, status, progress, stage, checkpoint_json, result_json, error, created_at, updated_at";
+
+async function scoutingRow(matchId: string) {
+  const db = await getDatabase();
+  return db
+    .prepare(`SELECT ${SCOUTING_COLUMNS} FROM scouting_analyses WHERE match_id = ?`)
+    .bind(matchId)
+    .first<ScoutingRow>();
+}
+
+export async function getScoutingAnalysis(matchId: string): Promise<ScoutingAnalysis | null> {
+  const row = await scoutingRow(matchId);
+  return row ? toScoutingAnalysis(row) : null;
+}
+
+export async function listActiveScoutingAnalyses(): Promise<ScoutingAnalysis[]> {
+  const db = await getDatabase();
+  const rows = await db
+    .prepare(`SELECT ${SCOUTING_COLUMNS} FROM scouting_analyses WHERE status IN ('queued', 'running') ORDER BY updated_at ASC`)
+    .all<ScoutingRow>();
+  return rows.results.map(toScoutingAnalysis);
+}
+
+async function scoutingContext(matchId: string) {
+  const db = await getDatabase();
+  const match = await db
+    .prepare(
+      `SELECT m.id, m.replay_url, m.opponent_name, m.team_version_id, v.format
+       FROM matches m
+       JOIN team_versions v ON v.id = m.team_version_id
+       WHERE m.id = ?`,
+    )
+    .bind(matchId)
+    .first<{ id: string; replay_url: string; opponent_name: string; team_version_id: string; format: string }>();
+  if (!match) throw new DomainError("No encontramos esa partida.", 404);
+  if (!match.replay_url) throw new DomainError("Esta partida no tiene un replay de Showdown para analizar.", 422);
+  const ownRows = await db
+    .prepare("SELECT id, team_version_id, slot, nickname, species, item, ability, level, tera_type, mechanics_json, evs, nature, moves_json, types_json FROM pokemon_sets WHERE team_version_id = ? ORDER BY slot")
+    .bind(match.team_version_id)
+    .all<PokemonRow>();
+  return { match, ownTeam: ownRows.results.map(toPokemon) };
+}
+
+export async function startScoutingAnalysis(matchId: string): Promise<ScoutingAnalysis> {
+  await scoutingContext(matchId);
+  const db = await getDatabase();
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO scouting_analyses (id, match_id, status, progress, stage, checkpoint_json, result_json, error, updated_at)
+       VALUES (?, ?, 'queued', 0, 'Preparando replay', '{}', NULL, NULL, CURRENT_TIMESTAMP)
+       ON CONFLICT(match_id) DO UPDATE SET
+         status = 'queued', progress = 0, stage = 'Preparando replay', checkpoint_json = '{}',
+         result_json = NULL, error = NULL, calculator_revision = 'champions-v1', updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(id, matchId)
+    .run();
+  return (await getScoutingAnalysis(matchId))!;
+}
+
+export async function runScoutingAnalysisStep(matchId: string): Promise<ScoutingAnalysis> {
+  const current = await scoutingRow(matchId);
+  if (!current) throw new DomainError("Inicia primero el análisis de esta partida.", 404);
+  if (current.status === "complete" || current.status === "error") return toScoutingAnalysis(current);
+  const db = await getDatabase();
+
+  try {
+    const context = await scoutingContext(matchId);
+    if (current.progress < 40) {
+      const [{ replay }, showdownNames] = await Promise.all([
+        fetchShowdownReplay(context.match.replay_url),
+        getShowdownNames(),
+      ]);
+      const evidence = collectScoutingReplayEvidence(replay, {
+        showdownNames,
+        teamSpecies: context.ownTeam.map((set) => set.species),
+      });
+      await db
+        .prepare("UPDATE scouting_analyses SET status = 'running', progress = 40, stage = 'Evidencia del replay extraída', checkpoint_json = ?, updated_at = CURRENT_TIMESTAMP WHERE match_id = ?")
+        .bind(JSON.stringify({ evidence }), matchId)
+        .run();
+      return (await getScoutingAnalysis(matchId))!;
+    }
+
+    if (current.progress < 85) {
+      const checkpoint = parseObject<{ evidence?: ScoutingReplayEvidence }>(current.checkpoint_json, {});
+      if (!checkpoint.evidence) throw new Error("El checkpoint del replay está incompleto.");
+      const result = analyzeScoutingEvidence(checkpoint.evidence, {
+        replayUrl: context.match.replay_url,
+        format: context.match.format || "champions",
+        ownTeam: context.ownTeam,
+      });
+      await db
+        .prepare("UPDATE scouting_analyses SET status = 'running', progress = 85, stage = 'Intervalos de daño calculados', result_json = ?, updated_at = CURRENT_TIMESTAMP WHERE match_id = ?")
+        .bind(JSON.stringify(result), matchId)
+        .run();
+      return (await getScoutingAnalysis(matchId))!;
+    }
+
+    await db
+      .prepare("UPDATE scouting_analyses SET status = 'complete', progress = 100, stage = 'Análisis listo', updated_at = CURRENT_TIMESTAMP WHERE match_id = ?")
+      .bind(matchId)
+      .run();
+    return (await getScoutingAnalysis(matchId))!;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "No pudimos analizar este replay.";
+    await db
+      .prepare("UPDATE scouting_analyses SET status = 'error', stage = 'Análisis detenido', error = ?, updated_at = CURRENT_TIMESTAMP WHERE match_id = ?")
+      .bind(message.slice(0, 500), matchId)
+      .run();
+    return (await getScoutingAnalysis(matchId))!;
+  }
 }
 
 export interface MoveUsageBackfillCandidate {

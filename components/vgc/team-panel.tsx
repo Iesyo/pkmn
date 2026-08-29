@@ -14,7 +14,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { winRate } from "@/lib/team-stats";
-import type { TeamVersion } from "@/lib/types";
+import type { MatchRecord, TeamVersion } from "@/lib/types";
 import { DEFAULT_BATTLE_FORMAT, formatVersion } from "@/lib/team-builder";
 import { cn } from "@/lib/utils";
 import { LeadsPanel } from "./leads-panel";
@@ -70,11 +70,13 @@ export function TeamPanel({
   version,
   accent,
   onMatchCreated,
+  onScoutingRequested,
   extraAction,
 }: {
   version: TeamVersion;
   accent: keyof typeof accentStyles;
   onMatchCreated?: () => void;
+  onScoutingRequested?: (version: TeamVersion, match: MatchRecord) => void;
   extraAction?: React.ReactNode;
 }) {
   const style = accentStyles[accent];
@@ -125,7 +127,7 @@ export function TeamPanel({
         <LeadsPanel leads={version.leads} />
         <TypeAnalysis pokemon={version.pokemon} allowTera={(version.mechanics ?? ["tera"]).includes("tera")} />
         <MatchupAttendance matches={version.matches} />
-        <MatchHistory version={version} onMatchCreated={onMatchCreated} />
+        <MatchHistory version={version} onMatchCreated={onMatchCreated} onScoutingRequested={onScoutingRequested} />
       </div>
     </section>
   );

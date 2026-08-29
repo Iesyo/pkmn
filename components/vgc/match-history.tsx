@@ -1,7 +1,8 @@
 import Image from "next/image";
-import { ExternalLink, History, Trophy } from "lucide-react";
+import { ExternalLink, History, ScanSearch, Trophy } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -12,7 +13,7 @@ import {
 } from "@/components/ui/table";
 import { ReplayQuickEntry } from "@/components/vgc/team-dialogs";
 import { getSpriteUrl } from "@/lib/pokemon-data";
-import type { TeamVersion } from "@/lib/types";
+import type { MatchRecord, TeamVersion } from "@/lib/types";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", {
   day: "2-digit",
@@ -33,7 +34,15 @@ function PokemonSpriteStrip({ species, label, tone = "violet", limit = 6 }: { sp
   );
 }
 
-export function MatchHistory({ version, onMatchCreated }: { version: TeamVersion; onMatchCreated?: () => void }) {
+export function MatchHistory({
+  version,
+  onMatchCreated,
+  onScoutingRequested,
+}: {
+  version: TeamVersion;
+  onMatchCreated?: () => void;
+  onScoutingRequested?: (version: TeamVersion, match: MatchRecord) => void;
+}) {
   const matches = version.matches;
   return (
     <section className="overflow-hidden rounded-2xl border border-white/8 bg-slate-950/65">
@@ -71,7 +80,23 @@ export function MatchHistory({ version, onMatchCreated }: { version: TeamVersion
                     </div>
                   </TableCell>
                   <TableCell className="max-w-36 truncate font-medium text-slate-300">{match.opponentName}</TableCell>
-                  <TableCell><PokemonSpriteStrip species={match.opponentSelected} label="Equipo rival" /></TableCell>
+                  <TableCell>
+                    <div className="flex min-w-max items-center gap-2">
+                      <PokemonSpriteStrip species={match.opponentSelected} label="Equipo rival" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-sm"
+                        disabled={version.demo || !match.replayUrl || !onScoutingRequested}
+                        onClick={() => onScoutingRequested?.(version, match)}
+                        title={version.demo ? "Guarda una partida real para analizarla" : match.replayUrl ? `Analizar el equipo de ${match.opponentName}` : "Esta partida no tiene replay"}
+                        aria-label={`Analizar el equipo rival de ${match.opponentName}`}
+                        className="shrink-0 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-300 hover:bg-cyan-300/10 hover:text-cyan-200"
+                      >
+                        <ScanSearch className="size-3.5" />
+                      </Button>
+                    </div>
+                  </TableCell>
                   <TableCell><PokemonSpriteStrip species={match.selected} label="Tus picks" tone="cyan" limit={4} /></TableCell>
                   <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
                   <TableCell className="text-right">

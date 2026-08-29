@@ -83,6 +83,62 @@ export interface MatchRecord {
   playedAt: string;
 }
 
+export type ScoutingAnalysisStatus = "queued" | "running" | "complete" | "error";
+
+export interface ScoutingPokemonEvidence {
+  species: string;
+  brought: boolean;
+  moves: string[];
+  item: string | null;
+  ability: string | null;
+  teraType: PokemonType | null;
+}
+
+export interface ScoutingDamageObservation {
+  turn: number;
+  attacker: string;
+  defender: string;
+  move: string;
+  direction: "outgoing" | "incoming";
+  damagePercent: number;
+  tolerance: number;
+  critical: boolean;
+}
+
+export interface ScoutingStatInference {
+  species: string;
+  stat: "HP" | "Atk" | "Def" | "SpA" | "SpD";
+  minimum: number;
+  maximum: number;
+  natures: string[];
+  observationCount: number;
+  confidence: "bounded" | "conditional";
+  detail: string;
+}
+
+export interface ScoutingResult {
+  opponentName: string;
+  replayUrl: string;
+  pokemon: ScoutingPokemonEvidence[];
+  observations: ScoutingDamageObservation[];
+  inferences: ScoutingStatInference[];
+  observedPaste: string;
+  notices: string[];
+  completedAt: string;
+}
+
+export interface ScoutingAnalysis {
+  id: string;
+  matchId: string;
+  status: ScoutingAnalysisStatus;
+  progress: number;
+  stage: string;
+  result: ScoutingResult | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TeamVersion {
   id: string;
   teamId: string;

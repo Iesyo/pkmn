@@ -101,3 +101,26 @@ export const matches = sqliteTable(
   },
   (table) => [index("matches_version_played_idx").on(table.teamVersionId, table.playedAt)],
 );
+
+export const scoutingAnalyses = sqliteTable(
+  "scouting_analyses",
+  {
+    id: text("id").primaryKey(),
+    matchId: text("match_id")
+      .notNull()
+      .references(() => matches.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["queued", "running", "complete", "error"] }).notNull().default("queued"),
+    progress: integer("progress").notNull().default(0),
+    stage: text("stage").notNull().default("En cola"),
+    checkpointJson: text("checkpoint_json").notNull().default("{}"),
+    resultJson: text("result_json"),
+    calculatorRevision: text("calculator_revision").notNull().default("champions-v1"),
+    error: text("error"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("scouting_analyses_match_idx").on(table.matchId),
+    index("scouting_analyses_status_idx").on(table.status, table.updatedAt),
+  ],
+);

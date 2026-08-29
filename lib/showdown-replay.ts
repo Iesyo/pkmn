@@ -1,5 +1,5 @@
 import { toId } from "./pokemon-data";
-import type { MatchResult } from "./types";
+import { POKEMON_TYPES, type MatchResult, type PokemonType, type ScoutingDamageObservation, type ScoutingPokemonEvidence } from "./types";
 
 type PlayerSlot = "p1" | "p2";
 
@@ -38,6 +38,13 @@ export interface ImportedReplayMatch {
   playedAt: string | null;
   format: string;
   warnings: string[];
+}
+
+export interface ScoutingReplayEvidence {
+  playerName: string;
+  opponentName: string;
+  pokemon: ScoutingPokemonEvidence[];
+  observations: ScoutingDamageObservation[];
 }
 
 export class ReplayValidationError extends Error {
@@ -443,5 +450,172 @@ export function importShowdownReplay(
     playedAt: replayDate(document, parsed.timestamp),
     format: document.format?.trim() ?? "",
     warnings,
+  };
+}
+
+interface HealthReading {
+  current: number;
+  maximum: number;
+}
+
+function parseHealth(value: string, previous?: HealthReading): HealthReading | null {
+  const token = value.trim().split(" ", 1)[0];
+  if (token === "0" && previous) return { current: 0, maximum: previous.maximum };
+  const match = token.match(/^(\d+)\/(\d+)$/);
+  if (!match) return null;
+  const current = Number(match[1]);
+  const maximum = Number(match[2]);
+  return maximum > 0 ? { current, maximum } : null;
+}
+
+function canonicalType(value: string): PokemonType | null {
+  return POKEMON_TYPES.find((type) => toId(type) === toId(value)) ?? null;
+}
+
+/**
+ * Extracts only facts visible in a public replay. Hidden information remains null;
+ * the inverse calculator consumes the direct-damage observations separately.
+ */
+export function collectScoutingReplayEvidence(
+  document: ShowdownReplayDocument,
+  options: { showdownNames: string[]; teamSpecies: string[] },
+): ScoutingReplayEvidence {
+  const parsed = parseReplay(document);
+  const ownSlot = identifyOwnSlot(parsed.sides, options.showdownNames, options.teamSpecies);
+  const opponentSlot: PlayerSlot = ownSlot === "p1" ? "p2" : "p1";
+  const pokemon = new Map<string, ScoutingPokemonEvidence>();
+  const activeSpecies = new Map<string, string>();
+  const health = new Map<string, HealthReading>();
+  const observations: ScoutingDamageObservation[] = [];
+  let turn = 0;
+  let lastObservation = -1;
+  let pendingMove: { attackerPosition: string; targetPosition: string; attacker: string; move: string; attackerSlot: PlayerSlot } | null = null;
+
+  function ensurePokemon(species: string) {
+    const existingKey = [...pokemon.keys()].find((key) => toId(key) === toId(species));
+    if (existingKey) return pokemon.get(existingKey)!;
+    const entry: ScoutingPokemonEvidence = {
+      species,
+      brought: false,
+      moves: [],
+      item: null,
+      ability: null,
+      teraType: null,
+    };
+    pokemon.set(species, entry);
+    return entry;
+  }
+
+  for (const species of parsed.sides[opponentSlot].team) ensurePokemon(species);
+
+  for (const line of document.log.split(/\r?\n/)) {
+    if (!line.startsWith("|")) continue;
+    const parts = line.split("|");
+    const command = parts[1];
+
+    if (command === "turn") {
+      turn = Number(parts[2]) || turn;
+      pendingMove = null;
+      continue;
+    }
+
+    if (command === "switch" || command === "drag" || command === "replace" || command === "detailschange") {
+      const identifier = parts[2] ?? "";
+      const slot = playerSlot(identifier);
+      const position = identifier.split(":", 1)[0];
+      const species = detailsSpecies(parts[3] ?? "");
+      if (!slot || !position || !species) continue;
+      activeSpecies.set(position, species);
+      const reading = parseHealth(parts[4] ?? "", health.get(position));
+      if (reading) health.set(position, reading);
+      if (slot === opponentSlot) ensurePokemon(species).brought = true;
+      continue;
+    }
+
+    if (command === "move") {
+      const attackerIdentifier = parts[2] ?? "";
+      const attackerPosition = attackerIdentifier.split(":", 1)[0];
+      const attackerSlot = playerSlot(attackerIdentifier);
+      const targetPosition = (parts[4] ?? "").split(":", 1)[0];
+      const attacker = activeSpecies.get(attackerPosition);
+      const sourceMove = parts
+        .slice(5)
+        .find((part) => /^\[from\]\s*move:/i.test(part))
+        ?.replace(/^\[from\]\s*move:\s*/i, "")
+        .trim();
+      const move = sourceMove || parts[3]?.trim();
+      pendingMove = attackerSlot && attacker && move && targetPosition
+        ? { attackerPosition, targetPosition, attacker, move, attackerSlot }
+        : null;
+      if (attackerSlot === opponentSlot && attacker && move) {
+        addUnique(ensurePokemon(attacker).moves, move);
+      }
+      continue;
+    }
+
+    if (command === "-damage") {
+      const targetIdentifier = parts[2] ?? "";
+      const targetPosition = targetIdentifier.split(":", 1)[0];
+      const previous = health.get(targetPosition);
+      const reading = parseHealth(parts[3] ?? "", previous);
+      if (reading) health.set(targetPosition, reading);
+      const indirect = parts.slice(4).some((part) => /^\[from\]/i.test(part));
+      if (!indirect && pendingMove && pendingMove.targetPosition === targetPosition && previous && reading) {
+        const defender = activeSpecies.get(targetPosition);
+        const damagePercent = (previous.current / previous.maximum - reading.current / reading.maximum) * 100;
+        if (defender && damagePercent > 0) {
+          const coarseHealth = previous.maximum <= 100 || reading.maximum <= 100;
+          observations.push({
+            turn,
+            attacker: pendingMove.attacker,
+            defender,
+            move: pendingMove.move,
+            direction: pendingMove.attackerSlot === ownSlot ? "outgoing" : "incoming",
+            damagePercent: Number(damagePercent.toFixed(2)),
+            tolerance: coarseHealth ? 1.25 : Number((100 / Math.max(previous.maximum, reading.maximum)).toFixed(2)),
+            critical: false,
+          });
+          lastObservation = observations.length - 1;
+        }
+      }
+      continue;
+    }
+
+    if (command === "-crit") {
+      if (lastObservation >= 0) observations[lastObservation] = { ...observations[lastObservation], critical: true };
+      continue;
+    }
+
+    const targetIdentifier = parts[2] ?? "";
+    const targetSlot = playerSlot(targetIdentifier);
+    const targetPosition = targetIdentifier.split(":", 1)[0];
+    const targetSpecies = activeSpecies.get(targetPosition);
+    if (targetSlot !== opponentSlot || !targetSpecies) continue;
+    const entry = ensurePokemon(targetSpecies);
+
+    if (command === "-item" || command === "-enditem") {
+      entry.item = parts[3]?.trim() || entry.item;
+    } else if (command === "-ability") {
+      entry.ability = parts[3]?.trim() || entry.ability;
+    } else if (command === "-terastallize") {
+      entry.teraType = canonicalType(parts[3] ?? "");
+    } else if (command === "-activate") {
+      const ability = parts.slice(3).find((part) => /^ability:/i.test(part))?.replace(/^ability:\s*/i, "").trim();
+      if (ability) entry.ability = ability;
+    }
+
+    for (const tag of parts.slice(3)) {
+      const item = tag.match(/^\[from\]\s*item:\s*(.+)$/i)?.[1]?.trim();
+      const ability = tag.match(/^\[from\]\s*ability:\s*(.+)$/i)?.[1]?.trim();
+      if (item) entry.item = item;
+      if (ability) entry.ability = ability;
+    }
+  }
+
+  return {
+    playerName: parsed.sides[ownSlot].name,
+    opponentName: parsed.sides[opponentSlot].name || "Rival",
+    pokemon: [...pokemon.values()],
+    observations,
   };
 }

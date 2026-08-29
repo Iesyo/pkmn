@@ -166,6 +166,46 @@ test("reverses side conditions when calculating incoming damage", async () => {
   assert.ok(guarded.max < unguarded.max);
 });
 
+test("inverse scouting keeps the real offensive Stat Point inside its compatible interval", async () => {
+  const { calculateDamage, createDamageDraft, defaultDamageField } = await damageModule();
+  const { analyzeScoutingEvidence } = await vite.ssrLoadModule("/lib/scouting-analysis.ts");
+  const { emptyPokemon } = await teamBuilderModule();
+  const ownDefender = configureSet(emptyPokemon(1), {
+    species: "Abomasnow",
+    ability: "Snow Warning",
+    item: "Leftovers",
+    nature: "Serious",
+    evs: "12 HP / 10 Def",
+    moves: ["Wood Hammer", "Ice Shard", "Earthquake", "Protect"],
+  });
+  const opponent = configureSet(emptyPokemon(2), {
+    species: "Kleavor",
+    ability: "Sharpness",
+    item: "",
+    nature: "Adamant",
+    evs: "20 Atk",
+    moves: ["Stone Axe", "X-Scissor", "Close Combat", "Protect"],
+  });
+  const roll = calculateDamage("champions", createDamageDraft(opponent), createDamageDraft(ownDefender), "Stone Axe", defaultDamageField());
+  const observed = Number(((roll.minPercent + roll.maxPercent) / 2).toFixed(2));
+  const result = analyzeScoutingEvidence(
+    {
+      playerName: "IesYo",
+      opponentName: "Rival",
+      pokemon: [{ species: "Kleavor", brought: true, moves: ["Stone Axe"], item: null, ability: "Sharpness", teraType: null }],
+      observations: [{ turn: 1, attacker: "Kleavor", defender: "Abomasnow", move: "Stone Axe", direction: "incoming", damagePercent: observed, tolerance: 0.5, critical: false }],
+    },
+    { replayUrl: "https://replay.pokemonshowdown.com/test-1", format: "champions", ownTeam: [ownDefender] },
+  );
+  const attack = result.inferences.find((entry) => entry.species === "Kleavor" && entry.stat === "Atk");
+
+  assert.ok(attack);
+  assert.ok(attack.minimum <= 20);
+  assert.ok(attack.maximum >= 20);
+  assert.match(result.observedPaste, /Kleavor/);
+  assert.match(result.observedPaste, /Stone Axe/);
+});
+
 test("uses the integrated calculator as the only Team Builder editor", async () => {
   const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
