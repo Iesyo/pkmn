@@ -153,4 +153,8 @@ test("renders the calculator as an inline Pro mode instead of a floating dialog"
   assert.match(calculatorSource, /<PokemonStatEditor/);
   assert.match(statEditorSource, /<Slider/);
   assert.match(statEditorSource, /calculateStat/);
+  assert.match(calculatorSource, /onBoostChange=/);
+  assert.match(statEditorSource, /BoostableStat/);
+  assert.match(statEditorSource, />Boost<\/span>/);
+  assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });

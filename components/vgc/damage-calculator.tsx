@@ -36,7 +36,7 @@ import {
 import { NATURES } from "@/lib/team-builder";
 import type { PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { PokemonStatEditor } from "./pokemon-stat-editor";
+import { PokemonStatEditor, type BoostableStat } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
 
 type DamageCalculatorProps = {
@@ -55,12 +55,12 @@ const STATUS_OPTIONS: Array<{ value: DamageStatus; label: string }> = [
   { value: "frz", label: "Congelado" },
 ];
 
-const BOOST_LABELS: Record<DamageStat, string> = {
-  atk: "Atk",
-  def: "Def",
-  spa: "SpA",
-  spd: "SpD",
-  spe: "Spe",
+const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
+  Atk: "atk",
+  Def: "def",
+  SpA: "spa",
+  SpD: "spd",
+  Spe: "spe",
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -152,7 +152,23 @@ function CalculatorPokemonPanel({
           <div className="grid gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
         </div>
 
-        <PokemonStatEditor pokemon={set} format={format} baseStats={selectedSpecies?.baseStats ?? null} onChange={updateSet} />
+        <PokemonStatEditor
+          pokemon={set}
+          format={format}
+          baseStats={selectedSpecies?.baseStats ?? null}
+          onChange={updateSet}
+          boosts={{
+            Atk: draft.boosts.atk,
+            Def: draft.boosts.def,
+            SpA: draft.boosts.spa,
+            SpD: draft.boosts.spd,
+            Spe: draft.boosts.spe,
+          }}
+          onBoostChange={(stat, value) => {
+            const damageStat = BOOST_STAT_KEYS[stat];
+            onChange({ ...draft, boosts: { ...draft.boosts, [damageStat]: value } });
+          }}
+        />
 
         <div>
           <div className="flex items-center justify-between gap-3"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">Resultados en vivo</span></div>
@@ -162,13 +178,6 @@ function CalculatorPokemonPanel({
               const options = legalMoves.filter((name) => !selectedElsewhere.has(toId(name)));
               return <div key={index} className="grid grid-cols-[minmax(0,1fr)_68px] gap-2"><Combobox items={options} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput placeholder={`Movimiento ${index + 1}`} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible o repetido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type.slice(0, 3)}</TypeBadge> : <span className="text-[8px] text-slate-600">Status</span>}</div></div>;
             })}
-          </div>
-        </div>
-
-        <div>
-          <Label>Boosts</Label>
-          <div className="mt-2 grid grid-cols-5 gap-1.5">
-            {(Object.keys(BOOST_LABELS) as DamageStat[]).map((stat) => <div key={stat} className="grid gap-1"><span className="text-center text-[8px] font-black text-slate-600">{BOOST_LABELS[stat]}</span><Select value={String(draft.boosts[stat])} onValueChange={(value) => onChange({ ...draft, boosts: { ...draft.boosts, [stat]: Number(value) } })}><SelectTrigger className="h-8 w-full border-white/8 bg-white/4 px-2 text-[10px]"><SelectValue /></SelectTrigger><SelectContent>{Array.from({ length: 13 }, (_, index) => index - 6).map((value) => <SelectItem key={value} value={String(value)}>{value > 0 ? `+${value}` : value}</SelectItem>)}</SelectContent></Select></div>)}
           </div>
         </div>
 
