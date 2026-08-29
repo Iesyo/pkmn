@@ -70,11 +70,15 @@ function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet
         <span className="absolute left-2 top-2 z-10 flex size-5 items-center justify-center rounded-full border border-white/8 bg-slate-900/90 text-[9px] font-black text-slate-500">{pokemon.slot}</span>
         {pokemon.species ? (
           <>
-            <div className="flex h-14 shrink-0 items-center justify-center pt-1"><Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={64} height={64} unoptimized className="size-14 object-contain" /></div>
+            <div className="flex h-16 shrink-0 items-center justify-center"><Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={72} height={72} unoptimized className="size-16 object-contain" /></div>
             <div className="min-w-0">
               <p className="w-full min-w-0 truncate text-xs font-black text-white">{pokemon.species}</p>
               <div className="mt-1 flex h-4 min-w-0 flex-nowrap gap-1 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-1.5 py-0 text-[7px]">{type}</TypeBadge>)}</div>
-              <p className="mt-1.5 truncate rounded-md bg-amber-300/8 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200/90">{pokemon.item || "Sin objeto"}</p>
+              <div className="mt-1.5 flex min-w-0 items-center gap-1 text-[9px] font-semibold">
+                <span className="min-w-0 flex-1 truncate text-amber-200/90">{pokemon.item || "Sin objeto"}</span>
+                <span className="shrink-0 text-slate-700">·</span>
+                <span className="min-w-0 flex-1 truncate text-fuchsia-300/85">{pokemon.nature || "Sin naturaleza"}</span>
+              </div>
               <p className="mt-1 truncate text-[9px] font-semibold text-emerald-300/80">{pokemon.ability || "Sin habilidad"}</p>
               <div className="mt-1.5 space-y-0.5">
                 {pokemon.moves.map((move, moveIndex) => <p key={`${pokemon.id}-move-${moveIndex}`} className="flex min-w-0 items-center gap-1 text-[8px] leading-3 text-slate-500"><span className="shrink-0 text-slate-700">•</span><span className={cn("truncate", move.name ? "text-slate-400" : "text-slate-700")}>{move.name || "Movimiento"}</span></p>)}
