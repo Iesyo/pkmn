@@ -65,7 +65,7 @@ function BuilderCoverage({ pokemon, teraEnabled }: { pokemon: PokemonSet[]; tera
 
 function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet; selected: boolean; onClick: () => void; onClear: () => void }) {
   return (
-    <div className={cn("relative h-52 min-w-0 overflow-hidden rounded-2xl border transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
+    <div className={cn("relative h-56 min-w-0 overflow-hidden rounded-2xl border transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
       <button type="button" onClick={onClick} aria-pressed={selected} aria-label={pokemon.species ? `Editar ${pokemon.species}` : `Elegir Pokémon para el slot ${pokemon.slot}`} className="flex h-full w-full min-w-0 flex-col p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/60">
         <span className="absolute left-2 top-2 z-10 flex size-5 items-center justify-center rounded-full border border-white/8 bg-slate-900/90 text-[9px] font-black text-slate-500">{pokemon.slot}</span>
         {pokemon.species ? (
@@ -80,7 +80,7 @@ function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet
                 <span className="min-w-0 flex-1 truncate text-fuchsia-300/85">{pokemon.nature || "Sin naturaleza"}</span>
               </div>
               <p className="mt-1 truncate text-[9px] font-semibold text-emerald-300/80">{pokemon.ability || "Sin habilidad"}</p>
-              <div className="mt-1.5 space-y-0.5">
+              <div className="mt-1.5 space-y-0.5 pb-2">
                 {pokemon.moves.map((move, moveIndex) => <p key={`${pokemon.id}-move-${moveIndex}`} className="flex min-w-0 items-center gap-1 text-[8px] leading-3 text-slate-500"><span className="shrink-0 text-slate-700">•</span><span className={cn("truncate", move.name ? "text-slate-400" : "text-slate-700")}>{move.name || "Movimiento"}</span></p>)}
               </div>
             </div>
