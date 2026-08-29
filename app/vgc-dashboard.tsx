@@ -187,14 +187,13 @@ export function VgcDashboard() {
           <div className="hidden items-center gap-2 lg:flex">
             <ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} />
             <Badge variant="outline" className={connection === "ready" ? "gap-1.5 border-emerald-300/15 bg-emerald-300/7 text-emerald-300" : "gap-1.5 border-amber-300/15 bg-amber-300/7 text-amber-200"}>{connection === "checking" ? <RefreshCw className="size-3 animate-spin" /> : connection === "ready" ? <Database className="size-3" /> : <Sparkles className="size-3" />}{connection === "checking" ? "Conectando" : connection === "ready" ? "SQLite listo" : "Modo muestra"}</Badge>
-            <AddTeamDialog onCreated={handleTeamCreated} />
           </div>
         </div>
       </header>
 
       <main className="relative mx-auto w-full max-w-none px-3 py-6 sm:px-4 lg:px-5 lg:py-8">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(circle_at_18%_12%,rgba(34,211,238,0.10),transparent_34%),radial-gradient(circle_at_82%_8%,rgba(217,70,239,0.09),transparent_34%)]" />
-        <div className="mb-4 flex flex-wrap justify-end gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
+        <div className="mb-4 flex flex-wrap justify-end gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /></div>
 
         <TabsContent value="compare" className="mt-0 outline-none">
           <section aria-label="Selección de equipos" className="relative mb-5 grid items-center gap-3 xl:grid-cols-[minmax(0,1fr)_72px_minmax(0,1fr)]">
@@ -217,7 +216,7 @@ export function VgcDashboard() {
           </div>
         </TabsContent>
 
-        <TabsContent value="builder" className="mt-0 outline-none">
+        <TabsContent value="builder" forceMount className="mt-0 outline-none">
           <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
         </TabsContent>
 
