@@ -1,11 +1,14 @@
 import { DomainError } from "@/db/queries";
 import { PasteValidationError } from "./paste";
+import { ReplayValidationError } from "./showdown-replay";
 
 export function apiError(error: unknown) {
-  if (error instanceof DomainError || error instanceof PasteValidationError) {
-    return Response.json({ error: error.message }, { status: error instanceof DomainError ? error.status : 400 });
+  if (error instanceof DomainError || error instanceof PasteValidationError || error instanceof ReplayValidationError) {
+    const status = error instanceof DomainError || error instanceof ReplayValidationError ? error.status : 400;
+    return Response.json({ error: error.message }, { status });
   }
 
+  console.error("Unhandled API error", error);
   const message = error instanceof Error ? error.message : "Error inesperado";
   const unavailable =
     message.includes("no such table") ||

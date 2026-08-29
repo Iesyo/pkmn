@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl } from "@/lib/pokemon-data";
+import type { ImportedReplayMatch } from "@/lib/showdown-replay";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion } from "@/lib/team-builder";
 import type { MatchResult, TeamGroup, TeamVersion } from "@/lib/types";
 
@@ -202,7 +203,7 @@ type AddMatchDialogProps = {
   onCreated: () => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  initialReplayUrl?: string;
+  initialReplay?: ImportedReplayMatch;
   hideTrigger?: boolean;
 };
 
@@ -219,17 +220,17 @@ function PokemonPreview({ species, tone = "cyan" }: { species: string[]; tone?: 
   );
 }
 
-export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpenChange, initialReplayUrl = "", hideTrigger = false }: AddMatchDialogProps) {
+export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpenChange, initialReplay, hideTrigger = false }: AddMatchDialogProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
-  const [result, setResult] = useState<MatchResult>("win");
-  const [opponentName, setOpponentName] = useState("");
-  const [replayUrl, setReplayUrl] = useState(initialReplayUrl);
-  const [rating, setRating] = useState("");
+  const [result, setResult] = useState<MatchResult>(initialReplay?.result ?? "win");
+  const [opponentName, setOpponentName] = useState(initialReplay?.opponentName ?? "");
+  const [replayUrl, setReplayUrl] = useState(initialReplay?.replayUrl ?? "");
+  const [rating, setRating] = useState(initialReplay?.rating?.toString() ?? "");
   const [notes, setNotes] = useState("");
-  const [opponentTeam, setOpponentTeam] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [lead, setLead] = useState<string[]>([]);
+  const [opponentTeam, setOpponentTeam] = useState(initialReplay?.opponentSelected.join(", ") ?? "");
+  const [selected, setSelected] = useState<string[]>(initialReplay?.selected ?? []);
+  const [lead, setLead] = useState<string[]>(initialReplay?.lead ?? []);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -266,7 +267,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
         await fetch("/api/matches", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead }),
+          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead, playedAt: initialReplay?.playedAt ?? undefined }),
         }),
       );
       onCreated();
@@ -286,20 +287,22 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
       {!hideTrigger ? <DialogTrigger asChild><Button className="gap-2 rounded-full bg-white text-slate-950 hover:bg-slate-200"><Swords className="size-4" />Registrar partida</Button></DialogTrigger> : null}
       <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-xl">
         <form onSubmit={submit}>
-          <DialogHeader><DialogTitle>Nueva partida · {version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Guarda el resultado y la selección real. Las métricas se recalculan desde el historial.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Confirmar partida · {version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Los datos se leyeron del replay. Revisa el resumen y guarda; solo completa lo que Showdown no haya publicado.</DialogDescription></DialogHeader>
           <div className="my-5 grid gap-4">
+            {initialReplay ? <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/8 px-3 py-2 text-xs text-emerald-100"><span className="font-bold">Replay importado</span><span className="text-emerald-200/70"> · {initialReplay.playerName}{initialReplay.format ? ` · ${initialReplay.format}` : ""}</span></div> : null}
+            {initialReplay?.warnings.length ? <div className="rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-[11px] leading-5 text-amber-100">{initialReplay.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-2"><Label>Resultado</Label><Select value={result} onValueChange={(value) => setResult(value as MatchResult)}><SelectTrigger className="w-full border-white/10 bg-white/5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="win">Victoria</SelectItem><SelectItem value="loss">Derrota</SelectItem></SelectContent></Select></div>
               <div className="grid gap-2"><Label htmlFor="match-rating">Rating final</Label><Input id="match-rating" inputMode="numeric" value={rating} onChange={(event) => setRating(event.target.value)} placeholder="1428" className="border-white/10 bg-white/5" /></div>
             </div>
-            <div className="grid gap-2"><Label htmlFor="opponent-name">Rival / arquetipo</Label><Input id="opponent-name" value={opponentName} onChange={(event) => setOpponentName(event.target.value)} placeholder="Ej. Rain Balance" className="border-white/10 bg-white/5" /></div>
+            <div className="grid gap-2"><Label htmlFor="opponent-name">Rival</Label><Input id="opponent-name" value={opponentName} onChange={(event) => setOpponentName(event.target.value)} placeholder="Nombre en Showdown" className="border-white/10 bg-white/5" /></div>
             <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-3"><Label htmlFor="opponent-team">Equipo rival visto</Label><span className="text-[10px] text-slate-600">Hasta 6 · separados por comas</span></div>
+              <div className="flex items-center justify-between gap-3"><Label htmlFor="opponent-team">Equipo rival visto</Label><span className="text-[10px] text-slate-600">Importado del Team Preview</span></div>
               <Input id="opponent-team" value={opponentTeam} onChange={(event) => setOpponentTeam(event.target.value)} placeholder="Pelipper, Archaludon, Rillaboom, ..." className="border-white/10 bg-white/5" />
               <p className="text-[10px] leading-4 text-slate-600">Este campo alimenta Best/Worst Matchups y Attendance, igual que en tus hojas.</p>
               <PokemonPreview species={opponentPreview} tone="violet" />
             </div>
-            <div className="grid gap-2"><Label htmlFor="replay-url">Replay de Showdown</Label><Input id="replay-url" type="url" value={replayUrl} onChange={(event) => setReplayUrl(event.target.value)} placeholder="https://replay.pokemonshowdown.com/..." className="border-white/10 bg-white/5" /></div>
+            <div className="grid gap-2"><Label htmlFor="replay-url">Replay de Showdown</Label><Input id="replay-url" type="url" value={replayUrl} onChange={(event) => setReplayUrl(event.target.value)} readOnly={Boolean(initialReplay)} placeholder="https://replay.pokemonshowdown.com/..." className="border-white/10 bg-white/5 read-only:cursor-default read-only:text-slate-400" /></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 4 picks</Label><span className="text-[10px] text-slate-600">{selected.length}/4</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleSelected(pokemon.species)} className={selected.includes(pokemon.species) ? "flex items-center gap-2 rounded-xl border border-cyan-300/35 bg-cyan-300/10 px-2 py-1.5 text-left text-xs text-cyan-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(pokemon.species)} alt="" width={34} height={34} unoptimized className="size-8 shrink-0 object-contain" /><span className="min-w-0 flex-1 truncate">{pokemon.species}</span>{selected.includes(pokemon.species) ? <Check className="size-3 shrink-0" /> : null}</button>)}</div><PokemonPreview species={selected} /></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 2 leads</Label><span className="text-[10px] text-slate-600">{lead.length}/2</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.filter((pokemon) => selected.includes(pokemon.species)).map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleLead(pokemon.species)} className={lead.includes(pokemon.species) ? "flex items-center gap-2 rounded-xl border border-violet-300/35 bg-violet-300/10 px-2 py-1.5 text-left text-xs text-violet-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(pokemon.species)} alt="" width={30} height={30} unoptimized className="size-7 shrink-0 object-contain" /><span className="truncate">{pokemon.species}</span></button>)}</div></div>
             <div className="grid gap-2"><Label htmlFor="match-notes">Notas</Label><Textarea id="match-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Qué funcionó, qué revisar..." className="min-h-20 border-white/10 bg-white/5" /></div>
@@ -316,17 +319,31 @@ export function ReplayQuickEntry({ version, onCreated }: { version: TeamVersion;
   const replayInputId = useId();
   const [replayUrl, setReplayUrl] = useState("");
   const [open, setOpen] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [importedReplay, setImportedReplay] = useState<ImportedReplayMatch | null>(null);
   const [error, setError] = useState("");
   const disabled = version.demo || !onCreated;
 
-  function continueEntry(event: React.FormEvent) {
+  async function continueEntry(event: React.FormEvent) {
     event.preventDefault();
     setError("");
-    if (!replayUrl.startsWith("https://replay.pokemonshowdown.com/")) {
-      setError("Pega un enlace válido de replay.pokemonshowdown.com.");
-      return;
+    setReading(true);
+    try {
+      const payload = await readResponse<{ match: ImportedReplayMatch }>(
+        await fetch("/api/replays", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ replayUrl, teamSpecies: version.pokemon.map((pokemon) => pokemon.species) }),
+        }),
+      );
+      setImportedReplay(payload.match);
+      setOpen(true);
+    } catch (caught) {
+      setImportedReplay(null);
+      setError(caught instanceof Error ? caught.message : "No pudimos leer el replay.");
+    } finally {
+      setReading(false);
     }
-    setOpen(true);
   }
 
   return (
@@ -342,28 +359,28 @@ export function ReplayQuickEntry({ version, onCreated }: { version: TeamVersion;
               id={replayInputId}
               type="url"
               value={replayUrl}
-              onChange={(event) => setReplayUrl(event.target.value)}
+              onChange={(event) => { setReplayUrl(event.target.value); setImportedReplay(null); setError(""); }}
               disabled={disabled}
               placeholder="https://replay.pokemonshowdown.com/gen9vgc..."
               className="replay-url-field h-12 border-cyan-300/35 bg-[#101c30] pl-12 font-mono text-xs text-white placeholder:text-slate-500"
             />
           </div>
         </div>
-        <Button type="submit" disabled={disabled || !replayUrl} className="h-12 gap-2 self-end bg-cyan-300 px-5 font-black text-slate-950 shadow-[0_8px_24px_rgba(34,211,238,0.14)] hover:bg-cyan-200"><Plus className="size-4" />Agregar replay</Button>
+        <Button type="submit" disabled={disabled || !replayUrl || reading} className="h-12 gap-2 self-end bg-cyan-300 px-5 font-black text-slate-950 shadow-[0_8px_24px_rgba(34,211,238,0.14)] hover:bg-cyan-200">{reading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}{reading ? "Leyendo replay" : "Agregar replay"}</Button>
       </form>
       <div className="mt-1.5 flex items-center justify-between gap-3 text-[9px]">
-        <span className={error ? "text-rose-300" : "text-slate-600"}>{error || (disabled ? "Guarda un equipo real para habilitar el registro." : "El enlace se conserva al abrir los detalles de la partida.")}</span>
+        <span className={error ? "text-rose-300" : "text-slate-600"}>{error || (disabled ? "Guarda un equipo real para habilitar el registro." : "Resultado, rival, Team Preview, picks y leads se importan automáticamente.")}</span>
         <span className="shrink-0 text-slate-700">Showdown</span>
       </div>
-      <AddMatchDialog
-        key={replayUrl}
-        version={version}
-        onCreated={() => { setReplayUrl(""); onCreated?.(); }}
-        open={open}
-        onOpenChange={setOpen}
-        initialReplayUrl={replayUrl}
-        hideTrigger
-      />
+      {importedReplay ? <AddMatchDialog
+          key={importedReplay.replayUrl}
+          version={version}
+          onCreated={() => { setReplayUrl(""); setImportedReplay(null); onCreated?.(); }}
+          open={open}
+          onOpenChange={setOpen}
+          initialReplay={importedReplay}
+          hideTrigger
+        /> : null}
     </div>
   );
 }

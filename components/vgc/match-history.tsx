@@ -42,7 +42,7 @@ export function MatchHistory({ version, onMatchCreated }: { version: TeamVersion
         <span className="text-[10px] text-slate-600">Últimas {Math.min(matches.length, 5)}</span>
       </div>
       <div className="border-b border-white/7 bg-white/[0.018] px-4 py-3">
-        <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace y completa resultado, picks, leads y equipo rival.</p></div>
+        <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace: Showdown completa automáticamente el resultado y las selecciones.</p></div>
         <ReplayQuickEntry version={version} onCreated={onMatchCreated} />
       </div>
       {matches.length ? (
