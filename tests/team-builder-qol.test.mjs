@@ -9,8 +9,13 @@ test("renders six summary cards with per-slot removal", async () => {
 
   assert.match(source, /relative h-52 min-w-0 overflow-hidden rounded-2xl border/);
   assert.ok(source.includes('pokemon.item || "Sin objeto"'));
+  assert.ok(source.includes('pokemon.nature || "Sin naturaleza"'));
   assert.ok(source.includes('pokemon.ability || "Sin habilidad"'));
   assert.ok(source.includes('pokemon.moves.map((move, moveIndex) =>'));
+  assert.match(source, /text-amber-200\/90/);
+  assert.match(source, /text-fuchsia-300\/85/);
+  assert.match(source, /width=\{72\} height=\{72\}/);
+  assert.match(source, /size-16 object-contain/);
   assert.ok(source.includes('aria-label={`Quitar ${pokemon.species} del Team`}'));
   assert.ok(source.includes('function clearSlot(index: number)'));
   assert.ok(source.includes('emptyPokemon(set.slot)'));
