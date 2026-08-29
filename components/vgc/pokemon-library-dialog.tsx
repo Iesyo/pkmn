@@ -43,27 +43,25 @@ type PokemonLibraryVersionSelectProps = {
   onLoad: (set: PokemonSet, label: string) => void;
 };
 
+type LibraryState = {
+  format: string;
+  entries: PokemonLibraryEntry[];
+};
+
 export function PokemonLibraryVersionSelect({ species, format, onLoad }: PokemonLibraryVersionSelectProps) {
-  const [entries, setEntries] = useState<PokemonLibraryEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedVersionId, setSelectedVersionId] = useState("");
+  const [library, setLibrary] = useState<LibraryState>({ format: "", entries: [] });
 
   useEffect(() => {
     let active = true;
-    setSelectedVersionId("");
-    setLoading(true);
 
     fetch(`/api/pokemon-library?format=${encodeURIComponent(format)}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = (await response.json()) as { pokemon?: PokemonLibraryEntry[] };
         if (!active) return;
-        setEntries(response.ok ? payload.pokemon ?? [] : []);
+        setLibrary({ format, entries: response.ok ? payload.pokemon ?? [] : [] });
       })
       .catch(() => {
-        if (active) setEntries([]);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+        if (active) setLibrary({ format, entries: [] });
       });
 
     return () => {
@@ -71,20 +69,16 @@ export function PokemonLibraryVersionSelect({ species, format, onLoad }: Pokemon
     };
   }, [format]);
 
-  useEffect(() => {
-    setSelectedVersionId("");
-  }, [species]);
-
+  const loading = library.format !== format;
   const entry = useMemo(
-    () => entries.find((candidate) => toId(candidate.species) === toId(species)),
-    [entries, species],
+    () => library.entries.find((candidate) => toId(candidate.species) === toId(species)),
+    [library.entries, species],
   );
-  const versions = entry?.versions ?? [];
+  const versions = loading ? [] : entry?.versions ?? [];
 
   function chooseVersion(versionId: string) {
     const version = versions.find((candidate) => candidate.id === versionId);
     if (!entry || !version) return;
-    setSelectedVersionId(versionId);
     onLoad(version.set, `${entry.species} v${version.version}`);
   }
 
@@ -102,7 +96,7 @@ export function PokemonLibraryVersionSelect({ species, format, onLoad }: Pokemon
         <Label>Set</Label>
         {loading ? <Loader2 className="size-3 animate-spin text-slate-600" /> : versions.length ? <span className="text-[9px] text-violet-300/70">{versions.length}v</span> : null}
       </div>
-      <Select value={selectedVersionId || undefined} onValueChange={chooseVersion} disabled={!species || loading || !versions.length}>
+      <Select key={`${format}:${toId(species)}`} onValueChange={chooseVersion} disabled={!species || loading || !versions.length}>
         <SelectTrigger className="w-full border-violet-300/15 bg-violet-300/[0.045] text-violet-100 disabled:border-white/8 disabled:bg-white/[0.025] disabled:text-slate-600">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
@@ -121,7 +115,7 @@ export function PokemonLibraryVersionSelect({ species, format, onLoad }: Pokemon
   );
 }
 
-// Kept as a compatibility shim while Team Builder no longer renders a separate My Pokémon control.
+// Compatibility shim: Team Builder still imports this symbol, but the standalone button is intentionally gone.
 export function PokemonLibraryDialog(props: PokemonLibraryDialogProps) {
   void props;
   return null;
