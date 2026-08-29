@@ -25,3 +25,11 @@ test("keeps replay deletion and the library version label usable", async () => {
   assert.match(dashboard, /SelectTrigger className="min-w-44[^\"]*sm:min-w-48"/);
   assert.match(dashboard, /versiones inmutables/);
 });
+
+test("keeps the Team Builder mounted between sections and removes the global Add Team action", async () => {
+  const dashboard = await source("app/vgc-dashboard.tsx");
+
+  assert.match(dashboard, /<TabsContent value="builder" forceMount className="mt-0 outline-none">/);
+  assert.equal((dashboard.match(/<AddTeamDialog onCreated=\{handleTeamCreated\} \/>/g) ?? []).length, 1);
+  assert.match(dashboard, /<ShowdownNamesDialog names=\{showdownNames\} onSaved=\{setShowdownNames\} \/><\/div>/);
+});
