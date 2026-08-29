@@ -34,6 +34,8 @@ class RepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual(first.version, 1)
+        self.assertEqual(first.format, "champions")
+        self.assertEqual(first.mechanics, ("mega",))
         self.assertEqual(second.version, 1)
         self.assertEqual(second.minor_version, 1)
         self.assertEqual(match["team_version_id"], first.id)

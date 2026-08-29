@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { winRate } from "@/lib/team-stats";
 import type { TeamVersion } from "@/lib/types";
-import { formatVersion } from "@/lib/team-builder";
+import { DEFAULT_BATTLE_FORMAT, formatVersion } from "@/lib/team-builder";
 import { cn } from "@/lib/utils";
 import { LeadsPanel } from "./leads-panel";
 import { MatchHistory } from "./match-history";
@@ -90,7 +90,7 @@ export function TeamPanel({
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-black tracking-[-0.03em] text-white">{version.name}</h2>
               <Badge variant="outline" className={style.badge}>v{formatVersion(version)}</Badge>
-              <Badge variant="outline" className="border-white/8 bg-white/3 text-slate-500">{version.format ?? "gen9"}</Badge>
+              <Badge variant="outline" className="border-white/8 bg-white/3 text-slate-500">{version.format ?? DEFAULT_BATTLE_FORMAT}</Badge>
               {version.demo ? <Badge variant="outline" className="border-white/10 bg-white/4 text-slate-500">Muestra</Badge> : <Badge variant="outline" className="border-emerald-300/15 bg-emerald-300/7 text-emerald-300"><Database className="mr-1 size-3" />SQLite</Badge>}
             </div>
             <p className="mt-1 text-xs text-slate-500">Versión inmutable · {version.pokemon.length} sets competitivos</p>

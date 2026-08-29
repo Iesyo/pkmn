@@ -39,8 +39,8 @@ app.add_middleware(
 class TeamBody(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     paste: str = Field(min_length=20)
-    format: str = "gen9"
-    mechanics: list[str] = Field(default_factory=lambda: ["tera"])
+    format: str = "champions"
+    mechanics: list[str] = Field(default_factory=lambda: ["mega"])
 
 
 class VersionBody(BaseModel):

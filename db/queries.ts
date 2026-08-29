@@ -1,6 +1,6 @@
 import { getMoveData, getSpeciesTypes } from "@/lib/pokemon-data";
 import { hashPaste, parseShowdownPaste } from "@/lib/paste";
-import { formatVersion, normalizeMechanics } from "@/lib/team-builder";
+import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import type {
   MatchRecord,
@@ -281,7 +281,7 @@ function pokemonInsertStatements(
   );
 }
 
-export async function createTeam(name: string, paste: string, format = "gen9", mechanicValues: string[] = ["tera"], builderSets?: BuilderSetInput[]) {
+export async function createTeam(name: string, paste: string, format = DEFAULT_BATTLE_FORMAT, mechanicValues: string[] = [...DEFAULT_BATTLE_MECHANICS], builderSets?: BuilderSetInput[]) {
   const cleanName = name.trim();
   if (cleanName.length < 2 || cleanName.length > 80) {
     throw new DomainError("El nombre debe tener entre 2 y 80 caracteres.");

@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
 import { getLegalAbilities, getLegalItems, getLegalMoves, getSpecies, getSpeciesOptions, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, moveFromSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
 import { analyzeTypes } from "@/lib/team-stats";
-import { BATTLE_FORMATS, MECHANIC_LABELS, NATURES, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, normalizeTeraType, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
+import { BATTLE_FORMATS, DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, MECHANIC_LABELS, NATURES, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, normalizeTeraType, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
 import { POKEMON_TYPES, type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PokemonStatEditor } from "./pokemon-stat-editor";
@@ -66,11 +66,15 @@ function BuilderCoverage({ pokemon, teraEnabled }: { pokemon: PokemonSet[]; tera
 
 function SlotCard({ pokemon, selected, onClick }: { pokemon: PokemonSet; selected: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={cn("group min-h-36 rounded-2xl border p-3 text-left transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
-      <div className="flex min-h-14 items-start justify-end">{pokemon.species ? <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={64} height={64} unoptimized className="size-14 object-contain" /> : <Plus className="mt-3 size-7 text-slate-700" />}</div>
-      <p className={pokemon.species ? "mt-1 truncate text-xs font-black text-white" : "mt-3 text-xs font-bold text-slate-600"}>{pokemon.species || "Elegir Pokémon"}</p>
-      <div className="mt-1 flex gap-1">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="px-1.5 text-[7px]">{type.slice(0, 3)}</TypeBadge>)}</div>
-      <p className="mt-2 truncate text-[9px] text-amber-200/70">{pokemon.item || "Sin objeto"}</p>
+    <button type="button" onClick={onClick} className={cn("group min-h-40 rounded-2xl border p-4 text-left transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
+      <div className="flex min-h-28 items-stretch justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <p className={pokemon.species ? "truncate text-sm font-black text-white" : "text-sm font-bold text-slate-600"}>{pokemon.species || "Elegir Pokémon"}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="px-2 py-0.5 text-[9px]">{type}</TypeBadge>)}</div>
+          <p className="mt-auto truncate pt-3 text-[11px] font-semibold text-amber-200/80">{pokemon.item || "Sin objeto"}</p>
+        </div>
+        <div className="flex shrink-0 items-start justify-end">{pokemon.species ? <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={88} height={88} unoptimized className="size-20 object-contain" /> : <Plus className="mt-2 size-9 text-slate-700" />}</div>
+      </div>
     </button>
   );
 }
@@ -151,8 +155,8 @@ function MyTeamsDialog({ versions, onLoad }: { versions: TeamVersion[]; onLoad: 
 export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCreated }: BuilderProps) {
   const [teamName, setTeamName] = useState(initialVersion?.demo ? `${initialVersion.name} Copy` : initialVersion?.name ?? "");
   const [sourceTeamId, setSourceTeamId] = useState(initialVersion?.demo ? "" : initialVersion?.teamId ?? "");
-  const [format, setFormat] = useState(initialVersion?.format ?? "champions");
-  const [mechanics, setMechanics] = useState<BattleMechanic[]>(initialVersion?.mechanics ?? ["mega"]);
+  const [format, setFormat] = useState(initialVersion?.format ?? DEFAULT_BATTLE_FORMAT);
+  const [mechanics, setMechanics] = useState<BattleMechanic[]>(initialVersion?.mechanics ?? [...DEFAULT_BATTLE_MECHANICS]);
   const [pokemon, setPokemon] = useState<PokemonSet[]>(initialVersion ? cloneForBuilder(initialVersion.pokemon) : Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1)));
   const [selectedSlot, setSelectedSlot] = useState(0);
   const [dex, setDex] = useState<ShowdownSnapshot | null>(null);
@@ -192,11 +196,11 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? "champions"); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? "champions")); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
-    setTeamName(""); setSourceTeamId(""); setFormat("champions"); setMechanics(["mega"]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setMessage(""); setError("");
+    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setMessage(""); setError("");
   }
 
   async function importPaste(value: string) {

@@ -68,7 +68,7 @@ class Repository:
                 )
         return normalized
 
-    def create_team(self, name: str, paste: str, *, format: str = "gen9", mechanics: Sequence[str] = ("tera",)) -> TeamVersion:
+    def create_team(self, name: str, paste: str, *, format: str = "champions", mechanics: Sequence[str] = ("mega",)) -> TeamVersion:
         clean_name = name.strip()
         if not 2 <= len(clean_name) <= 80:
             raise ValueError("El nombre debe tener entre 2 y 80 caracteres.")

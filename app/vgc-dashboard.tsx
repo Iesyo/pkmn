@@ -28,7 +28,7 @@ export function VgcDashboard() {
   const [rightId, setRightId] = useState(DEFAULT_RIGHT_VERSION_ID);
   const [libraryTeamId, setLibraryTeamId] = useState(DEMO_GROUPS[0].id);
   const [libraryVersionId, setLibraryVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
-  const [builderVersionId, setBuilderVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
+  const [builderVersionId, setBuilderVersionId] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -152,7 +152,7 @@ export function VgcDashboard() {
         </TabsContent>
 
         <TabsContent value="builder" className="mt-0 outline-none">
-          <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId) ?? left} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
+          <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
         </TabsContent>
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · datos de tipos basados en un snapshot local de Pokémon Showdown · análisis descriptivo</footer>

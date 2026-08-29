@@ -2,6 +2,9 @@ import { getMoveData, getSpeciesTypes } from "./pokemon-data";
 import type { BaseStats, StatId } from "./showdown-data";
 import type { BattleMechanic, PokemonSet, PokemonType, TeamVersion } from "./types";
 
+export const DEFAULT_BATTLE_FORMAT = "champions";
+export const DEFAULT_BATTLE_MECHANICS: BattleMechanic[] = ["mega"];
+
 export const BATTLE_FORMATS = [
   { id: "champions", label: "Pokémon Champions · Mega Evolution", mechanics: ["mega"] },
   { id: "gen9", label: "Gen 9 · Terastallization", mechanics: ["tera"] },

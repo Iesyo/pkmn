@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl } from "@/lib/pokemon-data";
-import { formatVersion } from "@/lib/team-builder";
+import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion } from "@/lib/team-builder";
 import type { MatchResult, TeamGroup, TeamVersion } from "@/lib/types";
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -171,7 +171,7 @@ export function NewVersionDialog({ team, onCreated }: { team: TeamGroup; onCreat
         await fetch(`/api/teams/${team.id}/versions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ paste, format: team.versions[0]?.format ?? "gen9", mechanics: team.versions[0]?.mechanics ?? ["tera"] }),
+          body: JSON.stringify({ paste, format: team.versions[0]?.format ?? DEFAULT_BATTLE_FORMAT, mechanics: team.versions[0]?.mechanics ?? DEFAULT_BATTLE_MECHANICS }),
         }),
       );
       onCreated(payload.version);

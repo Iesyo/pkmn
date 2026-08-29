@@ -87,3 +87,22 @@ test("filters held items by the selected Showdown format", async () => {
   assert.equal(isItemLegal(snapshot, "Booster Energy", "champions"), false);
   assert.equal(isItemLegal(snapshot, "", "champions"), true);
 });
+
+test("starts a fresh Team Builder in Champions with expanded Pokémon cards", async () => {
+  const { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS } = await vite.ssrLoadModule("/lib/team-builder.ts");
+  const [dashboardSource, builderSource] = await Promise.all([
+    readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.equal(DEFAULT_BATTLE_FORMAT, "champions");
+  assert.deepEqual(DEFAULT_BATTLE_MECHANICS, ["mega"]);
+  assert.match(dashboardSource, /const \[builderVersionId, setBuilderVersionId\] = useState\(""\)/);
+  assert.match(dashboardSource, /initialVersion=\{versions\.find\(\(version\) => version\.id === builderVersionId\)\}/);
+  assert.doesNotMatch(dashboardSource, /initialVersion=.*\?\? left/);
+  assert.match(builderSource, /min-h-40/);
+  assert.match(builderSource, /size-20 object-contain/);
+  assert.match(builderSource, /text-sm font-black text-white/);
+  assert.match(builderSource, /text-\[9px\].*>\{type\}<\/TypeBadge>/);
+  assert.match(builderSource, /text-\[11px\].*\{pokemon\.item \|\| "Sin objeto"\}/);
+});

@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 type EditableStat = (typeof EV_STATS)[number];
 export type BoostableStat = Exclude<EditableStat, "HP">;
 
-const BOOST_VALUES = Array.from({ length: 13 }, (_, index) => index - 6);
+const BOOST_VALUES = Array.from({ length: 13 }, (_, index) => 6 - index);
 
 export function PokemonStatEditor({
   pokemon,
