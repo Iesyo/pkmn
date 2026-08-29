@@ -44,19 +44,23 @@ test("saved sets are exposed as a contextual version selector", async () => {
   assert.ok(source.includes('"Elegir versión"'));
   assert.ok(source.includes('"Sin versiones"'));
   assert.ok(source.includes("onLoad(version.set"));
+  assert.ok(source.includes('className="grid min-w-0 gap-2"'));
+  assert.ok(source.includes('className="w-full min-w-0 border-violet-300/15'));
   assert.ok(!source.includes("DialogTrigger"));
   assert.ok(!source.includes("<Button"));
 });
 
-test("only the editable left Pokemon can load a saved set version", async () => {
+test("both calculator panels expose saved sets in a balanced Pokemon/Set row", async () => {
   const source = await readFile(calculatorUrl, "utf8");
 
   assert.ok(source.includes('import { PokemonLibraryVersionSelect } from "./pokemon-library-dialog"'));
   assert.ok(source.includes("function chooseLibraryVersion"));
   assert.ok(source.includes("id: set.id"));
   assert.ok(source.includes("slot: set.slot"));
-  assert.ok(source.includes('side === "left" ? <PokemonLibraryVersionSelect'));
-  assert.ok(source.includes("species={set.species}"));
-  assert.ok(source.includes("format={format}"));
+  assert.ok(source.includes('className="grid gap-3 sm:grid-cols-2"'));
+  assert.ok(source.includes('className="grid min-w-0 gap-2"'));
+  assert.ok(source.includes('className="w-full min-w-0 border-white/10 bg-white/4"'));
+  assert.ok(source.includes("<PokemonLibraryVersionSelect species={set.species} format={format}"));
+  assert.ok(!source.includes('side === "left" ? <PokemonLibraryVersionSelect'));
   assert.ok(source.includes("chooseLibraryVersion(librarySet)"));
 });
