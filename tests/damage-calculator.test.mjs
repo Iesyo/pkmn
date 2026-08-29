@@ -189,7 +189,7 @@ test("uses the integrated calculator as the only Team Builder editor", async () 
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
 
-test("keeps calculator drafts per Pokémon and gives the editor stable dimensions", async () => {
+test("keeps calculator drafts per Pokémon with one page scroll and inline damage", async () => {
   const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
@@ -207,11 +207,17 @@ test("keeps calculator drafts per Pokémon and gives the editor stable dimension
   assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
   assert.ok(calculatorSource.lastIndexOf("<OutcomeList") < calculatorSource.lastIndexOf("Motor oficial de Pokémon Showdown"));
   assert.match(builderSource, /data-team-calculator/);
-  assert.match(builderSource, /h-\[clamp\(44rem,72vh,68rem\)\]/);
-  assert.match(builderSource, /overflow-y-auto overscroll-contain \[scrollbar-gutter:stable\]/);
+  assert.match(builderSource, /data-team-calculator className="min-h-\[44rem\]"/);
+  assert.doesNotMatch(builderSource, /data-team-calculator className="[^"]*overflow-y-auto/);
   assert.match(calculatorSource, /stableHeight/);
   assert.match(statEditorSource, /stableHeight && "min-h-\[23rem\]"/);
-  assert.match(calculatorSource, /grid h-64 content-start gap-2 overflow-y-auto \[scrollbar-gutter:stable\]/);
+  assert.match(calculatorSource, /grid min-h-64 content-start gap-2/);
+  assert.doesNotMatch(calculatorSource, /grid h-64 content-start gap-2 overflow-y-auto/);
+  assert.match(calculatorSource, /function InlineDamageRange/);
+  assert.match(calculatorSource, /grid-cols-\[minmax\(0,1fr\)_62px_88px\]/);
+  assert.match(calculatorSource, /`\$\{outcome\.minPercent\}–\$\{outcome\.maxPercent\}%`/);
+  assert.match(calculatorSource, /outcomes=\{leftOutcomes\}/);
+  assert.match(calculatorSource, /outcomes=\{rightOutcomes\}/);
   assert.match(calculatorSource, /mechanics\.includes\("tera"\)/);
   assert.match(calculatorSource, /<Label>Tipo Tera<\/Label>/);
   assert.match(calculatorSource, /Forma Gigantamax/);

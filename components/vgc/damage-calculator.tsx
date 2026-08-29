@@ -83,6 +83,8 @@ function CalculatorPokemonPanel({
   format,
   dex,
   mechanics,
+  outcomes,
+  opponentReady,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
@@ -90,6 +92,8 @@ function CalculatorPokemonPanel({
   format: string;
   dex: ShowdownSnapshot;
   mechanics: BattleMechanic[];
+  outcomes: DamageOutcome[];
+  opponentReady: boolean;
 }) {
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
@@ -192,7 +196,8 @@ function CalculatorPokemonPanel({
             {set.moves.map((move, index) => {
               const selectedElsewhere = new Set(set.moves.filter((_, moveIndex) => moveIndex !== index).map((entry) => toId(entry.name)).filter(Boolean));
               const options = legalMoves.filter((name) => !selectedElsewhere.has(toId(name)));
-              return <div key={index} className="grid grid-cols-[minmax(0,1fr)_68px] gap-2"><Combobox items={options} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput placeholder={`Movimiento ${index + 1}`} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible o repetido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type.slice(0, 3)}</TypeBadge> : <span className="text-[8px] text-slate-600">Status</span>}</div></div>;
+              const outcome = outcomes.find((entry) => toId(entry.move) === toId(move.name));
+              return <div key={index} className="grid grid-cols-[minmax(0,1fr)_62px_88px] gap-2"><Combobox items={options} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput placeholder={`Movimiento ${index + 1}`} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible o repetido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type.slice(0, 3)}</TypeBadge> : <span className="text-[8px] text-slate-600">Status</span>}</div><InlineDamageRange move={move} outcome={outcome} ready={opponentReady} /></div>;
             })}
           </div>
         </div>
@@ -211,6 +216,33 @@ function CalculatorPokemonPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function InlineDamageRange({ move, outcome, ready }: { move: PokemonSet["moves"][number]; outcome?: DamageOutcome; ready: boolean }) {
+  const isStatus = Boolean(move.name) && !move.damaging;
+  const label = !move.name
+    ? "—"
+    : isStatus
+      ? "Estado"
+      : !ready
+        ? "—"
+        : outcome?.error
+          ? "N/D"
+          : outcome
+            ? `${outcome.minPercent}–${outcome.maxPercent}%`
+            : "—";
+
+  return (
+    <div
+      aria-label={move.name ? `Daño de ${move.name}: ${label}` : "Daño no disponible"}
+      className={cn(
+        "flex min-w-0 items-center justify-center rounded-lg border px-1 text-center text-[9px] font-black tabular-nums",
+        isStatus ? "border-white/7 bg-white/[0.025] text-slate-500" : outcome?.error ? "border-rose-300/15 bg-rose-300/5 text-rose-300" : "border-cyan-300/12 bg-cyan-300/5 text-cyan-200",
+      )}
+    >
+      {label}
+    </div>
   );
 }
 
@@ -249,7 +281,7 @@ function OutcomeList({ title, attacker, defender, outcomes }: { title: string; a
   return (
     <section className="w-full min-w-0 rounded-[22px] border border-white/8 bg-black/20 p-3">
       <div className="flex items-center justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-300/70">{title}</p><p className="mt-1 text-xs font-bold text-slate-300">{attacker || "Atacante"} <span className="text-slate-600">→</span> {defender || "Defensor"}</p></div><Crosshair className="size-4 text-rose-300" /></div>
-      <div className="mt-3 grid h-64 content-start gap-2 overflow-y-auto [scrollbar-gutter:stable] md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-3 grid min-h-64 content-start gap-2 md:grid-cols-2 xl:grid-cols-4">
         {outcomes.length ? outcomes.map((outcome) => <article key={outcome.move} className={cn("min-w-0 rounded-2xl border bg-white/[0.025] p-3", outcome.error ? "border-rose-300/20" : "border-white/7")}><div className="flex items-start justify-between gap-2"><p className="truncate text-xs font-black text-white">{outcome.move}</p><Swords className="size-3.5 shrink-0 text-amber-300" /></div><p className="mt-3 text-xl font-black tabular-nums text-cyan-200">{outcome.minPercent}–{outcome.maxPercent}%</p><p className="mt-1 text-[10px] font-bold tabular-nums text-slate-400">{outcome.min}–{outcome.max} HP</p><p className="mt-2 min-h-8 text-[9px] leading-4 text-emerald-300/80">{outcome.koChance}</p><p className="mt-2 line-clamp-3 text-[8px] leading-3.5 text-slate-600">{outcome.description}</p>{outcome.rolls.length ? <p className="mt-2 truncate font-mono text-[8px] text-slate-700">Rolls: {outcome.rolls.join(", ")}</p> : null}{outcome.error ? <p className="mt-2 text-[8px] text-rose-300">{outcome.error}</p> : null}</article>) : <div className="col-span-full flex h-64 items-center justify-center rounded-2xl border border-dashed border-white/8 px-4 py-6 text-center text-xs text-slate-600">Elige al menos un movimiento para ver daño.</div>}
       </div>
     </section>
@@ -292,9 +324,9 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} />
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />

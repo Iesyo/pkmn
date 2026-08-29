@@ -287,7 +287,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
         <div className="min-w-0 space-y-4">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} />)}</div>
           <div className="overflow-hidden rounded-[26px] border border-white/8 bg-[#0b1220]/92 shadow-[0_28px_90px_rgba(0,0,0,0.30)]">
-            <div data-team-calculator className="h-[clamp(44rem,72vh,68rem)] overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+            <div data-team-calculator className="min-h-[44rem]">
               {dex ? (
                 <Suspense fallback={<div role="status" className="flex h-full items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando calculadora…</div>}>
                   <DamageCalculatorView
