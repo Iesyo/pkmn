@@ -91,13 +91,13 @@ export function PokemonLibraryVersionSelect({ species, format, onLoad }: Pokemon
         : "Sin versiones";
 
   return (
-    <div className="grid gap-2">
-      <div className="flex items-center justify-between gap-2">
+    <div className="grid min-w-0 gap-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
         <Label>Set</Label>
-        {loading ? <Loader2 className="size-3 animate-spin text-slate-600" /> : versions.length ? <span className="text-[9px] text-violet-300/70">{versions.length}v</span> : null}
+        {loading ? <Loader2 className="size-3 shrink-0 animate-spin text-slate-600" /> : versions.length ? <span className="shrink-0 text-[9px] text-violet-300/70">{versions.length}v</span> : null}
       </div>
       <Select key={`${format}:${toId(species)}`} onValueChange={chooseVersion} disabled={!species || loading || !versions.length}>
-        <SelectTrigger className="w-full border-violet-300/15 bg-violet-300/[0.045] text-violet-100 disabled:border-white/8 disabled:bg-white/[0.025] disabled:text-slate-600">
+        <SelectTrigger className="w-full min-w-0 border-violet-300/15 bg-violet-300/[0.045] text-violet-100 disabled:border-white/8 disabled:bg-white/[0.025] disabled:text-slate-600">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>
