@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Upload } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Upload, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -63,18 +63,30 @@ function BuilderCoverage({ pokemon, teraEnabled }: { pokemon: PokemonSet[]; tera
   );
 }
 
-function SlotCard({ pokemon, selected, onClick }: { pokemon: PokemonSet; selected: boolean; onClick: () => void }) {
+function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet; selected: boolean; onClick: () => void; onClear: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={cn("group h-40 min-w-0 overflow-hidden rounded-2xl border p-4 text-left transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
-      <div className="flex h-full min-w-0 flex-col">
-        <p className={pokemon.species ? "w-full min-w-0 truncate text-sm font-black text-white" : "w-full min-w-0 truncate text-sm font-bold text-slate-600"}>{pokemon.species || "Elegir Pokémon"}</p>
-        <div className="mt-2 flex h-5 min-w-0 flex-nowrap gap-1.5 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-2 py-0.5 text-[9px]">{type}</TypeBadge>)}</div>
-        <div className="mt-auto flex min-h-0 items-end justify-between gap-2">
-          <p className="min-w-0 flex-1 truncate pb-1 text-[11px] font-semibold text-amber-200/80">{pokemon.item || "Sin objeto"}</p>
-          <div className="flex h-20 w-20 shrink-0 translate-y-2 items-end justify-end">{pokemon.species ? <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={88} height={88} unoptimized className="size-20 object-contain" /> : <Plus className="mb-4 size-9 text-slate-700" />}</div>
-        </div>
-      </div>
-    </button>
+    <div className={cn("relative h-52 min-w-0 overflow-hidden rounded-2xl border transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
+      <button type="button" onClick={onClick} aria-pressed={selected} aria-label={pokemon.species ? `Editar ${pokemon.species}` : `Elegir Pokémon para el slot ${pokemon.slot}`} className="flex h-full w-full min-w-0 flex-col p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/60">
+        <span className="absolute left-2 top-2 z-10 flex size-5 items-center justify-center rounded-full border border-white/8 bg-slate-900/90 text-[9px] font-black text-slate-500">{pokemon.slot}</span>
+        {pokemon.species ? (
+          <>
+            <div className="flex h-14 shrink-0 items-center justify-center pt-1"><Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={64} height={64} unoptimized className="size-14 object-contain" /></div>
+            <div className="min-w-0">
+              <p className="w-full min-w-0 truncate text-xs font-black text-white">{pokemon.species}</p>
+              <div className="mt-1 flex h-4 min-w-0 flex-nowrap gap-1 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-1.5 py-0 text-[7px]">{type}</TypeBadge>)}</div>
+              <p className="mt-1.5 truncate rounded-md bg-amber-300/8 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200/90">{pokemon.item || "Sin objeto"}</p>
+              <p className="mt-1 truncate text-[9px] font-semibold text-emerald-300/80">{pokemon.ability || "Sin habilidad"}</p>
+              <div className="mt-1.5 space-y-0.5">
+                {pokemon.moves.map((move, moveIndex) => <p key={`${pokemon.id}-move-${moveIndex}`} className="flex min-w-0 items-center gap-1 text-[8px] leading-3 text-slate-500"><span className="shrink-0 text-slate-700">•</span><span className={cn("truncate", move.name ? "text-slate-400" : "text-slate-700")}>{move.name || "Movimiento"}</span></p>)}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center text-center"><Plus className="size-8 text-slate-700" /><p className="mt-2 text-xs font-black text-slate-500">Elegir Pokémon</p><p className="mt-1 text-[9px] text-slate-700">Slot {pokemon.slot}</p></div>
+        )}
+      </button>
+      {pokemon.species ? <button type="button" onClick={onClear} title={`Quitar ${pokemon.species}`} aria-label={`Quitar ${pokemon.species} del Team`} className="absolute right-2 top-2 z-20 flex size-6 items-center justify-center rounded-full border border-white/8 bg-slate-900/90 text-slate-500 transition hover:border-rose-300/25 hover:bg-rose-300/10 hover:text-rose-300"><X className="size-3.5" /></button> : null}
+    </div>
   );
 }
 
@@ -158,6 +170,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [mechanics, setMechanics] = useState<BattleMechanic[]>(initialVersion?.mechanics ?? [...DEFAULT_BATTLE_MECHANICS]);
   const [pokemon, setPokemon] = useState<PokemonSet[]>(initialVersion ? cloneForBuilder(initialVersion.pokemon) : Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1)));
   const [selectedSlot, setSelectedSlot] = useState(0);
+  const [slotRevisions, setSlotRevisions] = useState(() => Array.from({ length: 6 }, () => 0));
   const [dex, setDex] = useState<ShowdownSnapshot | null>(null);
   const [dexError, setDexError] = useState("");
   const [refreshingDex, setRefreshingDex] = useState(false);
@@ -166,7 +179,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const selected = pokemon[selectedSlot];
-  const calculatorSessionKey = `${selected.id}:${format}`;
+  const calculatorSessionKey = `${selected.id}:${format}:${slotRevisions[selectedSlot]}`;
   const storedVersions = groups.filter((team) => !team.versions[0]?.demo).flatMap((team) => team.versions);
   const paste = useMemo(() => serializeShowdownPaste(pokemon, mechanics), [pokemon, mechanics]);
   const complete = isCompleteTeam(pokemon);
@@ -189,11 +202,22 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setSlotRevisions((current) => current.map((revision) => revision + 1)); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
-    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setCalculatorSessions({}); setMessage(""); setError("");
+    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setCalculatorSessions({}); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage(""); setError("");
+  }
+
+  function clearSlot(index: number) {
+    const slotId = pokemon[index]?.id;
+    if (!slotId) return;
+    setPokemon((current) => current.map((set, currentIndex) => currentIndex === index ? emptyPokemon(set.slot) : set));
+    setCalculatorSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${slotId}:`))));
+    setSlotRevisions((current) => current.map((revision, currentIndex) => currentIndex === index ? revision + 1 : revision));
+    setSelectedSlot(index);
+    setMessage("Pokémon eliminado del Team. El slot quedó libre.");
+    setError("");
   }
 
   async function importPaste(value: string) {
@@ -204,6 +228,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
       setSelectedSlot(0);
       setCalculatorSessions({});
+      setSlotRevisions((current) => current.map((revision) => revision + 1));
       setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
@@ -285,7 +310,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
       <div className="grid items-start gap-4 xl:grid-cols-[270px_minmax(0,1fr)]">
         <BuilderCoverage pokemon={pokemon} teraEnabled={mechanics.includes("tera")} />
         <div className="min-w-0 space-y-4">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} />)}</div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} onClear={() => clearSlot(index)} />)}</div>
           <div className="overflow-hidden rounded-[26px] border border-white/8 bg-[#0b1220]/92 shadow-[0_28px_90px_rgba(0,0,0,0.30)]">
             <div data-team-calculator className="min-h-[44rem]">
               {dex ? (
