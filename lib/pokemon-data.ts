@@ -180,12 +180,20 @@ export function getMoveData(move: string) {
   };
 }
 
+function getMegaSpriteSlug(species: string) {
+  const match = species.match(/^(.*)-Mega(?:-([XY]))?$/i);
+  if (!match) return null;
+  const base = match[1].toLowerCase().replace(/[^a-z0-9-]+/g, "");
+  const variant = match[2]?.toLowerCase();
+  return variant ? `${base}-mega${variant}` : `${base}-mega`;
+}
+
 export function getSpriteUrl(species: string) {
   const id = toId(species);
-  const slug = spriteAliases[id] ?? id;
+  const slug = getMegaSpriteSlug(species) ?? spriteAliases[id] ?? id;
   // The animated catalog is incomplete for several modern species and forms.
-  // Showdown's Gen 5-style static catalog is uniform and includes those entries,
-  // which keeps every dashboard and Builder sprite visually consistent.
+  // Showdown's Gen 5-style static catalog is uniform and includes those entries.
+  // Mega forms are the exception to the normal ID slug: X/Y use -megax/-megay.
   return `https://play.pokemonshowdown.com/sprites/gen5/${slug}.png`;
 }
 
