@@ -33,9 +33,10 @@ import {
   moveFromSnapshot,
   type ShowdownSnapshot,
 } from "@/lib/showdown-data";
-import { EV_STATS, NATURES, getStatRules, parseEvs, serializeEvs } from "@/lib/team-builder";
+import { NATURES } from "@/lib/team-builder";
 import type { PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { PokemonStatEditor } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
 
 type DamageCalculatorProps = {
@@ -81,12 +82,10 @@ function CalculatorPokemonPanel({
 }) {
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
+  const selectedSpecies = getSpecies(dex, set.species);
   const legalMoves = useMemo(() => getLegalMoves(dex, set.species, format), [dex, set.species, format]);
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
   const legalAbilities = getLegalAbilities(dex, set.species);
-  const allocations = parseEvs(set.evs);
-  const statRules = getStatRules(format);
-  const allocationTotal = Object.values(allocations).reduce((sum, value) => sum + value, 0);
 
   function updateSet(next: PokemonSet) {
     onChange({ ...draft, set: next });
@@ -106,13 +105,6 @@ function CalculatorPokemonPanel({
       evs: "",
       moves: Array.from({ length: 4 }, () => ({ name: "", type: null, damaging: false, usage: 0 })),
     });
-  }
-
-  function setAllocation(stat: (typeof EV_STATS)[number], value: number) {
-    const withoutCurrent = allocationTotal - allocations[stat];
-    const rounded = Math.round(value / statRules.step) * statRules.step;
-    const nextValue = clamp(rounded, 0, Math.min(statRules.perStatMax, statRules.totalMax - withoutCurrent));
-    updateSet({ ...set, evs: serializeEvs({ ...allocations, [stat]: nextValue }) });
   }
 
   function chooseMove(index: number, value: string | null) {
@@ -160,12 +152,7 @@ function CalculatorPokemonPanel({
           <div className="grid gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
         </div>
 
-        <div>
-          <div className="flex items-center justify-between gap-3"><Label>{statRules.label}</Label><span className="text-[9px] font-bold text-cyan-300">{allocationTotal}/{statRules.totalMax}</span></div>
-          <div className="mt-2 grid grid-cols-3 gap-2">
-            {EV_STATS.map((stat) => <label key={stat} className="rounded-xl border border-white/7 bg-black/20 p-2"><span className="text-[9px] font-black text-slate-500">{stat}</span><Input aria-label={`${statRules.shortLabel} de ${stat} en ${side === "left" ? "tu Pokémon" : "rival"}`} type="number" min={0} max={statRules.perStatMax} step={statRules.step} value={allocations[stat]} onChange={(event) => setAllocation(stat, Number(event.target.value) || 0)} className="mt-1 h-8 border-white/8 bg-white/4 px-2 text-center text-xs" /></label>)}
-          </div>
-        </div>
+        <PokemonStatEditor pokemon={set} format={format} baseStats={selectedSpecies?.baseStats ?? null} onChange={updateSet} />
 
         <div>
           <div className="flex items-center justify-between gap-3"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">Resultados en vivo</span></div>
