@@ -157,6 +157,27 @@ const spriteAliases: Record<string, string> = {
   zamazentacrowned: "zamazenta-crowned",
 };
 
+const megaSpriteAliases: Record<string, string> = {
+  meowsticmmega: "meowstic-mmega",
+  meowsticfmega: "meowstic-fmega",
+  magearnaoriginalmega: "magearna-originalmega",
+  tatsugiricurlymega: "tatsugiri-curly-mega",
+  tatsugiridroopymega: "tatsugiri-droopy-mega",
+  tatsugiristretchymega: "tatsugiri-stretchy-mega",
+};
+
+const animatedMegaSpriteIds = new Set([
+  "malamarmega",
+  "raichumegax",
+  "raichumegay",
+]);
+
+const megaZBaseFallbacks: Record<string, string> = {
+  absolmegaz: "absol",
+  garchompmegaz: "garchomp",
+  lucariomegaz: "lucario",
+};
+
 const conditionalEffects: Record<string, string> = {
   levitate: "Levitate: inmunidad condicional a Ground",
   flashfire: "Flash Fire: inmunidad condicional a Fire",
@@ -181,7 +202,9 @@ export function getMoveData(move: string) {
 }
 
 function getMegaSpriteSlug(species: string) {
-  const match = species.match(/^(.*)-Mega(?:-([XY]))?$/i);
+  const explicit = megaSpriteAliases[toId(species)];
+  if (explicit) return explicit;
+  const match = species.match(/^(.*)-Mega(?:-([XYZ]))?$/i);
   if (!match) return null;
   const base = match[1].toLowerCase().replace(/[^a-z0-9-]+/g, "");
   const variant = match[2]?.toLowerCase();
@@ -190,10 +213,22 @@ function getMegaSpriteSlug(species: string) {
 
 export function getSpriteUrl(species: string) {
   const id = toId(species);
+  const zFallback = megaZBaseFallbacks[id];
+  if (zFallback) {
+    // Pokémon Showdown's standard sprite catalogs do not yet expose these
+    // Legends Z-A Mega-Z art assets. Keep the UI intact until they land.
+    return `https://play.pokemonshowdown.com/sprites/gen5/${zFallback}.png`;
+  }
+
   const slug = getMegaSpriteSlug(species) ?? spriteAliases[id] ?? id;
-  // The animated catalog is incomplete for several modern species and forms.
-  // Showdown's Gen 5-style static catalog is uniform and includes those entries.
-  // Mega forms are the exception to the normal ID slug: X/Y use -megax/-megay.
+  if (animatedMegaSpriteIds.has(id)) {
+    // Some current Z-A Megas are available in Showdown's animated catalog
+    // before they reach the Gen 5-style static catalog.
+    return `https://play.pokemonshowdown.com/sprites/ani/${slug}.gif`;
+  }
+
+  // The Gen 5-style static catalog is the default because it is visually
+  // consistent across the rest of the app. Mega X/Y/Z use -megax/-megay/-megaz.
   return `https://play.pokemonshowdown.com/sprites/gen5/${slug}.png`;
 }
 
