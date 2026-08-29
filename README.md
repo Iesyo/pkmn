@@ -39,9 +39,22 @@ La arquitectura completa está en [docs/architecture.md](docs/architecture.md).
 Requiere Node.js `>=22.13.0`.
 
 ```bash
+npm ci
 npm run dev
 npm run lint
 npm test
+```
+
+`npm run dev` prepara y actualiza automáticamente la base SQLite/D1 local
+antes de iniciar el sitio. Los datos de desarrollo permanecen en
+`.wrangler/state/` entre reinicios.
+
+En Windows PowerShell, si la política del sistema bloquea `npm.ps1`, usa los
+ejecutables `.cmd` sin modificar la política de seguridad:
+
+```powershell
+npm.cmd ci
+npm.cmd run dev
 ```
 
 Para generar una migración después de cambiar `db/schema.ts`:
