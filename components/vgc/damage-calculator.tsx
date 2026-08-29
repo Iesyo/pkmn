@@ -14,6 +14,7 @@ import {
   calculateMoves,
   createDamageDraft,
   defaultDamageField,
+  getMegaForm,
   type DamageFieldState,
   type DamageOutcome,
   type DamagePokemonDraft,
@@ -99,12 +100,19 @@ function CalculatorPokemonPanel({
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
   const selectedSpecies = getSpecies(dex, set.species);
+  const megaForm = mechanics.includes("mega") ? getMegaForm(set) : null;
+  const megaActive = Boolean(megaForm && draft.megaActive);
+  const battleSpeciesName = megaActive ? megaForm! : set.species;
+  const battleSpecies = getSpecies(dex, battleSpeciesName) ?? selectedSpecies;
+  const displayTypes = megaActive ? battleSpecies?.types ?? set.types : set.types;
   const legalMoves = useMemo(() => getLegalMoves(dex, set.species, format), [dex, set.species, format]);
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
-  const legalAbilities = getLegalAbilities(dex, set.species);
+  const legalAbilities = megaActive ? battleSpecies?.abilities ?? [] : getLegalAbilities(dex, set.species);
+  const displayedAbility = megaActive ? battleSpecies?.abilities[0] ?? set.ability : set.ability;
 
   function updateSet(next: PokemonSet) {
-    onChange({ ...draft, set: next });
+    const nextMegaForm = mechanics.includes("mega") ? getMegaForm(next) : null;
+    onChange({ ...draft, set: next, megaActive: draft.megaActive && Boolean(nextMegaForm) });
   }
 
   function chooseSpecies(value: string | null) {
@@ -152,12 +160,12 @@ function CalculatorPokemonPanel({
       <div className="flex items-center justify-between gap-3 border-b border-white/7 pb-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-12 shrink-0 items-center justify-center">
-            {set.species ? <Image src={getSpriteUrl(set.species)} alt={set.species} width={56} height={56} unoptimized className="size-12 object-contain" /> : <div aria-hidden="true" className="size-10 rounded-xl border border-dashed border-white/8 bg-white/[0.02]" />}
+            {set.species ? <Image src={getSpriteUrl(battleSpeciesName)} alt={battleSpeciesName} width={56} height={56} unoptimized className="size-12 object-contain" /> : <div aria-hidden="true" className="size-10 rounded-xl border border-dashed border-white/8 bg-white/[0.02]" />}
           </div>
           <div className="min-w-0">
             <p className="text-[9px] font-black uppercase tracking-[0.15em] text-cyan-300/75">{side === "left" ? "Tu Pokémon" : "Rival"}</p>
-            <h3 className="truncate text-base font-black text-white">{set.species || "Selecciona un Pokémon"}</h3>
-            <div className="mt-1 flex min-h-4 gap-1">{set.types.map((type) => <TypeBadge key={type} type={type} className="text-[7px]">{type}</TypeBadge>)}</div>
+            <h3 className="truncate text-base font-black text-white">{battleSpeciesName || "Selecciona un Pokémon"}</h3>
+            <div className="mt-1 flex min-h-4 gap-1">{displayTypes.map((type) => <TypeBadge key={type} type={type} className="text-[7px]">{type}</TypeBadge>)}</div>
           </div>
         </div>
         <Badge variant="outline" className="border-white/10 bg-white/3 text-slate-400">{format === "champions" ? "Champions" : format.toUpperCase()}</Badge>
@@ -178,7 +186,7 @@ function CalculatorPokemonPanel({
         <div className="grid gap-2"><Label>Objeto</Label><Combobox items={legalItems} value={set.item || null} onValueChange={(value) => updateSet({ ...set, item: value ?? "" })}><ComboboxInput placeholder="Buscar objeto..." className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2"><Label>Habilidad</Label><Select value={set.ability || "none"} onValueChange={(value) => updateSet({ ...set, ability: value === "none" ? "" : value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{legalAbilities.map((ability) => <SelectItem key={ability} value={ability}>{ability}</SelectItem>)}</SelectContent></Select></div>
+          <div className="grid gap-2"><Label>Habilidad</Label><Select value={displayedAbility || "none"} disabled={megaActive} onValueChange={(value) => updateSet({ ...set, ability: value === "none" ? "" : value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{legalAbilities.map((ability) => <SelectItem key={ability} value={ability}>{ability}</SelectItem>)}</SelectContent></Select></div>
           <div className="grid gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
         </div>
 
@@ -189,24 +197,32 @@ function CalculatorPokemonPanel({
           </div>
         ) : null}
 
-        <PokemonStatEditor
-          pokemon={set}
-          format={format}
-          baseStats={selectedSpecies?.baseStats ?? null}
-          onChange={updateSet}
-          boosts={{
-            Atk: draft.boosts.atk,
-            Def: draft.boosts.def,
-            SpA: draft.boosts.spa,
-            SpD: draft.boosts.spd,
-            Spe: draft.boosts.spe,
-          }}
-          stableHeight
-          onBoostChange={(stat, value) => {
-            const damageStat = BOOST_STAT_KEYS[stat];
-            onChange({ ...draft, boosts: { ...draft.boosts, [damageStat]: value } });
-          }}
-        />
+        <div className="relative">
+          <PokemonStatEditor
+            pokemon={set}
+            format={format}
+            baseStats={battleSpecies?.baseStats ?? null}
+            onChange={updateSet}
+            boosts={{
+              Atk: draft.boosts.atk,
+              Def: draft.boosts.def,
+              SpA: draft.boosts.spa,
+              SpD: draft.boosts.spd,
+              Spe: draft.boosts.spe,
+            }}
+            stableHeight
+            onBoostChange={(stat, value) => {
+              const damageStat = BOOST_STAT_KEYS[stat];
+              onChange({ ...draft, boosts: { ...draft.boosts, [damageStat]: value } });
+            }}
+          />
+          {megaForm ? (
+            <label className={cn("absolute bottom-3 right-3 flex h-8 items-center gap-2 rounded-lg border px-2.5 text-[9px] font-black uppercase tracking-[0.08em] shadow-sm", megaActive ? "border-fuchsia-300/30 bg-fuchsia-300/10 text-fuchsia-100" : "border-white/8 bg-slate-950/90 text-slate-500")}>
+              <span>Mega</span>
+              <Switch checked={megaActive} onCheckedChange={(checked) => onChange({ ...draft, megaActive: checked })} aria-label={`Mega Evolución de ${set.species}`} />
+            </label>
+          ) : null}
+        </div>
 
         <div>
           <div className="flex items-center justify-between gap-3"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">Resultados en vivo</span></div>
