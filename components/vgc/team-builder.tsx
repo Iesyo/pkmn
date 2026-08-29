@@ -7,7 +7,7 @@ import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -73,15 +73,12 @@ function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet
             <div className="flex h-16 shrink-0 items-center justify-center"><Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={72} height={72} unoptimized className="size-16 object-contain" /></div>
             <div className="min-w-0">
               <p className="w-full min-w-0 truncate text-xs font-black text-white">{pokemon.species}</p>
-              <div className="mt-1 flex h-4 min-w-0 flex-nowrap gap-1 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-1.5 py-0 text-[7px]">{type}</TypeBadge>)}</div>
-              <div className="mt-1.5 flex min-w-0 items-center gap-1 text-[9px] font-semibold">
-                <span className="min-w-0 flex-1 truncate text-amber-200/90">{pokemon.item || "Sin objeto"}</span>
-                <span className="shrink-0 text-slate-700">·</span>
-                <span className="min-w-0 flex-1 truncate text-fuchsia-300/85">{pokemon.nature || "Sin naturaleza"}</span>
-              </div>
-              <p className="mt-1 truncate text-[9px] font-semibold text-emerald-300/80">{pokemon.ability || "Sin habilidad"}</p>
+              <p className="mt-0.5 truncate text-[9px] font-semibold text-amber-200/90">{pokemon.item || "Sin objeto"}</p>
+              <div className="mt-0.5 flex h-4 min-w-0 flex-nowrap gap-1 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-1.5 py-0 text-[7px]">{type}</TypeBadge>)}</div>
+              <p className="mt-1 truncate text-[9px] font-semibold text-fuchsia-300/85">{pokemon.nature || "Sin naturaleza"}</p>
+              <p className="mt-0.5 truncate text-[9px] font-semibold text-emerald-300/80">{pokemon.ability || "Sin habilidad"}</p>
               <div className="mt-1.5 space-y-0.5 pb-2">
-                {pokemon.moves.map((move, moveIndex) => <p key={`${pokemon.id}-move-${moveIndex}`} className="flex min-w-0 items-center gap-1 text-[8px] leading-3 text-slate-500"><span className="shrink-0 text-slate-700">•</span><span className={cn("truncate", move.name ? "text-slate-400" : "text-slate-700")}>{move.name || "Movimiento"}</span></p>)}
+                {pokemon.moves.map((move, moveIndex) => <p key={`${pokemon.id}-move-${moveIndex}`} className="flex min-w-0 items-center gap-1 text-[8px] leading-[11px] text-slate-500"><span className="shrink-0 text-slate-700">•</span><span className={cn("truncate", move.name ? "text-slate-400" : "text-slate-700")}>{move.name || "Movimiento"}</span></p>)}
               </div>
             </div>
           </>
@@ -98,23 +95,26 @@ function PasteDialog({ mode, paste, onImport }: { mode: "import" | "export"; pas
   const [value, setValue] = useState(paste);
   const [copied, setCopied] = useState(false);
   const action = mode === "import" ? (
-    <Button onClick={() => onImport?.(value)} className="w-full shrink-0 gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200 sm:w-auto">
+    <Button onClick={() => onImport?.(value)} className="w-full gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">
       <Download className="size-4" />Cargar equipo
     </Button>
   ) : (
-    <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="w-full shrink-0 gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200 sm:w-auto">
+    <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="w-full gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">
       {copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}{copied ? "Copiado" : "Copiar paste"}
     </Button>
   );
   return (
     <Dialog onOpenChange={(open) => { if (open) { setValue(paste); setCopied(false); } }}>
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4">{mode === "import" ? <Download className="size-4" /> : <Upload className="size-4" />}{mode === "import" ? "Importar" : "Exportar"}</Button></DialogTrigger>
-      <DialogContent className="max-h-[88vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
-        <div className="flex flex-col gap-4 border-b border-white/8 pb-4 sm:flex-row sm:items-start sm:justify-between">
-          <DialogHeader className="min-w-0 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
-          {action}
+      <DialogContent className="grid h-[88vh] max-h-[40rem] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden border-white/10 bg-slate-950 text-slate-100 sm:h-[38rem] sm:max-w-2xl">
+        <DialogHeader className="pr-8 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
+        <div className="min-h-0">
+          <Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="field-sizing-fixed h-full min-h-0 resize-none overflow-y-auto rounded-2xl border-white/10 bg-black/35 font-mono text-[11px] leading-5 scrollbar-thin" />
         </div>
-        <Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="mt-4 min-h-96 border-white/10 bg-black/35 font-mono text-[11px] leading-5" />
+        <div className="grid grid-cols-2 gap-2 border-t border-white/8 pt-4">
+          {action}
+          <DialogClose asChild><Button variant="outline" className="w-full border-white/10 bg-white/4 text-slate-300 hover:bg-white/8 hover:text-white">Cerrar</Button></DialogClose>
+        </div>
       </DialogContent>
     </Dialog>
   );
