@@ -6,6 +6,7 @@ const backendUrl = new URL("../db/pokemon-library.ts", import.meta.url);
 const schemaUrl = new URL("../db/schema.ts", import.meta.url);
 const migrationUrl = new URL("../drizzle/0005_pokemon_library.sql", import.meta.url);
 const dialogUrl = new URL("../components/vgc/pokemon-library-dialog.tsx", import.meta.url);
+const builderUrl = new URL("../components/vgc/team-builder.tsx", import.meta.url);
 
 test("deduplicates reusable Pokemon sets by canonical competitive content", async () => {
   const source = await readFile(backendUrl, "utf8");
@@ -40,4 +41,15 @@ test("My Pokemon dialog filters by current format and loads one stored version",
   assert.ok(source.includes("encodeURIComponent(format)"));
   assert.ok(source.includes("onLoad(version.set"));
   assert.ok(source.includes("Las configuraciones idénticas comparten versión"));
+});
+
+test("Team Builder loads a library version into only the active slot", async () => {
+  const source = await readFile(builderUrl, "utf8");
+
+  assert.ok(source.includes('import { PokemonLibraryDialog } from "./pokemon-library-dialog"'));
+  assert.ok(source.includes("function loadPokemonFromLibrary"));
+  assert.ok(source.includes("index === selectedSlot ? hydrated : set"));
+  assert.ok(source.includes("!key.startsWith(`${slot.id}:`)"));
+  assert.ok(source.includes("index === selectedSlot ? revision + 1 : revision"));
+  assert.ok(source.includes("<PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} />"));
 });
