@@ -166,19 +166,19 @@ test("reverses side conditions when calculating incoming damage", async () => {
   assert.ok(guarded.max < unguarded.max);
 });
 
-test("renders the calculator as an inline Pro mode instead of a floating dialog", async () => {
+test("uses the integrated calculator as the only Team Builder editor", async () => {
   const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/pokemon-stat-editor.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(builderSource, /proMode/);
   assert.match(builderSource, /DamageCalculatorView/);
-  assert.match(builderSource, /Volver al modo normal/);
+  assert.match(builderSource, /data-team-calculator/);
+  assert.doesNotMatch(builderSource, /proMode|Modo Pro|Volver al modo normal/);
   assert.doesNotMatch(builderSource, /DamageCalculatorDialog/);
   assert.doesNotMatch(calculatorSource, /components\/ui\/dialog/);
-  assert.match(builderSource, /<PokemonStatEditor/);
+  assert.doesNotMatch(builderSource, /<PokemonStatEditor|<Combobox/);
   assert.match(calculatorSource, /<PokemonStatEditor/);
   assert.match(statEditorSource, /<Slider/);
   assert.match(statEditorSource, /calculateStat/);
@@ -189,30 +189,32 @@ test("renders the calculator as an inline Pro mode instead of a floating dialog"
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
 
-test("keeps Pro drafts per Pokémon and gives the whole Pro canvas stable dimensions", async () => {
+test("keeps calculator drafts per Pokémon and gives the editor stable dimensions", async () => {
   const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/pokemon-stat-editor.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(builderSource, /proSessions/);
-  assert.match(builderSource, /const proSessionKey = `\$\{selected\.id\}:\$\{format\}`/);
-  assert.match(builderSource, /session=\{proSessions\[proSessionKey\]\}/);
+  assert.match(builderSource, /calculatorSessions/);
+  assert.match(builderSource, /const calculatorSessionKey = `\$\{selected\.id\}:\$\{format\}`/);
+  assert.match(builderSource, /session=\{calculatorSessions\[calculatorSessionKey\]\}/);
   assert.match(builderSource, /onSessionChange=/);
   assert.match(builderSource, /\.\.\.nextSession\.left\.set/);
-  assert.match(builderSource, /disabled=\{!dex\}/);
   assert.match(calculatorSource, /export type DamageCalculatorSession/);
   assert.doesNotMatch(calculatorSource, /Modo Pro · Calculadora de daño/);
   assert.doesNotMatch(calculatorSource, /Vista integrada/);
   assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
   assert.ok(calculatorSource.lastIndexOf("<OutcomeList") < calculatorSource.lastIndexOf("Motor oficial de Pokémon Showdown"));
-  assert.match(builderSource, /data-pro-mode-viewport/);
+  assert.match(builderSource, /data-team-calculator/);
   assert.match(builderSource, /h-\[clamp\(44rem,72vh,68rem\)\]/);
   assert.match(builderSource, /overflow-y-auto overscroll-contain \[scrollbar-gutter:stable\]/);
   assert.match(calculatorSource, /stableHeight/);
   assert.match(statEditorSource, /stableHeight && "min-h-\[23rem\]"/);
   assert.match(calculatorSource, /grid h-64 content-start gap-2 overflow-y-auto \[scrollbar-gutter:stable\]/);
+  assert.match(calculatorSource, /mechanics\.includes\("tera"\)/);
+  assert.match(calculatorSource, /<Label>Tipo Tera<\/Label>/);
+  assert.match(calculatorSource, /Forma Gigantamax/);
   assert.ok(calculatorSource.indexOf("<Label>Estado</Label>") < calculatorSource.indexOf("<Label>Nivel</Label>"));
   assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
 });

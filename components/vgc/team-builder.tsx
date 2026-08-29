@@ -2,12 +2,11 @@
 
 import Image from "next/image";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, Calculator, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Sparkles, Upload, WandSparkles } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Upload } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,12 +14,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
-import { getLegalAbilities, getLegalItems, getLegalMoves, getSpecies, getSpeciesOptions, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, moveFromSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
+import { getLegalAbilities, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
 import { analyzeTypes } from "@/lib/team-stats";
-import { BATTLE_FORMATS, DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, MECHANIC_LABELS, NATURES, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, normalizeTeraType, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
-import { POKEMON_TYPES, type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion } from "@/lib/types";
+import { BATTLE_FORMATS, DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, MECHANIC_LABELS, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
+import { type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { PokemonStatEditor } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
 import type { DamageCalculatorSession } from "./damage-calculator";
 
@@ -163,21 +161,15 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [dex, setDex] = useState<ShowdownSnapshot | null>(null);
   const [dexError, setDexError] = useState("");
   const [refreshingDex, setRefreshingDex] = useState(false);
-  const [proMode, setProMode] = useState(false);
-  const [proSessions, setProSessions] = useState<Record<string, DamageCalculatorSession>>({});
+  const [calculatorSessions, setCalculatorSessions] = useState<Record<string, DamageCalculatorSession>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const selected = pokemon[selectedSlot];
-  const proSessionKey = `${selected.id}:${format}`;
+  const calculatorSessionKey = `${selected.id}:${format}`;
   const storedVersions = groups.filter((team) => !team.versions[0]?.demo).flatMap((team) => team.versions);
   const paste = useMemo(() => serializeShowdownPaste(pokemon, mechanics), [pokemon, mechanics]);
   const complete = isCompleteTeam(pokemon);
-  const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
-  const selectedSpecies = getSpecies(dex, selected.species);
-  const legalMoves = useMemo(() => getLegalMoves(dex, selected.species, format), [dex, selected.species, format]);
-  const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
-  const legalAbilities = getLegalAbilities(dex, selected.species);
 
   useEffect(() => {
     let active = true;
@@ -193,26 +185,15 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     return () => { active = false; };
   }, []);
 
-  function updateSelected(next: PokemonSet) {
-    setPokemon((current) => current.map((set, index) => index === selectedSlot ? next : set));
-    setProSessions((current) => {
-      if (!(proSessionKey in current)) return current;
-      const nextSessions = { ...current };
-      delete nextSessions[proSessionKey];
-      return nextSessions;
-    });
-    setMessage("");
-  }
-
   function loadVersion(versionId: string) {
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setProMode(false); setProSessions({}); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
-    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setProMode(false); setProSessions({}); setMessage(""); setError("");
+    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setCalculatorSessions({}); setMessage(""); setError("");
   }
 
   async function importPaste(value: string) {
@@ -222,8 +203,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
       const imported = cloneForBuilder(parseShowdownPaste(value));
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
       setSelectedSlot(0);
-      setProMode(false);
-      setProSessions({});
+      setCalculatorSessions({});
       setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
@@ -232,34 +212,12 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     const previousRules = getStatRules(format);
     const nextRules = getStatRules(nextFormat);
     setFormat(nextFormat);
-    setProSessions({});
+    setCalculatorSessions({});
     if (nextFormat !== "custom") setMechanics(mechanicsForFormat(nextFormat));
     if (previousRules.totalMax !== nextRules.totalMax) {
       setPokemon((current) => current.map((set) => ({ ...set, evs: "" })));
       setMessage(`La escala cambió a ${nextRules.label}; reiniciamos la distribución para evitar valores incompatibles.`);
     }
-  }
-
-  function chooseSpecies(value: string | null) {
-    if (!value || !dex) {
-      updateSelected({ ...selected, species: "", nickname: "", ability: "", types: [], moves: emptyPokemon(selected.slot).moves });
-      return;
-    }
-    const species = getSpecies(dex, value);
-    if (!species) return;
-    updateSelected({
-      ...selected,
-      species: species.name,
-      nickname: !selected.nickname || selected.nickname === selected.species ? species.name : selected.nickname,
-      ability: species.abilities[0] ?? "",
-      types: species.types,
-      moves: emptyPokemon(selected.slot).moves,
-    });
-  }
-
-  function chooseMove(index: number, value: string | null) {
-    const nextMove = value ? moveFromSnapshot(dex, value) : emptyPokemon(selected.slot).moves[index];
-    updateSelected({ ...selected, moves: selected.moves.map((move, moveIndex) => moveIndex === index ? nextMove : move) });
   }
 
   async function refreshDatabases() {
@@ -324,25 +282,23 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
         {message ? <p className="mt-3 rounded-xl border border-emerald-300/15 bg-emerald-300/5 px-3 py-2 text-xs text-emerald-200">{message}</p> : null}{error ? <p role="alert" className="mt-3 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}{dexError ? <p role="alert" className="mt-3 flex items-center gap-2 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200"><AlertTriangle className="size-4" />{dexError}</p> : null}
       </div>
 
-      <div className="grid items-start gap-4 xl:grid-cols-[230px_minmax(0,1fr)]">
+      <div className="grid items-start gap-4 xl:grid-cols-[270px_minmax(0,1fr)]">
         <BuilderCoverage pokemon={pokemon} teraEnabled={mechanics.includes("tera")} />
         <div className="min-w-0 space-y-4">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} />)}</div>
           <div className="overflow-hidden rounded-[26px] border border-white/8 bg-[#0b1220]/92 shadow-[0_28px_90px_rgba(0,0,0,0.30)]">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5"><div className="flex items-center gap-3">{selected.species ? <Image src={getSpriteUrl(selected.species)} alt={selected.species} width={60} height={60} unoptimized className="size-12 object-contain" /> : <div className="flex size-12 items-center justify-center rounded-xl bg-white/4"><WandSparkles className="size-5 text-slate-600" /></div>}<div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-black text-white">{selected.species || "Nuevo Pokémon"}</h2>{proMode ? <Badge className="border-cyan-300/20 bg-cyan-300/8 text-[8px] uppercase tracking-[0.12em] text-cyan-200">Modo Pro</Badge> : null}</div><div className="mt-1.5 flex flex-wrap items-center gap-1">{selected.types.map((type) => <TypeBadge key={type} type={type} className="text-[8px]">{type}</TypeBadge>)}{selected.species ? <span className="ml-1 text-[9px] text-slate-600">Tipos oficiales · solo lectura</span> : <span className="text-[10px] text-slate-600">Puedes empezar aquí o directamente en Modo Pro.</span>}</div></div></div><Button type="button" variant="outline" size="icon" disabled={!dex} onClick={() => setProMode((current) => !current)} aria-pressed={proMode} aria-label={proMode ? "Volver al modo normal" : `Abrir modo Pro para ${selected.species || "este Pokémon"}`} title={proMode ? "Volver al modo normal" : "Abrir modo Pro"} className={cn("size-11 shrink-0 rounded-2xl border-cyan-300/20 bg-cyan-300/7 text-cyan-200 shadow-[0_0_24px_rgba(103,232,249,0.08)] hover:border-cyan-300/40 hover:bg-cyan-300/12", proMode && "border-cyan-200/40 bg-cyan-300/14")}>
-              {proMode ? <ArrowLeft className="size-5" /> : <Calculator className="size-5" />}
-            </Button></div>
-            {proMode && dex ? (
-              <div data-pro-mode-viewport className="h-[clamp(44rem,72vh,68rem)] overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
-                <Suspense fallback={<div role="status" className="flex h-full items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando modo Pro…</div>}>
+            <div data-team-calculator className="h-[clamp(44rem,72vh,68rem)] overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+              {dex ? (
+                <Suspense fallback={<div role="status" className="flex h-full items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando calculadora…</div>}>
                   <DamageCalculatorView
-                    key={proSessionKey}
+                    key={calculatorSessionKey}
                     source={selected}
                     format={format}
                     dex={dex}
-                    session={proSessions[proSessionKey]}
+                    mechanics={mechanics}
+                    session={calculatorSessions[calculatorSessionKey]}
                     onSessionChange={(nextSession) => {
-                      setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }));
+                      setCalculatorSessions((current) => ({ ...current, [calculatorSessionKey]: nextSession }));
                       setPokemon((current) => current.map((set, index) => index === selectedSlot ? {
                         ...nextSession.left.set,
                         id: set.id,
@@ -352,28 +308,10 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
                     }}
                   />
                 </Suspense>
-              </div>
-            ) : <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-[1.05fr_1fr_1fr]">
-              <div className="space-y-4">
-                <div className="grid gap-2"><Label>Pokémon</Label><Combobox items={speciesOptions} value={selected.species || null} onValueChange={chooseSpecies}><ComboboxInput placeholder={dex ? "Buscar especie..." : "Cargando Pokédex..."} disabled={!dex} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
-                <div className="grid gap-3 sm:grid-cols-2"><div className="grid gap-2"><Label htmlFor="builder-nickname">Apodo</Label><Input id="builder-nickname" value={selected.nickname} onChange={(event) => updateSelected({ ...selected, nickname: event.target.value })} className="border-white/10 bg-white/4" /></div><div className="grid gap-2"><Label htmlFor="builder-level">Nivel</Label><Input id="builder-level" type="number" min={1} max={100} value={selected.level} onChange={(event) => updateSelected({ ...selected, level: Math.min(100, Math.max(1, Number(event.target.value) || 50)) })} className="border-white/10 bg-white/4" /></div></div>
-                <div className="grid gap-2"><div className="flex items-center justify-between gap-3"><Label>Objeto</Label><span className="text-[9px] text-slate-600">{dex ? `${legalItems.length} disponibles` : "Cargando catálogo"}</span></div><Combobox items={legalItems} value={selected.item || null} onValueChange={(value) => updateSelected({ ...selected, item: value ?? "" })}><ComboboxInput placeholder={dex ? "Buscar objeto..." : "Cargando objetos..."} disabled={!dex} className={cn("w-full border-white/10 bg-white/4", selected.item && dex && !isItemLegal(dex, selected.item, format) && "border-rose-300/35 text-rose-200")} showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><p className="text-[9px] text-slate-600">Catálogo oficial del formato; puede dejarse sin objeto.</p></div>
-                <div className="grid gap-2"><Label>Habilidad</Label><Select value={selected.ability || "none"} disabled={!selectedSpecies} onValueChange={(value) => updateSelected({ ...selected, ability: value === "none" ? "" : value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue placeholder="Elige una habilidad" /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{selected.ability && !legalAbilities.includes(selected.ability) ? <SelectItem value={selected.ability} disabled>{selected.ability} · no disponible</SelectItem> : null}{legalAbilities.map((ability) => <SelectItem key={ability} value={ability}>{ability}</SelectItem>)}</SelectContent></Select><p className="text-[9px] text-slate-600">Solo habilidades ligadas a esta especie o forma.</p></div>
-                <div className="grid gap-2"><Label>Naturaleza</Label><Select value={selected.nature || "none"} onValueChange={(value) => updateSelected({ ...selected, nature: value === "none" ? "" : value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
-              </div>
-
-              <div className="space-y-4"><div><div className="flex items-center justify-between"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">{selected.species ? `${legalMoves.length} legales · 4 requeridos` : "Elige un Pokémon"}</span></div><div className="mt-2 space-y-2">{selected.moves.map((move, index) => { const legal = !move.name || legalMoves.some((name) => toId(name) === toId(move.name)); const selectedElsewhere = new Set(selected.moves.filter((_, moveIndex) => moveIndex !== index).map((entry) => toId(entry.name)).filter(Boolean)); const moveOptions = legalMoves.filter((name) => !selectedElsewhere.has(toId(name))); return <div key={index} className="grid grid-cols-[minmax(0,1fr)_78px] gap-2"><Combobox items={moveOptions} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput placeholder={`Movimiento ${index + 1}`} disabled={!selectedSpecies} className={cn("w-full border-white/10 bg-white/4", !legal && "border-rose-300/35 text-rose-200")} showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No forma parte de su learnset o ya está elegido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type}</TypeBadge> : <span className="text-[9px] font-bold text-slate-600">Status</span>}</div></div>; })}</div><p className="mt-2 text-[9px] text-slate-600">Tipo y categoría vienen de Showdown y no se pueden editar.</p></div>
-                <div className="rounded-2xl border border-white/7 bg-black/20 p-3"><p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.13em] text-slate-400"><Sparkles className="size-3 text-amber-300" />Mecánica especial</p>
-                  {mechanics.includes("tera") ? <div className="mt-3 grid gap-2"><Label>Tipo Tera</Label><Select value={selected.teraType ?? "none"} onValueChange={(value) => updateSelected({ ...selected, teraType: normalizeTeraType(value === "none" ? "" : value) })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{POKEMON_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent></Select></div> : null}
-                  {mechanics.includes("dynamax") ? <div className="mt-3 grid gap-3"><div className="grid gap-2"><Label>Dynamax Level</Label><Input type="number" min={0} max={10} value={selected.mechanics?.dynamaxLevel ?? 10} onChange={(event) => updateSelected({ ...selected, mechanics: { ...selected.mechanics, dynamaxLevel: Math.min(10, Math.max(0, Number(event.target.value) || 0)) } })} className="border-white/10 bg-white/4" /></div><label className="flex items-center justify-between rounded-xl border border-white/8 bg-white/3 px-3 py-2 text-xs"><span>Forma Gigantamax</span><Switch checked={selected.mechanics?.gigantamax ?? false} onCheckedChange={(checked) => updateSelected({ ...selected, mechanics: { ...selected.mechanics, gigantamax: checked } })} /></label></div> : null}
-                  {mechanics.includes("mega") ? <div className="mt-3 rounded-xl border border-amber-300/12 bg-amber-300/5 px-3 py-2 text-[10px] leading-4 text-amber-100/70"><strong className="text-amber-200">Mega Evolution:</strong> se determina por la especie/forma y la megapiedra guardada como objeto.</div> : null}
-                  {mechanics.includes("zmove") ? <div className="mt-3 rounded-xl border border-violet-300/12 bg-violet-300/5 px-3 py-2 text-[10px] leading-4 text-violet-100/70"><strong className="text-violet-200">Z-Move:</strong> se determina a partir del cristal Z y el movimiento compatible.</div> : null}
-                  {!mechanics.length ? <p className="mt-3 text-[10px] text-slate-600">Este formato no usa mecánicas especiales.</p> : null}
-                </div>
-              </div>
-
-              <div className="space-y-3 lg:col-span-2 2xl:col-span-1"><PokemonStatEditor pokemon={selected} format={format} baseStats={selectedSpecies?.baseStats ?? null} onChange={updateSelected} /></div>
-            </div>}
+              ) : (
+                <div role="status" className="flex h-full items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando calculadora…</div>
+              )}
+            </div>
           </div>
         </div>
       </div>

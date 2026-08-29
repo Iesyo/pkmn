@@ -106,7 +106,7 @@ export function VgcDashboard() {
   return (
     <Tabs value={activeView} onValueChange={setActiveView} className="vgc-app min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/7 bg-[#070b14]/88 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-[1920px] items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-none items-center justify-between gap-4 px-3 py-3 sm:px-4 lg:px-5">
           <div className="flex min-w-0 items-center gap-3">
             <div className="relative flex size-10 shrink-0 items-center justify-center rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/20 to-violet-400/15 shadow-[0_0_30px_rgba(34,211,238,0.12)]"><Flame className="size-5 text-cyan-200" /><span className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-[#070b14] bg-emerald-400" /></div>
             <div className="min-w-0"><p className="truncate text-sm font-black tracking-[-0.02em] text-white sm:text-base">Like No One Ever Was</p><p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-600">VGC Performance Lab</p></div>
@@ -126,7 +126,7 @@ export function VgcDashboard() {
         </div>
       </header>
 
-      <main className="relative mx-auto max-w-[1920px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <main className="relative mx-auto w-full max-w-none px-3 py-6 sm:px-4 lg:px-5 lg:py-8">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] bg-[radial-gradient(circle_at_18%_12%,rgba(34,211,238,0.10),transparent_34%),radial-gradient(circle_at_82%_8%,rgba(217,70,239,0.09),transparent_34%)]" />
         <div className="mb-4 flex flex-wrap justify-end gap-2 lg:hidden"><ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
 

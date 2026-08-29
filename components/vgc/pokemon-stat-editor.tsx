@@ -39,7 +39,7 @@ export function PokemonStatEditor({
   const total = Object.values(values).reduce((sum, value) => sum + value, 0);
   const showBoosts = boosts !== undefined && onBoostChange !== undefined;
   const gridColumns = showBoosts
-    ? "grid-cols-[28px_34px_minmax(48px,1fr)_44px_36px_48px] gap-x-1.5 sm:grid-cols-[30px_38px_minmax(90px,1fr)_46px_42px_54px] sm:gap-x-2"
+    ? "grid-cols-[28px_30px_minmax(64px,1fr)_42px_34px_46px] gap-x-1 sm:grid-cols-[30px_34px_minmax(120px,1fr)_44px_38px_48px] sm:gap-x-1.5"
     : "grid-cols-[28px_34px_minmax(70px,1fr)_50px_40px] gap-x-2 sm:grid-cols-[30px_38px_minmax(120px,1fr)_50px_42px]";
 
   function setAllocation(stat: EditableStat, requested: number) {

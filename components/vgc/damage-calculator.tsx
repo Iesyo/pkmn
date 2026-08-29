@@ -33,8 +33,8 @@ import {
   moveFromSnapshot,
   type ShowdownSnapshot,
 } from "@/lib/showdown-data";
-import { NATURES } from "@/lib/team-builder";
-import type { PokemonSet } from "@/lib/types";
+import { NATURES, normalizeTeraType } from "@/lib/team-builder";
+import { POKEMON_TYPES, type BattleMechanic, type PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PokemonStatEditor, type BoostableStat } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
@@ -43,6 +43,7 @@ type DamageCalculatorProps = {
   source: PokemonSet;
   format: string;
   dex: ShowdownSnapshot;
+  mechanics: BattleMechanic[];
   session?: DamageCalculatorSession;
   onSessionChange?: (session: DamageCalculatorSession) => void;
 };
@@ -81,12 +82,14 @@ function CalculatorPokemonPanel({
   onChange,
   format,
   dex,
+  mechanics,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
   onChange: (next: DamagePokemonDraft) => void;
   format: string;
   dex: ShowdownSnapshot;
+  mechanics: BattleMechanic[];
 }) {
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
@@ -157,6 +160,13 @@ function CalculatorPokemonPanel({
           <div className="grid gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
         </div>
 
+        {mechanics.includes("tera") || mechanics.includes("dynamax") ? (
+          <div className="grid gap-3 rounded-2xl border border-white/7 bg-black/15 p-3 sm:grid-cols-2">
+            {mechanics.includes("tera") ? <div className="grid gap-2"><Label>Tipo Tera</Label><Select value={set.teraType ?? "none"} onValueChange={(value) => updateSet({ ...set, teraType: normalizeTeraType(value === "none" ? "" : value) })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{POKEMON_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent></Select></div> : null}
+            {mechanics.includes("dynamax") ? <div className="grid gap-2"><Label>Dynamax Level</Label><Input type="number" min={0} max={10} value={set.mechanics?.dynamaxLevel ?? 10} onChange={(event) => updateSet({ ...set, mechanics: { ...set.mechanics, dynamaxLevel: clamp(Number(event.target.value) || 0, 0, 10) } })} className="border-white/10 bg-white/4" /><ToggleCard label="Forma Gigantamax" checked={set.mechanics?.gigantamax ?? false} onChange={(checked) => updateSet({ ...set, mechanics: { ...set.mechanics, gigantamax: checked } })} /></div> : null}
+          </div>
+        ) : null}
+
         <PokemonStatEditor
           pokemon={set}
           format={format}
@@ -195,8 +205,8 @@ function CalculatorPokemonPanel({
             <div className="grid gap-2"><Label>Nivel</Label><Input type="number" min={1} max={100} disabled={format === "champions"} value={format === "champions" ? 50 : set.level} onChange={(event) => updateSet({ ...set, level: clamp(Number(event.target.value) || 50, 1, 100) })} className="border-white/10 bg-white/4" /></div>
             <div className="grid gap-2"><Label>HP actual</Label><div className="relative"><Input type="number" min={1} max={100} value={draft.hpPercent} onChange={(event) => onChange({ ...draft, hpPercent: clamp(Number(event.target.value) || 1, 1, 100) })} className="border-white/10 bg-white/4 pr-8" /><span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">%</span></div></div>
             {set.teraType ? <ToggleCard label={`Tera ${set.teraType}`} checked={draft.teraActive} onChange={(checked) => onChange({ ...draft, teraActive: checked })} /> : null}
-            {format === "gen8" ? <ToggleCard label="Dynamax" checked={draft.dynamaxActive} onChange={(checked) => onChange({ ...draft, dynamaxActive: checked })} /> : null}
-            {format === "gen7" ? <ToggleCard label="Z-Move" checked={draft.zMoveActive} onChange={(checked) => onChange({ ...draft, zMoveActive: checked })} /> : null}
+            {mechanics.includes("dynamax") ? <ToggleCard label="Dynamax" checked={draft.dynamaxActive} onChange={(checked) => onChange({ ...draft, dynamaxActive: checked })} /> : null}
+            {mechanics.includes("zmove") ? <ToggleCard label="Z-Move" checked={draft.zMoveActive} onChange={(checked) => onChange({ ...draft, zMoveActive: checked })} /> : null}
           </div>
         </div>
       </div>
@@ -254,7 +264,7 @@ function createCalculatorSession(source: PokemonSet): DamageCalculatorSession {
   };
 }
 
-export function DamageCalculatorView({ source, format, dex, session: savedSession, onSessionChange }: DamageCalculatorProps) {
+export function DamageCalculatorView({ source, format, dex, mechanics, session: savedSession, onSessionChange }: DamageCalculatorProps) {
   const [localSession, setLocalSession] = useState(() => createCalculatorSession(source));
   const session = savedSession ?? localSession;
   const { left, right, field } = session;
@@ -281,10 +291,10 @@ export function DamageCalculatorView({ source, format, dex, session: savedSessio
 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_210px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} />
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />

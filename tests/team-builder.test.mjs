@@ -88,7 +88,7 @@ test("filters held items by the selected Showdown format", async () => {
   assert.equal(isItemLegal(snapshot, "", "champions"), true);
 });
 
-test("starts a fresh Team Builder in Champions with fixed Pokémon cards", async () => {
+test("starts a wide calculator-only Team Builder in Champions with fixed Pokémon cards", async () => {
   const { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS } = await vite.ssrLoadModule("/lib/team-builder.ts");
   const [dashboardSource, builderSource] = await Promise.all([
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
@@ -100,6 +100,9 @@ test("starts a fresh Team Builder in Champions with fixed Pokémon cards", async
   assert.match(dashboardSource, /const \[builderVersionId, setBuilderVersionId\] = useState\(""\)/);
   assert.match(dashboardSource, /initialVersion=\{versions\.find\(\(version\) => version\.id === builderVersionId\)\}/);
   assert.doesNotMatch(dashboardSource, /initialVersion=.*\?\? left/);
+  assert.match(dashboardSource, /w-full max-w-none/);
+  assert.match(builderSource, /xl:grid-cols-\[270px_minmax\(0,1fr\)\]/);
+  assert.match(builderSource, /data-team-calculator/);
   assert.match(builderSource, /h-40 min-w-0 overflow-hidden/);
   assert.doesNotMatch(builderSource, /group min-h-40/);
   assert.match(builderSource, /w-full min-w-0 truncate text-sm font-black/);
