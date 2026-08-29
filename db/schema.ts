@@ -77,6 +77,76 @@ export const pokemonSets = sqliteTable(
   ],
 );
 
+export const pokemonLibraryEntries = sqliteTable(
+  "pokemon_library_entries",
+  {
+    id: text("id").primaryKey(),
+    species: text("species").notNull(),
+    speciesKey: text("species_key").notNull(),
+    format: text("format").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("pokemon_library_entries_species_format_idx").on(
+      table.speciesKey,
+      table.format,
+    ),
+    index("pokemon_library_entries_species_idx").on(table.speciesKey),
+  ],
+);
+
+export const pokemonLibraryVersions = sqliteTable(
+  "pokemon_library_versions",
+  {
+    id: text("id").primaryKey(),
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => pokemonLibraryEntries.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    setHash: text("set_hash").notNull(),
+    paste: text("paste").notNull(),
+    setJson: text("set_json").notNull(),
+    sourceTeamVersionId: text("source_team_version_id").references(
+      () => teamVersions.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("pokemon_library_versions_entry_version_idx").on(
+      table.entryId,
+      table.versionNumber,
+    ),
+    uniqueIndex("pokemon_library_versions_entry_hash_idx").on(
+      table.entryId,
+      table.setHash,
+    ),
+    index("pokemon_library_versions_entry_idx").on(table.entryId),
+  ],
+);
+
+export const pokemonLibraryUsages = sqliteTable(
+  "pokemon_library_usages",
+  {
+    id: text("id").primaryKey(),
+    libraryVersionId: text("library_version_id")
+      .notNull()
+      .references(() => pokemonLibraryVersions.id, { onDelete: "cascade" }),
+    teamVersionId: text("team_version_id")
+      .notNull()
+      .references(() => teamVersions.id, { onDelete: "cascade" }),
+    slot: integer("slot").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("pokemon_library_usages_team_slot_idx").on(
+      table.teamVersionId,
+      table.slot,
+    ),
+    index("pokemon_library_usages_version_idx").on(table.libraryVersionId),
+  ],
+);
+
 export const matches = sqliteTable(
   "matches",
   {
