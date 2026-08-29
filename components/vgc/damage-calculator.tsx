@@ -164,15 +164,15 @@ function CalculatorPokemonPanel({
       </div>
 
       <div className="mt-4 space-y-4">
-        <div className={cn("grid gap-3", side === "left" && "sm:grid-cols-[minmax(0,1fr)_160px]")}>
-          <div className="grid gap-2">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid min-w-0 gap-2">
             <Label>Pokémon</Label>
             <Combobox items={speciesOptions} value={set.species || null} onValueChange={chooseSpecies}>
-              <ComboboxInput placeholder="Buscar especie..." className="w-full border-white/10 bg-white/4" />
+              <ComboboxInput placeholder="Buscar especie..." className="w-full min-w-0 border-white/10 bg-white/4" />
               <ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent>
             </Combobox>
           </div>
-          {side === "left" ? <PokemonLibraryVersionSelect species={set.species} format={format} onLoad={(librarySet) => chooseLibraryVersion(librarySet)} /> : null}
+          <PokemonLibraryVersionSelect species={set.species} format={format} onLoad={(librarySet) => chooseLibraryVersion(librarySet)} />
         </div>
 
         <div className="grid gap-2"><Label>Objeto</Label><Combobox items={legalItems} value={set.item || null} onValueChange={(value) => updateSet({ ...set, item: value ?? "" })}><ComboboxInput placeholder="Buscar objeto..." className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
