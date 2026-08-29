@@ -1,4 +1,4 @@
-import { calculate, Field, Move, Pokemon, type GenerationNum, type State } from "@smogon/calc";
+import { calculate, Field, MEGA_STONES, Move, Pokemon, type GenerationNum, type State } from "@smogon/calc";
 
 import { parseEvs } from "./team-builder";
 import type { PokemonSet } from "./types";
@@ -15,6 +15,7 @@ export interface DamagePokemonDraft {
   hpPercent: number;
   status: DamageStatus;
   teraActive: boolean;
+  megaActive: boolean;
   dynamaxActive: boolean;
   zMoveActive: boolean;
   critical: boolean;
@@ -84,6 +85,7 @@ export function createDamageDraft(set: PokemonSet): DamagePokemonDraft {
     hpPercent: 100,
     status: "",
     teraActive: false,
+    megaActive: false,
     dynamaxActive: false,
     zMoveActive: false,
     critical: false,
@@ -94,6 +96,43 @@ export function generationForFormat(format: string): GenerationNum {
   if (format === "champions") return 0;
   const parsed = Number(format.match(/^gen([6-9])$/)?.[1] ?? 9);
   return parsed as GenerationNum;
+}
+
+function knowsDragonAscent(set: PokemonSet) {
+  return set.moves.some((move) => move.name === "Dragon Ascent");
+}
+
+export function getMegaForm(set: PokemonSet): string | null {
+  if (!set.species) return null;
+  if (set.species === "Rayquaza") {
+    return knowsDragonAscent(set) ? "Rayquaza-Mega" : null;
+  }
+  if (!set.item) return null;
+  return MEGA_STONES[set.item]?.[set.species] ?? null;
+}
+
+export function canMegaEvolve(set: PokemonSet) {
+  return Boolean(getMegaForm(set));
+}
+
+export function resolveBattleSpeciesName(
+  format: string,
+  draft: DamagePokemonDraft,
+  moveName?: string,
+) {
+  const generation = generationForFormat(format);
+  const set = draft.set;
+  const megaForm = getMegaForm(set);
+  if (draft.megaActive && megaForm) return megaForm;
+
+  if (format === "champions" && set.species === "Aegislash") {
+    return moveName ? "Aegislash-Blade" : "Aegislash-Shield";
+  }
+
+  const stoneEquipped = Boolean(set.item && MEGA_STONES[set.item]?.[set.species]);
+  const itemForForme = stoneEquipped ? undefined : set.item || undefined;
+  const moveForForme = set.species === "Rayquaza" ? undefined : moveName;
+  return Pokemon.getForme(generation, set.species, itemForForme, moveForForme);
 }
 
 function allocationsFor(set: PokemonSet) {
@@ -139,13 +178,11 @@ function createPokemon(
 ) {
   const generation = generationForFormat(format);
   const set = draft.set;
-  const speciesName = format === "champions" && set.species === "Aegislash"
-    ? (moveName ? "Aegislash-Blade" : "Aegislash-Shield")
-    : set.species;
-  const species = Pokemon.getForme(generation, speciesName, set.item || undefined, moveName);
+  const speciesName = resolveBattleSpeciesName(format, draft, moveName);
+  const transformed = speciesName !== set.species;
   const options = {
     level: format === "champions" ? 50 : set.level || 50,
-    ability: set.ability || undefined,
+    ability: transformed ? undefined : set.ability || undefined,
     item: set.item || undefined,
     nature: set.nature || "Serious",
     evs: allocationsFor(set),
@@ -157,9 +194,9 @@ function createPokemon(
       : false,
     dynamaxLevel: set.mechanics?.dynamaxLevel ?? 10,
   };
-  const fullHealth = new Pokemon(generation, species, options);
+  const fullHealth = new Pokemon(generation, speciesName, options);
   if (draft.hpPercent >= 100) return fullHealth;
-  return new Pokemon(generation, species, {
+  return new Pokemon(generation, speciesName, {
     ...options,
     curHP: Math.max(1, Math.floor(fullHealth.maxHP() * draft.hpPercent / 100)),
   });
