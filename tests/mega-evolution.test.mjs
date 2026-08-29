@@ -76,6 +76,30 @@ test("Mega Stone mapping distinguishes split Mega forms", async () => {
   assert.equal(getMegaForm({ ...charizard, item: "Venusaurite" }), null);
 });
 
+test("vendored engine exposes representative Legends ZA Mega mappings", async () => {
+  const { getMegaForm } = await damageModule();
+  const { emptyPokemon } = await teamBuilderModule();
+
+  const setFor = (species, item) => configureSet(emptyPokemon(1), {
+    species,
+    ability: "",
+    item,
+    nature: "Serious",
+    evs: "",
+    moves: ["Protect", "Protect", "Protect", "Protect"],
+  });
+
+  assert.equal(getMegaForm(setFor("Dragonite", "Dragoninite")), "Dragonite-Mega");
+  assert.equal(getMegaForm(setFor("Greninja", "Greninjite")), "Greninja-Mega");
+  assert.equal(getMegaForm(setFor("Malamar", "Malamarite")), "Malamar-Mega");
+  assert.equal(getMegaForm(setFor("Raichu", "Raichunite X")), "Raichu-Mega-X");
+  assert.equal(getMegaForm(setFor("Raichu", "Raichunite Y")), "Raichu-Mega-Y");
+  assert.equal(getMegaForm(setFor("Baxcalibur", "Baxcalibrite")), "Baxcalibur-Mega");
+  assert.equal(getMegaForm(setFor("Zeraora", "Zeraorite")), "Zeraora-Mega");
+  assert.equal(getMegaForm(setFor("Lucario", "Lucarionite Z")), "Lucario-Mega-Z");
+  assert.equal(getMegaForm(setFor("Garchomp", "Garchompite Z")), "Garchomp-Mega-Z");
+});
+
 test("Rayquaza is the no-stone exception and requires Dragon Ascent", async () => {
   const { createDamageDraft, getMegaForm, resolveBattleSpeciesName } = await damageModule();
   const { emptyPokemon } = await teamBuilderModule();
