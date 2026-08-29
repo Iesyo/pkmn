@@ -169,7 +169,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const selected = pokemon[selectedSlot];
-  const proSessionKey = `${selected.id}:${selected.species}:${format}`;
+  const proSessionKey = `${selected.id}:${format}`;
   const storedVersions = groups.filter((team) => !team.versions[0]?.demo).flatMap((team) => team.versions);
   const paste = useMemo(() => serializeShowdownPaste(pokemon, mechanics), [pokemon, mechanics]);
   const complete = isCompleteTeam(pokemon);
@@ -329,7 +329,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
         <div className="min-w-0 space-y-4">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 2xl:grid-cols-6">{pokemon.map((set, index) => <SlotCard key={set.id} pokemon={set} selected={index === selectedSlot} onClick={() => setSelectedSlot(index)} />)}</div>
           <div className="overflow-hidden rounded-[26px] border border-white/8 bg-[#0b1220]/92 shadow-[0_28px_90px_rgba(0,0,0,0.30)]">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5"><div className="flex items-center gap-3">{selected.species ? <Image src={getSpriteUrl(selected.species)} alt={selected.species} width={60} height={60} unoptimized className="size-12 object-contain" /> : <div className="flex size-12 items-center justify-center rounded-xl bg-white/4"><WandSparkles className="size-5 text-slate-600" /></div>}<div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-black text-white">{selected.species || "Nuevo Pokémon"}</h2>{proMode ? <Badge className="border-cyan-300/20 bg-cyan-300/8 text-[8px] uppercase tracking-[0.12em] text-cyan-200">Modo Pro</Badge> : null}</div><div className="mt-1.5 flex flex-wrap items-center gap-1">{selected.types.map((type) => <TypeBadge key={type} type={type} className="text-[8px]">{type}</TypeBadge>)}{selected.species ? <span className="ml-1 text-[9px] text-slate-600">Tipos oficiales · solo lectura</span> : <span className="text-[10px] text-slate-600">Elige una especie para empezar.</span>}</div></div></div><Button type="button" variant="outline" size="icon" disabled={!selected.species || !dex} onClick={() => setProMode((current) => !current)} aria-pressed={proMode} aria-label={proMode ? "Volver al modo normal" : `Abrir modo Pro para ${selected.species || "este Pokémon"}`} title={proMode ? "Volver al modo normal" : "Abrir modo Pro"} className={cn("size-11 shrink-0 rounded-2xl border-cyan-300/20 bg-cyan-300/7 text-cyan-200 shadow-[0_0_24px_rgba(103,232,249,0.08)] hover:border-cyan-300/40 hover:bg-cyan-300/12", proMode && "border-cyan-200/40 bg-cyan-300/14")}>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-4 py-3 sm:px-5"><div className="flex items-center gap-3">{selected.species ? <Image src={getSpriteUrl(selected.species)} alt={selected.species} width={60} height={60} unoptimized className="size-12 object-contain" /> : <div className="flex size-12 items-center justify-center rounded-xl bg-white/4"><WandSparkles className="size-5 text-slate-600" /></div>}<div><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-black text-white">{selected.species || "Nuevo Pokémon"}</h2>{proMode ? <Badge className="border-cyan-300/20 bg-cyan-300/8 text-[8px] uppercase tracking-[0.12em] text-cyan-200">Modo Pro</Badge> : null}</div><div className="mt-1.5 flex flex-wrap items-center gap-1">{selected.types.map((type) => <TypeBadge key={type} type={type} className="text-[8px]">{type}</TypeBadge>)}{selected.species ? <span className="ml-1 text-[9px] text-slate-600">Tipos oficiales · solo lectura</span> : <span className="text-[10px] text-slate-600">Puedes empezar aquí o directamente en Modo Pro.</span>}</div></div></div><Button type="button" variant="outline" size="icon" disabled={!dex} onClick={() => setProMode((current) => !current)} aria-pressed={proMode} aria-label={proMode ? "Volver al modo normal" : `Abrir modo Pro para ${selected.species || "este Pokémon"}`} title={proMode ? "Volver al modo normal" : "Abrir modo Pro"} className={cn("size-11 shrink-0 rounded-2xl border-cyan-300/20 bg-cyan-300/7 text-cyan-200 shadow-[0_0_24px_rgba(103,232,249,0.08)] hover:border-cyan-300/40 hover:bg-cyan-300/12", proMode && "border-cyan-200/40 bg-cyan-300/14")}>
               {proMode ? <ArrowLeft className="size-5" /> : <Calculator className="size-5" />}
             </Button></div>
             {proMode && dex ? (
@@ -340,7 +340,15 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
                   format={format}
                   dex={dex}
                   session={proSessions[proSessionKey]}
-                  onSessionChange={(nextSession) => setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }))}
+                  onSessionChange={(nextSession) => {
+                    setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }));
+                    setPokemon((current) => current.map((set, index) => index === selectedSlot ? {
+                      ...nextSession.left.set,
+                      id: set.id,
+                      slot: set.slot,
+                    } : set));
+                    setMessage("");
+                  }}
                 />
               </Suspense>
             ) : <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-[1.05fr_1fr_1fr]">

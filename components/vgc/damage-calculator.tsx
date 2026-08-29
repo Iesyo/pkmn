@@ -234,10 +234,10 @@ function FieldPanel({ value, onChange }: { value: DamageFieldState; onChange: (n
 
 function OutcomeList({ title, attacker, defender, outcomes }: { title: string; attacker: string; defender: string; outcomes: DamageOutcome[] }) {
   return (
-    <section className="rounded-[22px] border border-white/8 bg-black/20 p-3">
+    <section className="w-full min-w-0 rounded-[22px] border border-white/8 bg-black/20 p-3">
       <div className="flex items-center justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-300/70">{title}</p><p className="mt-1 text-xs font-bold text-slate-300">{attacker || "Atacante"} <span className="text-slate-600">→</span> {defender || "Defensor"}</p></div><Crosshair className="size-4 text-rose-300" /></div>
-      <div className="mt-3 grid min-h-28 gap-2 md:grid-cols-2 xl:grid-cols-4">
-        {outcomes.length ? outcomes.map((outcome) => <article key={outcome.move} className={cn("rounded-2xl border bg-white/[0.025] p-3", outcome.error ? "border-rose-300/20" : "border-white/7")}><div className="flex items-start justify-between gap-2"><p className="truncate text-xs font-black text-white">{outcome.move}</p><Swords className="size-3.5 shrink-0 text-amber-300" /></div><p className="mt-3 text-xl font-black tabular-nums text-cyan-200">{outcome.minPercent}–{outcome.maxPercent}%</p><p className="mt-1 text-[10px] font-bold tabular-nums text-slate-400">{outcome.min}–{outcome.max} HP</p><p className="mt-2 min-h-8 text-[9px] leading-4 text-emerald-300/80">{outcome.koChance}</p><p className="mt-2 line-clamp-3 text-[8px] leading-3.5 text-slate-600">{outcome.description}</p>{outcome.rolls.length ? <p className="mt-2 truncate font-mono text-[8px] text-slate-700">Rolls: {outcome.rolls.join(", ")}</p> : null}{outcome.error ? <p className="mt-2 text-[8px] text-rose-300">{outcome.error}</p> : null}</article>) : <div className="col-span-full rounded-2xl border border-dashed border-white/8 px-4 py-6 text-center text-xs text-slate-600">Elige al menos un movimiento para ver daño.</div>}
+      <div className="mt-3 grid min-h-64 gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {outcomes.length ? outcomes.map((outcome) => <article key={outcome.move} className={cn("min-w-0 rounded-2xl border bg-white/[0.025] p-3", outcome.error ? "border-rose-300/20" : "border-white/7")}><div className="flex items-start justify-between gap-2"><p className="truncate text-xs font-black text-white">{outcome.move}</p><Swords className="size-3.5 shrink-0 text-amber-300" /></div><p className="mt-3 text-xl font-black tabular-nums text-cyan-200">{outcome.minPercent}–{outcome.maxPercent}%</p><p className="mt-1 text-[10px] font-bold tabular-nums text-slate-400">{outcome.min}–{outcome.max} HP</p><p className="mt-2 min-h-8 text-[9px] leading-4 text-emerald-300/80">{outcome.koChance}</p><p className="mt-2 line-clamp-3 text-[8px] leading-3.5 text-slate-600">{outcome.description}</p>{outcome.rolls.length ? <p className="mt-2 truncate font-mono text-[8px] text-slate-700">Rolls: {outcome.rolls.join(", ")}</p> : null}{outcome.error ? <p className="mt-2 text-[8px] text-rose-300">{outcome.error}</p> : null}</article>) : <div className="col-span-full flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-white/8 px-4 py-6 text-center text-xs text-slate-600">Elige al menos un movimiento para ver daño.</div>}
       </div>
     </section>
   );
@@ -277,7 +277,7 @@ export function DamageCalculatorView({ source, format, dex, session: savedSessio
   const rightOutcomes = useMemo(() => calculateMoves(format, right, left, field, true), [format, left, right, field]);
 
   return (
-    <div className="space-y-4 p-4 text-slate-100 sm:p-5">
+    <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_210px_minmax(0,1fr)]">
         <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>

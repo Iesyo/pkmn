@@ -139,7 +139,10 @@ function createPokemon(
 ) {
   const generation = generationForFormat(format);
   const set = draft.set;
-  const species = Pokemon.getForme(generation, set.species, set.item || undefined, moveName);
+  const speciesName = format === "champions" && set.species === "Aegislash"
+    ? (moveName ? "Aegislash-Blade" : "Aegislash-Shield")
+    : set.species;
+  const species = Pokemon.getForme(generation, speciesName, set.item || undefined, moveName);
   const options = {
     level: format === "champions" ? 50 : set.level || 50,
     ability: set.ability || undefined,
@@ -225,7 +228,7 @@ export function calculateDamage(
       description: result.fullDesc("%", false),
       rolls: summarizeRolls(result.damage, range),
     };
-  } catch (caught) {
+  } catch {
     return {
       move: moveName,
       min: 0,
@@ -235,7 +238,7 @@ export function calculateDamage(
       koChance: "No calculable",
       description: "No fue posible calcular este cruce con la configuración actual.",
       rolls: [],
-      error: caught instanceof Error ? caught.message : "Error de cálculo",
+      error: "Esta combinación todavía no es compatible con el motor de cálculo.",
     };
   }
 }

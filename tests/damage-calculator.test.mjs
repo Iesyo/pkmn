@@ -108,6 +108,35 @@ test("calculates a Champions damage range with Stat Points", async () => {
   assert.ok(outcome.rolls.length > 1);
 });
 
+test("maps base Aegislash to its attacking and defending Champions stances", async () => {
+  const { calculateDamage, createDamageDraft, defaultDamageField } = await damageModule();
+  const { emptyPokemon } = await teamBuilderModule();
+  const aegislash = configureSet(emptyPokemon(1), {
+    species: "Aegislash",
+    ability: "Stance Change",
+    item: "",
+    nature: "Serious",
+    evs: "",
+    moves: ["Brick Break", "Sacred Sword", "Shadow Sneak", "King's Shield"],
+  });
+  const aerodactyl = configureSet(emptyPokemon(2), {
+    species: "Aerodactyl",
+    ability: "Rock Head",
+    item: "",
+    nature: "Serious",
+    evs: "",
+    moves: ["Rock Slide", "Earthquake", "Crunch", "Protect"],
+  });
+
+  const outgoing = calculateDamage("champions", createDamageDraft(aegislash), createDamageDraft(aerodactyl), "Brick Break", defaultDamageField());
+  const incoming = calculateDamage("champions", createDamageDraft(aerodactyl), createDamageDraft(aegislash), "Crunch", defaultDamageField(), true);
+
+  assert.equal(outgoing.error, undefined);
+  assert.equal(incoming.error, undefined);
+  assert.ok(outgoing.max > 0);
+  assert.ok(incoming.max > 0);
+});
+
 test("reverses side conditions when calculating incoming damage", async () => {
   const { calculateDamage, createDamageDraft, defaultDamageField } = await damageModule();
   const { emptyPokemon } = await teamBuilderModule();
@@ -167,13 +196,17 @@ test("keeps Pro drafts per Pokémon and prevents result-driven layout shifts", a
   ]);
 
   assert.match(builderSource, /proSessions/);
+  assert.match(builderSource, /const proSessionKey = `\$\{selected\.id\}:\$\{format\}`/);
   assert.match(builderSource, /session=\{proSessions\[proSessionKey\]\}/);
   assert.match(builderSource, /onSessionChange=/);
+  assert.match(builderSource, /\.\.\.nextSession\.left\.set/);
+  assert.match(builderSource, /disabled=\{!dex\}/);
   assert.match(calculatorSource, /export type DamageCalculatorSession/);
   assert.doesNotMatch(calculatorSource, /Modo Pro · Calculadora de daño/);
   assert.doesNotMatch(calculatorSource, /Vista integrada/);
   assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
   assert.ok(calculatorSource.lastIndexOf("<OutcomeList") < calculatorSource.lastIndexOf("Motor oficial de Pokémon Showdown"));
+  assert.match(calculatorSource, /grid min-h-64/);
   assert.ok(calculatorSource.indexOf("<Label>Estado</Label>") < calculatorSource.indexOf("<Label>Nivel</Label>"));
   assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
 });
