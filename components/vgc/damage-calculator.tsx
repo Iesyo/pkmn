@@ -6,7 +6,6 @@ import { ArrowLeftRight, Calculator, Crosshair, ShieldCheck, Sparkles, Swords, Z
 
 import { Badge } from "@/components/ui/badge";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -40,8 +39,6 @@ import { cn } from "@/lib/utils";
 import { TypeBadge } from "./type-badge";
 
 type DamageCalculatorProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   source: PokemonSet;
   format: string;
   dex: ShowdownSnapshot;
@@ -244,7 +241,7 @@ function OutcomeList({ title, attacker, defender, outcomes }: { title: string; a
   );
 }
 
-export function DamageCalculatorDialog({ open, onOpenChange, source, format, dex }: DamageCalculatorProps) {
+export function DamageCalculatorView({ source, format, dex }: DamageCalculatorProps) {
   const [left, setLeft] = useState(() => createDamageDraft(source));
   const [right, setRight] = useState(() => createDamageDraft(source));
   const [field, setField] = useState(defaultDamageField);
@@ -253,22 +250,22 @@ export function DamageCalculatorDialog({ open, onOpenChange, source, format, dex
   const rightOutcomes = useMemo(() => calculateMoves(format, right, left, field, true), [format, left, right, field]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[96vh] overflow-y-auto border-white/10 bg-[#070d18] p-0 text-slate-100 sm:max-w-[96vw] 2xl:max-w-[1540px]">
-        <div className="sticky top-0 z-20 border-b border-white/8 bg-[#070d18]/95 px-4 py-4 backdrop-blur-xl sm:px-6">
-          <DialogHeader className="text-left"><DialogTitle className="flex items-center gap-2 text-lg"><span className="flex size-9 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-300/8"><Calculator className="size-4 text-cyan-200" /></span>Calculadora de daño</DialogTitle><DialogDescription className="text-slate-500">Ajusta ambos Pokémon y el campo sin modificar el Team que estás construyendo.</DialogDescription></DialogHeader>
+    <div className="space-y-4 p-4 text-slate-100 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-300/12 bg-cyan-300/5 px-4 py-3">
+        <div>
+          <p className="flex items-center gap-2 text-sm font-black text-white"><span className="flex size-8 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-300/8"><Calculator className="size-4 text-cyan-200" /></span>Modo Pro · Calculadora de daño</p>
+          <p className="mt-1 text-[10px] text-slate-500">Ajusta ambos Pokémon y el campo sin modificar el Team que estás construyendo.</p>
         </div>
-        <div className="space-y-4 p-4 sm:p-6">
-          <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · los resultados se recalculan localmente con cada cambio.</div>
-          <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
-          <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
-          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_210px_minmax(0,1fr)]">
-            <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} />
-            <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-            <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} />
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+        <span className="rounded-full border border-cyan-300/15 bg-black/20 px-3 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-cyan-200">Vista integrada</span>
+      </div>
+      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · los resultados se recalculan localmente con cada cambio.</div>
+      <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
+      <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_210px_minmax(0,1fr)]">
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} />
+        <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} />
+      </div>
+    </div>
   );
 }

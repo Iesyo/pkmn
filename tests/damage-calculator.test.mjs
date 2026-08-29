@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -134,4 +135,17 @@ test("reverses side conditions when calculating incoming damage", async () => {
   assert.equal(unguarded.error, undefined);
   assert.equal(guarded.error, undefined);
   assert.ok(guarded.max < unguarded.max);
+});
+
+test("renders the calculator as an inline Pro mode instead of a floating dialog", async () => {
+  const [builderSource, calculatorSource] = await Promise.all([
+    readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(builderSource, /proMode/);
+  assert.match(builderSource, /DamageCalculatorView/);
+  assert.match(builderSource, /Volver al modo normal/);
+  assert.doesNotMatch(builderSource, /DamageCalculatorDialog/);
+  assert.doesNotMatch(calculatorSource, /components\/ui\/dialog/);
 });
