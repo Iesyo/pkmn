@@ -58,3 +58,4 @@ class Match:
     rating: int | None
     notes: str
     played_at: str
+    moves_used: dict[str, tuple[str, ...]] | None = None

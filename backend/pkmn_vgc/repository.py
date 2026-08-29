@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .models import MatchResult, PokemonSet, TeamVersion
@@ -41,6 +41,13 @@ class Repository:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self.connect() as connection:
             connection.executescript(schema)
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(matches)").fetchall()
+            }
+            if "moves_used_json" not in columns:
+                with connection:
+                    connection.execute("ALTER TABLE matches ADD COLUMN moves_used_json TEXT")
 
     def get_showdown_names(self) -> list[str]:
         with self.connect() as connection:
@@ -165,6 +172,7 @@ class Repository:
         selected: Sequence[str] = (),
         opponent_selected: Sequence[str] = (),
         lead: Sequence[str] = (),
+        moves_used: Mapping[str, Sequence[str]] | None = None,
         rating: int | None = None,
         notes: str = "",
         played_at: str | None = None,
@@ -182,6 +190,17 @@ class Repository:
 
         match_id = str(uuid4())
         timestamp = played_at or _now()
+        normalized_moves_used = (
+            {
+                species.strip()[:80]: list(
+                    dict.fromkeys(move.strip() for move in moves if move.strip())
+                )[:24]
+                for species, moves in list(moves_used.items())[:6]
+                if species.strip()
+            }
+            if moves_used is not None
+            else None
+        )
         with self.connect() as connection:
             version = connection.execute(
                 "SELECT id FROM team_versions WHERE id = ?", (team_version_id,)
@@ -193,8 +212,8 @@ class Repository:
                     """INSERT INTO matches (
                         id, team_version_id, result, opponent_name, opponent_paste,
                         replay_url, selected_json, opponent_selected_json, lead_json,
-                        rating, notes, played_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        moves_used_json, rating, notes, played_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         match_id,
                         team_version_id,
@@ -205,6 +224,7 @@ class Repository:
                         json.dumps(list(selected)),
                         json.dumps(list(opponent_selected)),
                         json.dumps(list(lead)),
+                        json.dumps(normalized_moves_used) if normalized_moves_used is not None else None,
                         rating,
                         notes.strip(),
                         timestamp,

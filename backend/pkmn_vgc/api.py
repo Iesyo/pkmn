@@ -58,6 +58,7 @@ class MatchBody(BaseModel):
     selected: list[str] = Field(default_factory=list, max_length=4)
     opponent_selected: list[str] = Field(default_factory=list, max_length=6)
     lead: list[str] = Field(default_factory=list, max_length=2)
+    moves_used: dict[str, list[str]] | None = None
     rating: int | None = None
     notes: str = ""
     played_at: str | None = None
@@ -127,6 +128,7 @@ def create_match(body: MatchBody) -> dict[str, object]:
                 selected=body.selected,
                 opponent_selected=body.opponent_selected,
                 lead=body.lead,
+                moves_used=body.moves_used,
                 rating=body.rating,
                 notes=body.notes,
                 played_at=body.played_at,

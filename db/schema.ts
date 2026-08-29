@@ -93,6 +93,7 @@ export const matches = sqliteTable(
       .notNull()
       .default("[]"),
     leadJson: text("lead_json").notNull().default("[]"),
+    movesUsedJson: text("moves_used_json"),
     rating: integer("rating"),
     notes: text("notes").notNull().default(""),
     playedAt: text("played_at").notNull(),

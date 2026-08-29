@@ -1,4 +1,4 @@
-import { getConditionalEffect } from "./pokemon-data";
+import { getConditionalEffect, toId } from "./pokemon-data";
 import { effectiveness, POKEMON_TYPES } from "./type-chart";
 import type {
   LeadStat,
@@ -26,11 +26,21 @@ export function decoratePokemonPerformance(
   return pokemon.map((set) => {
     const selected = matches.filter((match) => match.selected.includes(set.species));
     const led = matches.filter((match) => match.lead.includes(set.species));
+    const trackedMoves = selected.flatMap((match) => {
+      if (!match.movesUsed) return [];
+      const entry = Object.entries(match.movesUsed).find(([species]) => toId(species) === toId(set.species));
+      return entry ? [entry[1]] : [];
+    });
     return {
       ...set,
       moves: set.moves.map((move) => ({
         ...move,
-        usage: selected.length ? Math.round(1000 / set.moves.length) / 10 : 0,
+        usage: trackedMoves.length
+          ? winRate(
+              trackedMoves.filter((moves) => moves.some((usedMove) => toId(usedMove) === toId(move.name))).length,
+              trackedMoves.length,
+            )
+          : null,
       })),
       performance: {
         games: selected.length,

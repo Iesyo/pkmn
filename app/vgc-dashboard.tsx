@@ -59,6 +59,18 @@ export function VgcDashboard() {
         setStoredGroups(teams);
         setShowdownNames(savedNames);
         setConnection("ready");
+        void fetch("/api/replays/backfill", { method: "POST" })
+          .then(async (response) => {
+            const payload = (await response.json()) as { updated?: number };
+            if (!response.ok || !payload.updated) return null;
+            const teamsResponse = await fetch("/api/teams", { cache: "no-store" });
+            if (!teamsResponse.ok) return null;
+            return (await teamsResponse.json()) as { teams?: TeamGroup[] };
+          })
+          .then((payload) => {
+            if (active && payload) setStoredGroups(payload.teams ?? []);
+          })
+          .catch(() => undefined);
       })
       .catch(() => {
         if (active) setConnection("demo");

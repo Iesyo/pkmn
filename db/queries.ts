@@ -60,6 +60,7 @@ interface MatchRow {
   selected_json: string;
   opponent_selected_json: string;
   lead_json: string;
+  moves_used_json: string | null;
   rating: number | null;
   notes: string;
   played_at: string;
@@ -105,6 +106,24 @@ function parseArray<T>(value: string, fallback: T[] = []) {
     return Array.isArray(parsed) ? (parsed as T[]) : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function parseMovesUsed(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .filter(([species, moves]) => species.trim() && Array.isArray(moves))
+        .map(([species, moves]) => [
+          species.trim(),
+          [...new Set((moves as unknown[]).filter((move): move is string => typeof move === "string").map((move) => move.trim()).filter(Boolean))],
+        ]),
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -155,6 +174,7 @@ function toMatch(row: MatchRow): MatchRecord {
     selected: parseArray<string>(row.selected_json),
     opponentSelected: parseArray<string>(row.opponent_selected_json),
     lead: parseArray<string>(row.lead_json),
+    movesUsed: parseMovesUsed(row.moves_used_json),
     rating: row.rating,
     notes: row.notes,
     playedAt: row.played_at,
@@ -238,7 +258,7 @@ export async function listTeamGroups(): Promise<TeamGroup[]> {
     db.prepare("SELECT id, name, created_at, updated_at FROM teams ORDER BY updated_at DESC, name ASC").all<TeamRow>(),
     db.prepare("SELECT id, team_id, version_number, minor_version, format, mechanics_json, paste, paste_hash, created_at FROM team_versions ORDER BY team_id, version_number DESC, minor_version DESC").all<VersionRow>(),
     db.prepare("SELECT id, team_version_id, slot, nickname, species, item, ability, level, tera_type, mechanics_json, evs, nature, moves_json, types_json FROM pokemon_sets ORDER BY team_version_id, slot").all<PokemonRow>(),
-    db.prepare("SELECT id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, rating, notes, played_at FROM matches ORDER BY played_at DESC").all<MatchRow>(),
+    db.prepare("SELECT id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at FROM matches ORDER BY played_at DESC").all<MatchRow>(),
   ]);
 
   return teamResult.results.map((team) => ({
@@ -375,6 +395,7 @@ export interface CreateMatchInput {
   selected?: string[];
   opponentSelected?: string[];
   lead?: string[];
+  movesUsed?: Record<string, string[]> | null;
   rating?: number | null;
   notes?: string;
   playedAt?: string;
@@ -393,6 +414,17 @@ export async function createMatch(input: CreateMatchInput) {
   if ((input.opponentSelected?.length ?? 0) > 6) {
     throw new DomainError("El equipo rival puede contener como máximo 6 Pokémon.");
   }
+  const movesUsed = input.movesUsed
+    ? Object.fromEntries(
+        Object.entries(input.movesUsed)
+          .slice(0, 6)
+          .map(([species, moves]) => [
+            species.trim().slice(0, 80),
+            [...new Set(moves.map((move) => move.trim()).filter(Boolean))].slice(0, 24),
+          ])
+          .filter(([species]) => species),
+      )
+    : null;
 
   const db = await getDatabase();
   const version = await db
@@ -410,6 +442,7 @@ export async function createMatch(input: CreateMatchInput) {
     selected: input.selected ?? [],
     opponentSelected: input.opponentSelected ?? [],
     lead: input.lead ?? [],
+    movesUsed,
     rating: input.rating ?? null,
     notes: input.notes?.trim() || "",
     playedAt: input.playedAt ?? new Date().toISOString(),
@@ -417,7 +450,7 @@ export async function createMatch(input: CreateMatchInput) {
 
   await db
     .prepare(
-      "INSERT INTO matches (id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, rating, notes, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO matches (id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(
       match.id,
@@ -429,6 +462,7 @@ export async function createMatch(input: CreateMatchInput) {
       JSON.stringify(match.selected),
       JSON.stringify(match.opponentSelected),
       JSON.stringify(match.lead),
+      match.movesUsed ? JSON.stringify(match.movesUsed) : null,
       match.rating,
       match.notes,
       match.playedAt,
@@ -436,4 +470,50 @@ export async function createMatch(input: CreateMatchInput) {
     .run();
 
   return match;
+}
+
+export interface MoveUsageBackfillCandidate {
+  matchId: string;
+  replayUrl: string;
+  teamSpecies: string[];
+}
+
+export async function listMoveUsageBackfillCandidates(limit = 12): Promise<MoveUsageBackfillCandidate[]> {
+  const db = await getDatabase();
+  const safeLimit = Math.min(50, Math.max(1, Math.trunc(limit)));
+  const rows = await db
+    .prepare(
+      `SELECT m.id AS match_id, m.replay_url, p.species, p.slot
+       FROM matches m
+       JOIN pokemon_sets p ON p.team_version_id = m.team_version_id
+       WHERE m.id IN (
+         SELECT id FROM matches
+         WHERE moves_used_json IS NULL AND replay_url <> ''
+         ORDER BY played_at DESC
+         LIMIT ?
+       )
+       ORDER BY m.played_at DESC, p.slot ASC`,
+    )
+    .bind(safeLimit)
+    .all<{ match_id: string; replay_url: string; species: string; slot: number }>();
+
+  const candidates = new Map<string, MoveUsageBackfillCandidate>();
+  for (const row of rows.results) {
+    const current = candidates.get(row.match_id) ?? {
+      matchId: row.match_id,
+      replayUrl: row.replay_url,
+      teamSpecies: [],
+    };
+    current.teamSpecies.push(row.species);
+    candidates.set(row.match_id, current);
+  }
+  return [...candidates.values()].filter((candidate) => candidate.teamSpecies.length === 6);
+}
+
+export async function saveBackfilledMoveUsage(matchId: string, movesUsed: Record<string, string[]>) {
+  const db = await getDatabase();
+  await db
+    .prepare("UPDATE matches SET moves_used_json = ? WHERE id = ? AND moves_used_json IS NULL")
+    .bind(JSON.stringify(movesUsed), matchId)
+    .run();
 }

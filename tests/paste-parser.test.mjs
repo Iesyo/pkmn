@@ -102,3 +102,39 @@ test("computes matchup and attendance stats from opposing Pokémon", async () =>
   });
   assert.equal(incineroar.attendanceRate, 50);
 });
+
+test("computes move usage from replay telemetry instead of dividing 100 by four", async () => {
+  const { parseShowdownPaste } = await vite.ssrLoadModule("/lib/paste.ts");
+  const { decoratePokemonPerformance } = await vite.ssrLoadModule("/lib/team-stats.ts");
+  const parsed = parseShowdownPaste(paste);
+  const team = parsed.map((set) => set.species === "Kleavor"
+    ? {
+        ...set,
+        moves: [
+          set.moves[0],
+          { name: "X-Scissor", type: "Bug", damaging: true, usage: 0 },
+        ],
+      }
+    : set);
+  const baseMatch = {
+    result: "win",
+    opponentSelected: [],
+    selected: ["Kleavor", "Miraidon", "Incineroar", "Farigiraf"],
+    lead: ["Kleavor", "Miraidon"],
+  };
+  const matches = [
+    { ...baseMatch, movesUsed: { Kleavor: ["Stone Axe"] } },
+    { ...baseMatch, result: "loss", movesUsed: { Kleavor: ["Stone Axe", "X-Scissor"] } },
+    { ...baseMatch, movesUsed: { Kleavor: [] } },
+    { ...baseMatch, movesUsed: null },
+  ];
+
+  const decorated = decoratePokemonPerformance(team, matches);
+  const kleavor = decorated.find((set) => set.species === "Kleavor");
+  const miraidon = decorated.find((set) => set.species === "Miraidon");
+
+  assert.equal(kleavor.moves.find((move) => move.name === "Stone Axe").usage, 66.7);
+  assert.equal(kleavor.moves.find((move) => move.name === "X-Scissor").usage, 33.3);
+  assert.equal(kleavor.performance.games, 4);
+  assert.equal(miraidon.moves[0].usage, null);
+});

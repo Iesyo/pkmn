@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -31,6 +32,10 @@ class RepositoryTests(unittest.TestCase):
             replay_url="https://replay.pokemonshowdown.com/",
             selected=("Kleavor", "Miraidon", "Incineroar", "Farigiraf"),
             lead=("Kleavor", "Miraidon"),
+            moves_used={
+                "Kleavor": ("Stone Axe", "Stone Axe", "X-Scissor"),
+                "Miraidon": (),
+            },
         )
 
         self.assertEqual(first.version, 1)
@@ -42,6 +47,13 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual([(item["version_number"], item["minor_version"]) for item in self.repository.list_teams()[0]["versions"]], [(1, 1), (1, 0)])
 
         with self.repository.connect() as connection:
+            stored_match = connection.execute(
+                "SELECT moves_used_json FROM matches WHERE id = ?", (match["id"],)
+            ).fetchone()
+            self.assertEqual(
+                json.loads(str(stored_match["moves_used_json"])),
+                {"Kleavor": ["Stone Axe", "X-Scissor"], "Miraidon": []},
+            )
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute(
                     "UPDATE team_versions SET paste = 'mutated' WHERE id = ?",

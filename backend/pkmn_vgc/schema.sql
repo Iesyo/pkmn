@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS matches (
     selected_json TEXT NOT NULL DEFAULT '[]',
     opponent_selected_json TEXT NOT NULL DEFAULT '[]',
     lead_json TEXT NOT NULL DEFAULT '[]',
+    moves_used_json TEXT,
     rating INTEGER,
     notes TEXT NOT NULL DEFAULT '',
     played_at TEXT NOT NULL,

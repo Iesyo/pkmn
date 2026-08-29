@@ -91,9 +91,9 @@ export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: 
                   <span className="truncate text-[11px] font-semibold text-slate-200">{move.name}</span>
                   {move.type ? <TypeBadge type={move.type} className="px-1.5 py-0 text-[8px]">{move.type.slice(0, 3)}</TypeBadge> : null}
                 </div>
-                <Progress value={move.usage} className={cn("mt-1 h-1 bg-white/6", style.bar)} />
+                <Progress value={move.usage ?? 0} className={cn("mt-1 h-1 bg-white/6", style.bar)} />
               </div>
-              <span className="text-right font-mono text-[9px] tabular-nums text-slate-500">{move.usage}%</span>
+              <span className="text-right font-mono text-[9px] tabular-nums text-slate-500">{move.usage === null ? "—" : `${move.usage}%`}</span>
             </div>
           ))}
         </div>

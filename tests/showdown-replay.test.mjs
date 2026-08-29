@@ -31,7 +31,11 @@ ${teamPreview}
 |switch|p2a: Miraidon|Miraidon, L50|100/100
 |switch|p2b: Amoonguss|Amoonguss, L50|100/100
 |turn|1
+|move|p1a: Kleavor|Stone Axe|p2a: Miraidon
+|move|p1a: Kleavor|Stone Axe|p2a: Miraidon
+|move|p1b: Pelipper|Tailwind|p1b: Pelipper
 |switch|p1a: Sinistcha|Sinistcha, L50|100/100
+|move|p1a: Sinistcha|Matcha Gotcha|p2a: Miraidon
 |raw|IesYo's rating: 1401 &rarr; <strong>1428</strong><br />(+27 for winning)
 |raw|Opponent's rating: 1390 &rarr; <strong>1363</strong><br />(-27 for losing)
 |win|IesYo`;
@@ -58,6 +62,12 @@ test("imports a VGC replay without manual match data", async () => {
   assert.deepEqual(match.selected, ["Kleavor", "Pelipper", "Venusaur", "Sinistcha"]);
   assert.deepEqual(match.lead, ["Kleavor", "Pelipper"]);
   assert.deepEqual(match.opponentSelected, p2Team);
+  assert.deepEqual(match.movesUsed, {
+    Kleavor: ["Stone Axe"],
+    Pelipper: ["Tailwind"],
+    Venusaur: [],
+    Sinistcha: ["Matcha Gotcha"],
+  });
   assert.equal(match.rating, 1428);
   assert.equal(match.format, "gen9championsvgc2026regma");
   assert.deepEqual(match.warnings, []);
@@ -77,6 +87,11 @@ test("falls back to the saved roster and public switches when inputlog is absent
   assert.equal(match.playerName, "IesYo");
   assert.deepEqual(match.selected, ["Kleavor", "Pelipper", "Sinistcha"]);
   assert.deepEqual(match.lead, ["Kleavor", "Pelipper"]);
+  assert.deepEqual(match.movesUsed, {
+    Kleavor: ["Stone Axe"],
+    Pelipper: ["Tailwind"],
+    Sinistcha: ["Matcha Gotcha"],
+  });
   assert.match(match.warnings.join(" "), /cuatro picks/);
 });
 

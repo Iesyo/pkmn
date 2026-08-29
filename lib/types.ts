@@ -33,7 +33,7 @@ export interface PokemonMechanics {
 export interface MoveSet {
   name: string;
   type: PokemonType | null;
-  usage: number;
+  usage: number | null;
   damaging: boolean;
 }
 
@@ -77,6 +77,7 @@ export interface MatchRecord {
   selected: string[];
   opponentSelected: string[];
   lead: string[];
+  movesUsed?: Record<string, string[]> | null;
   rating: number | null;
   notes: string;
   playedAt: string;

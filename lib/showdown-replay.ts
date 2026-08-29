@@ -22,6 +22,7 @@ interface ReplaySide {
   team: string[];
   selected: string[];
   lead: string[];
+  movesUsed: Record<string, string[]>;
 }
 
 export interface ImportedReplayMatch {
@@ -32,6 +33,7 @@ export interface ImportedReplayMatch {
   opponentSelected: string[];
   selected: string[];
   lead: string[];
+  movesUsed: Record<string, string[]>;
   rating: number | null;
   playedAt: string | null;
   format: string;
@@ -77,6 +79,59 @@ export function normalizeShowdownReplayUrl(value: string) {
   return { replayId, replayUrl, jsonUrl: `${replayUrl}.json` };
 }
 
+const MAX_REPLAY_BYTES = 5_000_000;
+
+export async function fetchShowdownReplay(value: string) {
+  const urls = normalizeShowdownReplayUrl(value);
+  let response: Response;
+  try {
+    response = await fetch(urls.jsonUrl, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(12_000),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    throw new ReplayValidationError(
+      timedOut
+        ? "Showdown tardó demasiado en responder. Intenta nuevamente."
+        : "No pudimos conectar con Showdown en este momento.",
+      timedOut ? 504 : 502,
+    );
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new ReplayValidationError("Showdown intentó redirigir el replay a una ubicación no permitida.", 502);
+  }
+  if (response.status === 404) {
+    throw new ReplayValidationError("Showdown no encontró ese replay o ya no está disponible.", 404);
+  }
+  if (!response.ok) {
+    throw new ReplayValidationError("Showdown no pudo entregar el replay en este momento.", 502);
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_REPLAY_BYTES) {
+    throw new ReplayValidationError("El replay excede el tamaño permitido.", 413);
+  }
+  const body = await response.text();
+  if (new TextEncoder().encode(body).byteLength > MAX_REPLAY_BYTES) {
+    throw new ReplayValidationError("El replay excede el tamaño permitido.", 413);
+  }
+
+  let rawReplay: ShowdownReplayDocument & { log: unknown };
+  try {
+    rawReplay = JSON.parse(body) as ShowdownReplayDocument & { log: unknown };
+  } catch {
+    throw new ReplayValidationError("Showdown devolvió un replay ilegible.", 502);
+  }
+  const log = Array.isArray(rawReplay.log)
+    ? rawReplay.log.filter((line): line is string => typeof line === "string").join("\n")
+    : typeof rawReplay.log === "string"
+      ? rawReplay.log
+      : "";
+  return { urls, replay: { ...rawReplay, log } as ShowdownReplayDocument };
+}
+
 function addUnique(list: string[], value: string) {
   const id = toId(value);
   if (!id || list.some((entry) => toId(entry) === id)) return;
@@ -98,6 +153,22 @@ function replaceSpecies(list: string[], previous: string | undefined, next: stri
     return;
   }
   list[index] = next;
+}
+
+function ensureMovesUsed(movesUsed: Record<string, string[]>, species: string) {
+  const existing = Object.keys(movesUsed).find((name) => toId(name) === toId(species));
+  if (existing) return movesUsed[existing];
+  movesUsed[species] = [];
+  return movesUsed[species];
+}
+
+function replaceMovesUsed(movesUsed: Record<string, string[]>, previous: string | undefined, next: string) {
+  const nextMoves = ensureMovesUsed(movesUsed, next);
+  if (!previous || toId(previous) === toId(next)) return;
+  const previousKey = Object.keys(movesUsed).find((name) => toId(name) === toId(previous));
+  if (!previousKey) return;
+  for (const move of movesUsed[previousKey]) addUnique(nextMoves, move);
+  delete movesUsed[previousKey];
 }
 
 function detailsSpecies(details: string) {
@@ -160,8 +231,8 @@ function parseTeamChoice(inputLog: string | null | undefined, slot: PlayerSlot, 
 
 function parseReplay(document: ShowdownReplayDocument) {
   const sides: Record<PlayerSlot, ReplaySide> = {
-    p1: { slot: "p1", name: document.p1?.trim() ?? "", initialRating: null, finalRating: null, team: [], selected: [], lead: [] },
-    p2: { slot: "p2", name: document.p2?.trim() ?? "", initialRating: null, finalRating: null, team: [], selected: [], lead: [] },
+    p1: { slot: "p1", name: document.p1?.trim() ?? "", initialRating: null, finalRating: null, team: [], selected: [], lead: [], movesUsed: {} },
+    p2: { slot: "p2", name: document.p2?.trim() ?? "", initialRating: null, finalRating: null, team: [], selected: [], lead: [], movesUsed: {} },
   };
   const activeSpecies = new Map<string, string>();
   let started = false;
@@ -207,11 +278,27 @@ function parseReplay(document: ShowdownReplayDocument) {
       if (command === "replace") {
         replaceSpecies(sides[slot].selected, previous, species);
         if (started && !turnStarted) replaceSpecies(sides[slot].lead, previous, species);
+        replaceMovesUsed(sides[slot].movesUsed, previous, species);
       } else {
         addUnique(sides[slot].selected, species);
         if (started && !turnStarted) addUnique(sides[slot].lead, species);
+        ensureMovesUsed(sides[slot].movesUsed, species);
       }
       activeSpecies.set(position, species);
+      continue;
+    }
+    if (command === "move") {
+      const identifier = parts[2] ?? "";
+      const slot = playerSlot(identifier);
+      const position = identifier.split(":", 1)[0];
+      const species = activeSpecies.get(position);
+      const sourceMove = parts
+        .slice(5)
+        .find((part) => /^\[from\]\s*move:/i.test(part))
+        ?.replace(/^\[from\]\s*move:\s*/i, "")
+        .trim();
+      const move = sourceMove || parts[3]?.trim();
+      if (slot && species && move) addUnique(ensureMovesUsed(sides[slot].movesUsed, species), move);
       continue;
     }
     if (command === "win") {
@@ -234,6 +321,7 @@ function parseReplay(document: ShowdownReplayDocument) {
       sides[slot].selected = teamChoice.selected;
       sides[slot].lead = teamChoice.lead;
     }
+    for (const species of sides[slot].selected) ensureMovesUsed(sides[slot].movesUsed, species);
     sides[slot].finalRating =
       extractFinalRating(document.log, sides[slot].name) ??
       ratingFromObject(document[`${slot}rating`]);
@@ -255,6 +343,24 @@ function mapToCanonicalSpecies(species: string[], canonicalTeam: string[]) {
     const compatible = canonicalTeam.filter((candidate) => speciesCompatible(candidate, name));
     return compatible.length === 1 ? compatible[0] : name;
   });
+}
+
+function mapMovesUsedToCanonical(
+  movesUsed: Record<string, string[]>,
+  selected: string[],
+  canonicalTeam: string[],
+) {
+  const result: Record<string, string[]> = {};
+  for (const species of selected) {
+    const canonical = mapToCanonicalSpecies([species], canonicalTeam)[0];
+    const moves: string[] = [];
+    for (const [sourceSpecies, sourceMoves] of Object.entries(movesUsed)) {
+      if (!speciesCompatible(sourceSpecies, canonical)) continue;
+      for (const move of sourceMoves) addUnique(moves, move);
+    }
+    result[canonical] = moves;
+  }
+  return result;
 }
 
 function teamOverlap(side: ReplaySide, canonicalTeam: string[]) {
@@ -316,6 +422,7 @@ export function importShowdownReplay(
   const opponent = parsed.sides[opponentSlot];
   const selected = mapToCanonicalSpecies(own.selected, options.teamSpecies).slice(0, 4);
   const lead = mapToCanonicalSpecies(own.lead, options.teamSpecies).slice(0, 2);
+  const movesUsed = mapMovesUsedToCanonical(own.movesUsed, selected, options.teamSpecies);
   const opponentSelected = (opponent.team.length ? opponent.team : opponent.selected).slice(0, 6);
   const warnings: string[] = [];
 
@@ -331,6 +438,7 @@ export function importShowdownReplay(
     opponentSelected,
     selected,
     lead,
+    movesUsed,
     rating: own.finalRating,
     playedAt: replayDate(document, parsed.timestamp),
     format: document.format?.trim() ?? "",

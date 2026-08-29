@@ -267,7 +267,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
         await fetch("/api/matches", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead, playedAt: initialReplay?.playedAt ?? undefined }),
+          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead, movesUsed: initialReplay?.movesUsed, playedAt: initialReplay?.playedAt ?? undefined }),
         }),
       );
       onCreated();
