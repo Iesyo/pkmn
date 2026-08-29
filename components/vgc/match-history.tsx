@@ -1,6 +1,20 @@
-import Image from "next/image";
-import { ExternalLink, History, ScanSearch, Trophy } from "lucide-react";
+"use client";
 
+import Image from "next/image";
+import { useState } from "react";
+import { ExternalLink, History, LoaderCircle, ScanSearch, Trash2, Trophy } from "lucide-react";
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +58,30 @@ export function MatchHistory({
   onScoutingRequested?: (version: TeamVersion, match: MatchRecord) => void;
 }) {
   const matches = version.matches;
+  const [deletingMatchId, setDeletingMatchId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+
+  async function removeMatch(match: MatchRecord) {
+    if (deletingMatchId) return;
+    setDeletingMatchId(match.id);
+    setDeleteError("");
+
+    try {
+      const response = await fetch(`/api/matches/${encodeURIComponent(match.id)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error ?? "No pudimos eliminar la partida.");
+      }
+      await onMatchCreated?.();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "No pudimos eliminar la partida.");
+    } finally {
+      setDeletingMatchId(null);
+    }
+  }
+
   return (
     <section className="overflow-hidden rounded-2xl border border-white/8 bg-slate-950/65">
       <div className="flex items-center justify-between border-b border-white/7 px-4 py-3">
@@ -53,6 +91,7 @@ export function MatchHistory({
       <div className="border-b border-white/7 bg-white/[0.018] px-4 py-3">
         <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace: Showdown completa automáticamente el resultado y las selecciones.</p></div>
         <ReplayQuickEntry version={version} onCreated={onMatchCreated} />
+        {deleteError ? <p role="status" className="mt-2 text-[10px] font-semibold text-rose-300">{deleteError}</p> : null}
       </div>
       {matches.length ? (
         <div className="overflow-x-auto">
@@ -100,11 +139,42 @@ export function MatchHistory({
                   <TableCell><PokemonSpriteStrip species={match.selected} label="Tus picks" tone="cyan" limit={4} /></TableCell>
                   <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
                   <TableCell className="text-right">
-                    {match.replayUrl ? (
-                      <a href={match.replayUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 transition hover:text-cyan-200">
-                        Ver <ExternalLink className="size-3" />
-                      </a>
-                    ) : <span className="text-slate-700">—</span>}
+                    <div className="flex min-w-max items-center justify-end gap-1.5">
+                      {match.replayUrl ? (
+                        <a href={match.replayUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 transition hover:text-cyan-200">
+                          Ver <ExternalLink className="size-3" />
+                        </a>
+                      ) : <span className="text-slate-700">—</span>}
+                      {!version.demo ? (
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={deletingMatchId !== null}
+                              title="Eliminar esta partida"
+                              aria-label={`Eliminar partida contra ${match.opponentName}`}
+                              className="rounded-full text-slate-600 hover:bg-rose-300/10 hover:text-rose-300"
+                            >
+                              {deletingMatchId === match.id ? <LoaderCircle className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent className="border-white/10 bg-slate-950 text-slate-100">
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>¿Eliminar esta partida?</AlertDialogTitle>
+                              <AlertDialogDescription className="text-slate-400">
+                                Se quitará el registro contra {match.opponentName}, su replay y cualquier análisis de Scouting asociado. Las estadísticas del Team se recalcularán automáticamente. Esta acción no se puede deshacer.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel className="border-white/10 bg-white/4 text-slate-200">Cancelar</AlertDialogCancel>
+                              <AlertDialogAction variant="destructive" onClick={() => void removeMatch(match)}>Eliminar partida</AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

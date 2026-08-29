@@ -106,6 +106,10 @@ export function VgcDashboard() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ matchId, action: "step" }),
           });
+          if (response.status === 404) {
+            finished.add(matchId);
+            return;
+          }
           const payload = (await response.json()) as { analysis?: ScoutingAnalysis };
           if (response.ok && payload.analysis && (payload.analysis.status === "complete" || payload.analysis.status === "error")) finished.add(matchId);
         } catch {
@@ -204,11 +208,11 @@ export function VgcDashboard() {
         <TabsContent value="library" className="mt-0 outline-none">
           <div className="grid items-start gap-5 lg:grid-cols-[310px_minmax(0,1fr)]">
             <aside className="rounded-[24px] border border-white/8 bg-slate-900/40 p-3 backdrop-blur-xl lg:sticky lg:top-24">
-              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{groups.length} equipos · historial inmutable</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
+              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{groups.length} equipos · versiones inmutables</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
               <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2"><div className="space-y-2">{groups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />)}</div></ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="w-36 border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
             </div>
           </div>
         </TabsContent>
