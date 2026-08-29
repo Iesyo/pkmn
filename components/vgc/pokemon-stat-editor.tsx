@@ -24,6 +24,7 @@ export function PokemonStatEditor({
   onChange,
   boosts,
   onBoostChange,
+  stableHeight = false,
 }: {
   pokemon: PokemonSet;
   format: string;
@@ -31,6 +32,7 @@ export function PokemonStatEditor({
   onChange: (next: PokemonSet) => void;
   boosts?: Record<BoostableStat, number>;
   onBoostChange?: (stat: BoostableStat, value: number) => void;
+  stableHeight?: boolean;
 }) {
   const values = parseEvs(pokemon.evs);
   const rules = getStatRules(format);
@@ -49,7 +51,7 @@ export function PokemonStatEditor({
 
   if (!baseStats) {
     return (
-      <div className="rounded-2xl border border-dashed border-white/10 bg-black/15 p-5 text-center">
+      <div className={cn("rounded-2xl border border-dashed border-white/10 bg-black/15 p-5 text-center", stableHeight && "flex min-h-[23rem] flex-col items-center justify-center")}>
         <Database className="mx-auto size-5 text-slate-600" />
         <p className="mt-2 text-xs font-bold text-slate-400">Elige un Pokémon para ver sus stats base.</p>
       </div>
@@ -57,7 +59,7 @@ export function PokemonStatEditor({
   }
 
   return (
-    <div className="rounded-2xl border border-white/8 bg-black/20 p-3">
+    <div className={cn("rounded-2xl border border-white/8 bg-black/20 p-3", stableHeight && "min-h-[23rem]")}>
       <div className="flex items-end justify-between gap-3">
         <div>
           <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-300">{rules.label}</p>

@@ -189,10 +189,11 @@ test("renders the calculator as an inline Pro mode instead of a floating dialog"
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
 
-test("keeps Pro drafts per Pokémon and prevents result-driven layout shifts", async () => {
-  const [builderSource, calculatorSource] = await Promise.all([
+test("keeps Pro drafts per Pokémon and gives the whole Pro canvas stable dimensions", async () => {
+  const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/pokemon-stat-editor.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(builderSource, /proSessions/);
@@ -206,7 +207,12 @@ test("keeps Pro drafts per Pokémon and prevents result-driven layout shifts", a
   assert.doesNotMatch(calculatorSource, /Vista integrada/);
   assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
   assert.ok(calculatorSource.lastIndexOf("<OutcomeList") < calculatorSource.lastIndexOf("Motor oficial de Pokémon Showdown"));
-  assert.match(calculatorSource, /grid min-h-64/);
+  assert.match(builderSource, /data-pro-mode-viewport/);
+  assert.match(builderSource, /h-\[clamp\(44rem,72vh,68rem\)\]/);
+  assert.match(builderSource, /overflow-y-auto overscroll-contain \[scrollbar-gutter:stable\]/);
+  assert.match(calculatorSource, /stableHeight/);
+  assert.match(statEditorSource, /stableHeight && "min-h-\[23rem\]"/);
+  assert.match(calculatorSource, /grid h-64 content-start gap-2 overflow-y-auto \[scrollbar-gutter:stable\]/);
   assert.ok(calculatorSource.indexOf("<Label>Estado</Label>") < calculatorSource.indexOf("<Label>Nivel</Label>"));
   assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
 });

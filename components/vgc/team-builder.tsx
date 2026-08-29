@@ -333,24 +333,26 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
               {proMode ? <ArrowLeft className="size-5" /> : <Calculator className="size-5" />}
             </Button></div>
             {proMode && dex ? (
-              <Suspense fallback={<div role="status" className="flex min-h-80 items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando modo Pro…</div>}>
-                <DamageCalculatorView
-                  key={proSessionKey}
-                  source={selected}
-                  format={format}
-                  dex={dex}
-                  session={proSessions[proSessionKey]}
-                  onSessionChange={(nextSession) => {
-                    setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }));
-                    setPokemon((current) => current.map((set, index) => index === selectedSlot ? {
-                      ...nextSession.left.set,
-                      id: set.id,
-                      slot: set.slot,
-                    } : set));
-                    setMessage("");
-                  }}
-                />
-              </Suspense>
+              <div data-pro-mode-viewport className="h-[clamp(44rem,72vh,68rem)] overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
+                <Suspense fallback={<div role="status" className="flex h-full items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando modo Pro…</div>}>
+                  <DamageCalculatorView
+                    key={proSessionKey}
+                    source={selected}
+                    format={format}
+                    dex={dex}
+                    session={proSessions[proSessionKey]}
+                    onSessionChange={(nextSession) => {
+                      setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }));
+                      setPokemon((current) => current.map((set, index) => index === selectedSlot ? {
+                        ...nextSession.left.set,
+                        id: set.id,
+                        slot: set.slot,
+                      } : set));
+                      setMessage("");
+                    }}
+                  />
+                </Suspense>
+              </div>
             ) : <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-[1.05fr_1fr_1fr]">
               <div className="space-y-4">
                 <div className="grid gap-2"><Label>Pokémon</Label><Combobox items={speciesOptions} value={selected.species || null} onValueChange={chooseSpecies}><ComboboxInput placeholder={dex ? "Buscar especie..." : "Cargando Pokédex..."} disabled={!dex} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
