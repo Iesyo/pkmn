@@ -88,7 +88,7 @@ test("filters held items by the selected Showdown format", async () => {
   assert.equal(isItemLegal(snapshot, "", "champions"), true);
 });
 
-test("starts a fresh Team Builder in Champions with expanded Pokémon cards", async () => {
+test("starts a fresh Team Builder in Champions with fixed Pokémon cards", async () => {
   const { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS } = await vite.ssrLoadModule("/lib/team-builder.ts");
   const [dashboardSource, builderSource] = await Promise.all([
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
@@ -100,7 +100,11 @@ test("starts a fresh Team Builder in Champions with expanded Pokémon cards", as
   assert.match(dashboardSource, /const \[builderVersionId, setBuilderVersionId\] = useState\(""\)/);
   assert.match(dashboardSource, /initialVersion=\{versions\.find\(\(version\) => version\.id === builderVersionId\)\}/);
   assert.doesNotMatch(dashboardSource, /initialVersion=.*\?\? left/);
-  assert.match(builderSource, /min-h-40/);
+  assert.match(builderSource, /h-40 min-w-0 overflow-hidden/);
+  assert.doesNotMatch(builderSource, /group min-h-40/);
+  assert.match(builderSource, /w-full min-w-0 truncate text-sm font-black/);
+  assert.match(builderSource, /mt-auto flex min-h-0 items-end justify-between/);
+  assert.match(builderSource, /h-20 w-20 shrink-0 translate-y-2/);
   assert.match(builderSource, /size-20 object-contain/);
   assert.match(builderSource, /text-sm font-black text-white/);
   assert.match(builderSource, /text-\[9px\].*>\{type\}<\/TypeBadge>/);

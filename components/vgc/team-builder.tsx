@@ -67,14 +67,14 @@ function BuilderCoverage({ pokemon, teraEnabled }: { pokemon: PokemonSet[]; tera
 
 function SlotCard({ pokemon, selected, onClick }: { pokemon: PokemonSet; selected: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={cn("group min-h-40 rounded-2xl border p-4 text-left transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
-      <div className="flex min-h-28 items-stretch justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-col">
-          <p className={pokemon.species ? "truncate text-sm font-black text-white" : "text-sm font-bold text-slate-600"}>{pokemon.species || "Elegir Pokémon"}</p>
-          <div className="mt-2 flex flex-wrap gap-1.5">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="px-2 py-0.5 text-[9px]">{type}</TypeBadge>)}</div>
-          <p className="mt-auto truncate pt-3 text-[11px] font-semibold text-amber-200/80">{pokemon.item || "Sin objeto"}</p>
+    <button type="button" onClick={onClick} className={cn("group h-40 min-w-0 overflow-hidden rounded-2xl border p-4 text-left transition", selected ? "border-cyan-300/55 bg-cyan-300/8 shadow-[0_0_24px_rgba(103,232,249,0.10)]" : "border-white/8 bg-[#0c1424] hover:border-white/16")}>
+      <div className="flex h-full min-w-0 flex-col">
+        <p className={pokemon.species ? "w-full min-w-0 truncate text-sm font-black text-white" : "w-full min-w-0 truncate text-sm font-bold text-slate-600"}>{pokemon.species || "Elegir Pokémon"}</p>
+        <div className="mt-2 flex h-5 min-w-0 flex-nowrap gap-1.5 overflow-hidden">{pokemon.types.map((type) => <TypeBadge key={type} type={type} className="shrink-0 px-2 py-0.5 text-[9px]">{type}</TypeBadge>)}</div>
+        <div className="mt-auto flex min-h-0 items-end justify-between gap-2">
+          <p className="min-w-0 flex-1 truncate pb-1 text-[11px] font-semibold text-amber-200/80">{pokemon.item || "Sin objeto"}</p>
+          <div className="flex h-20 w-20 shrink-0 translate-y-2 items-end justify-end">{pokemon.species ? <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={88} height={88} unoptimized className="size-20 object-contain" /> : <Plus className="mb-4 size-9 text-slate-700" />}</div>
         </div>
-        <div className="flex shrink-0 items-start justify-end">{pokemon.species ? <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={88} height={88} unoptimized className="size-20 object-contain" /> : <Plus className="mt-2 size-9 text-slate-700" />}</div>
       </div>
     </button>
   );
