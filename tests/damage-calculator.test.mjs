@@ -159,3 +159,21 @@ test("renders the calculator as an inline Pro mode instead of a floating dialog"
   assert.match(statEditorSource, /6 - index/);
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
+
+test("keeps Pro drafts per Pokémon and prevents result-driven layout shifts", async () => {
+  const [builderSource, calculatorSource] = await Promise.all([
+    readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(builderSource, /proSessions/);
+  assert.match(builderSource, /session=\{proSessions\[proSessionKey\]\}/);
+  assert.match(builderSource, /onSessionChange=/);
+  assert.match(calculatorSource, /export type DamageCalculatorSession/);
+  assert.doesNotMatch(calculatorSource, /Modo Pro · Calculadora de daño/);
+  assert.doesNotMatch(calculatorSource, /Vista integrada/);
+  assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
+  assert.ok(calculatorSource.lastIndexOf("<OutcomeList") < calculatorSource.lastIndexOf("Motor oficial de Pokémon Showdown"));
+  assert.ok(calculatorSource.indexOf("<Label>Estado</Label>") < calculatorSource.indexOf("<Label>Nivel</Label>"));
+  assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
+});

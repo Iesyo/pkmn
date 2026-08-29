@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useMemo, useState } from "react";
-import { ArrowLeftRight, Calculator, Crosshair, ShieldCheck, Sparkles, Swords, Zap } from "lucide-react";
+import { ArrowLeftRight, Crosshair, ShieldCheck, Sparkles, Swords, Zap } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
@@ -43,6 +43,14 @@ type DamageCalculatorProps = {
   source: PokemonSet;
   format: string;
   dex: ShowdownSnapshot;
+  session?: DamageCalculatorSession;
+  onSessionChange?: (session: DamageCalculatorSession) => void;
+};
+
+export type DamageCalculatorSession = {
+  left: DamagePokemonDraft;
+  right: DamagePokemonDraft;
+  field: DamageFieldState;
 };
 
 const STATUS_OPTIONS: Array<{ value: DamageStatus; label: string }> = [
@@ -140,11 +148,6 @@ function CalculatorPokemonPanel({
           </Combobox>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2"><Label>Nivel</Label><Input type="number" min={1} max={100} disabled={format === "champions"} value={format === "champions" ? 50 : set.level} onChange={(event) => updateSet({ ...set, level: clamp(Number(event.target.value) || 50, 1, 100) })} className="border-white/10 bg-white/4" /></div>
-          <div className="grid gap-2"><Label>HP actual</Label><div className="relative"><Input type="number" min={1} max={100} value={draft.hpPercent} onChange={(event) => onChange({ ...draft, hpPercent: clamp(Number(event.target.value) || 1, 1, 100) })} className="border-white/10 bg-white/4 pr-8" /><span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">%</span></div></div>
-        </div>
-
         <div className="grid gap-2"><Label>Objeto</Label><Combobox items={legalItems} value={set.item || null} onValueChange={(value) => updateSet({ ...set, item: value ?? "" })}><ComboboxInput placeholder="Buscar objeto..." className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -181,11 +184,14 @@ function CalculatorPokemonPanel({
           </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2"><Label>Estado</Label><Select value={draft.status || "healthy"} onValueChange={(value) => onChange({ ...draft, status: value === "healthy" ? "" : value as DamageStatus })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{STATUS_OPTIONS.map((option) => <SelectItem key={option.value || "healthy"} value={option.value || "healthy"}>{option.label}</SelectItem>)}</SelectContent></Select></div>
-          <div className="grid content-end grid-cols-2 gap-2">
-            {set.teraType ? <ToggleCard label={`Tera ${set.teraType}`} checked={draft.teraActive} onChange={(checked) => onChange({ ...draft, teraActive: checked })} /> : null}
+        <div>
+          <Label>Estado</Label>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <Select value={draft.status || "healthy"} onValueChange={(value) => onChange({ ...draft, status: value === "healthy" ? "" : value as DamageStatus })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{STATUS_OPTIONS.map((option) => <SelectItem key={option.value || "healthy"} value={option.value || "healthy"}>{option.label}</SelectItem>)}</SelectContent></Select>
             <ToggleCard label="Crítico" checked={draft.critical} onChange={(checked) => onChange({ ...draft, critical: checked })} />
+            <div className="grid gap-2"><Label>Nivel</Label><Input type="number" min={1} max={100} disabled={format === "champions"} value={format === "champions" ? 50 : set.level} onChange={(event) => updateSet({ ...set, level: clamp(Number(event.target.value) || 50, 1, 100) })} className="border-white/10 bg-white/4" /></div>
+            <div className="grid gap-2"><Label>HP actual</Label><div className="relative"><Input type="number" min={1} max={100} value={draft.hpPercent} onChange={(event) => onChange({ ...draft, hpPercent: clamp(Number(event.target.value) || 1, 1, 100) })} className="border-white/10 bg-white/4 pr-8" /><span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">%</span></div></div>
+            {set.teraType ? <ToggleCard label={`Tera ${set.teraType}`} checked={draft.teraActive} onChange={(checked) => onChange({ ...draft, teraActive: checked })} /> : null}
             {format === "gen8" ? <ToggleCard label="Dynamax" checked={draft.dynamaxActive} onChange={(checked) => onChange({ ...draft, dynamaxActive: checked })} /> : null}
             {format === "gen7" ? <ToggleCard label="Z-Move" checked={draft.zMoveActive} onChange={(checked) => onChange({ ...draft, zMoveActive: checked })} /> : null}
           </div>
@@ -230,38 +236,56 @@ function OutcomeList({ title, attacker, defender, outcomes }: { title: string; a
   return (
     <section className="rounded-[22px] border border-white/8 bg-black/20 p-3">
       <div className="flex items-center justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-300/70">{title}</p><p className="mt-1 text-xs font-bold text-slate-300">{attacker || "Atacante"} <span className="text-slate-600">→</span> {defender || "Defensor"}</p></div><Crosshair className="size-4 text-rose-300" /></div>
-      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-3 grid min-h-28 gap-2 md:grid-cols-2 xl:grid-cols-4">
         {outcomes.length ? outcomes.map((outcome) => <article key={outcome.move} className={cn("rounded-2xl border bg-white/[0.025] p-3", outcome.error ? "border-rose-300/20" : "border-white/7")}><div className="flex items-start justify-between gap-2"><p className="truncate text-xs font-black text-white">{outcome.move}</p><Swords className="size-3.5 shrink-0 text-amber-300" /></div><p className="mt-3 text-xl font-black tabular-nums text-cyan-200">{outcome.minPercent}–{outcome.maxPercent}%</p><p className="mt-1 text-[10px] font-bold tabular-nums text-slate-400">{outcome.min}–{outcome.max} HP</p><p className="mt-2 min-h-8 text-[9px] leading-4 text-emerald-300/80">{outcome.koChance}</p><p className="mt-2 line-clamp-3 text-[8px] leading-3.5 text-slate-600">{outcome.description}</p>{outcome.rolls.length ? <p className="mt-2 truncate font-mono text-[8px] text-slate-700">Rolls: {outcome.rolls.join(", ")}</p> : null}{outcome.error ? <p className="mt-2 text-[8px] text-rose-300">{outcome.error}</p> : null}</article>) : <div className="col-span-full rounded-2xl border border-dashed border-white/8 px-4 py-6 text-center text-xs text-slate-600">Elige al menos un movimiento para ver daño.</div>}
       </div>
     </section>
   );
 }
 
-export function DamageCalculatorView({ source, format, dex }: DamageCalculatorProps) {
-  const [left, setLeft] = useState(() => createDamageDraft(source));
-  const [right, setRight] = useState(() => createDamageDraft(source));
-  const [field, setField] = useState(defaultDamageField);
+function createCalculatorSession(source: PokemonSet): DamageCalculatorSession {
+  return {
+    left: createDamageDraft(source),
+    right: createDamageDraft(source),
+    field: defaultDamageField(),
+  };
+}
+
+export function DamageCalculatorView({ source, format, dex, session: savedSession, onSessionChange }: DamageCalculatorProps) {
+  const [localSession, setLocalSession] = useState(() => createCalculatorSession(source));
+  const session = savedSession ?? localSession;
+  const { left, right, field } = session;
+
+  function updateSession(next: DamageCalculatorSession) {
+    setLocalSession(next);
+    onSessionChange?.(next);
+  }
+
+  function setLeft(next: DamagePokemonDraft) {
+    updateSession({ ...session, left: next });
+  }
+
+  function setRight(next: DamagePokemonDraft) {
+    updateSession({ ...session, right: next });
+  }
+
+  function setField(next: DamageFieldState) {
+    updateSession({ ...session, field: next });
+  }
 
   const leftOutcomes = useMemo(() => calculateMoves(format, left, right, field), [format, left, right, field]);
   const rightOutcomes = useMemo(() => calculateMoves(format, right, left, field, true), [format, left, right, field]);
 
   return (
     <div className="space-y-4 p-4 text-slate-100 sm:p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-300/12 bg-cyan-300/5 px-4 py-3">
-        <div>
-          <p className="flex items-center gap-2 text-sm font-black text-white"><span className="flex size-8 items-center justify-center rounded-xl border border-cyan-300/20 bg-cyan-300/8"><Calculator className="size-4 text-cyan-200" /></span>Modo Pro · Calculadora de daño</p>
-          <p className="mt-1 text-[10px] text-slate-500">Ajusta ambos Pokémon y el campo sin modificar el Team que estás construyendo.</p>
-        </div>
-        <span className="rounded-full border border-cyan-300/15 bg-black/20 px-3 py-1 text-[9px] font-black uppercase tracking-[0.14em] text-cyan-200">Vista integrada</span>
-      </div>
-      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · los resultados se recalculan localmente con cada cambio.</div>
-      <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
-      <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_210px_minmax(0,1fr)]">
         <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
         <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} />
       </div>
+      <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
+      <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
+      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · los resultados se recalculan localmente con cada cambio.</div>
     </div>
   );
 }

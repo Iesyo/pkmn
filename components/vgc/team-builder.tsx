@@ -22,6 +22,7 @@ import { POKEMON_TYPES, type BattleMechanic, type PokemonSet, type TeamGroup, ty
 import { cn } from "@/lib/utils";
 import { PokemonStatEditor } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
+import type { DamageCalculatorSession } from "./damage-calculator";
 
 const DamageCalculatorView = lazy(async () => {
   const calculator = await import("./damage-calculator");
@@ -163,10 +164,12 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [dexError, setDexError] = useState("");
   const [refreshingDex, setRefreshingDex] = useState(false);
   const [proMode, setProMode] = useState(false);
+  const [proSessions, setProSessions] = useState<Record<string, DamageCalculatorSession>>({});
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const selected = pokemon[selectedSlot];
+  const proSessionKey = `${selected.id}:${selected.species}:${format}`;
   const storedVersions = groups.filter((team) => !team.versions[0]?.demo).flatMap((team) => team.versions);
   const paste = useMemo(() => serializeShowdownPaste(pokemon, mechanics), [pokemon, mechanics]);
   const complete = isCompleteTeam(pokemon);
@@ -190,17 +193,26 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     return () => { active = false; };
   }, []);
 
-  function updateSelected(next: PokemonSet) { setPokemon((current) => current.map((set, index) => index === selectedSlot ? next : set)); setMessage(""); }
+  function updateSelected(next: PokemonSet) {
+    setPokemon((current) => current.map((set, index) => index === selectedSlot ? next : set));
+    setProSessions((current) => {
+      if (!(proSessionKey in current)) return current;
+      const nextSessions = { ...current };
+      delete nextSessions[proSessionKey];
+      return nextSessions;
+    });
+    setMessage("");
+  }
 
   function loadVersion(versionId: string) {
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setProMode(false); setProSessions({}); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
-    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setMessage(""); setError("");
+    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setProMode(false); setProSessions({}); setMessage(""); setError("");
   }
 
   async function importPaste(value: string) {
@@ -210,6 +222,8 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
       const imported = cloneForBuilder(parseShowdownPaste(value));
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
       setSelectedSlot(0);
+      setProMode(false);
+      setProSessions({});
       setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
@@ -218,6 +232,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     const previousRules = getStatRules(format);
     const nextRules = getStatRules(nextFormat);
     setFormat(nextFormat);
+    setProSessions({});
     if (nextFormat !== "custom") setMechanics(mechanicsForFormat(nextFormat));
     if (previousRules.totalMax !== nextRules.totalMax) {
       setPokemon((current) => current.map((set) => ({ ...set, evs: "" })));
@@ -319,7 +334,14 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
             </Button></div>
             {proMode && dex ? (
               <Suspense fallback={<div role="status" className="flex min-h-80 items-center justify-center gap-2 p-6 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando modo Pro…</div>}>
-                <DamageCalculatorView key={`${selected.id}:${selected.species}:${format}`} source={selected} format={format} dex={dex} />
+                <DamageCalculatorView
+                  key={proSessionKey}
+                  source={selected}
+                  format={format}
+                  dex={dex}
+                  session={proSessions[proSessionKey]}
+                  onSessionChange={(nextSession) => setProSessions((current) => ({ ...current, [proSessionKey]: nextSession }))}
+                />
               </Suspense>
             ) : <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-2 2xl:grid-cols-[1.05fr_1fr_1fr]">
               <div className="space-y-4">
