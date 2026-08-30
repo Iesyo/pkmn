@@ -67,10 +67,6 @@ export function ChampionsQuickMatchDialog({
   }
 
   useEffect(() => {
-    if (open) resetEntry();
-  }, [open]);
-
-  useEffect(() => {
     if (!open || championsSpecies.length) return;
     let active = true;
     setLoadingSpecies(true);
@@ -102,6 +98,7 @@ export function ChampionsQuickMatchDialog({
   const canSave = selected.length === 4 && lead.length === 2 && opponentSelected.length === 4;
 
   function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) resetEntry();
     setOpen(nextOpen);
   }
 
