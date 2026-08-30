@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
 
-from .models import MatchResult, PokemonSet, TeamVersion
+from .models import MatchResult, PokemonSet, TeamFolder, TeamVersion
 from .parser import parse_showdown_paste
 
 
@@ -20,6 +20,13 @@ def _now() -> str:
 
 def _normalize_paste(paste: str) -> str:
     return paste.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _normalize_folder_name(name: str) -> str:
+    normalized = " ".join(name.strip().split())
+    if not 1 <= len(normalized) <= 40:
+        raise ValueError("El nombre de la carpeta debe tener entre 1 y 40 caracteres.")
+    return normalized
 
 
 class Repository:
@@ -41,13 +48,21 @@ class Repository:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self.connect() as connection:
             connection.executescript(schema)
-            columns = {
+            match_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(matches)").fetchall()
             }
-            if "moves_used_json" not in columns:
-                with connection:
+            team_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(teams)").fetchall()
+            }
+            with connection:
+                if "moves_used_json" not in match_columns:
                     connection.execute("ALTER TABLE matches ADD COLUMN moves_used_json TEXT")
+                if "folder_id" not in team_columns:
+                    connection.execute(
+                        "ALTER TABLE teams ADD COLUMN folder_id TEXT REFERENCES team_folders(id) ON DELETE SET NULL"
+                    )
 
     def get_showdown_names(self) -> list[str]:
         with self.connect() as connection:
@@ -74,6 +89,101 @@ class Repository:
                     (json.dumps(normalized), _now()),
                 )
         return normalized
+
+    def list_team_folders(self) -> list[TeamFolder]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, name, sort_order, created_at FROM team_folders ORDER BY sort_order ASC, name COLLATE NOCASE ASC"
+            ).fetchall()
+        return [
+            TeamFolder(
+                id=str(row["id"]),
+                name=str(row["name"]),
+                sort_order=int(row["sort_order"]),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def create_team_folder(self, name: str) -> TeamFolder:
+        clean_name = _normalize_folder_name(name)
+        folder_id = str(uuid4())
+        created_at = _now()
+        with self.connect() as connection:
+            duplicate = connection.execute(
+                "SELECT id FROM team_folders WHERE lower(name) = lower(?) LIMIT 1",
+                (clean_name,),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("Ya existe una carpeta con ese nombre.")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM team_folders"
+            ).fetchone()
+            sort_order = int(row["next_order"]) if row is not None else 0
+            with connection:
+                connection.execute(
+                    "INSERT INTO team_folders (id, name, sort_order, created_at) VALUES (?, ?, ?, ?)",
+                    (folder_id, clean_name, sort_order, created_at),
+                )
+        return TeamFolder(folder_id, clean_name, sort_order, created_at)
+
+    def rename_team_folder(self, folder_id: str, name: str) -> TeamFolder:
+        clean_name = _normalize_folder_name(name)
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT id, sort_order, created_at FROM team_folders WHERE id = ?",
+                (folder_id,),
+            ).fetchone()
+            if current is None:
+                raise LookupError("No encontramos esa carpeta.")
+            duplicate = connection.execute(
+                "SELECT id FROM team_folders WHERE lower(name) = lower(?) AND id <> ? LIMIT 1",
+                (clean_name, folder_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("Ya existe una carpeta con ese nombre.")
+            with connection:
+                connection.execute(
+                    "UPDATE team_folders SET name = ? WHERE id = ?",
+                    (clean_name, folder_id),
+                )
+        return TeamFolder(
+            folder_id,
+            clean_name,
+            int(current["sort_order"]),
+            str(current["created_at"]),
+        )
+
+    def delete_team_folder(self, folder_id: str) -> None:
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT id FROM team_folders WHERE id = ?", (folder_id,)
+            ).fetchone()
+            if current is None:
+                raise LookupError("No encontramos esa carpeta.")
+            with connection:
+                connection.execute(
+                    "UPDATE teams SET folder_id = NULL WHERE folder_id = ?", (folder_id,)
+                )
+                connection.execute("DELETE FROM team_folders WHERE id = ?", (folder_id,))
+
+    def move_team_to_folder(self, team_id: str, folder_id: str | None) -> None:
+        with self.connect() as connection:
+            team = connection.execute(
+                "SELECT id FROM teams WHERE id = ?", (team_id,)
+            ).fetchone()
+            if team is None:
+                raise LookupError("No encontramos ese equipo.")
+            if folder_id is not None:
+                folder = connection.execute(
+                    "SELECT id FROM team_folders WHERE id = ?", (folder_id,)
+                ).fetchone()
+                if folder is None:
+                    raise LookupError("No encontramos esa carpeta.")
+            with connection:
+                connection.execute(
+                    "UPDATE teams SET folder_id = ? WHERE id = ?", (folder_id, team_id)
+                )
 
     def create_team(self, name: str, paste: str, *, format: str = "champions", mechanics: Sequence[str] = ("mega",)) -> TeamVersion:
         clean_name = name.strip()
@@ -241,7 +351,7 @@ class Repository:
     def list_teams(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             teams = connection.execute(
-                "SELECT id, name, created_at, updated_at FROM teams ORDER BY updated_at DESC"
+                "SELECT id, name, folder_id, created_at, updated_at FROM teams ORDER BY updated_at DESC"
             ).fetchall()
             result: list[dict[str, Any]] = []
             for team in teams:

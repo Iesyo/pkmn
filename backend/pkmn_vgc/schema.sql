@@ -1,9 +1,17 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+CREATE TABLE IF NOT EXISTS team_folders (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    folder_id TEXT REFERENCES team_folders(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

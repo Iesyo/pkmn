@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
+import { CreateFolderDialog, TeamFolderSection } from "@/components/vgc/team-folders";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
 import { TeamBuilder } from "@/components/vgc/team-builder";
@@ -14,13 +15,19 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
+import type { MatchRecord, ScoutingAnalysis, TeamFolder, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
 
 type ConnectionState = "checking" | "ready" | "error";
+type TeamsPayload = { teams?: TeamGroup[]; folders?: TeamFolder[] };
+
+function sortFolders(folders: TeamFolder[]) {
+  return [...folders].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+}
 
 export function VgcDashboard() {
   const [storedGroups, setStoredGroups] = useState<TeamGroup[]>([]);
+  const [teamFolders, setTeamFolders] = useState<TeamFolder[]>([]);
   const [showdownNames, setShowdownNames] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [activeView, setActiveView] = useState("compare");
@@ -35,9 +42,10 @@ export function VgcDashboard() {
   const refresh = useCallback(async () => {
     try {
       const response = await fetch("/api/teams", { cache: "no-store" });
-      const payload = (await response.json()) as { teams?: TeamGroup[] };
+      const payload = (await response.json()) as TeamsPayload;
       if (!response.ok) throw new Error("Persistence unavailable");
       setStoredGroups(payload.teams ?? []);
+      setTeamFolders(sortFolders(payload.folders ?? []));
       setConnection("ready");
     } catch {
       setConnection("error");
@@ -51,14 +59,19 @@ export function VgcDashboard() {
       fetch("/api/settings", { cache: "no-store" }),
     ])
       .then(async ([teamsResponse, settingsResponse]) => {
-        const teamsPayload = (await teamsResponse.json()) as { teams?: TeamGroup[] };
+        const teamsPayload = (await teamsResponse.json()) as TeamsPayload;
         const settingsPayload = (await settingsResponse.json()) as { showdownNames?: string[] };
         if (!teamsResponse.ok || !settingsResponse.ok) throw new Error("Persistence unavailable");
-        return { teams: teamsPayload.teams ?? [], showdownNames: settingsPayload.showdownNames ?? [] };
+        return {
+          teams: teamsPayload.teams ?? [],
+          folders: teamsPayload.folders ?? [],
+          showdownNames: settingsPayload.showdownNames ?? [],
+        };
       })
-      .then(({ teams, showdownNames: savedNames }) => {
+      .then(({ teams, folders, showdownNames: savedNames }) => {
         if (!active) return;
         setStoredGroups(teams);
+        setTeamFolders(sortFolders(folders));
         setShowdownNames(savedNames);
         setConnection("ready");
         void fetch("/api/replays/backfill", { method: "POST" })
@@ -67,10 +80,12 @@ export function VgcDashboard() {
             if (!response.ok || !payload.updated) return null;
             const teamsResponse = await fetch("/api/teams", { cache: "no-store" });
             if (!teamsResponse.ok) return null;
-            return (await teamsResponse.json()) as { teams?: TeamGroup[] };
+            return (await teamsResponse.json()) as TeamsPayload;
           })
           .then((payload) => {
-            if (active && payload) setStoredGroups(payload.teams ?? []);
+            if (!active || !payload) return;
+            setStoredGroups(payload.teams ?? []);
+            setTeamFolders(sortFolders(payload.folders ?? []));
           })
           .catch(() => undefined);
       })
@@ -130,9 +145,14 @@ export function VgcDashboard() {
   const right = versions.find((version) => version.id === rightId) ?? fallbackRight;
   const libraryTeam = storedGroups.find((team) => team.id === libraryTeamId) ?? storedGroups[0];
   const libraryVersion = libraryTeam?.versions.find((version) => version.id === libraryVersionId) ?? libraryTeam?.versions[0];
+  const folderIds = useMemo(() => new Set(teamFolders.map((folder) => folder.id)), [teamFolders]);
+  const unfiledTeams = useMemo(
+    () => storedGroups.filter((team) => !team.folderId || !folderIds.has(team.folderId)),
+    [folderIds, storedGroups],
+  );
 
   function handleTeamCreated(team: TeamGroup) {
-    setStoredGroups((current) => [team, ...current.filter((entry) => entry.id !== team.id)]);
+    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null }, ...current.filter((entry) => entry.id !== team.id)]);
     setLibraryTeamId(team.id);
     setLibraryVersionId(team.versions[0].id);
     setActiveView("library");
@@ -145,8 +165,47 @@ export function VgcDashboard() {
   }
 
   function handleBuilderTeamCreated(team: TeamGroup) {
-    setStoredGroups((current) => [team, ...current.filter((entry) => entry.id !== team.id)]);
+    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null }, ...current.filter((entry) => entry.id !== team.id)]);
     setConnection("ready");
+  }
+
+  function handleFolderCreated(folder: TeamFolder) {
+    setTeamFolders((current) => sortFolders([...current.filter((entry) => entry.id !== folder.id), folder]));
+  }
+
+  function handleFolderRenamed(folder: TeamFolder) {
+    setTeamFolders((current) => sortFolders(current.map((entry) => entry.id === folder.id ? folder : entry)));
+  }
+
+  async function handleFolderDeleted(folderId: string) {
+    try {
+      const response = await fetch(`/api/team-folders/${folderId}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Could not delete folder");
+      setTeamFolders((current) => current.filter((folder) => folder.id !== folderId));
+      setStoredGroups((current) => current.map((team) => team.folderId === folderId ? { ...team, folderId: null } : team));
+      setConnection("ready");
+    } catch {
+      setConnection("error");
+    }
+  }
+
+  async function moveTeam(teamId: string, folderId: string | null) {
+    const team = storedGroups.find((entry) => entry.id === teamId);
+    if (!team || (team.folderId ?? null) === folderId) return;
+    const previousFolderId = team.folderId ?? null;
+    setStoredGroups((current) => current.map((entry) => entry.id === teamId ? { ...entry, folderId } : entry));
+    try {
+      const response = await fetch(`/api/teams/${teamId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folderId }),
+      });
+      if (!response.ok) throw new Error("Could not move team");
+      setConnection("ready");
+    } catch {
+      setStoredGroups((current) => current.map((entry) => entry.id === teamId ? { ...entry, folderId: previousFolderId } : entry));
+      setConnection("error");
+    }
   }
 
   function selectLibraryTeam(team: TeamGroup) {
@@ -207,10 +266,27 @@ export function VgcDashboard() {
         <TabsContent value="library" className="mt-0 outline-none">
           <div className="grid items-start gap-5 lg:grid-cols-[310px_minmax(0,1fr)]">
             <aside className="rounded-[24px] border border-white/8 bg-slate-900/40 p-3 backdrop-blur-xl lg:sticky lg:top-24">
-              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{storedGroups.length} equipos · versiones inmutables</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
+              <div className="flex items-center justify-between gap-2 px-1 pb-3">
+                <div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{storedGroups.length} equipos · versiones inmutables · {teamFolders.length} carpetas</p></div>
+                <div className="flex items-center gap-1.5"><CreateFolderDialog onCreated={handleFolderCreated} /><AddTeamDialog onCreated={handleTeamCreated} /></div>
+              </div>
               <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2">
                 <div className="space-y-2">
-                  {storedGroups.length ? storedGroups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />) : <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center"><BookOpen className="mx-auto size-6 text-slate-700" /><p className="mt-3 text-xs font-semibold text-slate-400">No hay Teams guardados</p><p className="mt-1 text-[10px] leading-4 text-slate-600">Agrega un equipo o créalo desde Team Builder.</p></div>}
+                  {storedGroups.length || teamFolders.length ? (
+                    <>
+                      {teamFolders.map((folder) => {
+                        const teams = storedGroups.filter((team) => team.folderId === folder.id);
+                        return (
+                          <TeamFolderSection key={folder.id} folder={folder} teamCount={teams.length} onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)} onRenamed={handleFolderRenamed} onDeleted={handleFolderDeleted}>
+                            {teams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
+                          </TeamFolderSection>
+                        );
+                      })}
+                      <TeamFolderSection folder={null} teamCount={unfiledTeams.length} onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)} onRenamed={handleFolderRenamed} onDeleted={handleFolderDeleted}>
+                        {unfiledTeams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
+                      </TeamFolderSection>
+                    </>
+                  ) : <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center"><BookOpen className="mx-auto size-6 text-slate-700" /><p className="mt-3 text-xs font-semibold text-slate-400">No hay Teams guardados</p><p className="mt-1 text-[10px] leading-4 text-slate-600">Agrega un equipo o créalo desde Team Builder.</p></div>}
                 </div>
               </ScrollArea>
             </aside>

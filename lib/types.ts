@@ -157,9 +157,17 @@ export interface TeamVersion {
   demo?: boolean;
 }
 
+export interface TeamFolder {
+  id: string;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+}
+
 export interface TeamGroup {
   id: string;
   name: string;
+  folderId?: string | null;
   versions: TeamVersion[];
 }
 

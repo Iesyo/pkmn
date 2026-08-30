@@ -45,6 +45,14 @@ class TeamVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class TeamFolder:
+    id: str
+    name: str
+    sort_order: int
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class Match:
     id: str
     team_version_id: str

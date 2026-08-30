@@ -7,9 +7,21 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
+export const teamFolders = sqliteTable(
+  "team_folders",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [uniqueIndex("team_folders_name_idx").on(table.name)],
+);
+
 export const teams = sqliteTable("teams", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  folderId: text("folder_id").references(() => teamFolders.id, { onDelete: "set null" }),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

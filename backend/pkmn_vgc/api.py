@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
@@ -68,6 +69,14 @@ class SettingsBody(BaseModel):
     showdown_names: list[str] = Field(min_length=1, max_length=10)
 
 
+class FolderBody(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class MoveTeamBody(BaseModel):
+    folder_id: str | None = None
+
+
 def _http_error(error: Exception) -> HTTPException:
     if isinstance(error, LookupError):
         return HTTPException(status_code=404, detail=str(error))
@@ -83,7 +92,10 @@ def health() -> dict[str, str]:
 
 @app.get("/api/teams")
 def list_teams() -> dict[str, object]:
-    return {"teams": repository.list_teams()}
+    return {
+        "teams": repository.list_teams(),
+        "folders": [asdict(folder) for folder in repository.list_team_folders()],
+    }
 
 
 @app.get("/api/settings")
@@ -95,6 +107,44 @@ def get_settings() -> dict[str, object]:
 def update_settings(body: SettingsBody) -> dict[str, object]:
     try:
         return {"showdown_names": repository.save_showdown_names(body.showdown_names)}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.get("/api/team-folders")
+def list_team_folders() -> dict[str, object]:
+    return {"folders": [asdict(folder) for folder in repository.list_team_folders()]}
+
+
+@app.post("/api/team-folders", status_code=201)
+def create_team_folder(body: FolderBody) -> dict[str, object]:
+    try:
+        return {"folder": asdict(repository.create_team_folder(body.name))}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.patch("/api/team-folders/{folder_id}")
+def rename_team_folder(folder_id: str, body: FolderBody) -> dict[str, object]:
+    try:
+        return {"folder": asdict(repository.rename_team_folder(folder_id, body.name))}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.delete("/api/team-folders/{folder_id}", status_code=204)
+def delete_team_folder(folder_id: str) -> None:
+    try:
+        repository.delete_team_folder(folder_id)
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.patch("/api/teams/{team_id}")
+def move_team(team_id: str, body: MoveTeamBody) -> dict[str, object]:
+    try:
+        repository.move_team_to_folder(team_id, body.folder_id)
+        return {"team_id": team_id, "folder_id": body.folder_id}
     except Exception as error:
         raise _http_error(error) from error
 
