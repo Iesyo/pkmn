@@ -109,6 +109,7 @@ export function MatchHistory({
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Partida</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Rival</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">{isChampions ? "Pokémon rival" : "Equipo rival"}</TableHead>
+                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Picks rival</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
@@ -144,6 +145,7 @@ export function MatchHistory({
                       </Button>
                     </div>
                   </TableCell>
+                  <TableCell><PokemonSpriteStrip species={match.opponentPicks ?? []} label="Picks rival" limit={4} /></TableCell>
                   <TableCell><PokemonSpriteStrip species={match.selected} label="Tus picks" tone="cyan" limit={4} /></TableCell>
                   <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
                   <TableCell className="text-right">
