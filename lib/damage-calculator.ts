@@ -8,13 +8,19 @@ export type DamageStat = (typeof DAMAGE_STATS)[number];
 export type DamageStatus = "" | "brn" | "par" | "psn" | "tox" | "slp" | "frz";
 export type DamageWeather = "" | "Sun" | "Rain" | "Sand" | "Snow";
 export type DamageTerrain = "" | "Electric" | "Grassy" | "Psychic" | "Misty";
+export type DamageGender = "" | "M" | "F" | "N";
+export type DamageSwitching = "" | "in" | "out";
 export type SpeedOrder = "left" | "right" | "tie";
+export type EffectiveStatValues = Record<"hp" | DamageStat, number>;
 
 export interface DamagePokemonDraft {
   set: PokemonSet;
   boosts: Record<DamageStat, number>;
   hpPercent: number;
   status: DamageStatus;
+  gender: DamageGender;
+  abilityOn: boolean;
+  alliesFainted: number;
   teraActive: boolean;
   megaActive: boolean;
   dynamaxActive: boolean;
@@ -30,6 +36,13 @@ export interface DamageSideConditions {
   helpingHand: boolean;
   friendGuard: boolean;
   protected: boolean;
+  charge: boolean;
+  flowerGift: boolean;
+  powerTrick: boolean;
+  battery: boolean;
+  powerSpot: boolean;
+  steelySpirit: boolean;
+  switching: DamageSwitching;
 }
 
 export interface DamageFieldState {
@@ -38,6 +51,15 @@ export interface DamageFieldState {
   terrain: DamageTerrain;
   gravity: boolean;
   trickRoom: boolean;
+  magicRoom: boolean;
+  wonderRoom: boolean;
+  auraBreak: boolean;
+  fairyAura: boolean;
+  darkAura: boolean;
+  beadsOfRuin: boolean;
+  swordOfRuin: boolean;
+  tabletsOfRuin: boolean;
+  vesselOfRuin: boolean;
   left: DamageSideConditions;
   right: DamageSideConditions;
 }
@@ -52,6 +74,11 @@ export interface DamageOutcome {
   description: string;
   rolls: number[];
   error?: string;
+}
+
+export interface EffectiveStatsPair {
+  left: EffectiveStatValues | null;
+  right: EffectiveStatValues | null;
 }
 
 const MODERN_BOOST_TABLE: ReadonlyArray<readonly [number, number]> = [
@@ -101,6 +128,13 @@ export function emptySideConditions(): DamageSideConditions {
     helpingHand: false,
     friendGuard: false,
     protected: false,
+    charge: false,
+    flowerGift: false,
+    powerTrick: false,
+    battery: false,
+    powerSpot: false,
+    steelySpirit: false,
+    switching: "",
   };
 }
 
@@ -111,6 +145,15 @@ export function defaultDamageField(): DamageFieldState {
     terrain: "",
     gravity: false,
     trickRoom: false,
+    magicRoom: false,
+    wonderRoom: false,
+    auraBreak: false,
+    fairyAura: false,
+    darkAura: false,
+    beadsOfRuin: false,
+    swordOfRuin: false,
+    tabletsOfRuin: false,
+    vesselOfRuin: false,
     left: emptySideConditions(),
     right: emptySideConditions(),
   };
@@ -127,6 +170,9 @@ export function createDamageDraft(set: PokemonSet): DamagePokemonDraft {
     boosts: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0 },
     hpPercent: 100,
     status: "",
+    gender: "",
+    abilityOn: false,
+    alliesFainted: 0,
     teraActive: false,
     megaActive: false,
     dynamaxActive: false,
@@ -199,6 +245,13 @@ function sideToCalc(side: DamageSideConditions): State.Side {
     isHelpingHand: side.helpingHand,
     isFriendGuard: side.friendGuard,
     isProtected: side.protected,
+    isCharge: side.charge,
+    isFlowerGift: side.flowerGift,
+    isPowerTrick: side.powerTrick,
+    isBattery: side.battery,
+    isPowerSpot: side.powerSpot,
+    isSteelySpirit: side.steelySpirit,
+    isSwitching: side.switching || undefined,
   };
 }
 
@@ -210,6 +263,15 @@ function createField(state: DamageFieldState, reverse: boolean) {
     weather: state.weather || undefined,
     terrain: state.terrain || undefined,
     isGravity: state.gravity,
+    isMagicRoom: Boolean(state.magicRoom),
+    isWonderRoom: Boolean(state.wonderRoom),
+    isAuraBreak: Boolean(state.auraBreak),
+    isFairyAura: Boolean(state.fairyAura),
+    isDarkAura: Boolean(state.darkAura),
+    isBeadsOfRuin: Boolean(state.beadsOfRuin),
+    isSwordOfRuin: Boolean(state.swordOfRuin),
+    isTabletsOfRuin: Boolean(state.tabletsOfRuin),
+    isVesselOfRuin: Boolean(state.vesselOfRuin),
     attackerSide: sideToCalc(attacker),
     defenderSide: sideToCalc(defender),
   });
@@ -224,9 +286,14 @@ function createPokemon(
   const set = draft.set;
   const speciesName = resolveBattleSpeciesName(format, draft, moveName);
   const transformed = speciesName !== set.species;
+  const protoQuark = set.ability === "Protosynthesis" || set.ability === "Quark Drive";
   const options = {
     level: format === "champions" ? 50 : set.level || 50,
     ability: transformed ? undefined : set.ability || undefined,
+    abilityOn: Boolean(draft.abilityOn),
+    alliesFainted: Math.max(0, Math.min(5, Math.trunc(draft.alliesFainted ?? 0))),
+    boostedStat: protoQuark ? "auto" as const : undefined,
+    gender: draft.gender || undefined,
     item: set.item || undefined,
     nature: set.nature || "Serious",
     evs: allocationsFor(set),
@@ -244,6 +311,40 @@ function createPokemon(
     ...options,
     curHP: Math.max(1, Math.floor(fullHealth.maxHP() * draft.hpPercent / 100)),
   });
+}
+
+function statsFromPokemon(pokemon: Pokemon): EffectiveStatValues {
+  return {
+    hp: pokemon.stats.hp,
+    atk: pokemon.stats.atk,
+    def: pokemon.stats.def,
+    spa: pokemon.stats.spa,
+    spd: pokemon.stats.spd,
+    spe: pokemon.stats.spe,
+  };
+}
+
+export function calculateEffectiveStats(
+  format: string,
+  left: DamagePokemonDraft,
+  right: DamagePokemonDraft,
+  fieldState: DamageFieldState,
+): EffectiveStatsPair {
+  if (!left.set.species || !right.set.species) return { left: null, right: null };
+
+  try {
+    const generation = generationForFormat(format);
+    const leftPokemon = createPokemon(format, left);
+    const rightPokemon = createPokemon(format, right);
+    const probeMove = new Move(generation, "Protect");
+    const result = calculate(generation, leftPokemon, rightPokemon, probeMove, createField(fieldState, false));
+    return {
+      left: statsFromPokemon(result.attacker),
+      right: statsFromPokemon(result.defender),
+    };
+  } catch {
+    return { left: null, right: null };
+  }
 }
 
 function summarizeRolls(damage: number | number[] | number[][], range: [number, number]) {
@@ -297,7 +398,7 @@ export function calculateDamage(
       createField(fieldState, reverse),
     );
     const range = result.range();
-    const maxHp = defensePokemon.maxHP();
+    const maxHp = result.defender.maxHP();
     const ko = result.kochance(false);
     return {
       move: moveName,
