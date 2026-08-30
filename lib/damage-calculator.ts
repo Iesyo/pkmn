@@ -8,6 +8,7 @@ export type DamageStat = (typeof DAMAGE_STATS)[number];
 export type DamageStatus = "" | "brn" | "par" | "psn" | "tox" | "slp" | "frz";
 export type DamageWeather = "" | "Sun" | "Rain" | "Sand" | "Snow";
 export type DamageTerrain = "" | "Electric" | "Grassy" | "Psychic" | "Misty";
+export type SpeedOrder = "left" | "right" | "tie";
 
 export interface DamagePokemonDraft {
   set: PokemonSet;
@@ -36,6 +37,7 @@ export interface DamageFieldState {
   weather: DamageWeather;
   terrain: DamageTerrain;
   gravity: boolean;
+  trickRoom: boolean;
   left: DamageSideConditions;
   right: DamageSideConditions;
 }
@@ -84,6 +86,12 @@ export function getDisplayedEffectiveStat(
   return stat === "spe" && tailwind ? Math.min(10000, boosted * 2) : boosted;
 }
 
+export function getSpeedOrder(leftSpeed: number, rightSpeed: number, trickRoom = false): SpeedOrder {
+  if (leftSpeed === rightSpeed) return "tie";
+  if (trickRoom) return leftSpeed < rightSpeed ? "left" : "right";
+  return leftSpeed > rightSpeed ? "left" : "right";
+}
+
 export function emptySideConditions(): DamageSideConditions {
   return {
     reflect: false,
@@ -102,6 +110,7 @@ export function defaultDamageField(): DamageFieldState {
     weather: "",
     terrain: "",
     gravity: false,
+    trickRoom: false,
     left: emptySideConditions(),
     right: emptySideConditions(),
   };
