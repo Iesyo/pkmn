@@ -50,3 +50,18 @@ test("keeps demo teams out of the comparator and separates team from version sel
   assert.match(selector, /handleTeamChange/);
   assert.match(selector, /team\?\.versions\[0\]\?\.id/);
 });
+
+test("pins replay entry state and persisted matches to the exact team version", async () => {
+  const [panel, dialogs, queries] = await Promise.all([
+    source("components/vgc/team-panel.tsx"),
+    source("components/vgc/team-dialogs.tsx"),
+    source("db/queries.ts"),
+  ]);
+
+  assert.match(panel, /<MatchHistory key=\{version\.id\} version=\{version\}/);
+  assert.match(dialogs, /teamVersionId:\s*version\.id/);
+  assert.match(queries, /SELECT id FROM team_versions WHERE id = \?/);
+  assert.match(queries, /INSERT INTO matches \(id, team_version_id,/);
+  assert.match(queries, /match\.id,\s*\n\s*input\.teamVersionId,/);
+  assert.match(queries, /match\.team_version_id === version\.id/);
+});
