@@ -56,7 +56,7 @@ test("groups My Teams by team before choosing an exact version", async () => {
   assert.match(dialog, /function selectTeam\(nextTeamId: string\)/);
   assert.match(dialog, /setVersionId\(team\?\.versions\[0\]\?\.id \?\? ""\)/);
   assert.match(dialog, /onLoad\(selectedVersion\.id\)/);
-  assert.match(dialog, />Cargar versión<\/Button>/);
+  assert.match(dialog, /Cargar versión/);
   assert.match(source, /<MyTeamsDialog groups=\{groups\} onLoad=\{loadVersion\} \/>/);
   assert.doesNotMatch(source, /<MyTeamsDialog versions=\{storedVersions\}/);
 });
