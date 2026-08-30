@@ -32,5 +32,5 @@ test("shows the quick entry only for Champions while keeping replay entry availa
   assert.match(history, /isChampions \? \(/);
   assert.match(history, /<ChampionsQuickMatchDialog version=\{version\} onCreated=\{onMatchCreated\} \/>/);
   assert.match(history, /<ReplayQuickEntry version=\{version\} onCreated=\{onMatchCreated\} \/>/);
-  assert.match(history, /\{isChampions \? "Picks rival" : "Equipo rival"\}/);
+  assert.match(history, /\{isChampions \? "Pokémon rival" : "Equipo rival"\}/);
 });
