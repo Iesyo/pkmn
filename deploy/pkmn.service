@@ -13,6 +13,8 @@ Environment=PKMN_PERSIST_PATH=/var/lib/pkmn/state
 Environment=WRANGLER_WRITE_LOGS=false
 Environment=WRANGLER_LOG_PATH=/var/lib/pkmn/logs/wrangler.log
 Environment=MINIFLARE_REGISTRY_PATH=/var/lib/pkmn/registry
+ExecStartPre=+/usr/bin/rm -rf -- /opt/pkmn-runtime/node_modules/.vite-temp
+ExecStartPre=+/usr/bin/install -d -o root -g pkmn -m 0770 /opt/pkmn-runtime/node_modules/.vite-temp
 ExecStart=/opt/pkmn-runtime/deploy/start-vps.sh
 Restart=always
 RestartSec=5
