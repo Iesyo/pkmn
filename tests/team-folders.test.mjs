@@ -46,10 +46,26 @@ test("Teams UI offers folders, move menu and drag-and-drop fallback", () => {
   assert.match(card, /Mover a/);
   assert.match(card, /TEAM_DRAG_MIME/);
   assert.match(card, /import \{ getSpriteUrl \} from "@\/lib\/pokemon-data"/);
-  assert.match(card, /getSpriteUrl\(pokemon\.species\)/);
+  assert.match(card, /src=\{getSpriteUrl\(pokemon\.species\)\}/);
   assert.doesNotMatch(card, /getPokemonSpriteUrl/);
   assert.match(pokemonData, /export function getSpriteUrl\(species: string\)/);
   assert.match(folders, /onDropTeam/);
   assert.match(folders, /Eliminar carpeta/);
   assert.match(folders, /Volverán automáticamente a Sin carpeta/);
+});
+
+test("folder disclosure and drag hover stay stable across child transitions and remounts", () => {
+  const folders = source("components/vgc/team-folders.tsx");
+
+  assert.match(folders, /const folderDisclosureState = new Map<string, boolean>\(\)/);
+  assert.match(folders, /useState\(\(\) => folderDisclosureState\.get\(folderKey\) \?\? true\)/);
+  assert.match(folders, /folderDisclosureState\.set\(folderKey, next\)/);
+  assert.match(folders, /const dragDepth = useRef\(0\)/);
+  assert.match(folders, /onDragEnter=\{handleDragEnter\}/);
+  assert.match(folders, /dragDepth\.current \+= 1/);
+  assert.match(folders, /dragDepth\.current = Math\.max\(0, dragDepth\.current - 1\)/);
+  assert.doesNotMatch(folders, /relatedTarget/);
+  assert.match(folders, /aria-expanded=\{open\}/);
+  assert.match(folders, /hidden=\{!open\}/);
+  assert.doesNotMatch(folders, /\{open \? \(/);
 });
