@@ -229,6 +229,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
   const [rating, setRating] = useState(initialReplay?.rating?.toString() ?? "");
   const [notes, setNotes] = useState("");
   const [opponentTeam, setOpponentTeam] = useState(initialReplay?.opponentSelected.join(", ") ?? "");
+  const [opponentPicks, setOpponentPicks] = useState<string[]>(initialReplay?.opponentPicks ?? []);
   const [selected, setSelected] = useState<string[]>(initialReplay?.selected ?? []);
   const [lead, setLead] = useState<string[]>(initialReplay?.lead ?? []);
   const [error, setError] = useState("");
@@ -237,6 +238,12 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
   function setOpen(nextOpen: boolean) {
     setInternalOpen(nextOpen);
     onOpenChange?.(nextOpen);
+  }
+
+  function toggleOpponentPick(species: string) {
+    setOpponentPicks((current) => current.includes(species)
+      ? current.filter((entry) => entry !== species)
+      : current.length < 4 ? [...current, species] : current);
   }
 
   function toggleSelected(species: string) {
@@ -267,12 +274,12 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
         await fetch("/api/matches", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, lead, movesUsed: initialReplay?.movesUsed, playedAt: initialReplay?.playedAt ?? undefined }),
+          body: JSON.stringify({ teamVersionId: version.id, result, opponentName, replayUrl, rating: rating ? Number(rating) : null, notes, selected, opponentSelected, opponentPicks, lead, movesUsed: initialReplay?.movesUsed, playedAt: initialReplay?.playedAt ?? undefined }),
         }),
       );
       onCreated();
       setOpen(false);
-      setOpponentName(""); setReplayUrl(""); setRating(""); setNotes(""); setOpponentTeam(""); setSelected([]); setLead([]);
+      setOpponentName(""); setReplayUrl(""); setRating(""); setNotes(""); setOpponentTeam(""); setOpponentPicks([]); setSelected([]); setLead([]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No pudimos registrar la partida.");
     } finally {
@@ -301,6 +308,11 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
               <Input id="opponent-team" value={opponentTeam} onChange={(event) => setOpponentTeam(event.target.value)} placeholder="Pelipper, Archaludon, Rillaboom, ..." className="border-white/10 bg-white/5" />
               <p className="text-[10px] leading-4 text-slate-600">Este campo alimenta Best/Worst Matchups y Attendance, igual que en tus hojas.</p>
               <PokemonPreview species={opponentPreview} tone="violet" />
+            </div>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between"><Label>Picks rival</Label><span className="text-[10px] text-slate-600">{opponentPicks.length}/4</span></div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{opponentPreview.map((species) => <button key={species} type="button" onClick={() => toggleOpponentPick(species)} className={opponentPicks.includes(species) ? "flex items-center gap-2 rounded-xl border border-violet-300/35 bg-violet-300/10 px-2 py-1.5 text-left text-xs text-violet-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(species)} alt="" width={34} height={34} unoptimized className="size-8 shrink-0 object-contain" /><span className="min-w-0 flex-1 truncate">{species}</span>{opponentPicks.includes(species) ? <Check className="size-3 shrink-0" /> : null}</button>)}</div>
+              <PokemonPreview species={opponentPicks} tone="violet" />
             </div>
             <div className="grid gap-2"><Label htmlFor="replay-url">Replay de Showdown</Label><Input id="replay-url" type="url" value={replayUrl} onChange={(event) => setReplayUrl(event.target.value)} readOnly={Boolean(initialReplay)} placeholder="https://replay.pokemonshowdown.com/..." className="border-white/10 bg-white/5 read-only:cursor-default read-only:text-slate-400" /></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 4 picks</Label><span className="text-[10px] text-slate-600">{selected.length}/4</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleSelected(pokemon.species)} className={selected.includes(pokemon.species) ? "flex items-center gap-2 rounded-xl border border-cyan-300/35 bg-cyan-300/10 px-2 py-1.5 text-left text-xs text-cyan-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(pokemon.species)} alt="" width={34} height={34} unoptimized className="size-8 shrink-0 object-contain" /><span className="min-w-0 flex-1 truncate">{pokemon.species}</span>{selected.includes(pokemon.species) ? <Check className="size-3 shrink-0" /> : null}</button>)}</div><PokemonPreview species={selected} /></div>
