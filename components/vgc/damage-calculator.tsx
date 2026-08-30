@@ -14,7 +14,9 @@ import {
   calculateMoves,
   createDamageDraft,
   defaultDamageField,
+  getDisplayedEffectiveStat,
   getMegaForm,
+  getSpeedOrder,
   type DamageFieldState,
   type DamageOutcome,
   type DamagePokemonDraft,
@@ -34,7 +36,7 @@ import {
   moveFromSnapshot,
   type ShowdownSnapshot,
 } from "@/lib/showdown-data";
-import { NATURES, normalizeTeraType } from "@/lib/team-builder";
+import { calculateStat, NATURES, normalizeTeraType, parseEvs } from "@/lib/team-builder";
 import { POKEMON_TYPES, type BattleMechanic, type PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PokemonLibraryVersionSelect } from "./pokemon-library-dialog";
@@ -76,6 +78,30 @@ const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function getCurrentEffectiveSpeed(
+  draft: DamagePokemonDraft,
+  format: string,
+  dex: ShowdownSnapshot,
+  tailwind: boolean,
+) {
+  const set = draft.set;
+  if (!set.species) return null;
+  const megaForm = getMegaForm(set);
+  const speciesName = draft.megaActive && megaForm ? megaForm : set.species;
+  const species = getSpecies(dex, speciesName) ?? getSpecies(dex, set.species);
+  if (!species) return null;
+  const allocations = parseEvs(set.evs);
+  const rawSpeed = calculateStat(
+    species.baseStats,
+    "Spe",
+    allocations.Spe,
+    format === "champions" ? 50 : set.level || 50,
+    set.nature || "Serious",
+    format,
+  );
+  return getDisplayedEffectiveStat("spe", rawSpeed, draft.boosts.spe, tailwind);
 }
 
 function CalculatorPokemonPanel({
@@ -287,7 +313,76 @@ function ToggleCard({ label, checked, onChange }: { label: string; checked: bool
   return <label className={cn("flex min-h-10 items-center justify-between gap-2 rounded-xl border px-2.5 text-[9px] font-bold", checked ? "border-cyan-300/25 bg-cyan-300/8 text-cyan-100" : "border-white/7 bg-white/3 text-slate-500")}><span>{label}</span><Switch checked={checked} onCheckedChange={onChange} /></label>;
 }
 
-function FieldPanel({ value, onChange }: { value: DamageFieldState; onChange: (next: DamageFieldState) => void }) {
+function SpeedComparisonCard({
+  leftName,
+  rightName,
+  leftSpeed,
+  rightSpeed,
+  trickRoom,
+}: {
+  leftName: string;
+  rightName: string;
+  leftSpeed: number | null;
+  rightSpeed: number | null;
+  trickRoom: boolean;
+}) {
+  const ready = leftSpeed !== null && rightSpeed !== null;
+  const order = ready ? getSpeedOrder(leftSpeed, rightSpeed, trickRoom) : null;
+  const status = !ready
+    ? "Selecciona ambos Pokémon"
+    : order === "tie"
+      ? "Speed tie"
+      : order === "left"
+        ? "Tu Pokémon gana el orden por Speed"
+        : "El rival gana el orden por Speed";
+  const leftWins = order === "left";
+  const rightWins = order === "right";
+  const tie = order === "tie";
+
+  return (
+    <div
+      aria-label={ready ? `Orden por Speed: ${leftName} ${leftSpeed}, ${rightName} ${rightSpeed}. ${status}` : status}
+      className={cn(
+        "mt-4 rounded-2xl border p-3 text-center",
+        trickRoom ? "border-violet-300/20 bg-violet-300/[0.06]" : "border-amber-300/15 bg-amber-300/[0.045]",
+      )}
+    >
+      <div className="flex items-center justify-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+        <Zap className={cn("size-3.5", trickRoom ? "text-violet-300" : "text-amber-300")} />
+        Orden por Speed
+      </div>
+      <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-[8px] font-bold uppercase tracking-[0.08em] text-slate-600">{leftName || "Tu Pokémon"}</p>
+          <p className={cn("mt-1 text-lg font-black tabular-nums", tie ? "text-amber-200" : leftWins ? "text-cyan-200" : "text-slate-500")}>{leftSpeed ?? "—"}</p>
+        </div>
+        <div className={cn("flex size-7 items-center justify-center rounded-full border text-[9px] font-black", trickRoom ? "border-violet-300/20 bg-violet-300/10 text-violet-200" : "border-white/8 bg-black/20 text-slate-600")}>{tie ? "=" : "VS"}</div>
+        <div className="min-w-0">
+          <p className="truncate text-[8px] font-bold uppercase tracking-[0.08em] text-slate-600">{rightName || "Rival"}</p>
+          <p className={cn("mt-1 text-lg font-black tabular-nums", tie ? "text-amber-200" : rightWins ? "text-cyan-200" : "text-slate-500")}>{rightSpeed ?? "—"}</p>
+        </div>
+      </div>
+      <p className={cn("mt-2 text-[9px] font-black", tie ? "text-amber-200" : ready ? "text-cyan-100" : "text-slate-600")}>{status}</p>
+      <p className="mt-1 text-[8px] leading-4 text-slate-600">{trickRoom ? "Trick Room · menor Speed primero" : "Mayor Speed primero"}</p>
+    </div>
+  );
+}
+
+function FieldPanel({
+  value,
+  onChange,
+  leftName,
+  rightName,
+  leftSpeed,
+  rightSpeed,
+}: {
+  value: DamageFieldState;
+  onChange: (next: DamageFieldState) => void;
+  leftName: string;
+  rightName: string;
+  leftSpeed: number | null;
+  rightSpeed: number | null;
+}) {
   function updateSide(side: "left" | "right", key: keyof DamageSideConditions, checked: boolean) {
     onChange({ ...value, [side]: { ...value[side], [key]: checked } });
   }
@@ -295,11 +390,13 @@ function FieldPanel({ value, onChange }: { value: DamageFieldState; onChange: (n
   return (
     <section className="rounded-[24px] border border-cyan-300/10 bg-cyan-300/[0.035] p-3 xl:sticky xl:top-4">
       <div className="text-center"><Zap className="mx-auto size-5 text-amber-300" /><p className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-300">Campo</p><p className="mt-1 text-[9px] text-slate-600">Condiciones compartidas</p></div>
+      <SpeedComparisonCard leftName={leftName} rightName={rightName} leftSpeed={leftSpeed} rightSpeed={rightSpeed} trickRoom={Boolean(value.trickRoom)} />
       <div className="mt-4 space-y-3">
         <div className="grid gap-1.5"><Label>Combate</Label><Select value={value.gameType} onValueChange={(gameType) => onChange({ ...value, gameType: gameType as DamageFieldState["gameType"] })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Doubles">Dobles · VGC</SelectItem><SelectItem value="Singles">Individual</SelectItem></SelectContent></Select></div>
         <div className="grid gap-1.5"><Label>Clima</Label><Select value={value.weather || "none"} onValueChange={(weather) => onChange({ ...value, weather: weather === "none" ? "" : weather as DamageWeather })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Ninguno</SelectItem><SelectItem value="Sun">Sol</SelectItem><SelectItem value="Rain">Lluvia</SelectItem><SelectItem value="Sand">Arena</SelectItem><SelectItem value="Snow">Nieve</SelectItem></SelectContent></Select></div>
         <div className="grid gap-1.5"><Label>Terreno</Label><Select value={value.terrain || "none"} onValueChange={(terrain) => onChange({ ...value, terrain: terrain === "none" ? "" : terrain as DamageTerrain })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Ninguno</SelectItem><SelectItem value="Electric">Eléctrico</SelectItem><SelectItem value="Grassy">Hierba</SelectItem><SelectItem value="Psychic">Psíquico</SelectItem><SelectItem value="Misty">Niebla</SelectItem></SelectContent></Select></div>
         <ToggleCard label="Gravedad" checked={value.gravity} onChange={(gravity) => onChange({ ...value, gravity })} />
+        <ToggleCard label="Trick Room" checked={Boolean(value.trickRoom)} onChange={(trickRoom) => onChange({ ...value, trickRoom })} />
       </div>
       <div className="my-4 h-px bg-white/7" />
       {(["left", "right"] as const).map((side) => <div key={side} className="mt-3"><p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-500">{side === "left" ? "Tu lado" : "Lado rival"}</p><div className="mt-2 grid gap-1.5">{([
@@ -358,12 +455,14 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
 
   const leftOutcomes = useMemo(() => calculateMoves(format, left, right, field), [format, left, right, field]);
   const rightOutcomes = useMemo(() => calculateMoves(format, right, left, field, true), [format, left, right, field]);
+  const leftSpeed = useMemo(() => getCurrentEffectiveSpeed(left, format, dex, field.left.tailwind), [dex, field.left.tailwind, format, left]);
+  const rightSpeed = useMemo(() => getCurrentEffectiveSpeed(right, format, dex, field.right.tailwind), [dex, field.right.tailwind, format, right]);
 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
         <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} tailwind={field.left.tailwind} />
-        <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
+        <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} leftName={left.set.species} rightName={right.set.species} leftSpeed={leftSpeed} rightSpeed={rightSpeed} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
         <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} tailwind={field.right.tailwind} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
