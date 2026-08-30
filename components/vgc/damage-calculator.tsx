@@ -86,16 +86,7 @@ const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
 };
 
 type DamageSideBooleanKey = Exclude<keyof DamageSideConditions, "switching">;
-type AdvancedFieldToggleKey =
-  | "magicRoom"
-  | "wonderRoom"
-  | "auraBreak"
-  | "fairyAura"
-  | "darkAura"
-  | "beadsOfRuin"
-  | "swordOfRuin"
-  | "tabletsOfRuin"
-  | "vesselOfRuin";
+type AdvancedFieldToggleKey = "magicRoom" | "wonderRoom" | "auraBreak" | "fairyAura" | "darkAura";
 
 const FIELD_SIDE_TOGGLES: Array<[DamageSideBooleanKey, string]> = [
   ["reflect", "Reflect"],
@@ -113,16 +104,16 @@ const ADVANCED_SIDE_TOGGLES: Array<[DamageSideBooleanKey, string]> = [
   ["battery", "Battery aliado"],
   ["powerSpot", "Power Spot aliado"],
   ["steelySpirit", "Steely Spirit aliado"],
+  ["swordOfRuin", "Sword of Ruin aliado"],
+  ["beadsOfRuin", "Beads of Ruin aliado"],
+  ["tabletsOfRuin", "Tablets of Ruin aliado"],
+  ["vesselOfRuin", "Vessel of Ruin aliado"],
   ["powerTrick", "Power Trick"],
 ];
 
 const ADVANCED_FIELD_TOGGLES: Array<[AdvancedFieldToggleKey, string]> = [
   ["magicRoom", "Magic Room"],
   ["wonderRoom", "Wonder Room"],
-  ["swordOfRuin", "Sword of Ruin aliado"],
-  ["beadsOfRuin", "Beads of Ruin aliado"],
-  ["tabletsOfRuin", "Tablets of Ruin aliado"],
-  ["vesselOfRuin", "Vessel of Ruin aliado"],
   ["fairyAura", "Fairy Aura"],
   ["darkAura", "Dark Aura"],
   ["auraBreak", "Aura Break"],
