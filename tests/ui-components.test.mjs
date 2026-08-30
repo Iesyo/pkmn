@@ -83,3 +83,18 @@ test("renders sidebar skeletons deterministically", async () => {
   assert.equal(first, second);
   assert.match(first, /--skeleton-width:70%/);
 });
+
+test("keeps force-mounted inactive tab panels hidden", async () => {
+  const { Tabs, TabsContent } = await vite.ssrLoadModule("/components/ui/tabs.tsx");
+  const html = renderToStaticMarkup(
+    React.createElement(
+      Tabs,
+      { defaultValue: "compare" },
+      React.createElement(TabsContent, { value: "compare" }, "Compare"),
+      React.createElement(TabsContent, { value: "builder", forceMount: true }, "Builder"),
+    ),
+  );
+
+  assert.match(html, /Builder/);
+  assert.match(html, /data-\[state=inactive\]:hidden/);
+});
