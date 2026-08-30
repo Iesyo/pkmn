@@ -25,6 +25,7 @@ export interface DamageSideConditions {
   reflect: boolean;
   lightScreen: boolean;
   auroraVeil: boolean;
+  tailwind: boolean;
   helpingHand: boolean;
   friendGuard: boolean;
   protected: boolean;
@@ -51,11 +52,44 @@ export interface DamageOutcome {
   error?: string;
 }
 
+const MODERN_BOOST_TABLE: ReadonlyArray<readonly [number, number]> = [
+  [2, 8],
+  [2, 7],
+  [2, 6],
+  [2, 5],
+  [2, 4],
+  [2, 3],
+  [2, 2],
+  [3, 2],
+  [4, 2],
+  [5, 2],
+  [6, 2],
+  [7, 2],
+  [8, 2],
+];
+
+export function getBoostedStatValue(rawStat: number, boost: number) {
+  const stage = Math.max(-6, Math.min(6, Math.trunc(boost)));
+  const [numerator, denominator] = MODERN_BOOST_TABLE[stage + 6];
+  return Math.floor(rawStat * numerator / denominator);
+}
+
+export function getDisplayedEffectiveStat(
+  stat: DamageStat,
+  rawStat: number,
+  boost: number,
+  tailwind = false,
+) {
+  const boosted = getBoostedStatValue(rawStat, boost);
+  return stat === "spe" && tailwind ? Math.min(10000, boosted * 2) : boosted;
+}
+
 export function emptySideConditions(): DamageSideConditions {
   return {
     reflect: false,
     lightScreen: false,
     auroraVeil: false,
+    tailwind: false,
     helpingHand: false,
     friendGuard: false,
     protected: false,
@@ -152,6 +186,7 @@ function sideToCalc(side: DamageSideConditions): State.Side {
     isReflect: side.reflect,
     isLightScreen: side.lightScreen,
     isAuroraVeil: side.auroraVeil,
+    isTailwind: side.tailwind,
     isHelpingHand: side.helpingHand,
     isFriendGuard: side.friendGuard,
     isProtected: side.protected,

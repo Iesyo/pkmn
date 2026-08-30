@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { getDisplayedEffectiveStat, type DamageStat } from "@/lib/damage-calculator";
 import type { BaseStats } from "@/lib/showdown-data";
 import { EV_STATS, calculateStat, getNatureEffect, getStatRules, parseEvs, serializeEvs } from "@/lib/team-builder";
 import type { PokemonSet } from "@/lib/types";
@@ -16,6 +17,13 @@ type EditableStat = (typeof EV_STATS)[number];
 export type BoostableStat = Exclude<EditableStat, "HP">;
 
 const BOOST_VALUES = Array.from({ length: 13 }, (_, index) => 6 - index);
+const DAMAGE_STAT_KEYS: Record<BoostableStat, DamageStat> = {
+  Atk: "atk",
+  Def: "def",
+  SpA: "spa",
+  SpD: "spd",
+  Spe: "spe",
+};
 
 export function PokemonStatEditor({
   pokemon,
@@ -24,6 +32,7 @@ export function PokemonStatEditor({
   onChange,
   boosts,
   onBoostChange,
+  tailwind = false,
   stableHeight = false,
 }: {
   pokemon: PokemonSet;
@@ -32,6 +41,7 @@ export function PokemonStatEditor({
   onChange: (next: PokemonSet) => void;
   boosts?: Record<BoostableStat, number>;
   onBoostChange?: (stat: BoostableStat, value: number) => void;
+  tailwind?: boolean;
   stableHeight?: boolean;
 }) {
   const values = parseEvs(pokemon.evs);
@@ -39,7 +49,7 @@ export function PokemonStatEditor({
   const total = Object.values(values).reduce((sum, value) => sum + value, 0);
   const showBoosts = boosts !== undefined && onBoostChange !== undefined;
   const gridColumns = showBoosts
-    ? "grid-cols-[28px_30px_minmax(64px,1fr)_42px_34px_46px] gap-x-1 sm:grid-cols-[30px_34px_minmax(120px,1fr)_44px_38px_48px] sm:gap-x-1.5"
+    ? "grid-cols-[28px_30px_minmax(56px,1fr)_42px_34px_44px_46px] gap-x-1 sm:grid-cols-[30px_34px_minmax(100px,1fr)_44px_38px_48px_48px] sm:gap-x-1.5"
     : "grid-cols-[28px_34px_minmax(70px,1fr)_50px_40px] gap-x-2 sm:grid-cols-[30px_38px_minmax(120px,1fr)_50px_42px]";
 
   function setAllocation(stat: EditableStat, requested: number) {
@@ -73,12 +83,18 @@ export function PokemonStatEditor({
         <span className="text-center">{rules.shortLabel}</span>
         <span />
         <span className="text-right">Total</span>
+        {showBoosts ? <span className="text-center" title="Stat tras boost y Tailwind">Efect.</span> : null}
         {showBoosts ? <span className="text-center">Boost</span> : null}
       </div>
       <div className="mt-1 space-y-1.5">
         {EV_STATS.map((stat) => {
           const nature = getNatureEffect(pokemon.nature, stat);
           const finalStat = calculateStat(baseStats, stat, values[stat], pokemon.level, pokemon.nature, format);
+          const boost = stat === "HP" ? 0 : boosts?.[stat] ?? 0;
+          const effectiveStat = stat === "HP"
+            ? finalStat
+            : getDisplayedEffectiveStat(DAMAGE_STAT_KEYS[stat], finalStat, boost, stat === "Spe" && tailwind);
+          const effectiveChanged = stat !== "HP" && effectiveStat !== finalStat;
           return (
             <div key={stat} className={cn("grid items-center rounded-lg px-1 py-1.5 hover:bg-white/[0.025]", gridColumns)}>
               <span className={cn("text-[10px] font-black", nature === "plus" ? "text-rose-400" : nature === "minus" ? "text-cyan-400" : "text-slate-500")}>{stat}</span>
@@ -90,6 +106,7 @@ export function PokemonStatEditor({
               </div>
               <Input aria-label={`${rules.shortLabel} de ${stat}`} type="number" min={0} max={rules.perStatMax} step={rules.step} value={values[stat]} onChange={(event) => setAllocation(stat, Number(event.target.value) || 0)} className="h-7 border-white/8 bg-black/25 px-1 text-center text-[10px]" />
               <strong className={cn("text-right text-xs", nature === "plus" ? "text-rose-400" : nature === "minus" ? "text-cyan-300" : "text-slate-200")}>{finalStat}</strong>
+              {showBoosts ? stat === "HP" ? <span className="text-center text-[10px] font-bold text-slate-700">—</span> : <strong title={stat === "Spe" && tailwind ? "Después de boost y Tailwind" : "Después del boost"} className={cn("text-center text-xs font-black tabular-nums", effectiveChanged ? "text-amber-200" : "text-slate-500")}>{effectiveStat}</strong> : null}
               {showBoosts ? stat === "HP" ? <span aria-hidden="true" /> : (
                 <Select value={String(boosts[stat])} onValueChange={(value) => onBoostChange(stat, Number(value))}>
                   <SelectTrigger aria-label={`Boost de ${stat}`} className="h-7 w-full border-white/8 bg-black/25 px-1 text-[9px]">

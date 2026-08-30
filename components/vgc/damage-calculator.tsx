@@ -87,6 +87,7 @@ function CalculatorPokemonPanel({
   mechanics,
   outcomes,
   opponentReady,
+  tailwind,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
@@ -96,6 +97,7 @@ function CalculatorPokemonPanel({
   mechanics: BattleMechanic[];
   outcomes: DamageOutcome[];
   opponentReady: boolean;
+  tailwind: boolean;
 }) {
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
@@ -210,6 +212,7 @@ function CalculatorPokemonPanel({
               SpD: draft.boosts.spd,
               Spe: draft.boosts.spe,
             }}
+            tailwind={tailwind}
             stableHeight
             onBoostChange={(stat, value) => {
               const damageStat = BOOST_STAT_KEYS[stat];
@@ -303,6 +306,7 @@ function FieldPanel({ value, onChange }: { value: DamageFieldState; onChange: (n
         ["reflect", "Reflect"],
         ["lightScreen", "Light Screen"],
         ["auroraVeil", "Aurora Veil"],
+        ["tailwind", "Tailwind"],
         ["helpingHand", "Helping Hand"],
         ["friendGuard", "Friend Guard"],
         ["protected", "Protect"],
@@ -358,9 +362,9 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} />
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} tailwind={field.left.tailwind} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} tailwind={field.right.tailwind} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />

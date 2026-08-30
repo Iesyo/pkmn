@@ -49,6 +49,17 @@ test("maps Pokémon Champions to the official generation zero engine", async () 
   assert.equal(generationForFormat("gen6"), 6);
 });
 
+test("uses Showdown stage rounding for displayed effective stats and Tailwind speed", async () => {
+  const { emptySideConditions, getBoostedStatValue, getDisplayedEffectiveStat } = await damageModule();
+
+  assert.equal(getBoostedStatValue(126, 1), 189);
+  assert.equal(getBoostedStatValue(126, -1), 84);
+  assert.equal(getDisplayedEffectiveStat("spe", 126, 1, false), 189);
+  assert.equal(getDisplayedEffectiveStat("spe", 126, 1, true), 378);
+  assert.equal(getDisplayedEffectiveStat("atk", 182, 2, true), 364);
+  assert.equal(emptySideConditions().tailwind, false);
+});
+
 test("keeps calculator edits isolated from the Team Builder set", async () => {
   const { createDamageDraft } = await damageModule();
   const { emptyPokemon } = await teamBuilderModule();
@@ -207,10 +218,11 @@ test("inverse scouting keeps the real offensive Stat Point inside its compatible
 });
 
 test("uses the integrated calculator as the only Team Builder editor", async () => {
-  const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
+  const [builderSource, calculatorSource, statEditorSource, damageSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/pokemon-stat-editor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/damage-calculator.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(builderSource, /DamageCalculatorView/);
@@ -225,6 +237,13 @@ test("uses the integrated calculator as the only Team Builder editor", async () 
   assert.match(calculatorSource, /onBoostChange=/);
   assert.match(statEditorSource, /BoostableStat/);
   assert.match(statEditorSource, />Boost<\/span>/);
+  assert.match(statEditorSource, />Efect\.<\/span>/);
+  assert.match(statEditorSource, /getDisplayedEffectiveStat/);
+  assert.match(statEditorSource, /tailwind\?: boolean/);
+  assert.match(calculatorSource, /\["tailwind", "Tailwind"\]/);
+  assert.match(calculatorSource, /tailwind=\{field\.left\.tailwind\}/);
+  assert.match(calculatorSource, /tailwind=\{field\.right\.tailwind\}/);
+  assert.match(damageSource, /isTailwind: side\.tailwind/);
   assert.match(statEditorSource, /6 - index/);
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
