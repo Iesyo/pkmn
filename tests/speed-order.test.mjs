@@ -39,7 +39,7 @@ test("Trick Room is a shared calculator field condition and starts disabled", as
   assert.equal(field.right.tailwind, false);
 });
 
-test("the Speed card stays clean and sits between both side sections", async () => {
+test("the clean Speed card uses engine-resolved stats and sits between both side sections", async () => {
   const source = await readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8");
 
   assert.match(source, /function SpeedComparisonCard/);
@@ -48,8 +48,10 @@ test("the Speed card stays clean and sits between both side sections", async () 
   assert.match(source, /rightName=\{right\.set\.species\}/);
   assert.match(source, /leftSpeed=\{leftSpeed\}/);
   assert.match(source, /rightSpeed=\{rightSpeed\}/);
-  assert.match(source, /getCurrentEffectiveSpeed\(left, format, dex, field\.left\.tailwind\)/);
-  assert.match(source, /getCurrentEffectiveSpeed\(right, format, dex, field\.right\.tailwind\)/);
+  assert.match(source, /calculateEffectiveStats\(format, left, right, field\)/);
+  assert.match(source, /const leftSpeed = effectiveStats\.left\?\.spe \?\? null/);
+  assert.match(source, /const rightSpeed = effectiveStats\.right\?\.spe \?\? null/);
+  assert.doesNotMatch(source, /function getCurrentEffectiveSpeed/);
   assert.match(source, /label="Trick Room"/);
   assert.match(source, /Speed tie/);
   assert.doesNotMatch(source, /Mayor Speed primero|menor Speed primero|gana el orden por Speed/);
