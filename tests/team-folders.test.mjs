@@ -37,6 +37,7 @@ test("Teams UI offers folders, move menu and drag-and-drop fallback", () => {
   const dashboard = source("app/vgc-dashboard.tsx");
   const card = source("components/vgc/library-card.tsx");
   const folders = source("components/vgc/team-folders.tsx");
+  const pokemonData = source("lib/pokemon-data.ts");
 
   assert.match(dashboard, /CreateFolderDialog/);
   assert.match(dashboard, /TeamFolderSection/);
@@ -44,6 +45,10 @@ test("Teams UI offers folders, move menu and drag-and-drop fallback", () => {
   assert.match(card, /draggable/);
   assert.match(card, /Mover a/);
   assert.match(card, /TEAM_DRAG_MIME/);
+  assert.match(card, /import \{ getSpriteUrl \} from "@\/lib\/pokemon-data"/);
+  assert.match(card, /getSpriteUrl\(pokemon\.species\)/);
+  assert.doesNotMatch(card, /getPokemonSpriteUrl/);
+  assert.match(pokemonData, /export function getSpriteUrl\(species: string\)/);
   assert.match(folders, /onDropTeam/);
   assert.match(folders, /Eliminar carpeta/);
   assert.match(folders, /Volverán automáticamente a Sin carpeta/);
