@@ -76,6 +76,7 @@ export interface MatchRecord {
   replayUrl: string;
   selected: string[];
   opponentSelected: string[];
+  opponentPicks?: string[];
   lead: string[];
   movesUsed?: Record<string, string[]> | null;
   rating: number | null;
