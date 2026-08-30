@@ -25,12 +25,28 @@ test("registers a minimal Champions match against the exact team version", async
   assert.match(queries, /match\.id,\s*\n\s*input\.teamVersionId,/);
 });
 
-test("shows the quick entry only for Champions while keeping replay entry available", async () => {
-  const history = await source("components/vgc/match-history.tsx");
+test("uses one adaptive control for Champions quick entry and replay import", async () => {
+  const [history, entry, quickMatch] = await Promise.all([
+    source("components/vgc/match-history.tsx"),
+    source("components/vgc/match-quick-entry.tsx"),
+    source("components/vgc/champions-quick-match.tsx"),
+  ]);
 
   assert.match(history, /const isChampions = version\.format === "champions"/);
-  assert.match(history, /isChampions \? \(/);
-  assert.match(history, /<ChampionsQuickMatchDialog version=\{version\} onCreated=\{onMatchCreated\} \/>/);
-  assert.match(history, /<ReplayQuickEntry version=\{version\} onCreated=\{onMatchCreated\} \/>/);
+  assert.match(history, /<MatchQuickEntry version=\{version\} onCreated=\{onMatchCreated\} \/>/);
+  assert.doesNotMatch(history, /Registro rápido Champions/);
+  assert.doesNotMatch(history, /<ReplayQuickEntry/);
   assert.match(history, /\{isChampions \? "Pokémon rival" : "Equipo rival"\}/);
+
+  assert.match(entry, /const hasReplayInput = replayUrl\.trim\(\)\.length > 0/);
+  assert.match(entry, /const championsMode = version\.format === "champions" && !hasReplayInput/);
+  assert.match(entry, /championsMode \? "Partida Champions" : "Agregar replay"/);
+  assert.match(entry, /if \(!hasReplayInput\)[\s\S]*setChampionsDialogOpen\(true\)/);
+  assert.match(entry, /replayUrl:\s*replayUrl\.trim\(\)/);
+  assert.match(entry, /open=\{championsDialogOpen\}/);
+  assert.match(entry, /hideTrigger/);
+
+  assert.match(quickMatch, /open:\s*controlledOpen/);
+  assert.match(quickMatch, /onOpenChange/);
+  assert.match(quickMatch, /hideTrigger = false/);
 });
