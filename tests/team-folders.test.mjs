@@ -58,7 +58,9 @@ test("folder disclosure and drag hover stay stable across child transitions and 
   const folders = source("components/vgc/team-folders.tsx");
 
   assert.match(folders, /const folderDisclosureState = new Map<string, boolean>\(\)/);
-  assert.match(folders, /useState\(\(\) => folderDisclosureState\.get\(folderKey\) \?\? true\)/);
+  assert.match(folders, /function defaultDisclosureOpen\(folder: TeamFolder \| null\)/);
+  assert.match(folders, /return folder === null/);
+  assert.match(folders, /useState\(\(\) => folderDisclosureState\.get\(folderKey\) \?\? defaultDisclosureOpen\(folder\)\)/);
   assert.match(folders, /folderDisclosureState\.set\(folderKey, next\)/);
   assert.match(folders, /const dragDepth = useRef\(0\)/);
   assert.match(folders, /onDragEnter=\{handleDragEnter\}/);

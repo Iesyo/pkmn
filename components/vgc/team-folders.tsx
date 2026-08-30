@@ -41,6 +41,10 @@ function disclosureKey(folder: TeamFolder | null) {
   return folder?.id ?? UNFILED_DISCLOSURE_KEY;
 }
 
+function defaultDisclosureOpen(folder: TeamFolder | null) {
+  return folder === null;
+}
+
 async function readApiError(response: Response, fallback: string) {
   try {
     const payload = (await response.json()) as { error?: string };
@@ -184,7 +188,7 @@ export function TeamFolderSection({
   onDeleted: (folderId: string) => Promise<void>;
 }) {
   const folderKey = disclosureKey(folder);
-  const [open, setOpenState] = useState(() => folderDisclosureState.get(folderKey) ?? true);
+  const [open, setOpenState] = useState(() => folderDisclosureState.get(folderKey) ?? defaultDisclosureOpen(folder));
   const [dragOver, setDragOver] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
