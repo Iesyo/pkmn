@@ -1,3 +1,4 @@
+import { enrichTeamsWithOpponentPicks } from "@/db/opponent-picks";
 import { createTeam, listTeamGroups } from "@/db/queries";
 import { listTeamFolderAssignments, listTeamFolders } from "@/db/team-folders";
 import { apiError } from "@/lib/http";
@@ -7,11 +8,12 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [teams, folders, folderAssignments] = await Promise.all([
+    const [rawTeams, folders, folderAssignments] = await Promise.all([
       listTeamGroups(),
       listTeamFolders(),
       listTeamFolderAssignments(),
     ]);
+    const teams = await enrichTeamsWithOpponentPicks(rawTeams);
     return Response.json({
       teams: teams.map((team) => ({
         ...team,
