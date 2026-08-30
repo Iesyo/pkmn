@@ -157,6 +157,24 @@ const spriteAliases: Record<string, string> = {
   zamazentacrowned: "zamazenta-crowned",
 };
 
+// Most Showdown forms use `<base>-<forme>` as their sprite slug even though
+// the battle ID removes punctuation (Floette-Eternal -> floetteeternal). These
+// are actual species names whose hyphen belongs to the base name, so they must
+// keep the compact battle ID instead of being interpreted as forms.
+const hyphenatedBaseSpriteIds = new Set([
+  "nidoranf",
+  "nidoranm",
+  "hooh",
+  "porygonz",
+  "jangmoo",
+  "hakamoo",
+  "kommoo",
+  "wochien",
+  "chienpao",
+  "tinglu",
+  "chiyu",
+]);
+
 const megaSpriteAliases: Record<string, string> = {
   meowsticmmega: "meowstic-mmega",
   meowsticfmega: "meowstic-fmega",
@@ -211,6 +229,15 @@ function getMegaSpriteSlug(species: string) {
   return variant ? `${base}-mega${variant}` : `${base}-mega`;
 }
 
+function getFormSpriteSlug(species: string) {
+  const id = toId(species);
+  if (hyphenatedBaseSpriteIds.has(id) || !species.includes("-")) return id;
+
+  const [base, ...formeParts] = species.split("-").map((part) => part.trim()).filter(Boolean);
+  if (!base || !formeParts.length) return id;
+  return `${toId(base)}-${toId(formeParts.join("-"))}`;
+}
+
 export function getSpriteUrl(species: string) {
   const id = toId(species);
   const zFallback = megaZBaseFallbacks[id];
@@ -220,7 +247,7 @@ export function getSpriteUrl(species: string) {
     return `https://play.pokemonshowdown.com/sprites/gen5/${zFallback}.png`;
   }
 
-  const slug = getMegaSpriteSlug(species) ?? spriteAliases[id] ?? id;
+  const slug = getMegaSpriteSlug(species) ?? spriteAliases[id] ?? getFormSpriteSlug(species);
   if (animatedMegaSpriteIds.has(id)) {
     // Some current Z-A Megas are available in Showdown's animated catalog
     // before they reach the Gen 5-style static catalog.
