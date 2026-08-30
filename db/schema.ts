@@ -174,6 +174,9 @@ export const matches = sqliteTable(
     opponentSelectedJson: text("opponent_selected_json")
       .notNull()
       .default("[]"),
+    opponentPicksJson: text("opponent_picks_json")
+      .notNull()
+      .default("[]"),
     leadJson: text("lead_json").notNull().default("[]"),
     movesUsedJson: text("moves_used_json"),
     rating: integer("rating"),
