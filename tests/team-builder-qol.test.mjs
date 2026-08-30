@@ -45,3 +45,18 @@ test("keeps import and export dialogs fixed while the paste scrolls internally",
   assert.match(source, /grid grid-cols-2 gap-2 border-t border-white\/8 pt-4/);
   assert.ok(source.includes("<DialogClose asChild>"));
 });
+
+test("groups My Teams by team before choosing an exact version", async () => {
+  const source = await readFile(builderSourceUrl, "utf8");
+  const dialog = source.match(/function MyTeamsDialog[\s\S]*?export function TeamBuilder/)?.[0] ?? "";
+
+  assert.match(dialog, /\{ groups, onLoad \}/);
+  assert.match(dialog, />Equipo<\/Label>/);
+  assert.match(dialog, />Versión<\/Label>/);
+  assert.match(dialog, /function selectTeam\(nextTeamId: string\)/);
+  assert.match(dialog, /setVersionId\(team\?\.versions\[0\]\?\.id \?\? ""\)/);
+  assert.match(dialog, /onLoad\(selectedVersion\.id\)/);
+  assert.match(dialog, />Cargar versión<\/Button>/);
+  assert.match(source, /<MyTeamsDialog groups=\{groups\} onLoad=\{loadVersion\} \/>/);
+  assert.doesNotMatch(source, /<MyTeamsDialog versions=\{storedVersions\}/);
+});
