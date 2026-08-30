@@ -31,6 +31,7 @@ export interface ImportedReplayMatch {
   playerName: string;
   opponentName: string;
   opponentSelected: string[];
+  opponentPicks: string[];
   selected: string[];
   lead: string[];
   movesUsed: Record<string, string[]>;
@@ -431,10 +432,12 @@ export function importShowdownReplay(
   const lead = mapToCanonicalSpecies(own.lead, options.teamSpecies).slice(0, 2);
   const movesUsed = mapMovesUsedToCanonical(own.movesUsed, selected, options.teamSpecies);
   const opponentSelected = (opponent.team.length ? opponent.team : opponent.selected).slice(0, 6);
+  const opponentPicks = opponent.selected.slice(0, 4);
   const warnings: string[] = [];
 
   if (selected.length !== 4) warnings.push("El log público no reveló los cuatro picks; completa únicamente los que falten.");
   if (lead.length !== 2) warnings.push("El log público no reveló ambos leads; completa únicamente los que falten.");
+  if (opponentPicks.length !== 4) warnings.push("El log público no reveló los cuatro picks del rival; completa únicamente los que falten.");
   if (own.finalRating === null) warnings.push("Showdown no publicó el rating final para esta partida.");
 
   return {
@@ -443,6 +446,7 @@ export function importShowdownReplay(
     playerName: own.name,
     opponentName: opponent.name || "Rival",
     opponentSelected,
+    opponentPicks,
     selected,
     lead,
     movesUsed,
