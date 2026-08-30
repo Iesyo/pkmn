@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChampionsQuickMatchDialog } from "@/components/vgc/champions-quick-match";
 import { ReplayQuickEntry } from "@/components/vgc/team-dialogs";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { MatchRecord, TeamVersion } from "@/lib/types";
@@ -60,6 +61,7 @@ export function MatchHistory({
   const matches = version.matches;
   const [deletingMatchId, setDeletingMatchId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState("");
+  const isChampions = version.format === "champions";
 
   async function removeMatch(match: MatchRecord) {
     if (deletingMatchId) return;
@@ -89,8 +91,19 @@ export function MatchHistory({
         <span className="text-[10px] text-slate-600">Últimas {Math.min(matches.length, 5)}</span>
       </div>
       <div className="border-b border-white/7 bg-white/[0.018] px-4 py-3">
-        <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace: Showdown completa automáticamente el resultado y las selecciones.</p></div>
-        <ReplayQuickEntry version={version} onCreated={onMatchCreated} />
+        {isChampions ? (
+          <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/[0.035] p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-bold text-amber-100">Registro rápido Champions</p>
+              <p className="mt-0.5 text-[10px] text-slate-600">WIN/LOSS · tus 4 picks · tu lead · 4 picks del rival.</p>
+            </div>
+            <ChampionsQuickMatchDialog version={version} onCreated={onMatchCreated} />
+          </div>
+        ) : null}
+        <div className={isChampions ? "border-t border-white/7 pt-3" : ""}>
+          <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace: Showdown completa automáticamente el resultado y las selecciones.</p></div>
+          <ReplayQuickEntry version={version} onCreated={onMatchCreated} />
+        </div>
         {deleteError ? <p role="status" className="mt-2 text-[10px] font-semibold text-rose-300">{deleteError}</p> : null}
       </div>
       {matches.length ? (
@@ -100,7 +113,7 @@ export function MatchHistory({
               <TableRow className="border-white/7 hover:bg-transparent">
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Partida</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Rival</TableHead>
-                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Equipo rival</TableHead>
+                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">{isChampions ? "Picks rival" : "Equipo rival"}</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
@@ -121,7 +134,7 @@ export function MatchHistory({
                   <TableCell className="max-w-36 truncate font-medium text-slate-300">{match.opponentName}</TableCell>
                   <TableCell>
                     <div className="flex min-w-max items-center gap-2">
-                      <PokemonSpriteStrip species={match.opponentSelected} label="Equipo rival" />
+                      <PokemonSpriteStrip species={match.opponentSelected} label={isChampions ? "Picks del rival" : "Equipo rival"} />
                       <Button
                         type="button"
                         variant="outline"
@@ -185,7 +198,7 @@ export function MatchHistory({
         <div className="flex flex-col items-center px-6 py-10 text-center">
           <Trophy className="size-6 text-slate-700" />
           <p className="mt-2 text-xs font-semibold text-slate-400">Todavía no hay partidas</p>
-          <p className="mt-1 max-w-xs text-[10px] leading-4 text-slate-600">Registra el primer resultado con su replay para empezar a medir este equipo.</p>
+          <p className="mt-1 max-w-xs text-[10px] leading-4 text-slate-600">Registra el primer resultado para empezar a medir este equipo.</p>
         </div>
       )}
     </section>
