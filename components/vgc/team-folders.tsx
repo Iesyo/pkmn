@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type DragEvent, type ReactNode } from "react";
+import { useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ChevronDown, Folder, FolderOpen, FolderPlus, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
 import {
@@ -33,6 +33,13 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { TeamFolder } from "@/lib/types";
 import { TEAM_DRAG_MIME } from "./library-card";
+
+const UNFILED_DISCLOSURE_KEY = "__unfiled__";
+const folderDisclosureState = new Map<string, boolean>();
+
+function disclosureKey(folder: TeamFolder | null) {
+  return folder?.id ?? UNFILED_DISCLOSURE_KEY;
+}
 
 async function readApiError(response: Response, fallback: string) {
   try {
@@ -176,20 +183,40 @@ export function TeamFolderSection({
   onRenamed: (folder: TeamFolder) => void;
   onDeleted: (folderId: string) => Promise<void>;
 }) {
-  const [open, setOpen] = useState(true);
+  const folderKey = disclosureKey(folder);
+  const [open, setOpenState] = useState(() => folderDisclosureState.get(folderKey) ?? true);
   const [dragOver, setDragOver] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const dragDepth = useRef(0);
   const folderId = folder?.id ?? null;
+
+  function toggleOpen() {
+    const next = !open;
+    folderDisclosureState.set(folderKey, next);
+    setOpenState(next);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
+  }
 
   function handleDragOver(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    setDragOver(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragOver(false);
   }
 
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
+    dragDepth.current = 0;
     setDragOver(false);
     const teamId = event.dataTransfer.getData(TEAM_DRAG_MIME) || event.dataTransfer.getData("text/plain");
     if (teamId) onDropTeam(teamId, folderId);
@@ -197,11 +224,9 @@ export function TeamFolderSection({
 
   return (
     <section
+      onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
-      onDragLeave={(event) => {
-        const nextTarget = event.relatedTarget;
-        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setDragOver(false);
-      }}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={cn(
         "rounded-2xl border p-1.5 transition-colors",
@@ -209,7 +234,7 @@ export function TeamFolderSection({
       )}
     >
       <div className="flex items-center gap-1">
-        <button type="button" onClick={() => setOpen((current) => !current)} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-white/[0.035]">
+        <button type="button" aria-expanded={open} onClick={toggleOpen} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-white/[0.035]">
           <ChevronDown className={cn("size-3.5 shrink-0 text-slate-600 transition-transform", !open && "-rotate-90")} />
           {open ? <FolderOpen className="size-3.5 shrink-0 text-cyan-300/80" /> : <Folder className="size-3.5 shrink-0 text-cyan-300/65" />}
           <span className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-slate-400">{folder?.name ?? "Sin carpeta"}</span>
@@ -244,11 +269,9 @@ export function TeamFolderSection({
           </>
         ) : null}
       </div>
-      {open ? (
-        <div className="space-y-2 pt-1.5">
-          {teamCount ? children : <div className={cn("rounded-xl border border-dashed px-3 py-3 text-center text-[9px] font-semibold", dragOver ? "border-cyan-300/25 text-cyan-200/70" : "border-white/7 text-slate-700")}>{dragOver ? "Suelta aquí para mover el equipo" : "Carpeta vacía · arrastra un equipo aquí"}</div>}
-        </div>
-      ) : null}
+      <div hidden={!open} className="space-y-2 pt-1.5">
+        {teamCount ? children : <div className={cn("rounded-xl border border-dashed px-3 py-3 text-center text-[9px] font-semibold", dragOver ? "border-cyan-300/25 text-cyan-200/70" : "border-white/7 text-slate-700")}>{dragOver ? "Suelta aquí para mover el equipo" : "Carpeta vacía · arrastra un equipo aquí"}</div>}
+      </div>
     </section>
   );
 }
