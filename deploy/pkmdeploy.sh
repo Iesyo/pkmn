@@ -50,6 +50,7 @@ wait_for_app() {
 
 run_as_app() {
   runuser -u "${APP_USER}" -- env \
+    CI=1 \
     HOME="${DATA_ROOT}/home" \
     PKMN_PERSIST_PATH="${STATE_DIR}" \
     WRANGLER_WRITE_LOGS=false \
