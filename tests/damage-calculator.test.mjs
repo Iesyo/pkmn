@@ -237,7 +237,7 @@ test("keeps calculator drafts per Pokémon with one page scroll and inline damag
   ]);
 
   assert.match(builderSource, /calculatorSessions/);
-  assert.match(builderSource, /const calculatorSessionKey = `\$\{selected\.id\}:\$\{format\}`/);
+  assert.match(builderSource, /const calculatorSessionKey = `\$\{selected\.id\}:\$\{format\}:\$\{slotRevisions\[selectedSlot\]\}`/);
   assert.match(builderSource, /session=\{calculatorSessions\[calculatorSessionKey\]\}/);
   assert.match(builderSource, /onSessionChange=/);
   assert.match(builderSource, /\.\.\.nextSession\.left\.set/);
