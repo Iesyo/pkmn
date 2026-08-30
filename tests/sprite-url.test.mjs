@@ -92,3 +92,36 @@ test("keeps existing non-Mega sprite aliases intact", async () => {
     "https://play.pokemonshowdown.com/sprites/gen5/fluttermane.png",
   );
 });
+
+test("uses Showdown form slugs without breaking species whose base name contains a hyphen", async () => {
+  const { getSpriteUrl } = await vite.ssrLoadModule("/lib/pokemon-data.ts");
+
+  assert.equal(
+    getSpriteUrl("Floette-Eternal"),
+    "https://play.pokemonshowdown.com/sprites/gen5/floette-eternal.png",
+  );
+  assert.equal(
+    getSpriteUrl("Necrozma-Dusk-Mane"),
+    "https://play.pokemonshowdown.com/sprites/gen5/necrozma-duskmane.png",
+  );
+  assert.equal(
+    getSpriteUrl("Tauros-Paldea-Aqua"),
+    "https://play.pokemonshowdown.com/sprites/gen5/tauros-paldeaaqua.png",
+  );
+  assert.equal(
+    getSpriteUrl("Ho-Oh"),
+    "https://play.pokemonshowdown.com/sprites/gen5/hooh.png",
+  );
+  assert.equal(
+    getSpriteUrl("Porygon-Z"),
+    "https://play.pokemonshowdown.com/sprites/gen5/porygonz.png",
+  );
+  assert.equal(
+    getSpriteUrl("Jangmo-o"),
+    "https://play.pokemonshowdown.com/sprites/gen5/jangmoo.png",
+  );
+  assert.equal(
+    getSpriteUrl("Chien-Pao"),
+    "https://play.pokemonshowdown.com/sprites/gen5/chienpao.png",
+  );
+});
