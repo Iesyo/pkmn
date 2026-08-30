@@ -25,8 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ChampionsQuickMatchDialog } from "@/components/vgc/champions-quick-match";
-import { ReplayQuickEntry } from "@/components/vgc/team-dialogs";
+import { MatchQuickEntry } from "@/components/vgc/match-quick-entry";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { MatchRecord, TeamVersion } from "@/lib/types";
 
@@ -91,19 +90,15 @@ export function MatchHistory({
         <span className="text-[10px] text-slate-600">Últimas {Math.min(matches.length, 5)}</span>
       </div>
       <div className="border-b border-white/7 bg-white/[0.018] px-4 py-3">
-        {isChampions ? (
-          <div className="mb-3 flex flex-col gap-3 rounded-2xl border border-amber-300/15 bg-amber-300/[0.035] p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs font-bold text-amber-100">Registro rápido Champions</p>
-              <p className="mt-0.5 text-[10px] text-slate-600">WIN/LOSS · tus 4 picks · tu lead · 4 picks del rival.</p>
-            </div>
-            <ChampionsQuickMatchDialog version={version} onCreated={onMatchCreated} />
-          </div>
-        ) : null}
-        <div className={isChampions ? "border-t border-white/7 pt-3" : ""}>
-          <div className="mb-2.5"><p className="text-xs font-bold text-slate-300">Agregar replay</p><p className="mt-0.5 text-[10px] text-slate-600">Pega el enlace: Showdown completa automáticamente el resultado y las selecciones.</p></div>
-          <ReplayQuickEntry version={version} onCreated={onMatchCreated} />
+        <div className="mb-2.5">
+          <p className="text-xs font-bold text-slate-300">{isChampions ? "Registrar partida" : "Agregar replay"}</p>
+          <p className="mt-0.5 text-[10px] text-slate-600">
+            {isChampions
+              ? "Sin enlace abre el registro rápido Champions; con un replay, Showdown importa automáticamente el resultado y las selecciones."
+              : "Pega el enlace: Showdown completa automáticamente el resultado y las selecciones."}
+          </p>
         </div>
+        <MatchQuickEntry version={version} onCreated={onMatchCreated} />
         {deleteError ? <p role="status" className="mt-2 text-[10px] font-semibold text-rose-300">{deleteError}</p> : null}
       </div>
       {matches.length ? (
