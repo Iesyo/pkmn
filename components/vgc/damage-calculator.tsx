@@ -11,13 +11,14 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
+  calculateEffectiveStats,
   calculateMoves,
   createDamageDraft,
   defaultDamageField,
-  getDisplayedEffectiveStat,
   getMegaForm,
   getSpeedOrder,
   type DamageFieldState,
+  type DamageGender,
   type DamageOutcome,
   type DamagePokemonDraft,
   type DamageSideConditions,
@@ -25,6 +26,7 @@ import {
   type DamageStatus,
   type DamageTerrain,
   type DamageWeather,
+  type EffectiveStatValues,
 } from "@/lib/damage-calculator";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
 import {
@@ -36,7 +38,7 @@ import {
   moveFromSnapshot,
   type ShowdownSnapshot,
 } from "@/lib/showdown-data";
-import { calculateStat, NATURES, normalizeTeraType, parseEvs } from "@/lib/team-builder";
+import { NATURES, normalizeTeraType } from "@/lib/team-builder";
 import { POKEMON_TYPES, type BattleMechanic, type PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { PokemonLibraryVersionSelect } from "./pokemon-library-dialog";
@@ -68,6 +70,13 @@ const STATUS_OPTIONS: Array<{ value: DamageStatus; label: string }> = [
   { value: "frz", label: "Congelado" },
 ];
 
+const GENDER_OPTIONS: Array<{ value: DamageGender | "auto"; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "M", label: "Macho" },
+  { value: "F", label: "Hembra" },
+  { value: "N", label: "Sin género" },
+];
+
 const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
   Atk: "atk",
   Def: "def",
@@ -76,7 +85,19 @@ const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
   Spe: "spe",
 };
 
-const FIELD_SIDE_TOGGLES: Array<[keyof DamageSideConditions, string]> = [
+type DamageSideBooleanKey = Exclude<keyof DamageSideConditions, "switching">;
+type AdvancedFieldToggleKey =
+  | "magicRoom"
+  | "wonderRoom"
+  | "auraBreak"
+  | "fairyAura"
+  | "darkAura"
+  | "beadsOfRuin"
+  | "swordOfRuin"
+  | "tabletsOfRuin"
+  | "vesselOfRuin";
+
+const FIELD_SIDE_TOGGLES: Array<[DamageSideBooleanKey, string]> = [
   ["reflect", "Reflect"],
   ["lightScreen", "Light Screen"],
   ["auroraVeil", "Aurora Veil"],
@@ -86,32 +107,44 @@ const FIELD_SIDE_TOGGLES: Array<[keyof DamageSideConditions, string]> = [
   ["protected", "Protect"],
 ];
 
+const ADVANCED_SIDE_TOGGLES: Array<[DamageSideBooleanKey, string]> = [
+  ["charge", "Charge"],
+  ["flowerGift", "Flower Gift aliado"],
+  ["battery", "Battery aliado"],
+  ["powerSpot", "Power Spot aliado"],
+  ["steelySpirit", "Steely Spirit aliado"],
+  ["powerTrick", "Power Trick"],
+];
+
+const ADVANCED_FIELD_TOGGLES: Array<[AdvancedFieldToggleKey, string]> = [
+  ["magicRoom", "Magic Room"],
+  ["wonderRoom", "Wonder Room"],
+  ["swordOfRuin", "Sword of Ruin aliado"],
+  ["beadsOfRuin", "Beads of Ruin aliado"],
+  ["tabletsOfRuin", "Tablets of Ruin aliado"],
+  ["vesselOfRuin", "Vessel of Ruin aliado"],
+  ["fairyAura", "Fairy Aura"],
+  ["darkAura", "Dark Aura"],
+  ["auraBreak", "Aura Break"],
+];
+
+const ABILITY_ON_ABILITIES = new Set([
+  "Analytic",
+  "Dauntless Shield",
+  "Electromorphosis",
+  "Flash Fire",
+  "Intimidate",
+  "Intrepid Sword",
+  "Minus",
+  "Plus",
+  "Slow Start",
+  "Stakeout",
+  "Teraform Zero",
+  "Unburden",
+]);
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
-}
-
-function getCurrentEffectiveSpeed(
-  draft: DamagePokemonDraft,
-  format: string,
-  dex: ShowdownSnapshot,
-  tailwind: boolean,
-) {
-  const set = draft.set;
-  if (!set.species) return null;
-  const megaForm = getMegaForm(set);
-  const speciesName = draft.megaActive && megaForm ? megaForm : set.species;
-  const species = getSpecies(dex, speciesName) ?? getSpecies(dex, set.species);
-  if (!species) return null;
-  const allocations = parseEvs(set.evs);
-  const rawSpeed = calculateStat(
-    species.baseStats,
-    "Spe",
-    allocations.Spe,
-    format === "champions" ? 50 : set.level || 50,
-    set.nature || "Serious",
-    format,
-  );
-  return getDisplayedEffectiveStat("spe", rawSpeed, draft.boosts.spe, tailwind);
 }
 
 function CalculatorPokemonPanel({
@@ -123,7 +156,8 @@ function CalculatorPokemonPanel({
   mechanics,
   outcomes,
   opponentReady,
-  tailwind,
+  effectiveStats,
+  showGender,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
@@ -133,7 +167,8 @@ function CalculatorPokemonPanel({
   mechanics: BattleMechanic[];
   outcomes: DamageOutcome[];
   opponentReady: boolean;
-  tailwind: boolean;
+  effectiveStats: EffectiveStatValues | null;
+  showGender: boolean;
 }) {
   const set = draft.set;
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
@@ -147,10 +182,20 @@ function CalculatorPokemonPanel({
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
   const legalAbilities = megaActive ? battleSpecies?.abilities ?? [] : getLegalAbilities(dex, set.species);
   const displayedAbility = megaActive ? battleSpecies?.abilities[0] ?? set.ability : set.ability;
+  const showAbilityOn = ABILITY_ON_ABILITIES.has(displayedAbility);
+  const showAlliesFainted = displayedAbility === "Supreme Overlord";
+  const showAdvancedPokemonState = showGender || showAbilityOn || showAlliesFainted;
 
   function updateSet(next: PokemonSet) {
     const nextMegaForm = mechanics.includes("mega") ? getMegaForm(next) : null;
-    onChange({ ...draft, set: next, megaActive: draft.megaActive && Boolean(nextMegaForm) });
+    const abilityChanged = next.ability !== set.ability;
+    onChange({
+      ...draft,
+      set: next,
+      megaActive: draft.megaActive && Boolean(nextMegaForm),
+      abilityOn: abilityChanged ? false : Boolean(draft.abilityOn),
+      alliesFainted: abilityChanged && next.ability !== "Supreme Overlord" ? 0 : draft.alliesFainted ?? 0,
+    });
   }
 
   function chooseSpecies(value: string | null) {
@@ -248,7 +293,7 @@ function CalculatorPokemonPanel({
               SpD: draft.boosts.spd,
               Spe: draft.boosts.spe,
             }}
-            tailwind={tailwind}
+            effectiveStats={effectiveStats}
             stableHeight
             onBoostChange={(stat, value) => {
               const damageStat = BOOST_STAT_KEYS[stat];
@@ -286,6 +331,18 @@ function CalculatorPokemonPanel({
             {mechanics.includes("dynamax") ? <ToggleCard label="Dynamax" checked={draft.dynamaxActive} onChange={(checked) => onChange({ ...draft, dynamaxActive: checked })} /> : null}
             {mechanics.includes("zmove") ? <ToggleCard label="Z-Move" checked={draft.zMoveActive} onChange={(checked) => onChange({ ...draft, zMoveActive: checked })} /> : null}
           </div>
+          {showAdvancedPokemonState ? (
+            <details className="mt-3 rounded-xl border border-white/7 bg-white/[0.02] px-3 py-2">
+              <summary className="cursor-pointer select-none text-[9px] font-black uppercase tracking-[0.1em] text-slate-500">Estado avanzado</summary>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {showGender ? (
+                  <div className="grid gap-1.5"><Label>Género</Label><Select value={draft.gender || "auto"} onValueChange={(value) => onChange({ ...draft, gender: value === "auto" ? "" : value as DamageGender })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent>{GENDER_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div>
+                ) : null}
+                {showAbilityOn ? <ToggleCard label="Habilidad activada" checked={Boolean(draft.abilityOn)} onChange={(abilityOn) => onChange({ ...draft, abilityOn })} /> : null}
+                {showAlliesFainted ? <div className="grid gap-1.5"><Label>Aliados caídos</Label><Input type="number" min={0} max={5} value={draft.alliesFainted ?? 0} onChange={(event) => onChange({ ...draft, alliesFainted: clamp(Number(event.target.value) || 0, 0, 5) })} className="border-white/8 bg-black/20" /></div> : null}
+              </div>
+            </details>
+          ) : null}
         </div>
       </div>
     </section>
@@ -372,17 +429,26 @@ function FieldSideSection({
   label,
   value,
   onChange,
+  onSwitchingChange,
 }: {
   label: string;
   value: DamageSideConditions;
-  onChange: (key: keyof DamageSideConditions, checked: boolean) => void;
+  onChange: (key: DamageSideBooleanKey, checked: boolean) => void;
+  onSwitchingChange: (value: DamageSideConditions["switching"]) => void;
 }) {
   return (
     <div className="mt-3">
       <p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-500">{label}</p>
       <div className="mt-2 grid gap-1.5">
-        {FIELD_SIDE_TOGGLES.map(([key, toggleLabel]) => <ToggleCard key={key} label={toggleLabel} checked={value[key]} onChange={(checked) => onChange(key, checked)} />)}
+        {FIELD_SIDE_TOGGLES.map(([key, toggleLabel]) => <ToggleCard key={key} label={toggleLabel} checked={Boolean(value[key])} onChange={(checked) => onChange(key, checked)} />)}
       </div>
+      <details className="mt-2 rounded-xl border border-white/6 bg-black/10 px-2.5 py-2">
+        <summary className="cursor-pointer select-none text-[8px] font-black uppercase tracking-[0.1em] text-slate-600">Efectos avanzados</summary>
+        <div className="mt-2 grid gap-1.5">
+          {ADVANCED_SIDE_TOGGLES.map(([key, toggleLabel]) => <ToggleCard key={key} label={toggleLabel} checked={Boolean(value[key])} onChange={(checked) => onChange(key, checked)} />)}
+          <div className="grid gap-1.5"><Label>Cambio</Label><Select value={value.switching || "none"} onValueChange={(next) => onSwitchingChange(next === "none" ? "" : next as DamageSideConditions["switching"])}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Ninguno</SelectItem><SelectItem value="in">Entrando</SelectItem><SelectItem value="out">Saliendo</SelectItem></SelectContent></Select></div>
+        </div>
+      </details>
     </div>
   );
 }
@@ -402,8 +468,12 @@ function FieldPanel({
   leftSpeed: number | null;
   rightSpeed: number | null;
 }) {
-  function updateSide(side: "left" | "right", key: keyof DamageSideConditions, checked: boolean) {
+  function updateSide(side: "left" | "right", key: DamageSideBooleanKey, checked: boolean) {
     onChange({ ...value, [side]: { ...value[side], [key]: checked } });
+  }
+
+  function updateSwitching(side: "left" | "right", switching: DamageSideConditions["switching"]) {
+    onChange({ ...value, [side]: { ...value[side], switching } });
   }
 
   return (
@@ -415,11 +485,17 @@ function FieldPanel({
         <div className="grid gap-1.5"><Label>Terreno</Label><Select value={value.terrain || "none"} onValueChange={(terrain) => onChange({ ...value, terrain: terrain === "none" ? "" : terrain as DamageTerrain })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Ninguno</SelectItem><SelectItem value="Electric">Eléctrico</SelectItem><SelectItem value="Grassy">Hierba</SelectItem><SelectItem value="Psychic">Psíquico</SelectItem><SelectItem value="Misty">Niebla</SelectItem></SelectContent></Select></div>
         <ToggleCard label="Gravedad" checked={value.gravity} onChange={(gravity) => onChange({ ...value, gravity })} />
         <ToggleCard label="Trick Room" checked={Boolean(value.trickRoom)} onChange={(trickRoom) => onChange({ ...value, trickRoom })} />
+        <details className="rounded-xl border border-white/6 bg-black/10 px-2.5 py-2">
+          <summary className="cursor-pointer select-none text-[8px] font-black uppercase tracking-[0.1em] text-slate-600">Campo avanzado</summary>
+          <div className="mt-2 grid gap-1.5">
+            {ADVANCED_FIELD_TOGGLES.map(([key, label]) => <ToggleCard key={key} label={label} checked={Boolean(value[key])} onChange={(checked) => onChange({ ...value, [key]: checked })} />)}
+          </div>
+        </details>
       </div>
       <div className="my-4 h-px bg-white/7" />
-      <FieldSideSection label="Tu lado" value={value.left} onChange={(key, checked) => updateSide("left", key, checked)} />
+      <FieldSideSection label="Tu lado" value={value.left} onChange={(key, checked) => updateSide("left", key, checked)} onSwitchingChange={(switching) => updateSwitching("left", switching)} />
       <SpeedComparisonCard leftName={leftName} rightName={rightName} leftSpeed={leftSpeed} rightSpeed={rightSpeed} trickRoom={Boolean(value.trickRoom)} />
-      <FieldSideSection label="Lado rival" value={value.right} onChange={(key, checked) => updateSide("right", key, checked)} />
+      <FieldSideSection label="Lado rival" value={value.right} onChange={(key, checked) => updateSide("right", key, checked)} onSwitchingChange={(switching) => updateSwitching("right", switching)} />
     </section>
   );
 }
@@ -465,21 +541,23 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
     updateSession({ ...session, field: next });
   }
 
+  const effectiveStats = useMemo(() => calculateEffectiveStats(format, left, right, field), [format, left, right, field]);
   const leftOutcomes = useMemo(() => calculateMoves(format, left, right, field), [format, left, right, field]);
   const rightOutcomes = useMemo(() => calculateMoves(format, right, left, field, true), [format, left, right, field]);
-  const leftSpeed = useMemo(() => getCurrentEffectiveSpeed(left, format, dex, field.left.tailwind), [dex, field.left.tailwind, format, left]);
-  const rightSpeed = useMemo(() => getCurrentEffectiveSpeed(right, format, dex, field.right.tailwind), [dex, field.right.tailwind, format, right]);
+  const leftSpeed = effectiveStats.left?.spe ?? null;
+  const rightSpeed = effectiveStats.right?.spe ?? null;
+  const showGender = left.set.ability === "Rivalry" || right.set.ability === "Rivalry";
 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} tailwind={field.left.tailwind} />
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} effectiveStats={effectiveStats.left} showGender={showGender} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} leftName={left.set.species} rightName={right.set.species} leftSpeed={leftSpeed} rightSpeed={rightSpeed} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} tailwind={field.right.tailwind} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} effectiveStats={effectiveStats.right} showGender={showGender} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
-      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · los resultados se recalculan localmente con cada cambio.</div>
+      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · stats efectivos y daño se recalculan localmente con cada cambio.</div>
     </div>
   );
 }
