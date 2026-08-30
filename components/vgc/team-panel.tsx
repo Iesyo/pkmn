@@ -127,7 +127,7 @@ export function TeamPanel({
         <LeadsPanel leads={version.leads} />
         <TypeAnalysis pokemon={version.pokemon} allowTera={(version.mechanics ?? ["tera"]).includes("tera")} />
         <MatchupAttendance matches={version.matches} />
-        <MatchHistory version={version} onMatchCreated={onMatchCreated} onScoutingRequested={onScoutingRequested} />
+        <MatchHistory key={version.id} version={version} onMatchCreated={onMatchCreated} onScoutingRequested={onScoutingRequested} />
       </div>
     </section>
   );
