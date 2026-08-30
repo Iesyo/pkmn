@@ -112,28 +112,75 @@ function PasteDialog({ mode, paste, onImport }: { mode: "import" | "export"; pas
   );
 }
 
-function MyTeamsDialog({ versions, onLoad }: { versions: TeamVersion[]; onLoad: (versionId: string) => void }) {
+function MyTeamsDialog({ groups, onLoad }: { groups: TeamGroup[]; onLoad: (versionId: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [teamId, setTeamId] = useState("");
+  const [versionId, setVersionId] = useState("");
+  const savedGroups = groups
+    .map((group) => ({ ...group, versions: group.versions.filter((version) => !version.demo) }))
+    .filter((group) => group.versions.length > 0);
+  const selectedTeam = savedGroups.find((group) => group.id === teamId) ?? savedGroups[0];
+  const selectedVersion = selectedTeam?.versions.find((version) => version.id === versionId) ?? selectedTeam?.versions[0];
 
-  function selectVersion(versionId: string) {
-    onLoad(versionId);
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      const team = savedGroups.find((group) => group.id === teamId) ?? savedGroups[0];
+      const version = team?.versions.find((entry) => entry.id === versionId) ?? team?.versions[0];
+      setTeamId(team?.id ?? "");
+      setVersionId(version?.id ?? "");
+    }
+    setOpen(nextOpen);
+  }
+
+  function selectTeam(nextTeamId: string) {
+    const team = savedGroups.find((group) => group.id === nextTeamId);
+    setTeamId(nextTeamId);
+    setVersionId(team?.versions[0]?.id ?? "");
+  }
+
+  function loadSelection() {
+    if (!selectedVersion) return;
+    onLoad(selectedVersion.id);
     setOpen(false);
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><FolderOpen className="size-4" />My Teams</Button></DialogTrigger>
       <DialogContent className="max-h-[88vh] overflow-hidden border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
-        <DialogHeader><DialogTitle>My Teams</DialogTitle><DialogDescription className="text-slate-500">Abre una versión guardada para editarla. Al guardar, el original permanecerá intacto.</DialogDescription></DialogHeader>
-        {versions.length ? (
-          <div className="max-h-[62vh] space-y-2 overflow-y-auto pr-1">
-            {versions.map((version) => (
-              <button key={version.id} type="button" onClick={() => selectVersion(version.id)} className="flex w-full items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.025] p-3 text-left transition hover:border-cyan-300/30 hover:bg-cyan-300/5">
-                <div className="grid w-36 shrink-0 grid-cols-6 gap-0.5">{version.pokemon.map((set) => <Image key={set.id} src={getSpriteUrl(set.species)} alt={set.species} width={34} height={34} unoptimized className="size-8 object-contain" />)}</div>
-                <div className="min-w-0 flex-1"><p className="truncate text-sm font-black text-white">{version.name}</p><p className="mt-1 text-[10px] text-slate-500">{BATTLE_FORMATS.find((entry) => entry.id === version.format)?.label ?? version.format}</p></div>
-                <Badge variant="outline" className="shrink-0 border-cyan-300/20 bg-cyan-300/5 text-cyan-200">v{formatVersion(version)}</Badge>
-              </button>
-            ))}
+        <DialogHeader><DialogTitle>My Teams</DialogTitle><DialogDescription className="text-slate-500">Elige primero el Team y luego la versión exacta que quieres abrir. Al guardar, el original permanecerá intacto.</DialogDescription></DialogHeader>
+        {savedGroups.length ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Equipo</Label>
+                <Select value={selectedTeam?.id ?? ""} onValueChange={selectTeam}>
+                  <SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue placeholder="Seleccionar Team" /></SelectTrigger>
+                  <SelectContent className="border-white/10 bg-slate-950 text-slate-200">
+                    {savedGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name} · {group.versions.length} {group.versions.length === 1 ? "versión" : "versiones"}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Versión</Label>
+                <Select value={selectedVersion?.id ?? ""} onValueChange={setVersionId} disabled={!selectedTeam}>
+                  <SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue placeholder="Seleccionar versión" /></SelectTrigger>
+                  <SelectContent className="border-white/10 bg-slate-950 text-slate-200">
+                    {selectedTeam?.versions.map((version) => <SelectItem key={version.id} value={version.id}>v{formatVersion(version)} · {BATTLE_FORMATS.find((entry) => entry.id === version.format)?.label ?? version.format}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {selectedVersion ? (
+              <div className="rounded-2xl border border-white/8 bg-white/[0.025] p-4">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                  <div className="grid shrink-0 grid-cols-6 gap-1">{selectedVersion.pokemon.map((set) => <Image key={set.id} src={getSpriteUrl(set.species)} alt={set.species} width={38} height={38} unoptimized className="size-9 object-contain" />)}</div>
+                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-black text-white">{selectedVersion.name}</p><p className="mt-1 text-[10px] text-slate-500">{BATTLE_FORMATS.find((entry) => entry.id === selectedVersion.format)?.label ?? selectedVersion.format}</p></div>
+                  <Badge variant="outline" className="w-fit shrink-0 border-cyan-300/20 bg-cyan-300/5 text-cyan-200">v{formatVersion(selectedVersion)}</Badge>
+                </div>
+                <Button type="button" onClick={loadSelection} className="mt-4 w-full gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><FolderOpen className="size-4" />Cargar versión</Button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-5 py-10 text-center"><FolderOpen className="mx-auto size-6 text-slate-600" /><p className="mt-3 text-sm font-bold text-slate-300">Todavía no hay Teams guardados.</p><p className="mt-1 text-xs text-slate-600">Completa el equipo actual y usa Guardar en Teams.</p></div>
@@ -289,7 +336,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
             <div className="grid gap-1.5"><Label htmlFor="builder-name" className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Nombre del Team</Label><Input id="builder-name" value={teamName} onChange={(event) => setTeamName(event.target.value)} disabled={Boolean(sourceTeamId)} placeholder="Ej. Aurora Protocol" className="border-white/10 bg-black/20" /></div>
             <div className="grid gap-1.5"><Label className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Formato</Label><Select value={format} onValueChange={changeFormat}><SelectTrigger className="w-full border-white/10 bg-black/20"><SelectValue /></SelectTrigger><SelectContent>{BATTLE_FORMATS.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.label}</SelectItem>)}</SelectContent></Select></div>
           </div>
-          <div className="flex flex-wrap gap-2"><MyTeamsDialog versions={storedVersions} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} /><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
+          <div className="flex flex-wrap gap-2"><MyTeamsDialog groups={groups} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} /><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2"><span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Mecánicas</span>{(["tera", "dynamax", "mega", "zmove"] as BattleMechanic[]).map((mechanic) => <label key={mechanic} className={cn("flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px]", mechanics.includes(mechanic) ? "border-cyan-300/20 bg-cyan-300/8 text-cyan-100" : "border-white/7 bg-white/3 text-slate-600", format !== "custom" && "pointer-events-none opacity-75")}><Checkbox checked={mechanics.includes(mechanic)} disabled={format !== "custom"} onCheckedChange={(checked) => setMechanics((current) => checked ? [...new Set([...current, mechanic])] : current.filter((entry) => entry !== mechanic))} />{MECHANIC_LABELS[mechanic]}</label>)}<div className="ml-auto flex items-center gap-2"><span className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px]", dex ? "bg-emerald-300/7 text-emerald-300" : "bg-white/4 text-slate-500")}>{dex ? <Database className="size-3" /> : <Loader2 className="size-3 animate-spin" />}{dex ? `Showdown · ${dex.metadata.captured}` : "Cargando Pokédex"}</span><Button type="button" variant="ghost" size="sm" onClick={refreshDatabases} disabled={refreshingDex} className="h-7 gap-1.5 rounded-full border border-white/8 bg-white/3 px-2.5 text-[9px] text-slate-400 hover:bg-cyan-300/8 hover:text-cyan-100">{refreshingDex ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}Actualizar bases</Button></div></div>
         {message ? <p className="mt-3 rounded-xl border border-emerald-300/15 bg-emerald-300/5 px-3 py-2 text-xs text-emerald-200">{message}</p> : null}{error ? <p role="alert" className="mt-3 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}{dexError ? <p role="alert" className="mt-3 flex items-center gap-2 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200"><AlertTriangle className="size-4" />{dexError}</p> : null}
