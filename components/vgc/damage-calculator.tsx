@@ -76,6 +76,16 @@ const BOOST_STAT_KEYS: Record<BoostableStat, DamageStat> = {
   Spe: "spe",
 };
 
+const FIELD_SIDE_TOGGLES: Array<[keyof DamageSideConditions, string]> = [
+  ["reflect", "Reflect"],
+  ["lightScreen", "Light Screen"],
+  ["auroraVeil", "Aurora Veil"],
+  ["tailwind", "Tailwind"],
+  ["helpingHand", "Helping Hand"],
+  ["friendGuard", "Friend Guard"],
+  ["protected", "Protect"],
+];
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -328,22 +338,20 @@ function SpeedComparisonCard({
 }) {
   const ready = leftSpeed !== null && rightSpeed !== null;
   const order = ready ? getSpeedOrder(leftSpeed, rightSpeed, trickRoom) : null;
-  const status = !ready
-    ? "Selecciona ambos Pokémon"
-    : order === "tie"
-      ? "Speed tie"
-      : order === "left"
-        ? "Tu Pokémon gana el orden por Speed"
-        : "El rival gana el orden por Speed";
   const leftWins = order === "left";
   const rightWins = order === "right";
   const tie = order === "tie";
+  const ariaLabel = !ready
+    ? "Orden por Speed: selecciona ambos Pokémon"
+    : tie
+      ? `Orden por Speed: ${leftName} y ${rightName}, Speed tie en ${leftSpeed}`
+      : `Orden por Speed: ${leftName} ${leftSpeed}, ${rightName} ${rightSpeed}. ${leftWins ? leftName : rightName} gana el orden${trickRoom ? " con Trick Room" : ""}`;
 
   return (
     <div
-      aria-label={ready ? `Orden por Speed: ${leftName} ${leftSpeed}, ${rightName} ${rightSpeed}. ${status}` : status}
+      aria-label={ariaLabel}
       className={cn(
-        "mt-4 rounded-2xl border p-3 text-center",
+        "my-4 rounded-2xl border p-3 text-center",
         trickRoom ? "border-violet-300/20 bg-violet-300/[0.06]" : "border-amber-300/15 bg-amber-300/[0.045]",
       )}
     >
@@ -352,18 +360,29 @@ function SpeedComparisonCard({
         Orden por Speed
       </div>
       <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-[8px] font-bold uppercase tracking-[0.08em] text-slate-600">{leftName || "Tu Pokémon"}</p>
-          <p className={cn("mt-1 text-lg font-black tabular-nums", tie ? "text-amber-200" : leftWins ? "text-cyan-200" : "text-slate-500")}>{leftSpeed ?? "—"}</p>
-        </div>
+        <p className={cn("text-lg font-black tabular-nums", tie ? "text-amber-200" : leftWins ? "text-cyan-200" : "text-slate-500")}>{leftSpeed ?? "—"}</p>
         <div className={cn("flex size-7 items-center justify-center rounded-full border text-[9px] font-black", trickRoom ? "border-violet-300/20 bg-violet-300/10 text-violet-200" : "border-white/8 bg-black/20 text-slate-600")}>{tie ? "=" : "VS"}</div>
-        <div className="min-w-0">
-          <p className="truncate text-[8px] font-bold uppercase tracking-[0.08em] text-slate-600">{rightName || "Rival"}</p>
-          <p className={cn("mt-1 text-lg font-black tabular-nums", tie ? "text-amber-200" : rightWins ? "text-cyan-200" : "text-slate-500")}>{rightSpeed ?? "—"}</p>
-        </div>
+        <p className={cn("text-lg font-black tabular-nums", tie ? "text-amber-200" : rightWins ? "text-cyan-200" : "text-slate-500")}>{rightSpeed ?? "—"}</p>
       </div>
-      <p className={cn("mt-2 text-[9px] font-black", tie ? "text-amber-200" : ready ? "text-cyan-100" : "text-slate-600")}>{status}</p>
-      <p className="mt-1 text-[8px] leading-4 text-slate-600">{trickRoom ? "Trick Room · menor Speed primero" : "Mayor Speed primero"}</p>
+    </div>
+  );
+}
+
+function FieldSideSection({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: DamageSideConditions;
+  onChange: (key: keyof DamageSideConditions, checked: boolean) => void;
+}) {
+  return (
+    <div className="mt-3">
+      <p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <div className="mt-2 grid gap-1.5">
+        {FIELD_SIDE_TOGGLES.map(([key, toggleLabel]) => <ToggleCard key={key} label={toggleLabel} checked={value[key]} onChange={(checked) => onChange(key, checked)} />)}
+      </div>
     </div>
   );
 }
@@ -390,7 +409,6 @@ function FieldPanel({
   return (
     <section className="rounded-[24px] border border-cyan-300/10 bg-cyan-300/[0.035] p-3 xl:sticky xl:top-4">
       <div className="text-center"><Zap className="mx-auto size-5 text-amber-300" /><p className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-300">Campo</p><p className="mt-1 text-[9px] text-slate-600">Condiciones compartidas</p></div>
-      <SpeedComparisonCard leftName={leftName} rightName={rightName} leftSpeed={leftSpeed} rightSpeed={rightSpeed} trickRoom={Boolean(value.trickRoom)} />
       <div className="mt-4 space-y-3">
         <div className="grid gap-1.5"><Label>Combate</Label><Select value={value.gameType} onValueChange={(gameType) => onChange({ ...value, gameType: gameType as DamageFieldState["gameType"] })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Doubles">Dobles · VGC</SelectItem><SelectItem value="Singles">Individual</SelectItem></SelectContent></Select></div>
         <div className="grid gap-1.5"><Label>Clima</Label><Select value={value.weather || "none"} onValueChange={(weather) => onChange({ ...value, weather: weather === "none" ? "" : weather as DamageWeather })}><SelectTrigger className="w-full border-white/8 bg-black/20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Ninguno</SelectItem><SelectItem value="Sun">Sol</SelectItem><SelectItem value="Rain">Lluvia</SelectItem><SelectItem value="Sand">Arena</SelectItem><SelectItem value="Snow">Nieve</SelectItem></SelectContent></Select></div>
@@ -399,15 +417,9 @@ function FieldPanel({
         <ToggleCard label="Trick Room" checked={Boolean(value.trickRoom)} onChange={(trickRoom) => onChange({ ...value, trickRoom })} />
       </div>
       <div className="my-4 h-px bg-white/7" />
-      {(["left", "right"] as const).map((side) => <div key={side} className="mt-3"><p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-500">{side === "left" ? "Tu lado" : "Lado rival"}</p><div className="mt-2 grid gap-1.5">{([
-        ["reflect", "Reflect"],
-        ["lightScreen", "Light Screen"],
-        ["auroraVeil", "Aurora Veil"],
-        ["tailwind", "Tailwind"],
-        ["helpingHand", "Helping Hand"],
-        ["friendGuard", "Friend Guard"],
-        ["protected", "Protect"],
-      ] as Array<[keyof DamageSideConditions, string]>).map(([key, label]) => <ToggleCard key={key} label={label} checked={value[side][key]} onChange={(checked) => updateSide(side, key, checked)} />)}</div></div>)}
+      <FieldSideSection label="Tu lado" value={value.left} onChange={(key, checked) => updateSide("left", key, checked)} />
+      <SpeedComparisonCard leftName={leftName} rightName={rightName} leftSpeed={leftSpeed} rightSpeed={rightSpeed} trickRoom={Boolean(value.trickRoom)} />
+      <FieldSideSection label="Lado rival" value={value.right} onChange={(key, checked) => updateSide("right", key, checked)} />
     </section>
   );
 }
