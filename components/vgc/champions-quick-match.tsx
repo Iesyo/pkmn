@@ -24,14 +24,23 @@ function unique(values: string[]) {
   return [...new Set(values)];
 }
 
+type ChampionsQuickMatchDialogProps = {
+  version: TeamVersion;
+  onCreated?: () => void | Promise<void>;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
+};
+
 export function ChampionsQuickMatchDialog({
   version,
   onCreated,
-}: {
-  version: TeamVersion;
-  onCreated?: () => void | Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+}: ChampionsQuickMatchDialogProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
   const [result, setResult] = useState<MatchResult>("win");
   const [selected, setSelected] = useState<string[]>([]);
   const [lead, setLead] = useState<string[]>([]);
@@ -42,6 +51,24 @@ export function ChampionsQuickMatchDialog({
   const [speciesError, setSpeciesError] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  function setOpen(nextOpen: boolean) {
+    setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }
+
+  function resetEntry() {
+    setResult("win");
+    setSelected([]);
+    setLead([]);
+    setOpponentSelected([]);
+    setOpponentQuery("");
+    setError("");
+  }
+
+  useEffect(() => {
+    if (open) resetEntry();
+  }, [open]);
 
   useEffect(() => {
     if (!open || championsSpecies.length) return;
@@ -74,17 +101,7 @@ export function ChampionsQuickMatchDialog({
 
   const canSave = selected.length === 4 && lead.length === 2 && opponentSelected.length === 4;
 
-  function resetEntry() {
-    setResult("win");
-    setSelected([]);
-    setLead([]);
-    setOpponentSelected([]);
-    setOpponentQuery("");
-    setError("");
-  }
-
   function handleOpenChange(nextOpen: boolean) {
-    if (nextOpen) resetEntry();
     setOpen(nextOpen);
   }
 
@@ -164,16 +181,18 @@ export function ChampionsQuickMatchDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button
-          type="button"
-          disabled={disabled}
-          className="gap-2 rounded-full bg-amber-300 font-black text-slate-950 hover:bg-amber-200"
-          title={version.demo ? "Guarda un Team real para registrar partidas" : "Registrar una partida rápida de Pokémon Champions"}
-        >
-          <Gamepad2 className="size-4" />Partida Champions
-        </Button>
-      </DialogTrigger>
+      {!hideTrigger ? (
+        <DialogTrigger asChild>
+          <Button
+            type="button"
+            disabled={disabled}
+            className="gap-2 rounded-full bg-amber-300 font-black text-slate-950 hover:bg-amber-200"
+            title={version.demo ? "Guarda un Team real para registrar partidas" : "Registrar una partida rápida de Pokémon Champions"}
+          >
+            <Gamepad2 className="size-4" />Partida Champions
+          </Button>
+        </DialogTrigger>
+      ) : null}
       <DialogContent className="max-h-[90vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-100 sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Partida rápida · Pokémon Champions</DialogTitle>
