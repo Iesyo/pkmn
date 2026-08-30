@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatVersion } from "@/lib/team-builder";
 import type { TeamFolder, TeamGroup } from "@/lib/types";
-import { getPokemonSpriteUrl } from "@/lib/pokemon-data";
+import { getSpriteUrl } from "@/lib/pokemon-data";
 
 export const TEAM_DRAG_MIME = "application/x-like-no-one-ever-was-team";
 
@@ -70,7 +70,7 @@ export function LibraryCard({
           <div className="flex -space-x-1.5">
             {latest.pokemon.slice(0, 6).map((pokemon, index) => (
               <span key={pokemon.id} className="relative flex size-7 items-center justify-center overflow-hidden rounded-full border border-slate-800 bg-slate-950" style={{ zIndex: 6 - index }}>
-                <Image src={getPokemonSpriteUrl(pokemon.species)} alt={pokemon.species} width={28} height={28} className="size-7 object-contain" unoptimized />
+                <Image src={getSpriteUrl(pokemon.species)} alt={pokemon.species} width={28} height={28} className="size-7 object-contain" unoptimized />
               </span>
             ))}
           </div>
