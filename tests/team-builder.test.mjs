@@ -88,12 +88,13 @@ test("filters held items by the selected Showdown format", async () => {
   assert.equal(isItemLegal(snapshot, "", "champions"), true);
 });
 
-test("starts a wide calculator-only Team Builder in Champions with fixed Pokémon cards", async () => {
+test("starts a wide calculator-only Team Builder in Champions with current summary cards", async () => {
   const { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS } = await vite.ssrLoadModule("/lib/team-builder.ts");
   const [dashboardSource, builderSource] = await Promise.all([
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
   ]);
+  const slotCard = builderSource.match(/function SlotCard[\s\S]*?function PasteDialog/)?.[0] ?? "";
 
   assert.equal(DEFAULT_BATTLE_FORMAT, "champions");
   assert.deepEqual(DEFAULT_BATTLE_MECHANICS, ["mega"]);
@@ -103,13 +104,16 @@ test("starts a wide calculator-only Team Builder in Champions with fixed Pokémo
   assert.match(dashboardSource, /w-full max-w-none/);
   assert.match(builderSource, /xl:grid-cols-\[270px_minmax\(0,1fr\)\]/);
   assert.match(builderSource, /data-team-calculator/);
-  assert.match(builderSource, /h-40 min-w-0 overflow-hidden/);
-  assert.doesNotMatch(builderSource, /group min-h-40/);
-  assert.match(builderSource, /w-full min-w-0 truncate text-sm font-black/);
-  assert.match(builderSource, /mt-auto flex min-h-0 items-end justify-between/);
-  assert.match(builderSource, /h-20 w-20 shrink-0 translate-y-2/);
-  assert.match(builderSource, /size-20 object-contain/);
-  assert.match(builderSource, /text-sm font-black text-white/);
-  assert.match(builderSource, /text-\[9px\].*>\{type\}<\/TypeBadge>/);
-  assert.match(builderSource, /text-\[11px\].*\{pokemon\.item \|\| "Sin objeto"\}/);
+
+  assert.match(slotCard, /relative h-56 min-w-0 overflow-hidden rounded-2xl border/);
+  assert.doesNotMatch(slotCard, /group min-h-40/);
+  assert.match(slotCard, /w-full min-w-0 truncate text-xs font-black text-white/);
+  assert.match(slotCard, /flex h-16 shrink-0 items-center justify-center/);
+  assert.match(slotCard, /size-16 object-contain/);
+  assert.match(slotCard, /text-\[7px\].*>\{type\}<\/TypeBadge>/);
+  assert.match(slotCard, /text-\[9px\].*\{pokemon\.item \|\| "Sin objeto"\}/);
+  assert.match(slotCard, /text-\[9px\].*\{pokemon\.nature \|\| "Sin naturaleza"\}/);
+  assert.match(slotCard, /text-\[9px\].*\{pokemon\.ability \|\| "Sin habilidad"\}/);
+  assert.match(slotCard, /pokemon\.moves\.map\(\(move, moveIndex\) =>/);
+  assert.match(slotCard, /mt-1\.5 space-y-0\.5 pb-2/);
 });
