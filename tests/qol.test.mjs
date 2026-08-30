@@ -34,17 +34,25 @@ test("keeps the Team Builder mounted between sections and removes the global Add
   assert.match(dashboard, /<ShowdownNamesDialog names=\{showdownNames\} onSaved=\{setShowdownNames\} \/><\/div>/);
 });
 
-test("keeps demo teams out of the comparator and separates team from version selection", async () => {
+test("removes demo teams from every runtime team surface and separates team from version selection", async () => {
   const [dashboard, selector] = await Promise.all([
     source("app/vgc-dashboard.tsx"),
     source("components/vgc/team-selector.tsx"),
   ]);
   const compareSection = dashboard.match(/<TabsContent value="compare"[\s\S]*?<TabsContent value="library"/)?.[0] ?? "";
+  const librarySection = dashboard.match(/<TabsContent value="library"[\s\S]*?<TabsContent value="builder"/)?.[0] ?? "";
 
-  assert.match(dashboard, /const comparisonVersions = useMemo\(\(\) => storedGroups\.flatMap/);
+  assert.doesNotMatch(dashboard, /DEMO_GROUPS/);
+  assert.doesNotMatch(dashboard, /DEFAULT_LEFT_VERSION_ID/);
+  assert.doesNotMatch(dashboard, /@\/lib\/demo-data/);
+  assert.doesNotMatch(dashboard, /Modo muestra/);
+  assert.doesNotMatch(dashboard, /libraryVersion\.demo/);
+  assert.match(dashboard, /type ConnectionState = "checking" \| "ready" \| "error"/);
   assert.match(compareSection, /groups=\{storedGroups\}/);
-  assert.doesNotMatch(compareSection, /DEMO_GROUPS/);
-  assert.doesNotMatch(compareSection, /versions=\{versions\}/);
+  assert.match(librarySection, /\{storedGroups\.length\} equipos/);
+  assert.match(librarySection, /storedGroups\.map\(\(team\)/);
+  assert.match(dashboard, /<TeamBuilder key=\{builderVersionId\} groups=\{storedGroups\}/);
+  assert.match(dashboard, /No hay Teams guardados/);
   assert.match(selector, />Equipo<\/span>/);
   assert.match(selector, />Versión<\/span>/);
   assert.match(selector, /handleTeamChange/);
