@@ -110,6 +110,7 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
 
       {version.format === "champions" ? (
         <ChampionsQuickMatchDialog
+          key={championsDialogOpen ? "champions-open" : "champions-closed"}
           version={version}
           onCreated={onCreated}
           open={championsDialogOpen}
