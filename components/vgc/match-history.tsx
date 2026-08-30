@@ -113,7 +113,7 @@ export function MatchHistory({
               <TableRow className="border-white/7 hover:bg-transparent">
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Partida</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Rival</TableHead>
-                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">{isChampions ? "Picks rival" : "Equipo rival"}</TableHead>
+                <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">{isChampions ? "Pokémon rival" : "Equipo rival"}</TableHead>
                 <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
                 <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
@@ -134,7 +134,7 @@ export function MatchHistory({
                   <TableCell className="max-w-36 truncate font-medium text-slate-300">{match.opponentName}</TableCell>
                   <TableCell>
                     <div className="flex min-w-max items-center gap-2">
-                      <PokemonSpriteStrip species={match.opponentSelected} label={isChampions ? "Picks del rival" : "Equipo rival"} />
+                      <PokemonSpriteStrip species={match.opponentSelected} label={isChampions ? "Pokémon rival" : "Equipo rival"} />
                       <Button
                         type="button"
                         variant="outline"
