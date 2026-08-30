@@ -39,7 +39,7 @@ test("Trick Room is a shared calculator field condition and starts disabled", as
   assert.equal(field.right.tailwind, false);
 });
 
-test("the center column compares only the two current calculator Pokemon", async () => {
+test("the Speed card stays clean and sits between both side sections", async () => {
   const source = await readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8");
 
   assert.match(source, /function SpeedComparisonCard/);
@@ -51,7 +51,12 @@ test("the center column compares only the two current calculator Pokemon", async
   assert.match(source, /getCurrentEffectiveSpeed\(left, format, dex, field\.left\.tailwind\)/);
   assert.match(source, /getCurrentEffectiveSpeed\(right, format, dex, field\.right\.tailwind\)/);
   assert.match(source, /label="Trick Room"/);
-  assert.match(source, /menor Speed primero/);
   assert.match(source, /Speed tie/);
+  assert.doesNotMatch(source, /Mayor Speed primero|menor Speed primero|gana el orden por Speed/);
   assert.doesNotMatch(source, /Ataca primero|Atacar primero/);
+
+  const leftSide = source.indexOf('<FieldSideSection label="Tu lado"');
+  const speedCard = source.indexOf('<SpeedComparisonCard leftName={leftName}');
+  const rightSide = source.indexOf('<FieldSideSection label="Lado rival"');
+  assert.ok(leftSide >= 0 && speedCard > leftSide && rightSide > speedCard);
 });
