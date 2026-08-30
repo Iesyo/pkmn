@@ -33,3 +33,20 @@ test("keeps the Team Builder mounted between sections and removes the global Add
   assert.equal((dashboard.match(/<AddTeamDialog onCreated=\{handleTeamCreated\} \/>/g) ?? []).length, 1);
   assert.match(dashboard, /<ShowdownNamesDialog names=\{showdownNames\} onSaved=\{setShowdownNames\} \/><\/div>/);
 });
+
+test("keeps demo teams out of the comparator and separates team from version selection", async () => {
+  const [dashboard, selector] = await Promise.all([
+    source("app/vgc-dashboard.tsx"),
+    source("components/vgc/team-selector.tsx"),
+  ]);
+  const compareSection = dashboard.match(/<TabsContent value="compare"[\s\S]*?<TabsContent value="library"/)?.[0] ?? "";
+
+  assert.match(dashboard, /const comparisonVersions = useMemo\(\(\) => storedGroups\.flatMap/);
+  assert.match(compareSection, /groups=\{storedGroups\}/);
+  assert.doesNotMatch(compareSection, /DEMO_GROUPS/);
+  assert.doesNotMatch(compareSection, /versions=\{versions\}/);
+  assert.match(selector, />Equipo<\/span>/);
+  assert.match(selector, />Versión<\/span>/);
+  assert.match(selector, /handleTeamChange/);
+  assert.match(selector, /team\?\.versions\[0\]\?\.id/);
+});
