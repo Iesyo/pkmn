@@ -1,0 +1,22 @@
+[Unit]
+Description=LikeNoOneEverWas Pokemon VGC app
+After=network.target
+
+[Service]
+Type=simple
+User=pkmn
+Group=pkmn
+WorkingDirectory=/opt/pkmn-runtime
+Environment=NODE_ENV=production
+Environment=HOME=/var/lib/pkmn/home
+Environment=PKMN_PERSIST_PATH=/var/lib/pkmn/state
+Environment=WRANGLER_WRITE_LOGS=false
+Environment=WRANGLER_LOG_PATH=/var/lib/pkmn/logs/wrangler.log
+Environment=MINIFLARE_REGISTRY_PATH=/var/lib/pkmn/registry
+ExecStart=/opt/pkmn-runtime/deploy/start-vps.sh
+Restart=always
+RestartSec=5
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

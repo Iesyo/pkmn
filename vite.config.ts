@@ -34,8 +34,9 @@ const localBindingConfig = {
 };
 
 export default defineConfig(async () => {
-  // Keep Wrangler and Miniflare state project-local. These are non-secret tool
-  // settings; application environment belongs in ignored `.env*` files.
+  // Keep Wrangler and Miniflare state project-local by default. The VPS sets
+  // PKMN_PERSIST_PATH so D1 lives outside the Git checkout and runtime swap.
+  const persistStatePath = process.env.PKMN_PERSIST_PATH?.trim();
   process.env.WRANGLER_WRITE_LOGS ??= "false";
   process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
   process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
@@ -51,13 +52,22 @@ export default defineConfig(async () => {
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
     },
+    preview: {
+      host: "127.0.0.1",
+      port: 3200,
+      strictPort: true,
+      // The preview server is loopback-only and is intended to sit behind the
+      // VPS Cloudflare Tunnel, whose public hostname is configured separately.
+      allowedHosts: true,
+    },
     plugins: [
       vinext(),
       sites(),
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        inspectorPort: false,
         config: localBindingConfig,
+        persistState: persistStatePath ? { path: persistStatePath } : true,
+        inspectorPort: false,
       }),
     ],
   };
