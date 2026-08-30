@@ -67,13 +67,13 @@ export async function saveOpponentPicks(matchId: string, values: string[]) {
 
 export async function saveBackfilledOpponentPicks(matchId: string, values: string[]) {
   const picks = normalizeOpponentPicks(values);
-  if (!picks.length) return false;
+  if (picks.length !== 4) return false;
   const db = await getDatabase();
   const result = await db
     .prepare("UPDATE matches SET opponent_picks_json = ? WHERE id = ? AND opponent_picks_json = '[]'")
     .bind(JSON.stringify(picks), matchId)
     .run();
-  return Boolean(result.meta.changes);
+  return Number(result.meta.changes ?? 0) > 0;
 }
 
 export async function listOpponentPicksBackfillCandidates(limit = 12): Promise<OpponentPicksBackfillCandidate[]> {
