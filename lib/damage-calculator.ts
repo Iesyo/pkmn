@@ -42,6 +42,10 @@ export interface DamageSideConditions {
   battery: boolean;
   powerSpot: boolean;
   steelySpirit: boolean;
+  swordOfRuin: boolean;
+  beadsOfRuin: boolean;
+  tabletsOfRuin: boolean;
+  vesselOfRuin: boolean;
   switching: DamageSwitching;
 }
 
@@ -56,10 +60,6 @@ export interface DamageFieldState {
   auraBreak: boolean;
   fairyAura: boolean;
   darkAura: boolean;
-  beadsOfRuin: boolean;
-  swordOfRuin: boolean;
-  tabletsOfRuin: boolean;
-  vesselOfRuin: boolean;
   left: DamageSideConditions;
   right: DamageSideConditions;
 }
@@ -134,6 +134,10 @@ export function emptySideConditions(): DamageSideConditions {
     battery: false,
     powerSpot: false,
     steelySpirit: false,
+    swordOfRuin: false,
+    beadsOfRuin: false,
+    tabletsOfRuin: false,
+    vesselOfRuin: false,
     switching: "",
   };
 }
@@ -150,10 +154,6 @@ export function defaultDamageField(): DamageFieldState {
     auraBreak: false,
     fairyAura: false,
     darkAura: false,
-    beadsOfRuin: false,
-    swordOfRuin: false,
-    tabletsOfRuin: false,
-    vesselOfRuin: false,
     left: emptySideConditions(),
     right: emptySideConditions(),
   };
@@ -268,10 +268,10 @@ function createField(state: DamageFieldState, reverse: boolean) {
     isAuraBreak: Boolean(state.auraBreak),
     isFairyAura: Boolean(state.fairyAura),
     isDarkAura: Boolean(state.darkAura),
-    isBeadsOfRuin: Boolean(state.beadsOfRuin),
-    isSwordOfRuin: Boolean(state.swordOfRuin),
-    isTabletsOfRuin: Boolean(state.tabletsOfRuin),
-    isVesselOfRuin: Boolean(state.vesselOfRuin),
+    isSwordOfRuin: Boolean(attacker.swordOfRuin),
+    isBeadsOfRuin: Boolean(attacker.beadsOfRuin),
+    isTabletsOfRuin: Boolean(defender.tabletsOfRuin),
+    isVesselOfRuin: Boolean(defender.vesselOfRuin),
     attackerSide: sideToCalc(attacker),
     defenderSide: sideToCalc(defender),
   });
