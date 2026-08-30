@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { TeamPanel } from "@/components/vgc/team-panel";
@@ -14,11 +14,10 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DEFAULT_LEFT_VERSION_ID, DEMO_GROUPS } from "@/lib/demo-data";
 import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
 
-type ConnectionState = "checking" | "ready" | "demo";
+type ConnectionState = "checking" | "ready" | "error";
 
 export function VgcDashboard() {
   const [storedGroups, setStoredGroups] = useState<TeamGroup[]>([]);
@@ -27,8 +26,8 @@ export function VgcDashboard() {
   const [activeView, setActiveView] = useState("compare");
   const [leftId, setLeftId] = useState("");
   const [rightId, setRightId] = useState("");
-  const [libraryTeamId, setLibraryTeamId] = useState(DEMO_GROUPS[0].id);
-  const [libraryVersionId, setLibraryVersionId] = useState(DEFAULT_LEFT_VERSION_ID);
+  const [libraryTeamId, setLibraryTeamId] = useState("");
+  const [libraryVersionId, setLibraryVersionId] = useState("");
   const [builderVersionId, setBuilderVersionId] = useState("");
   const [scoutingMatchId, setScoutingMatchId] = useState("");
   const [runningScoutingIds, setRunningScoutingIds] = useState<string[]>([]);
@@ -41,7 +40,7 @@ export function VgcDashboard() {
       setStoredGroups(payload.teams ?? []);
       setConnection("ready");
     } catch {
-      setConnection("demo");
+      setConnection("error");
     }
   }, []);
 
@@ -76,7 +75,7 @@ export function VgcDashboard() {
           .catch(() => undefined);
       })
       .catch(() => {
-        if (active) setConnection("demo");
+        if (active) setConnection("error");
       });
     return () => {
       active = false;
@@ -124,14 +123,12 @@ export function VgcDashboard() {
     };
   }, [runningScoutingIds]);
 
-  const groups = useMemo(() => [...storedGroups, ...DEMO_GROUPS], [storedGroups]);
-  const versions = useMemo(() => groups.flatMap((group) => group.versions), [groups]);
-  const comparisonVersions = useMemo(() => storedGroups.flatMap((group) => group.versions), [storedGroups]);
+  const versions = useMemo(() => storedGroups.flatMap((group) => group.versions), [storedGroups]);
   const fallbackLeft = storedGroups[0]?.versions[0];
   const fallbackRight = storedGroups[1]?.versions[0] ?? storedGroups[0]?.versions[1] ?? fallbackLeft;
-  const left = comparisonVersions.find((version) => version.id === leftId) ?? fallbackLeft;
-  const right = comparisonVersions.find((version) => version.id === rightId) ?? fallbackRight;
-  const libraryTeam = groups.find((team) => team.id === libraryTeamId) ?? groups[0];
+  const left = versions.find((version) => version.id === leftId) ?? fallbackLeft;
+  const right = versions.find((version) => version.id === rightId) ?? fallbackRight;
+  const libraryTeam = storedGroups.find((team) => team.id === libraryTeamId) ?? storedGroups[0];
   const libraryVersion = libraryTeam?.versions.find((version) => version.id === libraryVersionId) ?? libraryTeam?.versions[0];
 
   function handleTeamCreated(team: TeamGroup) {
@@ -189,7 +186,7 @@ export function VgcDashboard() {
 
           <div className="hidden items-center gap-2 lg:flex">
             <ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} />
-            <Badge variant="outline" className={connection === "ready" ? "gap-1.5 border-emerald-300/15 bg-emerald-300/7 text-emerald-300" : "gap-1.5 border-amber-300/15 bg-amber-300/7 text-amber-200"}>{connection === "checking" ? <RefreshCw className="size-3 animate-spin" /> : connection === "ready" ? <Database className="size-3" /> : <Sparkles className="size-3" />}{connection === "checking" ? "Conectando" : connection === "ready" ? "SQLite listo" : "Modo muestra"}</Badge>
+            <Badge variant="outline" className={connection === "ready" ? "gap-1.5 border-emerald-300/15 bg-emerald-300/7 text-emerald-300" : connection === "error" ? "gap-1.5 border-rose-300/15 bg-rose-300/7 text-rose-200" : "gap-1.5 border-cyan-300/15 bg-cyan-300/7 text-cyan-200"}>{connection === "checking" ? <RefreshCw className="size-3 animate-spin" /> : connection === "ready" ? <Database className="size-3" /> : <AlertTriangle className="size-3" />}{connection === "checking" ? "Conectando" : connection === "ready" ? "SQLite listo" : "Persistencia no disponible"}</Badge>
           </div>
         </div>
       </header>
@@ -210,17 +207,21 @@ export function VgcDashboard() {
         <TabsContent value="library" className="mt-0 outline-none">
           <div className="grid items-start gap-5 lg:grid-cols-[310px_minmax(0,1fr)]">
             <aside className="rounded-[24px] border border-white/8 bg-slate-900/40 p-3 backdrop-blur-xl lg:sticky lg:top-24">
-              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{groups.length} equipos · versiones inmutables</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
-              <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2"><div className="space-y-2">{groups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />)}</div></ScrollArea>
+              <div className="flex items-center justify-between gap-2 px-1 pb-3"><div><h2 className="flex items-center gap-2 text-sm font-black text-white"><BookOpen className="size-4 text-cyan-300" />Teams</h2><p className="mt-1 text-[10px] text-slate-600">{storedGroups.length} equipos · versiones inmutables</p></div><AddTeamDialog onCreated={handleTeamCreated} /></div>
+              <ScrollArea className="h-[calc(100vh-250px)] min-h-80 pr-2">
+                <div className="space-y-2">
+                  {storedGroups.length ? storedGroups.map((team) => <LibraryCard key={team.id} team={team} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} />) : <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center"><BookOpen className="mx-auto size-6 text-slate-700" /><p className="mt-3 text-xs font-semibold text-slate-400">No hay Teams guardados</p><p className="mt-1 text-[10px] leading-4 text-slate-600">Agrega un equipo o créalo desde Team Builder.</p></div>}
+                </div>
+              </ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select>{!libraryVersion.demo ? <NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /> : <Button variant="outline" disabled className="rounded-full border-white/8 bg-white/3 text-slate-600">Ejemplo de v{formatVersion(libraryVersion)}</Button>}</div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : null}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select><NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /></div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-12 text-center"><BookOpen className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm font-semibold text-slate-400">Todavía no hay equipos guardados</p><p className="mt-1 text-xs text-slate-600">Crea tu primer Team para ver aquí sus versiones, estadísticas e historial.</p></div>}
             </div>
           </div>
         </TabsContent>
 
         <TabsContent value="builder" forceMount className="mt-0 outline-none">
-          <TeamBuilder key={builderVersionId} groups={groups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
+          <TeamBuilder key={builderVersionId} groups={storedGroups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
         </TabsContent>
 
         <TabsContent value="scouting" className="mt-0 outline-none">
