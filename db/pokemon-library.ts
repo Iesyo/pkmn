@@ -134,11 +134,24 @@ function toPokemonSet(row: SnapshotRow): PokemonSet {
   };
 }
 
-function canonicalSignature(row: SnapshotRow) {
-  const setMechanics = parseJson<PokemonSet["mechanics"]>(row.mechanics_json, {});
-  const teamMechanics = normalizeMechanics(
+function getTeamMechanics(row: SnapshotRow) {
+  return normalizeMechanics(
     parseJson<string[]>(row.team_mechanics_json, []),
   ).sort();
+}
+
+function toCanonicalPokemonSet(
+  row: SnapshotRow,
+  teamMechanics: BattleMechanic[],
+) {
+  const set = toPokemonSet(row);
+  if (!teamMechanics.includes("tera")) set.teraType = null;
+  return set;
+}
+
+function canonicalSignature(row: SnapshotRow) {
+  const setMechanics = parseJson<PokemonSet["mechanics"]>(row.mechanics_json, {});
+  const teamMechanics = getTeamMechanics(row);
   const allocation = parseEvs(row.evs);
   const moveIds = normalizeMoves(row.moves_json)
     .map((move) => toId(move.name))
@@ -154,7 +167,7 @@ function canonicalSignature(row: SnapshotRow) {
     item: toId(row.item),
     ability: toId(row.ability),
     level: row.level || 50,
-    teraType: toId(row.tera_type ?? ""),
+    teraType: teamMechanics.includes("tera") ? toId(row.tera_type ?? "") : "",
     pokemonMechanics: {
       dynamaxLevel: Number(setMechanics?.dynamaxLevel ?? 10),
       gigantamax: Boolean(setMechanics?.gigantamax),
@@ -226,32 +239,27 @@ async function syncPokemonLibrary() {
       .first<{ id: string; version_number: number }>();
 
     if (!libraryVersion) {
-      const maxVersion = await db
-        .prepare(
-          "SELECT MAX(version_number) AS max_version FROM pokemon_library_versions WHERE entry_id = ?",
-        )
-        .bind(entry.id)
-        .first<{ max_version: number | null }>();
-      const versionNumber = Number(maxVersion?.max_version ?? 0) + 1;
-      const set = toPokemonSet(row);
-      const mechanics = normalizeMechanics(
-        parseJson<string[]>(row.team_mechanics_json, []),
-      ) as BattleMechanic[];
+      const mechanics = getTeamMechanics(row) as BattleMechanic[];
+      const set = toCanonicalPokemonSet(row, mechanics);
       const versionId = crypto.randomUUID();
 
       await db
         .prepare(
-          "INSERT OR IGNORE INTO pokemon_library_versions (id, entry_id, version_number, set_hash, paste, set_json, source_team_version_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          `INSERT OR IGNORE INTO pokemon_library_versions
+            (id, entry_id, version_number, set_hash, paste, set_json, source_team_version_id, created_at)
+          SELECT ?, ?, COALESCE(MAX(version_number), 0) + 1, ?, ?, ?, ?, ?
+          FROM pokemon_library_versions
+          WHERE entry_id = ?`,
         )
         .bind(
           versionId,
           entry.id,
-          versionNumber,
           setHash,
           serializeShowdownPaste([set], mechanics),
           JSON.stringify(set),
           row.team_version_id,
           row.version_created_at,
+          entry.id,
         )
         .run();
 

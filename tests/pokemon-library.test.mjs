@@ -5,6 +5,7 @@ import test from "node:test";
 const backendUrl = new URL("../db/pokemon-library.ts", import.meta.url);
 const schemaUrl = new URL("../db/schema.ts", import.meta.url);
 const migrationUrl = new URL("../drizzle/0005_pokemon_library.sql", import.meta.url);
+const rebuildMigrationUrl = new URL("../drizzle/0008_rebuild_pokemon_library.sql", import.meta.url);
 const selectorUrl = new URL("../components/vgc/pokemon-library-dialog.tsx", import.meta.url);
 const calculatorUrl = new URL("../components/vgc/damage-calculator.tsx", import.meta.url);
 
@@ -17,8 +18,21 @@ test("deduplicates reusable Pokemon sets by canonical competitive content", asyn
   assert.ok(source.includes("moves: moveIds"));
   assert.ok(source.includes(".sort();"));
   assert.ok(source.includes("set_hash = ?"));
-  assert.ok(source.includes("MAX(version_number) AS max_version"));
+  assert.ok(source.includes('teraType: teamMechanics.includes("tera")'));
+  assert.ok(source.includes("function toCanonicalPokemonSet"));
+  assert.ok(source.includes('if (!teamMechanics.includes("tera")) set.teraType = null;'));
+  assert.ok(source.includes("COALESCE(MAX(version_number), 0) + 1"));
+  assert.ok(!source.includes("SELECT MAX(version_number) AS max_version"));
   assert.ok(source.includes("ON CONFLICT(team_version_id, slot)"));
+});
+
+test("rebuilds derived library rows after canonical signature changes", async () => {
+  const migration = await readFile(rebuildMigrationUrl, "utf8");
+
+  const usages = migration.indexOf("DELETE FROM `pokemon_library_usages`");
+  const versions = migration.indexOf("DELETE FROM `pokemon_library_versions`");
+  const entries = migration.indexOf("DELETE FROM `pokemon_library_entries`");
+  assert.ok(usages >= 0 && versions > usages && entries > versions);
 });
 
 test("keeps immutable Team snapshots separate from canonical library versions", async () => {
