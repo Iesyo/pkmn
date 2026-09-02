@@ -16,8 +16,8 @@ export async function PATCH(
     const folderId = typeof payload.folderId === "string" && payload.folderId.trim()
       ? payload.folderId.trim()
       : null;
-    await moveTeamToFolder(id, folderId);
-    return Response.json({ teamId: id, folderId });
+    const organization = await moveTeamToFolder(id, folderId);
+    return Response.json({ organization });
   } catch (error) {
     return apiError(error);
   }
