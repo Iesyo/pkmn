@@ -10,10 +10,23 @@ interface TeamFolderRow {
   created_at: string;
 }
 
+interface TeamOrganizationRow {
+  id: string;
+  folder_id: string | null;
+  sort_order: number;
+}
+
 interface TeamFolderAssignmentRow {
   id: string;
   folder_id: string | null;
 }
+
+export interface TeamOrganization {
+  folderId: string | null;
+  sortOrder: number;
+}
+
+export type TeamDropPosition = "before" | "after";
 
 function normalizeFolderName(name: string) {
   const normalized = name.trim().replace(/\s+/g, " ");
@@ -32,6 +45,13 @@ function normalizeFolderOrder(folderIds: unknown): string[] {
     throw new DomainError("El orden de carpetas contiene carpetas duplicadas.");
   }
   return normalized;
+}
+
+function normalizeTeamDropPosition(position: unknown): TeamDropPosition {
+  if (position !== "before" && position !== "after") {
+    throw new DomainError("La posición del equipo no es válida.");
+  }
+  return position;
 }
 
 function toFolder(row: TeamFolderRow): TeamFolder {
@@ -54,6 +74,39 @@ async function ensureUniqueName(name: string, excludingId?: string) {
     .bind(...(excludingId ? [name, excludingId] : [name]))
     .first<{ id: string }>();
   if (existing) throw new DomainError("Ya existe una carpeta con ese nombre.", 409);
+}
+
+async function orderedTeamIds(
+  db: D1Database,
+  folderId: string | null,
+  excludingId?: string,
+): Promise<string[]> {
+  const where = folderId ? "folder_id = ?" : "folder_id IS NULL";
+  const exclusion = excludingId ? " AND id <> ?" : "";
+  const statement = db.prepare(
+    `SELECT id FROM teams WHERE ${where}${exclusion} ORDER BY sort_order ASC, updated_at DESC, name COLLATE NOCASE ASC, id ASC`,
+  );
+  const params = [
+    ...(folderId ? [folderId] : []),
+    ...(excludingId ? [excludingId] : []),
+  ];
+  const result = await statement.bind(...params).all<{ id: string }>();
+  return result.results.map((row) => row.id);
+}
+
+function organizationStatements(
+  db: D1Database,
+  ids: string[],
+  folderId: string | null,
+  movedTeamId?: string,
+) {
+  return ids.map((id, sortOrder) =>
+    id === movedTeamId
+      ? db
+          .prepare("UPDATE teams SET folder_id = ?, sort_order = ? WHERE id = ?")
+          .bind(folderId, sortOrder, id)
+      : db.prepare("UPDATE teams SET sort_order = ? WHERE id = ?").bind(sortOrder, id),
+  );
 }
 
 export async function listTeamFolders(): Promise<TeamFolder[]> {
@@ -82,12 +135,17 @@ export async function reorderTeamFolders(folderIds: unknown): Promise<TeamFolder
   return listTeamFolders();
 }
 
-export async function listTeamFolderAssignments(): Promise<Record<string, string | null>> {
+export async function listTeamOrganization(): Promise<Record<string, TeamOrganization>> {
   const db = await getDatabase();
   const result = await db
-    .prepare("SELECT id, folder_id FROM teams")
-    .all<TeamFolderAssignmentRow>();
-  return Object.fromEntries(result.results.map((row) => [row.id, row.folder_id]));
+    .prepare("SELECT id, folder_id, sort_order FROM teams")
+    .all<TeamOrganizationRow>();
+  return Object.fromEntries(
+    result.results.map((row) => [
+      row.id,
+      { folderId: row.folder_id, sortOrder: row.sort_order },
+    ]),
+  );
 }
 
 export async function createTeamFolder(name: string): Promise<TeamFolder> {
@@ -138,8 +196,20 @@ export async function deleteTeamFolder(id: string) {
     .bind(id)
     .first<{ id: string }>();
   if (!current) throw new DomainError("No encontramos esa carpeta.", 404);
+
+  const [unfiledIds, movedIds] = await Promise.all([
+    orderedTeamIds(db, null),
+    orderedTeamIds(db, id),
+  ]);
+  const combinedIds = [...unfiledIds, ...movedIds];
   await db.batch([
-    db.prepare("UPDATE teams SET folder_id = NULL WHERE folder_id = ?").bind(id),
+    ...combinedIds.map((teamId, sortOrder) =>
+      movedIds.includes(teamId)
+        ? db
+            .prepare("UPDATE teams SET folder_id = NULL, sort_order = ? WHERE id = ?")
+            .bind(sortOrder, teamId)
+        : db.prepare("UPDATE teams SET sort_order = ? WHERE id = ?").bind(sortOrder, teamId),
+    ),
     db.prepare("DELETE FROM team_folders WHERE id = ?").bind(id),
   ]);
 }
@@ -147,9 +217,9 @@ export async function deleteTeamFolder(id: string) {
 export async function moveTeamToFolder(teamId: string, folderId: string | null) {
   const db = await getDatabase();
   const team = await db
-    .prepare("SELECT id FROM teams WHERE id = ?")
+    .prepare("SELECT id, folder_id FROM teams WHERE id = ?")
     .bind(teamId)
-    .first<{ id: string }>();
+    .first<TeamFolderAssignmentRow>();
   if (!team) throw new DomainError("No encontramos ese equipo.", 404);
 
   if (folderId) {
@@ -160,8 +230,63 @@ export async function moveTeamToFolder(teamId: string, folderId: string | null) 
     if (!folder) throw new DomainError("No encontramos esa carpeta.", 404);
   }
 
-  await db
-    .prepare("UPDATE teams SET folder_id = ? WHERE id = ?")
-    .bind(folderId, teamId)
-    .run();
+  const sourceIds = await orderedTeamIds(db, team.folder_id, teamId);
+  const targetIds = team.folder_id === folderId
+    ? sourceIds
+    : await orderedTeamIds(db, folderId, teamId);
+  const nextTargetIds = [...targetIds, teamId];
+
+  await db.batch([
+    ...(team.folder_id === folderId ? [] : organizationStatements(db, sourceIds, team.folder_id)),
+    ...organizationStatements(db, nextTargetIds, folderId, teamId),
+  ]);
+
+  return listTeamOrganization();
+}
+
+export async function reorderTeamByTarget(
+  teamId: string,
+  targetTeamId: string,
+  rawPosition: unknown,
+) {
+  const position = normalizeTeamDropPosition(rawPosition);
+  if (!teamId || !targetTeamId || teamId === targetTeamId) {
+    return listTeamOrganization();
+  }
+
+  const db = await getDatabase();
+  const [team, target] = await Promise.all([
+    db
+      .prepare("SELECT id, folder_id FROM teams WHERE id = ?")
+      .bind(teamId)
+      .first<TeamFolderAssignmentRow>(),
+    db
+      .prepare("SELECT id, folder_id FROM teams WHERE id = ?")
+      .bind(targetTeamId)
+      .first<TeamFolderAssignmentRow>(),
+  ]);
+  if (!team) throw new DomainError("No encontramos ese equipo.", 404);
+  if (!target) throw new DomainError("No encontramos el equipo de destino.", 404);
+
+  const sourceIds = await orderedTeamIds(db, team.folder_id, teamId);
+  const targetIds = team.folder_id === target.folder_id
+    ? sourceIds
+    : await orderedTeamIds(db, target.folder_id, teamId);
+  const targetIndex = targetIds.indexOf(targetTeamId);
+  if (targetIndex < 0) {
+    throw new DomainError("El orden de equipos ya no está actualizado.", 409);
+  }
+  const insertAt = targetIndex + (position === "after" ? 1 : 0);
+  const nextTargetIds = [
+    ...targetIds.slice(0, insertAt),
+    teamId,
+    ...targetIds.slice(insertAt),
+  ];
+
+  await db.batch([
+    ...(team.folder_id === target.folder_id ? [] : organizationStatements(db, sourceIds, team.folder_id)),
+    ...organizationStatements(db, nextTargetIds, target.folder_id, teamId),
+  ]);
+
+  return listTeamOrganization();
 }
