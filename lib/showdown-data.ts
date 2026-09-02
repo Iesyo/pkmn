@@ -38,16 +38,67 @@ export interface ShowdownSnapshot {
   items: Record<string, ShowdownItem>;
 }
 
-export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean } = {}) {
-  const query = fresh ? `schema=2&refresh=${Date.now()}` : "schema=2";
-  const response = await fetch(`/data/showdown-dex.json.gz?${query}`, { cache: fresh ? "no-store" : "force-cache" });
-  if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
+function validateSnapshot(value: unknown): ShowdownSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("La Pokédex de Pokémon Showdown tiene un formato inválido.");
+  }
+  const snapshot = value as Partial<ShowdownSnapshot>;
+  if (
+    !snapshot.metadata?.captured ||
+    !snapshot.species ||
+    !snapshot.moves ||
+    !snapshot.items ||
+    !snapshot.formats ||
+    !snapshot.itemFormats
+  ) {
+    throw new Error("La Pokédex de Pokémon Showdown está incompleta.");
+  }
+  return snapshot as ShowdownSnapshot;
+}
+
+async function decodeSnapshotResponse(response: Response) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) throw new Error("La Pokédex de Pokémon Showdown llegó vacía.");
   const text = bytes[0] === 0x1f && bytes[1] === 0x8b
     ? await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text()
     : new TextDecoder().decode(bytes);
-  return JSON.parse(text) as ShowdownSnapshot;
+  return validateSnapshot(JSON.parse(text));
+}
+
+async function readRefreshError(response: Response) {
+  try {
+    const payload = (await response.json()) as { error?: string };
+    return payload.error || "No pudimos actualizar las bases desde Pokémon Showdown.";
+  } catch {
+    return "No pudimos actualizar las bases desde Pokémon Showdown.";
+  }
+}
+
+export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean } = {}) {
+  if (fresh) {
+    let response: Response;
+    try {
+      response = await fetch("/api/showdown-data", {
+        method: "POST",
+        cache: "no-store",
+      });
+    } catch {
+      throw new Error("No pudimos contactar el actualizador de Pokémon Showdown en el servidor.");
+    }
+    if (!response.ok) throw new Error(await readRefreshError(response));
+    return decodeSnapshotResponse(response);
+  }
+
+  try {
+    const persisted = await fetch("/api/showdown-data", { cache: "no-store" });
+    if (persisted.ok) return await decodeSnapshotResponse(persisted);
+  } catch {
+    // The bundled snapshot remains the safe fallback if D1 is unavailable.
+  }
+
+  const response = await fetch("/data/showdown-dex.json.gz?schema=2", { cache: "force-cache" });
+  if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
+  return decodeSnapshotResponse(response);
 }
 
 export function getSpecies(snapshot: ShowdownSnapshot | null, value: string) {
