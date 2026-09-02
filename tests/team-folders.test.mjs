@@ -71,3 +71,23 @@ test("folder disclosure and drag hover stay stable across child transitions and 
   assert.match(folders, /hidden=\{!open\}/);
   assert.doesNotMatch(folders, /\{open \? \(/);
 });
+
+test("Team folders can be reordered independently from team drag and persist their order", () => {
+  const folderQueries = source("db/team-folders.ts");
+  const reorderRoute = source("app/api/team-folders/reorder/route.ts");
+  const dashboard = source("app/vgc-dashboard.tsx");
+  const folders = source("components/vgc/team-folders.tsx");
+
+  assert.match(folderQueries, /export async function reorderTeamFolders/);
+  assert.match(folderQueries, /UPDATE team_folders SET sort_order = \? WHERE id = \?/);
+  assert.match(reorderRoute, /reorderTeamFolders/);
+  assert.match(reorderRoute, /folderIds/);
+  assert.match(folders, /TEAM_FOLDER_DRAG_MIME/);
+  assert.match(folders, /GripVertical/);
+  assert.match(folders, /onDropFolder/);
+  assert.match(folders, /getFolderDropPosition/);
+  assert.match(dashboard, /function reorderFolders/);
+  assert.match(dashboard, /\/api\/team-folders\/reorder/);
+  assert.match(dashboard, /folderIds: next\.map/);
+  assert.match(dashboard, /reorderDisabled=\{folderOrderSaving\}/);
+});
