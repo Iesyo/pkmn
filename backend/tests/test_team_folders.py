@@ -50,3 +50,20 @@ def test_folder_names_are_case_insensitively_unique(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Ya existe una carpeta"):
         repository.create_team_folder("  megas  ")
+
+
+def test_folder_order_can_be_reordered_and_persists(tmp_path: Path) -> None:
+    repository = Repository(tmp_path / "pkmn.sqlite")
+    repository.initialize()
+    first = repository.create_team_folder("Primera")
+    second = repository.create_team_folder("Segunda")
+    third = repository.create_team_folder("Tercera")
+
+    reordered = repository.reorder_team_folders([third.id, first.id, second.id])
+
+    assert [folder.id for folder in reordered] == [third.id, first.id, second.id]
+    assert [folder.sort_order for folder in reordered] == [0, 1, 2]
+    assert [folder.id for folder in repository.list_team_folders()] == [third.id, first.id, second.id]
+
+    with pytest.raises(ValueError, match="no está actualizada"):
+        repository.reorder_team_folders([third.id, first.id])
