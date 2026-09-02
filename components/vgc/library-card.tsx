@@ -2,7 +2,7 @@
 
 import type { DragEvent } from "react";
 import Image from "next/image";
-import { Check, ChevronRight, FolderInput } from "lucide-react";
+import { Check, ChevronRight, FolderInput, GripVertical } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -55,7 +55,10 @@ export function LibraryCard({
           : "border-white/8 bg-white/[0.025] hover:border-white/15 hover:bg-white/[0.04]",
       )}
     >
-      <button type="button" onClick={onClick} className="w-full p-3 pr-10 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/45">
+      <div className="pointer-events-none absolute left-1 top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center text-slate-700 transition-colors group-hover:text-cyan-300/70" aria-hidden="true">
+        <GripVertical className="size-3.5" />
+      </div>
+      <button type="button" onClick={onClick} className="w-full p-3 pl-7 pr-10 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/45">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="truncate text-xs font-black text-white">{team.name}</p>
