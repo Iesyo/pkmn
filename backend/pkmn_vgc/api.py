@@ -73,6 +73,10 @@ class FolderBody(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
 
+class FolderOrderBody(BaseModel):
+    folder_ids: list[str]
+
+
 class MoveTeamBody(BaseModel):
     folder_id: str | None = None
 
@@ -120,6 +124,14 @@ def list_team_folders() -> dict[str, object]:
 def create_team_folder(body: FolderBody) -> dict[str, object]:
     try:
         return {"folder": asdict(repository.create_team_folder(body.name))}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.patch("/api/team-folders/reorder")
+def reorder_team_folders(body: FolderOrderBody) -> dict[str, object]:
+    try:
+        return {"folders": [asdict(folder) for folder in repository.reorder_team_folders(body.folder_ids)]}
     except Exception as error:
         raise _http_error(error) from error
 
