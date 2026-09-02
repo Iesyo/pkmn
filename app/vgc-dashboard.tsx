@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
-import { CreateFolderDialog, TeamFolderSection } from "@/components/vgc/team-folders";
+import { CreateFolderDialog, TeamFolderSection, type FolderDropPosition } from "@/components/vgc/team-folders";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
 import { TeamBuilder } from "@/components/vgc/team-builder";
@@ -25,9 +25,31 @@ function sortFolders(folders: TeamFolder[]) {
   return [...folders].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
 }
 
+function reorderFolders(
+  folders: TeamFolder[],
+  draggedId: string,
+  targetId: string | null,
+  position: FolderDropPosition,
+) {
+  const dragged = folders.find((folder) => folder.id === draggedId);
+  if (!dragged) return folders;
+  const remaining = folders.filter((folder) => folder.id !== draggedId);
+  let insertAt = remaining.length;
+  if (targetId) {
+    const targetIndex = remaining.findIndex((folder) => folder.id === targetId);
+    if (targetIndex < 0) return folders;
+    insertAt = targetIndex + (position === "after" ? 1 : 0);
+  }
+  const reordered = [...remaining.slice(0, insertAt), dragged, ...remaining.slice(insertAt)];
+  if (reordered.every((folder, index) => folder.id === folders[index]?.id)) return folders;
+  return reordered.map((folder, sortOrder) => ({ ...folder, sortOrder }));
+}
+
 export function VgcDashboard() {
   const [storedGroups, setStoredGroups] = useState<TeamGroup[]>([]);
   const [teamFolders, setTeamFolders] = useState<TeamFolder[]>([]);
+  const [folderOrderSaving, setFolderOrderSaving] = useState(false);
+  const folderOrderSavingRef = useRef(false);
   const [showdownNames, setShowdownNames] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [activeView, setActiveView] = useState("compare");
@@ -177,6 +199,39 @@ export function VgcDashboard() {
     setTeamFolders((current) => sortFolders(current.map((entry) => entry.id === folder.id ? folder : entry)));
   }
 
+  async function handleFolderReordered(
+    draggedId: string,
+    targetId: string | null,
+    position: FolderDropPosition,
+  ) {
+    if (folderOrderSavingRef.current) return;
+    const previous = teamFolders;
+    const next = reorderFolders(previous, draggedId, targetId, position);
+    if (next === previous) return;
+
+    folderOrderSavingRef.current = true;
+    setFolderOrderSaving(true);
+    setTeamFolders(next);
+    try {
+      const response = await fetch("/api/team-folders/reorder", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ folderIds: next.map((folder) => folder.id) }),
+      });
+      const payload = (await response.json()) as { folders?: TeamFolder[] };
+      if (!response.ok) throw new Error("Could not reorder folders");
+      setTeamFolders(sortFolders(payload.folders ?? next));
+      setConnection("ready");
+    } catch {
+      setTeamFolders(previous);
+      setConnection("error");
+      void refresh();
+    } finally {
+      folderOrderSavingRef.current = false;
+      setFolderOrderSaving(false);
+    }
+  }
+
   async function handleFolderDeleted(folderId: string) {
     try {
       const response = await fetch(`/api/team-folders/${folderId}`, { method: "DELETE" });
@@ -277,12 +332,29 @@ export function VgcDashboard() {
                       {teamFolders.map((folder) => {
                         const teams = storedGroups.filter((team) => team.folderId === folder.id);
                         return (
-                          <TeamFolderSection key={folder.id} folder={folder} teamCount={teams.length} onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)} onRenamed={handleFolderRenamed} onDeleted={handleFolderDeleted}>
+                          <TeamFolderSection
+                            key={folder.id}
+                            folder={folder}
+                            teamCount={teams.length}
+                            onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)}
+                            onDropFolder={(folderId, targetFolderId, dropPosition) => void handleFolderReordered(folderId, targetFolderId, dropPosition)}
+                            onRenamed={handleFolderRenamed}
+                            onDeleted={handleFolderDeleted}
+                            reorderDisabled={folderOrderSaving}
+                          >
                             {teams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
                           </TeamFolderSection>
                         );
                       })}
-                      <TeamFolderSection folder={null} teamCount={unfiledTeams.length} onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)} onRenamed={handleFolderRenamed} onDeleted={handleFolderDeleted}>
+                      <TeamFolderSection
+                        folder={null}
+                        teamCount={unfiledTeams.length}
+                        onDropTeam={(teamId, folderId) => void moveTeam(teamId, folderId)}
+                        onDropFolder={(folderId, targetFolderId, dropPosition) => void handleFolderReordered(folderId, targetFolderId, dropPosition)}
+                        onRenamed={handleFolderRenamed}
+                        onDeleted={handleFolderDeleted}
+                        reorderDisabled={folderOrderSaving}
+                      >
                         {unfiledTeams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
                       </TeamFolderSection>
                     </>
