@@ -23,6 +23,17 @@ function normalizeFolderName(name: string) {
   return normalized;
 }
 
+function normalizeFolderOrder(folderIds: unknown): string[] {
+  if (!Array.isArray(folderIds) || folderIds.some((id) => typeof id !== "string" || !id.trim())) {
+    throw new DomainError("El orden de carpetas no es válido.");
+  }
+  const normalized = folderIds.map((id) => id.trim());
+  if (new Set(normalized).size !== normalized.length) {
+    throw new DomainError("El orden de carpetas contiene carpetas duplicadas.");
+  }
+  return normalized;
+}
+
 function toFolder(row: TeamFolderRow): TeamFolder {
   return {
     id: row.id,
@@ -51,6 +62,24 @@ export async function listTeamFolders(): Promise<TeamFolder[]> {
     .prepare("SELECT id, name, sort_order, created_at FROM team_folders ORDER BY sort_order ASC, name COLLATE NOCASE ASC")
     .all<TeamFolderRow>();
   return result.results.map(toFolder);
+}
+
+export async function reorderTeamFolders(folderIds: unknown): Promise<TeamFolder[]> {
+  const orderedIds = normalizeFolderOrder(folderIds);
+  const db = await getDatabase();
+  const current = await db.prepare("SELECT id FROM team_folders").all<{ id: string }>();
+  const currentIds = new Set(current.results.map((row) => row.id));
+  if (orderedIds.length !== currentIds.size || orderedIds.some((id) => !currentIds.has(id))) {
+    throw new DomainError("La lista de carpetas ya no está actualizada.", 409);
+  }
+  if (orderedIds.length) {
+    await db.batch(
+      orderedIds.map((id, sortOrder) =>
+        db.prepare("UPDATE team_folders SET sort_order = ? WHERE id = ?").bind(sortOrder, id),
+      ),
+    );
+  }
+  return listTeamFolders();
 }
 
 export async function listTeamFolderAssignments(): Promise<Record<string, string | null>> {
