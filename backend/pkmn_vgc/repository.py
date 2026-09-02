@@ -63,6 +63,22 @@ class Repository:
                     connection.execute(
                         "ALTER TABLE teams ADD COLUMN folder_id TEXT REFERENCES team_folders(id) ON DELETE SET NULL"
                     )
+                if "sort_order" not in team_columns:
+                    connection.execute(
+                        "ALTER TABLE teams ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+                    )
+                    rows = connection.execute(
+                        "SELECT id, folder_id FROM teams ORDER BY folder_id, updated_at DESC, name COLLATE NOCASE ASC, id ASC"
+                    ).fetchall()
+                    next_orders: dict[str | None, int] = {}
+                    for row in rows:
+                        folder_id = str(row["folder_id"]) if row["folder_id"] is not None else None
+                        sort_order = next_orders.get(folder_id, 0)
+                        connection.execute(
+                            "UPDATE teams SET sort_order = ? WHERE id = ?",
+                            (sort_order, row["id"]),
+                        )
+                        next_orders[folder_id] = sort_order + 1
 
     def get_showdown_names(self) -> list[str]:
         with self.connect() as connection:
@@ -89,6 +105,45 @@ class Repository:
                     (json.dumps(normalized), _now()),
                 )
         return normalized
+
+    @staticmethod
+    def _ordered_team_ids(
+        connection: sqlite3.Connection,
+        folder_id: str | None,
+        excluding_id: str | None = None,
+    ) -> list[str]:
+        where = "folder_id = ?" if folder_id is not None else "folder_id IS NULL"
+        exclusion = " AND id <> ?" if excluding_id is not None else ""
+        params: list[object] = []
+        if folder_id is not None:
+            params.append(folder_id)
+        if excluding_id is not None:
+            params.append(excluding_id)
+        rows = connection.execute(
+            f"SELECT id FROM teams WHERE {where}{exclusion} ORDER BY sort_order ASC, updated_at DESC, name COLLATE NOCASE ASC, id ASC",
+            params,
+        ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    @staticmethod
+    def _write_team_order(
+        connection: sqlite3.Connection,
+        team_ids: Sequence[str],
+        *,
+        folder_id: str | None,
+        moved_team_id: str | None = None,
+    ) -> None:
+        for sort_order, team_id in enumerate(team_ids):
+            if team_id == moved_team_id:
+                connection.execute(
+                    "UPDATE teams SET folder_id = ?, sort_order = ? WHERE id = ?",
+                    (folder_id, sort_order, team_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE teams SET sort_order = ? WHERE id = ?",
+                    (sort_order, team_id),
+                )
 
     def list_team_folders(self) -> list[TeamFolder]:
         with self.connect() as connection:
@@ -122,6 +177,19 @@ class Repository:
                     [(sort_order, folder_id) for sort_order, folder_id in enumerate(ordered_ids)],
                 )
         return self.list_team_folders()
+
+    def list_team_organization(self) -> dict[str, dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, folder_id, sort_order FROM teams"
+            ).fetchall()
+        return {
+            str(row["id"]): {
+                "folderId": str(row["folder_id"]) if row["folder_id"] is not None else None,
+                "sortOrder": int(row["sort_order"]),
+            }
+            for row in rows
+        }
 
     def create_team_folder(self, name: str) -> TeamFolder:
         clean_name = _normalize_folder_name(name)
@@ -179,29 +247,107 @@ class Repository:
             ).fetchone()
             if current is None:
                 raise LookupError("No encontramos esa carpeta.")
+            unfiled_ids = self._ordered_team_ids(connection, None)
+            moved_ids = self._ordered_team_ids(connection, folder_id)
+            combined_ids = [*unfiled_ids, *moved_ids]
             with connection:
-                connection.execute(
-                    "UPDATE teams SET folder_id = NULL WHERE folder_id = ?", (folder_id,)
-                )
+                for sort_order, team_id in enumerate(combined_ids):
+                    if team_id in moved_ids:
+                        connection.execute(
+                            "UPDATE teams SET folder_id = NULL, sort_order = ? WHERE id = ?",
+                            (sort_order, team_id),
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE teams SET sort_order = ? WHERE id = ?",
+                            (sort_order, team_id),
+                        )
                 connection.execute("DELETE FROM team_folders WHERE id = ?", (folder_id,))
 
-    def move_team_to_folder(self, team_id: str, folder_id: str | None) -> None:
+    def move_team_to_folder(self, team_id: str, folder_id: str | None) -> dict[str, dict[str, object]]:
         with self.connect() as connection:
             team = connection.execute(
-                "SELECT id FROM teams WHERE id = ?", (team_id,)
+                "SELECT id, folder_id FROM teams WHERE id = ?", (team_id,)
             ).fetchone()
             if team is None:
                 raise LookupError("No encontramos ese equipo.")
+            source_folder_id = str(team["folder_id"]) if team["folder_id"] is not None else None
             if folder_id is not None:
                 folder = connection.execute(
                     "SELECT id FROM team_folders WHERE id = ?", (folder_id,)
                 ).fetchone()
                 if folder is None:
                     raise LookupError("No encontramos esa carpeta.")
+
+            source_ids = self._ordered_team_ids(connection, source_folder_id, team_id)
+            target_ids = (
+                source_ids
+                if source_folder_id == folder_id
+                else self._ordered_team_ids(connection, folder_id, team_id)
+            )
+            next_target_ids = [*target_ids, team_id]
             with connection:
-                connection.execute(
-                    "UPDATE teams SET folder_id = ? WHERE id = ?", (folder_id, team_id)
+                if source_folder_id != folder_id:
+                    self._write_team_order(connection, source_ids, folder_id=source_folder_id)
+                self._write_team_order(
+                    connection,
+                    next_target_ids,
+                    folder_id=folder_id,
+                    moved_team_id=team_id,
                 )
+        return self.list_team_organization()
+
+    def reorder_team_by_target(
+        self,
+        team_id: str,
+        target_team_id: str,
+        position: str,
+    ) -> dict[str, dict[str, object]]:
+        if position not in ("before", "after"):
+            raise ValueError("La posición del equipo no es válida.")
+        if team_id == target_team_id:
+            return self.list_team_organization()
+
+        with self.connect() as connection:
+            team = connection.execute(
+                "SELECT id, folder_id FROM teams WHERE id = ?", (team_id,)
+            ).fetchone()
+            target = connection.execute(
+                "SELECT id, folder_id FROM teams WHERE id = ?", (target_team_id,)
+            ).fetchone()
+            if team is None:
+                raise LookupError("No encontramos ese equipo.")
+            if target is None:
+                raise LookupError("No encontramos el equipo de destino.")
+
+            source_folder_id = str(team["folder_id"]) if team["folder_id"] is not None else None
+            target_folder_id = str(target["folder_id"]) if target["folder_id"] is not None else None
+            source_ids = self._ordered_team_ids(connection, source_folder_id, team_id)
+            target_ids = (
+                source_ids
+                if source_folder_id == target_folder_id
+                else self._ordered_team_ids(connection, target_folder_id, team_id)
+            )
+            try:
+                target_index = target_ids.index(target_team_id)
+            except ValueError as error:
+                raise ValueError("El orden de equipos ya no está actualizado.") from error
+            insert_at = target_index + (1 if position == "after" else 0)
+            next_target_ids = [
+                *target_ids[:insert_at],
+                team_id,
+                *target_ids[insert_at:],
+            ]
+            with connection:
+                if source_folder_id != target_folder_id:
+                    self._write_team_order(connection, source_ids, folder_id=source_folder_id)
+                self._write_team_order(
+                    connection,
+                    next_target_ids,
+                    folder_id=target_folder_id,
+                    moved_team_id=team_id,
+                )
+        return self.list_team_organization()
 
     def create_team(self, name: str, paste: str, *, format: str = "champions", mechanics: Sequence[str] = ("mega",)) -> TeamVersion:
         clean_name = name.strip()
@@ -217,10 +363,14 @@ class Repository:
         paste_hash = hashlib.sha256(signature.encode()).hexdigest()
 
         with self.connect() as connection:
+            order_row = connection.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM teams WHERE folder_id IS NULL"
+            ).fetchone()
+            sort_order = int(order_row["next_order"]) if order_row is not None else 0
             with connection:
                 connection.execute(
-                    "INSERT INTO teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                    (team_id, clean_name, now, now),
+                    "INSERT INTO teams (id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (team_id, clean_name, sort_order, now, now),
                 )
                 connection.execute(
                     "INSERT INTO team_versions (id, team_id, version_number, minor_version, format, mechanics_json, paste, paste_hash, created_at) VALUES (?, ?, 1, 0, ?, ?, ?, ?, ?)",
@@ -368,7 +518,7 @@ class Repository:
     def list_teams(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             teams = connection.execute(
-                "SELECT id, name, folder_id, created_at, updated_at FROM teams ORDER BY updated_at DESC"
+                "SELECT id, name, folder_id, sort_order, created_at, updated_at FROM teams ORDER BY folder_id, sort_order ASC, updated_at DESC"
             ).fetchall()
             result: list[dict[str, Any]] = []
             for team in teams:
