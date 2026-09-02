@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type DragEvent, type ReactNode } from "react";
-import { ChevronDown, Folder, FolderOpen, FolderPlus, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, Folder, FolderOpen, FolderPlus, GripVertical, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 
 import {
   AlertDialog,
@@ -37,12 +37,24 @@ import { TEAM_DRAG_MIME } from "./library-card";
 const UNFILED_DISCLOSURE_KEY = "__unfiled__";
 const folderDisclosureState = new Map<string, boolean>();
 
+export const TEAM_FOLDER_DRAG_MIME = "application/x-like-no-one-ever-was-team-folder";
+export type FolderDropPosition = "before" | "after";
+
 function disclosureKey(folder: TeamFolder | null) {
   return folder?.id ?? UNFILED_DISCLOSURE_KEY;
 }
 
 function defaultDisclosureOpen(folder: TeamFolder | null) {
   return folder === null;
+}
+
+function isFolderDrag(event: DragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes(TEAM_FOLDER_DRAG_MIME);
+}
+
+function getFolderDropPosition(event: DragEvent<HTMLElement>): FolderDropPosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
 async function readApiError(response: Response, fallback: string) {
@@ -177,19 +189,24 @@ export function TeamFolderSection({
   teamCount,
   children,
   onDropTeam,
+  onDropFolder,
   onRenamed,
   onDeleted,
+  reorderDisabled = false,
 }: {
   folder: TeamFolder | null;
   teamCount: number;
   children: ReactNode;
   onDropTeam: (teamId: string, folderId: string | null) => void;
+  onDropFolder?: (folderId: string, targetFolderId: string | null, position: FolderDropPosition) => void;
   onRenamed: (folder: TeamFolder) => void;
   onDeleted: (folderId: string) => Promise<void>;
+  reorderDisabled?: boolean;
 }) {
   const folderKey = disclosureKey(folder);
   const [open, setOpenState] = useState(() => folderDisclosureState.get(folderKey) ?? defaultDisclosureOpen(folder));
   const [dragOver, setDragOver] = useState(false);
+  const [folderDropIndicator, setFolderDropIndicator] = useState<FolderDropPosition | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const dragDepth = useRef(0);
@@ -201,7 +218,28 @@ export function TeamFolderSection({
     setOpenState(next);
   }
 
+  function handleFolderDragStart(event: DragEvent<HTMLButtonElement>) {
+    if (!folder || reorderDisabled) return;
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(TEAM_FOLDER_DRAG_MIME, folder.id);
+  }
+
+  function handleFolderDragEnd(event: DragEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    dragDepth.current = 0;
+    setDragOver(false);
+    setFolderDropIndicator(null);
+  }
+
   function handleDragEnter(event: DragEvent<HTMLElement>) {
+    if (isFolderDrag(event) && onDropFolder) {
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragOver(false);
+      setFolderDropIndicator(folder ? getFolderDropPosition(event) : "before");
+      return;
+    }
     event.preventDefault();
     dragDepth.current += 1;
     setDragOver(true);
@@ -210,18 +248,35 @@ export function TeamFolderSection({
   function handleDragOver(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
+    if (isFolderDrag(event) && onDropFolder) {
+      setDragOver(false);
+      setFolderDropIndicator(folder ? getFolderDropPosition(event) : "before");
+    }
   }
 
   function handleDragLeave(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     dragDepth.current = Math.max(0, dragDepth.current - 1);
-    if (dragDepth.current === 0) setDragOver(false);
+    if (dragDepth.current === 0) {
+      setDragOver(false);
+      setFolderDropIndicator(null);
+    }
   }
 
   function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     dragDepth.current = 0;
     setDragOver(false);
+
+    if (isFolderDrag(event) && onDropFolder) {
+      const draggedFolderId = event.dataTransfer.getData(TEAM_FOLDER_DRAG_MIME);
+      const position = folder ? folderDropIndicator ?? getFolderDropPosition(event) : "before";
+      setFolderDropIndicator(null);
+      if (draggedFolderId && draggedFolderId !== folderId) onDropFolder(draggedFolderId, folderId, position);
+      return;
+    }
+
+    setFolderDropIndicator(null);
     const teamId = event.dataTransfer.getData(TEAM_DRAG_MIME) || event.dataTransfer.getData("text/plain");
     if (teamId) onDropTeam(teamId, folderId);
   }
@@ -233,11 +288,34 @@ export function TeamFolderSection({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={cn(
-        "rounded-2xl border p-1.5 transition-colors",
+        "relative rounded-2xl border p-1.5 transition-colors",
         dragOver ? "border-cyan-300/35 bg-cyan-300/[0.07]" : "border-white/6 bg-white/[0.015]",
       )}
     >
+      {folderDropIndicator ? (
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute inset-x-2 z-20 h-0.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.75)]",
+            folderDropIndicator === "before" ? "-top-px" : "-bottom-px",
+          )}
+        />
+      ) : null}
       <div className="flex items-center gap-1">
+        {folder ? (
+          <button
+            type="button"
+            draggable={!reorderDisabled}
+            disabled={reorderDisabled}
+            onDragStart={handleFolderDragStart}
+            onDragEnd={handleFolderDragEnd}
+            title="Arrastra para reordenar"
+            aria-label={`Reordenar ${folder.name}`}
+            className="flex size-6 shrink-0 cursor-grab items-center justify-center rounded-lg text-slate-700 hover:bg-white/5 hover:text-cyan-300 active:cursor-grabbing disabled:cursor-wait disabled:opacity-35"
+          >
+            <GripVertical className="size-3.5" />
+          </button>
+        ) : null}
         <button type="button" aria-expanded={open} onClick={toggleOpen} className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-white/[0.035]">
           <ChevronDown className={cn("size-3.5 shrink-0 text-slate-600 transition-transform", !open && "-rotate-90")} />
           {open ? <FolderOpen className="size-3.5 shrink-0 text-cyan-300/80" /> : <Folder className="size-3.5 shrink-0 text-cyan-300/65" />}
