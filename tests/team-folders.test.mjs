@@ -16,20 +16,20 @@ test("Teams folders are persisted without touching immutable versions", () => {
   assert.match(migration, /ON DELETE SET NULL/);
   assert.match(schema, /export const teamFolders = sqliteTable/);
   assert.match(schema, /folderId: text\("folder_id"\)/);
-  assert.match(folderQueries, /UPDATE teams SET folder_id = NULL WHERE folder_id = \?/);
-  assert.match(folderQueries, /UPDATE teams SET folder_id = \? WHERE id = \?/);
+  assert.match(folderQueries, /UPDATE teams SET folder_id = NULL, sort_order = \? WHERE id = \?/);
+  assert.match(folderQueries, /UPDATE teams SET folder_id = \?, sort_order = \? WHERE id = \?/);
   assert.doesNotMatch(migration, /ALTER TABLE `team_versions`/);
 });
 
-test("Teams API returns folders and supports moving a complete team", () => {
+test("Teams API returns folder and sort organization and supports moving a complete team", () => {
   const teamsRoute = source("app/api/teams/route.ts");
   const moveRoute = source("app/api/teams/[id]/route.ts");
   const foldersRoute = source("app/api/team-folders/route.ts");
 
-  assert.match(teamsRoute, /folders,/);
-  assert.match(teamsRoute, /folderId: folderAssignments\[team\.id\] \?\? null/);
+  assert.match(teamsRoute, /listTeamOrganization/);
+  assert.match(teamsRoute, /\.\.\.\(organization\[team\.id\]/);
   assert.match(moveRoute, /moveTeamToFolder/);
-  assert.match(moveRoute, /folderId/);
+  assert.match(moveRoute, /organization/);
   assert.match(foldersRoute, /createTeamFolder/);
 });
 
@@ -41,7 +41,7 @@ test("Teams UI offers folders, move menu and drag-and-drop fallback", () => {
 
   assert.match(dashboard, /CreateFolderDialog/);
   assert.match(dashboard, /TeamFolderSection/);
-  assert.match(dashboard, /Sin carpeta|folder=\{null\}/);
+  assert.match(dashboard, /folder=\{null\}/);
   assert.match(card, /draggable/);
   assert.match(card, /Mover a/);
   assert.match(card, /TEAM_DRAG_MIME/);
@@ -89,5 +89,32 @@ test("Team folders can be reordered independently from team drag and persist the
   assert.match(dashboard, /function reorderFolders/);
   assert.match(dashboard, /\/api\/team-folders\/reorder/);
   assert.match(dashboard, /folderIds: next\.map/);
-  assert.match(dashboard, /reorderDisabled=\{folderOrderSaving\}/);
+  assert.match(dashboard, /reorderDisabled=\{folderOrderSaving \|\| teamOrderSaving\}/);
+});
+
+test("Teams can be reordered inside folders with the same drag interaction and persist", () => {
+  const migration = source("drizzle/0009_team_order.sql");
+  const schema = source("db/schema.ts");
+  const folderQueries = source("db/team-folders.ts");
+  const reorderRoute = source("app/api/teams/reorder/route.ts");
+  const dashboard = source("app/vgc-dashboard.tsx");
+  const orderItem = source("components/vgc/team-order-item.tsx");
+
+  assert.match(migration, /ALTER TABLE `teams` ADD `sort_order`/);
+  assert.match(migration, /PARTITION BY folder_id/);
+  assert.match(schema, /sortOrder: integer\("sort_order"\)/);
+  assert.match(folderQueries, /export async function listTeamOrganization/);
+  assert.match(folderQueries, /export async function reorderTeamByTarget/);
+  assert.match(folderQueries, /ORDER BY sort_order ASC/);
+  assert.match(reorderRoute, /reorderTeamByTarget/);
+  assert.match(reorderRoute, /targetTeamId/);
+  assert.match(orderItem, /TEAM_DRAG_MIME/);
+  assert.match(orderItem, /getDropPosition/);
+  assert.match(orderItem, /onDropTeam/);
+  assert.match(orderItem, /dropIndicator === "before"/);
+  assert.match(dashboard, /function sortTeams/);
+  assert.match(dashboard, /function reorderTeamGroups/);
+  assert.match(dashboard, /\/api\/teams\/reorder/);
+  assert.match(dashboard, /targetTeamId: targetId/);
+  assert.match(dashboard, /teamOrderSavingRef/);
 });
