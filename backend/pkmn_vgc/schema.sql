@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     folder_id TEXT REFERENCES team_folders(id) ON DELETE SET NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -80,8 +81,39 @@ BEGIN
     SELECT RAISE(ABORT, 'team versions are immutable');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pokemon_sets_are_immutable
-BEFORE UPDATE ON pokemon_sets
-BEGIN
-    SELECT RAISE(ABORT, 'pokemon sets are immutable');
-END;
+CREATE TABLE IF NOT EXISTS pokemon_library_entries (
+    id TEXT PRIMARY KEY,
+    species TEXT NOT NULL,
+    species_key TEXT NOT NULL,
+    format TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (species_key, format)
+);
+
+CREATE TABLE IF NOT EXISTS pokemon_library_versions (
+    id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL REFERENCES pokemon_library_entries(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL CHECK (version_number > 0),
+    set_hash TEXT NOT NULL,
+    paste TEXT NOT NULL,
+    set_json TEXT NOT NULL,
+    source_team_version_id TEXT REFERENCES team_versions(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (entry_id, version_number),
+    UNIQUE (entry_id, set_hash)
+);
+
+CREATE TABLE IF NOT EXISTS pokemon_library_usages (
+    id TEXT PRIMARY KEY,
+    library_version_id TEXT NOT NULL REFERENCES pokemon_library_versions(id) ON DELETE CASCADE,
+    team_version_id TEXT NOT NULL REFERENCES team_versions(id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (team_version_id, slot)
+);
+
+CREATE INDEX IF NOT EXISTS pokemon_library_versions_entry_idx
+ON pokemon_library_versions(entry_id);
+
+CREATE INDEX IF NOT EXISTS pokemon_library_usages_version_idx
+ON pokemon_library_usages(library_version_id);
