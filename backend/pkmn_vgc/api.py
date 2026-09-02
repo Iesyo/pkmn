@@ -77,6 +77,12 @@ class FolderOrderBody(BaseModel):
     folder_ids: list[str]
 
 
+class TeamOrderBody(BaseModel):
+    team_id: str
+    target_team_id: str
+    position: Literal["before", "after"]
+
+
 class MoveTeamBody(BaseModel):
     folder_id: str | None = None
 
@@ -152,11 +158,24 @@ def delete_team_folder(folder_id: str) -> None:
         raise _http_error(error) from error
 
 
+@app.patch("/api/teams/reorder")
+def reorder_teams(body: TeamOrderBody) -> dict[str, object]:
+    try:
+        return {
+            "organization": repository.reorder_team_by_target(
+                body.team_id,
+                body.target_team_id,
+                body.position,
+            )
+        }
+    except Exception as error:
+        raise _http_error(error) from error
+
+
 @app.patch("/api/teams/{team_id}")
 def move_team(team_id: str, body: MoveTeamBody) -> dict[str, object]:
     try:
-        repository.move_team_to_folder(team_id, body.folder_id)
-        return {"team_id": team_id, "folder_id": body.folder_id}
+        return {"organization": repository.move_team_to_folder(team_id, body.folder_id)}
     except Exception as error:
         raise _http_error(error) from error
 
