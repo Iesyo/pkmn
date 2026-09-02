@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Libra
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { CreateFolderDialog, TeamFolderSection, type FolderDropPosition } from "@/components/vgc/team-folders";
+import { TeamOrderItem, type TeamDropPosition } from "@/components/vgc/team-order-item";
 import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
 import { TeamBuilder } from "@/components/vgc/team-builder";
@@ -20,9 +21,25 @@ import { formatVersion } from "@/lib/team-builder";
 
 type ConnectionState = "checking" | "ready" | "error";
 type TeamsPayload = { teams?: TeamGroup[]; folders?: TeamFolder[] };
+type TeamOrganization = Record<string, { folderId: string | null; sortOrder: number }>;
 
 function sortFolders(folders: TeamFolder[]) {
   return [...folders].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+}
+
+function sortTeams(teams: TeamGroup[]) {
+  return [...teams].sort((a, b) =>
+    (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+    || a.name.localeCompare(b.name, "es", { sensitivity: "base" })
+    || a.id.localeCompare(b.id),
+  );
+}
+
+function applyTeamOrganization(teams: TeamGroup[], organization: TeamOrganization) {
+  return teams.map((team) => {
+    const next = organization[team.id];
+    return next ? { ...team, ...next } : team;
+  });
 }
 
 function reorderFolders(
@@ -45,11 +62,61 @@ function reorderFolders(
   return reordered.map((folder, sortOrder) => ({ ...folder, sortOrder }));
 }
 
+function reorderTeamGroups(
+  teams: TeamGroup[],
+  draggedId: string,
+  targetId: string,
+  position: TeamDropPosition,
+) {
+  const dragged = teams.find((team) => team.id === draggedId);
+  const target = teams.find((team) => team.id === targetId);
+  if (!dragged || !target || dragged.id === target.id) return teams;
+
+  const sourceFolderId = dragged.folderId ?? null;
+  const targetFolderId = target.folderId ?? null;
+  const source = sortTeams(teams.filter((team) => (team.folderId ?? null) === sourceFolderId && team.id !== draggedId));
+  const targetBase = sourceFolderId === targetFolderId
+    ? source
+    : sortTeams(teams.filter((team) => (team.folderId ?? null) === targetFolderId && team.id !== draggedId));
+  const targetIndex = targetBase.findIndex((team) => team.id === targetId);
+  if (targetIndex < 0) return teams;
+
+  const insertAt = targetIndex + (position === "after" ? 1 : 0);
+  const nextTarget = [
+    ...targetBase.slice(0, insertAt),
+    dragged,
+    ...targetBase.slice(insertAt),
+  ];
+  const sourceOrder = new Map(source.map((team, sortOrder) => [team.id, sortOrder]));
+  const targetOrder = new Map(nextTarget.map((team, sortOrder) => [team.id, sortOrder]));
+  let changed = sourceFolderId !== targetFolderId;
+
+  const result = teams.map((team) => {
+    const nextTargetOrder = targetOrder.get(team.id);
+    if (nextTargetOrder !== undefined) {
+      if ((team.folderId ?? null) !== targetFolderId || (team.sortOrder ?? 0) !== nextTargetOrder) changed = true;
+      return { ...team, folderId: targetFolderId, sortOrder: nextTargetOrder };
+    }
+    if (sourceFolderId !== targetFolderId) {
+      const nextSourceOrder = sourceOrder.get(team.id);
+      if (nextSourceOrder !== undefined) {
+        if ((team.sortOrder ?? 0) !== nextSourceOrder) changed = true;
+        return { ...team, sortOrder: nextSourceOrder };
+      }
+    }
+    return team;
+  });
+
+  return changed ? result : teams;
+}
+
 export function VgcDashboard() {
   const [storedGroups, setStoredGroups] = useState<TeamGroup[]>([]);
   const [teamFolders, setTeamFolders] = useState<TeamFolder[]>([]);
   const [folderOrderSaving, setFolderOrderSaving] = useState(false);
   const folderOrderSavingRef = useRef(false);
+  const [teamOrderSaving, setTeamOrderSaving] = useState(false);
+  const teamOrderSavingRef = useRef(false);
   const [showdownNames, setShowdownNames] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [activeView, setActiveView] = useState("compare");
@@ -169,12 +236,12 @@ export function VgcDashboard() {
   const libraryVersion = libraryTeam?.versions.find((version) => version.id === libraryVersionId) ?? libraryTeam?.versions[0];
   const folderIds = useMemo(() => new Set(teamFolders.map((folder) => folder.id)), [teamFolders]);
   const unfiledTeams = useMemo(
-    () => storedGroups.filter((team) => !team.folderId || !folderIds.has(team.folderId)),
+    () => sortTeams(storedGroups.filter((team) => !team.folderId || !folderIds.has(team.folderId))),
     [folderIds, storedGroups],
   );
 
   function handleTeamCreated(team: TeamGroup) {
-    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null }, ...current.filter((entry) => entry.id !== team.id)]);
+    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null, sortOrder: team.sortOrder ?? 0 }, ...current.filter((entry) => entry.id !== team.id)]);
     setLibraryTeamId(team.id);
     setLibraryVersionId(team.versions[0].id);
     setActiveView("library");
@@ -187,7 +254,7 @@ export function VgcDashboard() {
   }
 
   function handleBuilderTeamCreated(team: TeamGroup) {
-    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null }, ...current.filter((entry) => entry.id !== team.id)]);
+    setStoredGroups((current) => [{ ...team, folderId: team.folderId ?? null, sortOrder: team.sortOrder ?? 0 }, ...current.filter((entry) => entry.id !== team.id)]);
     setConnection("ready");
   }
 
@@ -204,7 +271,7 @@ export function VgcDashboard() {
     targetId: string | null,
     position: FolderDropPosition,
   ) {
-    if (folderOrderSavingRef.current) return;
+    if (folderOrderSavingRef.current || teamOrderSavingRef.current) return;
     const previous = teamFolders;
     const next = reorderFolders(previous, draggedId, targetId, position);
     if (next === previous) return;
@@ -232,34 +299,70 @@ export function VgcDashboard() {
     }
   }
 
+  async function handleTeamReordered(
+    draggedId: string,
+    targetId: string,
+    position: TeamDropPosition,
+  ) {
+    if (teamOrderSavingRef.current || folderOrderSavingRef.current) return;
+    const previous = storedGroups;
+    const next = reorderTeamGroups(previous, draggedId, targetId, position);
+    if (next === previous) return;
+
+    teamOrderSavingRef.current = true;
+    setTeamOrderSaving(true);
+    setStoredGroups(next);
+    try {
+      const response = await fetch("/api/teams/reorder", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ teamId: draggedId, targetTeamId: targetId, position }),
+      });
+      const payload = (await response.json()) as { organization?: TeamOrganization };
+      if (!response.ok || !payload.organization) throw new Error("Could not reorder teams");
+      setStoredGroups((current) => applyTeamOrganization(current, payload.organization!));
+      setConnection("ready");
+    } catch {
+      setStoredGroups(previous);
+      setConnection("error");
+      void refresh();
+    } finally {
+      teamOrderSavingRef.current = false;
+      setTeamOrderSaving(false);
+    }
+  }
+
   async function handleFolderDeleted(folderId: string) {
     try {
       const response = await fetch(`/api/team-folders/${folderId}`, { method: "DELETE" });
       if (!response.ok) throw new Error("Could not delete folder");
-      setTeamFolders((current) => current.filter((folder) => folder.id !== folderId));
-      setStoredGroups((current) => current.map((team) => team.folderId === folderId ? { ...team, folderId: null } : team));
-      setConnection("ready");
+      await refresh();
     } catch {
       setConnection("error");
     }
   }
 
   async function moveTeam(teamId: string, folderId: string | null) {
+    if (teamOrderSavingRef.current || folderOrderSavingRef.current) return;
     const team = storedGroups.find((entry) => entry.id === teamId);
     if (!team || (team.folderId ?? null) === folderId) return;
-    const previousFolderId = team.folderId ?? null;
-    setStoredGroups((current) => current.map((entry) => entry.id === teamId ? { ...entry, folderId } : entry));
+    const previous = storedGroups;
+    const optimisticOrder = sortTeams(storedGroups.filter((entry) => entry.id !== teamId && (entry.folderId ?? null) === folderId)).length;
+    setStoredGroups((current) => current.map((entry) => entry.id === teamId ? { ...entry, folderId, sortOrder: optimisticOrder } : entry));
     try {
       const response = await fetch(`/api/teams/${teamId}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ folderId }),
       });
-      if (!response.ok) throw new Error("Could not move team");
+      const payload = (await response.json()) as { organization?: TeamOrganization };
+      if (!response.ok || !payload.organization) throw new Error("Could not move team");
+      setStoredGroups((current) => applyTeamOrganization(current, payload.organization!));
       setConnection("ready");
     } catch {
-      setStoredGroups((current) => current.map((entry) => entry.id === teamId ? { ...entry, folderId: previousFolderId } : entry));
+      setStoredGroups(previous);
       setConnection("error");
+      void refresh();
     }
   }
 
@@ -330,7 +433,7 @@ export function VgcDashboard() {
                   {storedGroups.length || teamFolders.length ? (
                     <>
                       {teamFolders.map((folder) => {
-                        const teams = storedGroups.filter((team) => team.folderId === folder.id);
+                        const teams = sortTeams(storedGroups.filter((team) => team.folderId === folder.id));
                         return (
                           <TeamFolderSection
                             key={folder.id}
@@ -340,9 +443,18 @@ export function VgcDashboard() {
                             onDropFolder={(folderId, targetFolderId, dropPosition) => void handleFolderReordered(folderId, targetFolderId, dropPosition)}
                             onRenamed={handleFolderRenamed}
                             onDeleted={handleFolderDeleted}
-                            reorderDisabled={folderOrderSaving}
+                            reorderDisabled={folderOrderSaving || teamOrderSaving}
                           >
-                            {teams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
+                            {teams.map((team) => (
+                              <TeamOrderItem
+                                key={team.id}
+                                teamId={team.id}
+                                onDropTeam={(teamId, targetTeamId, dropPosition) => void handleTeamReordered(teamId, targetTeamId, dropPosition)}
+                                disabled={teamOrderSaving || folderOrderSaving}
+                              >
+                                <LibraryCard team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />
+                              </TeamOrderItem>
+                            ))}
                           </TeamFolderSection>
                         );
                       })}
@@ -353,9 +465,18 @@ export function VgcDashboard() {
                         onDropFolder={(folderId, targetFolderId, dropPosition) => void handleFolderReordered(folderId, targetFolderId, dropPosition)}
                         onRenamed={handleFolderRenamed}
                         onDeleted={handleFolderDeleted}
-                        reorderDisabled={folderOrderSaving}
+                        reorderDisabled={folderOrderSaving || teamOrderSaving}
                       >
-                        {unfiledTeams.map((team) => <LibraryCard key={team.id} team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />)}
+                        {unfiledTeams.map((team) => (
+                          <TeamOrderItem
+                            key={team.id}
+                            teamId={team.id}
+                            onDropTeam={(teamId, targetTeamId, dropPosition) => void handleTeamReordered(teamId, targetTeamId, dropPosition)}
+                            disabled={teamOrderSaving || folderOrderSaving}
+                          >
+                            <LibraryCard team={team} folders={teamFolders} selected={team.id === libraryTeam?.id} onClick={() => selectLibraryTeam(team)} onMove={(folderId) => void moveTeam(team.id, folderId)} />
+                          </TeamOrderItem>
+                        ))}
                       </TeamFolderSection>
                     </>
                   ) : <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center"><BookOpen className="mx-auto size-6 text-slate-700" /><p className="mt-3 text-xs font-semibold text-slate-400">No hay Teams guardados</p><p className="mt-1 text-[10px] leading-4 text-slate-600">Agrega un equipo o créalo desde Team Builder.</p></div>}
