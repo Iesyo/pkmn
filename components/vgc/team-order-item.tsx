@@ -33,7 +33,6 @@ export function TeamOrderItem({
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     if (!isTeamDrag(event)) return;
     event.preventDefault();
-    event.stopPropagation();
     dragDepth.current += 1;
     event.dataTransfer.dropEffect = disabled ? "none" : "move";
     setDropIndicator(disabled ? null : getDropPosition(event));
@@ -42,7 +41,6 @@ export function TeamOrderItem({
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
     if (!isTeamDrag(event)) return;
     event.preventDefault();
-    event.stopPropagation();
     event.dataTransfer.dropEffect = disabled ? "none" : "move";
     setDropIndicator(disabled ? null : getDropPosition(event));
   }
@@ -50,7 +48,6 @@ export function TeamOrderItem({
   function handleDragLeave(event: DragEvent<HTMLDivElement>) {
     if (!isTeamDrag(event)) return;
     event.preventDefault();
-    event.stopPropagation();
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setDropIndicator(null);
   }
@@ -58,7 +55,6 @@ export function TeamOrderItem({
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     if (!isTeamDrag(event)) return;
     event.preventDefault();
-    event.stopPropagation();
     dragDepth.current = 0;
     const position = dropIndicator ?? getDropPosition(event);
     setDropIndicator(null);
