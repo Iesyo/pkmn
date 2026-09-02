@@ -169,6 +169,7 @@ export interface TeamGroup {
   id: string;
   name: string;
   folderId?: string | null;
+  sortOrder?: number;
   versions: TeamVersion[];
 }
 
