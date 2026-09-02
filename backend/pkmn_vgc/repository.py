@@ -105,6 +105,24 @@ class Repository:
             for row in rows
         ]
 
+    def reorder_team_folders(self, folder_ids: Sequence[str]) -> list[TeamFolder]:
+        if isinstance(folder_ids, (str, bytes)):
+            raise ValueError("El orden de carpetas no es válido.")
+        ordered_ids = [str(folder_id).strip() for folder_id in folder_ids]
+        if any(not folder_id for folder_id in ordered_ids) or len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("El orden de carpetas no es válido.")
+        with self.connect() as connection:
+            rows = connection.execute("SELECT id FROM team_folders").fetchall()
+            current_ids = {str(row["id"]) for row in rows}
+            if len(ordered_ids) != len(current_ids) or any(folder_id not in current_ids for folder_id in ordered_ids):
+                raise ValueError("La lista de carpetas ya no está actualizada.")
+            with connection:
+                connection.executemany(
+                    "UPDATE team_folders SET sort_order = ? WHERE id = ?",
+                    [(sort_order, folder_id) for sort_order, folder_id in enumerate(ordered_ids)],
+                )
+        return self.list_team_folders()
+
     def create_team_folder(self, name: str) -> TeamFolder:
         clean_name = _normalize_folder_name(name)
         folder_id = str(uuid4())
@@ -217,7 +235,6 @@ class Repository:
         pokemon = parse_showdown_paste(normalized)
         now = _now()
         version_id = str(uuid4())
-
         with self.connect() as connection:
             team = connection.execute(
                 "SELECT id, name FROM teams WHERE id = ?", (team_id,)
