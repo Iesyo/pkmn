@@ -208,10 +208,9 @@ function championAbilityNames(species: ShowdownSpecies) {
 export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName: string, format?: string) {
   const species = getSpecies(snapshot, speciesName);
   if (!species) return [];
-  if (format === "champions") {
-    const overridden = championAbilityNames(species);
-    if (overridden.length) return overridden;
-  }
+  const champions = championAbilityNames(species);
+  if (format === "champions" && champions.length) return champions;
+  if (!format && champions.length) return [...new Set([...species.abilities, ...champions])];
   return species.abilities;
 }
 
@@ -237,9 +236,16 @@ function applyMoveFormat(move: ShowdownMove, format?: string): ShowdownMove {
   if (format !== "champions" || !move.championsOverride) return move;
   const override = move.championsOverride;
   const next: ShowdownMove = { ...move };
-  for (const key of ["name", "type", "category", "basePower", "accuracy", "pp", "priority", "target", "desc", "shortDesc"] as const) {
-    if (override[key] !== undefined) (next as Record<string, unknown>)[key] = override[key];
-  }
+  if (typeof override.name === "string") next.name = override.name;
+  if (typeof override.type === "string") next.type = override.type as PokemonType;
+  if (override.category === "Physical" || override.category === "Special" || override.category === "Status") next.category = override.category;
+  if (typeof override.basePower === "number") next.basePower = override.basePower;
+  if (override.accuracy === true || typeof override.accuracy === "number") next.accuracy = override.accuracy;
+  if (typeof override.pp === "number") next.pp = override.pp;
+  if (typeof override.priority === "number") next.priority = override.priority;
+  if (typeof override.target === "string") next.target = override.target;
+  if (typeof override.desc === "string") next.desc = override.desc;
+  if (typeof override.shortDesc === "string") next.shortDesc = override.shortDesc;
   if (override.flags !== undefined) next.flags = normalizedFlags(override.flags, next.flags);
   const effects = { ...(move.effects ?? {}) };
   for (const key of MOVE_EFFECT_KEYS) {
