@@ -105,13 +105,14 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   assert.deepEqual(snapshot.species.pikachu.championsOverride.types, ["Electric", "Fairy"]);
   assert.deepEqual(snapshot.species.pikachu.championsMoves, ["thunderbolt"]);
   assert.equal(snapshot.moves.thunderbolt.type, "Electric");
-  assert.equal(snapshot.moves.thunderbolt.basePower, 95);
+  assert.equal(snapshot.moves.thunderbolt.basePower, 90);
   assert.equal(snapshot.moves.thunderbolt.accuracy, 100);
   assert.equal(snapshot.moves.thunderbolt.pp, 15);
   assert.equal(snapshot.moves.thunderbolt.priority, 0);
   assert.deepEqual(snapshot.moves.thunderbolt.flags, ["mirror", "protect"]);
   assert.deepEqual(snapshot.moves.thunderbolt.effects.secondary, { chance: 10, status: "par" });
   assert.equal(snapshot.moves.thunderbolt.details.num, 85);
+  assert.equal(snapshot.moves.thunderbolt.details.secondary, undefined);
   assert.equal(snapshot.moves.thunderbolt.shortDesc, "10% chance to paralyze the target.");
   assert.equal(snapshot.moves.thunderbolt.championsOverride.basePower, 95);
   assert.equal(snapshot.abilities.static.name, "Static");
@@ -139,6 +140,7 @@ test("wires runtime refresh through the server and persists compressed rich data
   assert.ok(client.includes("abilities: snapshot.abilities ?? {}"));
   assert.ok(client.includes("getMoveData"));
   assert.ok(client.includes("getAbilityData"));
+  assert.ok(client.includes('format !== "champions"'));
   assert.ok(storage.includes("showdown_snapshot_gzip_base64_v1"));
   assert.ok(storage.includes('new CompressionStream("gzip")'));
   assert.ok(storage.includes("app_settings"));
