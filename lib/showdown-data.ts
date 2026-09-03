@@ -66,6 +66,13 @@ export interface ShowdownSnapshot {
   items: Record<string, ShowdownItem>;
 }
 
+const MOVE_EFFECT_KEYS = [
+  "boosts", "secondary", "secondaries", "self", "condition", "zMove", "maxMove", "status", "volatileStatus",
+  "drain", "recoil", "multihit", "critRatio", "willCrit", "breaksProtect", "hasCrashDamage", "mindBlownRecoil",
+  "struggleRecoil", "basePowerCallback", "damageCallback", "damage", "callsMove", "forceSwitch", "selfSwitch",
+  "stealsBoosts", "thawsTarget",
+] as const;
+
 function validateSnapshot(value: unknown): ShowdownSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("La Pokédex de Pokémon Showdown tiene un formato inválido.");
@@ -192,8 +199,20 @@ export function getLegalMoves(snapshot: ShowdownSnapshot | null, speciesName: st
     .sort((left, right) => left.localeCompare(right));
 }
 
-export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName: string) {
-  return getSpecies(snapshot, speciesName)?.abilities ?? [];
+function championAbilityNames(species: ShowdownSpecies) {
+  const abilities = species.championsOverride?.abilities;
+  if (!abilities || typeof abilities !== "object" || Array.isArray(abilities)) return [];
+  return [...new Set(Object.values(abilities).filter((ability): ability is string => typeof ability === "string"))];
+}
+
+export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName: string, format?: string) {
+  const species = getSpecies(snapshot, speciesName);
+  if (!species) return [];
+  if (format === "champions") {
+    const overridden = championAbilityNames(species);
+    if (overridden.length) return overridden;
+  }
+  return species.abilities;
 }
 
 export function getLegalItems(snapshot: ShowdownSnapshot | null, format: string) {
@@ -206,16 +225,48 @@ export function getLegalItems(snapshot: ShowdownSnapshot | null, format: string)
     .sort((left, right) => left.localeCompare(right));
 }
 
-export function getMoveData(snapshot: ShowdownSnapshot | null, moveName: string) {
-  return snapshot?.moves[toId(moveName)] ?? null;
+function normalizedFlags(value: unknown, fallback: string[] | undefined) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+  return Object.entries(value)
+    .filter(([, enabled]) => Boolean(enabled))
+    .map(([flag]) => flag)
+    .sort();
 }
 
-export function getAbilityData(snapshot: ShowdownSnapshot | null, abilityName: string) {
-  return snapshot?.abilities?.[toId(abilityName)] ?? null;
+function applyMoveFormat(move: ShowdownMove, format?: string): ShowdownMove {
+  if (format !== "champions" || !move.championsOverride) return move;
+  const override = move.championsOverride;
+  const next: ShowdownMove = { ...move };
+  for (const key of ["name", "type", "category", "basePower", "accuracy", "pp", "priority", "target", "desc", "shortDesc"] as const) {
+    if (override[key] !== undefined) (next as Record<string, unknown>)[key] = override[key];
+  }
+  if (override.flags !== undefined) next.flags = normalizedFlags(override.flags, next.flags);
+  const effects = { ...(move.effects ?? {}) };
+  for (const key of MOVE_EFFECT_KEYS) {
+    if (override[key] !== undefined) effects[key] = override[key];
+  }
+  next.effects = effects;
+  return next;
 }
 
-export function getItemData(snapshot: ShowdownSnapshot | null, itemName: string) {
-  return snapshot?.items?.[toId(itemName)] ?? null;
+function applySimpleFormat<T extends { championsOverride?: Record<string, unknown> }>(entry: T, format?: string): T {
+  if (format !== "champions" || !entry.championsOverride) return entry;
+  return { ...entry, ...entry.championsOverride, championsOverride: entry.championsOverride } as T;
+}
+
+export function getMoveData(snapshot: ShowdownSnapshot | null, moveName: string, format?: string) {
+  const move = snapshot?.moves[toId(moveName)] ?? null;
+  return move ? applyMoveFormat(move, format) : null;
+}
+
+export function getAbilityData(snapshot: ShowdownSnapshot | null, abilityName: string, format?: string) {
+  const ability = snapshot?.abilities?.[toId(abilityName)] ?? null;
+  return ability ? applySimpleFormat(ability, format) : null;
+}
+
+export function getItemData(snapshot: ShowdownSnapshot | null, itemName: string, format?: string) {
+  const item = snapshot?.items?.[toId(itemName)] ?? null;
+  return item ? applySimpleFormat(item, format) : null;
 }
 
 export function formatMoveAccuracy(accuracy: ShowdownMove["accuracy"]) {
@@ -224,8 +275,8 @@ export function formatMoveAccuracy(accuracy: ShowdownMove["accuracy"]) {
   return "?";
 }
 
-export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string): MoveSet {
-  const move = getMoveData(snapshot, name);
+export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string, format?: string): MoveSet {
+  const move = getMoveData(snapshot, name, format);
   return {
     name: move?.name ?? name,
     type: move?.type ?? null,
@@ -234,14 +285,14 @@ export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string
   };
 }
 
-export function hydrateSetFromSnapshot(snapshot: ShowdownSnapshot, set: PokemonSet): PokemonSet {
+export function hydrateSetFromSnapshot(snapshot: ShowdownSnapshot, set: PokemonSet, format?: string): PokemonSet {
   const species = getSpecies(snapshot, set.species);
   if (!species) return set;
   return {
     ...set,
     species: species.name,
     types: species.types,
-    moves: set.moves.map((move) => moveFromSnapshot(snapshot, move.name)),
+    moves: set.moves.map((move) => moveFromSnapshot(snapshot, move.name, format)),
   };
 }
 
