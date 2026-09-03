@@ -176,9 +176,9 @@ function CalculatorPokemonPanel({
   const displayTypes = megaActive ? battleSpecies?.types ?? set.types : set.types;
   const legalMoves = useMemo(() => getLegalMoves(dex, set.species, format), [dex, set.species, format]);
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
-  const legalAbilities = megaActive ? battleSpecies?.abilities ?? [] : getLegalAbilities(dex, set.species);
-  const displayedAbility = megaActive ? battleSpecies?.abilities[0] ?? set.ability : set.ability;
-  const abilityInfo = getAbilityData(dex, displayedAbility);
+  const legalAbilities = megaActive ? getLegalAbilities(dex, battleSpeciesName, format) : getLegalAbilities(dex, set.species, format);
+  const displayedAbility = megaActive ? legalAbilities[0] ?? set.ability : set.ability;
+  const abilityInfo = getAbilityData(dex, displayedAbility, format);
   const showAbilityOn = ABILITY_ON_ABILITIES.has(displayedAbility);
   const showAlliesFainted = displayedAbility === "Supreme Overlord";
   const showAdvancedPokemonState = showGender || showAbilityOn || showAlliesFainted;
@@ -203,7 +203,7 @@ function CalculatorPokemonPanel({
       species: nextSpecies.name,
       nickname: nextSpecies.name,
       types: nextSpecies.types,
-      ability: nextSpecies.abilities[0] ?? "",
+      ability: getLegalAbilities(dex, nextSpecies.name, format)[0] ?? "",
       item: "",
       nature: set.nature || "Serious",
       evs: "",
@@ -227,7 +227,7 @@ function CalculatorPokemonPanel({
 
   function chooseMove(index: number, value: string | null) {
     const nextMove = value
-      ? moveFromSnapshot(dex, value)
+      ? moveFromSnapshot(dex, value, format)
       : { name: "", type: null, damaging: false, usage: 0 } as PokemonSet["moves"][number];
     updateSet({
       ...set,
@@ -313,7 +313,7 @@ function CalculatorPokemonPanel({
               const selectedElsewhere = new Set(set.moves.filter((_, moveIndex) => moveIndex !== index).map((entry) => toId(entry.name)).filter(Boolean));
               const options = legalMoves.filter((name) => !selectedElsewhere.has(toId(name)));
               const outcome = outcomes.find((entry) => toId(entry.move) === toId(move.name));
-              const technical = getMoveData(dex, move.name);
+              const technical = getMoveData(dex, move.name, format);
               const technicalLine = technical && move.name
                 ? [
                     technical.category,
