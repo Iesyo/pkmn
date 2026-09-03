@@ -24,7 +24,7 @@ test("parses Showdown generated JS without eval or vm", () => {
   assert.equal(items.x.flag, true);
 
   const abilities = parseEs3Export(
-    'exports.BattleAbilities = {\n  static: {name:"Static", shortDesc:"May paralyze on contact."},\n  lightningrod: {name:"Lightning Rod", rating:3},\n};',
+    'exports.BattleAbilities = {\n  static: {name:"Static", shortDesc:"May paralyze on contact."},\n  lightningrod: {name:"Lightning Rod", rating:3}\n};',
     "BattleAbilities",
   );
   assert.equal(abilities.static.name, "Static");
@@ -55,6 +55,9 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
       learnsets: { pikachu: { thunderbolt: "a" } },
       items: ["lightball"],
       overrideMoveData: { thunderbolt: { type: "Electric", basePower: 95 } },
+      overrideAbilityData: { static: { rating: 4 } },
+      overrideItemData: { lightball: { fling: { basePower: 30 } } },
+      overrideSpeciesData: { pikachu: { types: ["Electric", "Fairy"] } },
     },
     gen9vgc: { tiers: ["pikachu"] },
     gen8vgc: { tiers: ["pikachu"] },
@@ -70,6 +73,7 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   const responses = new Map([
     ["pokedex.json", JSON.stringify({ pikachu: { name: "Pikachu", types: ["Electric"], baseStats: { hp: 35, atk: 55, def: 40, spa: 50, spd: 50, spe: 90 }, abilities: { 0: "Static" } } })],
     ["moves.json", JSON.stringify({ thunderbolt: {
+      num: 85,
       name: "Thunderbolt",
       type: "Electric",
       category: "Special",
@@ -84,7 +88,7 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
       shortDesc: "10% chance to paralyze the target.",
     } })],
     ["abilities.js", 'exports.BattleAbilities = {static:{name:"Static",desc:"Contact may paralyze the attacker.",shortDesc:"Contact may paralyze the attacker.",rating:2,num:9}};'],
-    ["items.js", 'exports.BattleItems = {lightball:{name:"Light Ball",desc:"Doubles Pikachu attacking stats.",shortDesc:"Doubles Pikachu attacking stats."}};'],
+    ["items.js", 'exports.BattleItems = {lightball:{name:"Light Ball",desc:"Doubles Pikachu attacking stats.",shortDesc:"Doubles Pikachu attacking stats.",num:236}};'],
     ["teambuilder-tables.js", `// DO NOT EDIT - automatically built with build-tools/build-indexes\nexports.BattleTeambuilderTable = JSON.parse('${tableEncoded}');\n`],
   ]);
   const fetcher = async (url) => {
@@ -95,6 +99,8 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   const snapshot = await buildShowdownSnapshot(fetcher);
   assert.equal(snapshot.metadata.schema, 3);
   assert.equal(snapshot.species.pikachu.name, "Pikachu");
+  assert.deepEqual(snapshot.species.pikachu.types, ["Electric"]);
+  assert.deepEqual(snapshot.species.pikachu.championsOverride.types, ["Electric", "Fairy"]);
   assert.deepEqual(snapshot.species.pikachu.championsMoves, ["thunderbolt"]);
   assert.equal(snapshot.moves.thunderbolt.type, "Electric");
   assert.equal(snapshot.moves.thunderbolt.basePower, 95);
@@ -103,13 +109,17 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   assert.equal(snapshot.moves.thunderbolt.priority, 0);
   assert.deepEqual(snapshot.moves.thunderbolt.flags, ["mirror", "protect"]);
   assert.deepEqual(snapshot.moves.thunderbolt.effects.secondary, { chance: 10, status: "par" });
+  assert.equal(snapshot.moves.thunderbolt.details.num, 85);
   assert.equal(snapshot.moves.thunderbolt.shortDesc, "10% chance to paralyze the target.");
   assert.equal(snapshot.moves.thunderbolt.championsOverride.basePower, 95);
   assert.equal(snapshot.abilities.static.name, "Static");
   assert.equal(snapshot.abilities.static.shortDesc, "Contact may paralyze the attacker.");
   assert.equal(snapshot.abilities.static.rating, 2);
+  assert.equal(snapshot.abilities.static.championsOverride.rating, 4);
   assert.equal(snapshot.items.lightball.name, "Light Ball");
   assert.equal(snapshot.items.lightball.shortDesc, "Doubles Pikachu attacking stats.");
+  assert.equal(snapshot.items.lightball.details.num, 236);
+  assert.deepEqual(snapshot.items.lightball.championsOverride.fling, { basePower: 30 });
   assert.deepEqual(snapshot.formats.champions, ["pikachu"]);
 });
 
