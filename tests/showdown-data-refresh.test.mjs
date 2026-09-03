@@ -12,6 +12,8 @@ const clientUrl = new URL("../lib/showdown-data.ts", import.meta.url);
 const storageUrl = new URL("../db/showdown-snapshot.ts", import.meta.url);
 const routeUrl = new URL("../app/api/showdown-data/route.ts", import.meta.url);
 const scriptUrl = new URL("../scripts/update-showdown-data.mjs", import.meta.url);
+const pokemonCardUrl = new URL("../components/vgc/pokemon-card.tsx", import.meta.url);
+const techHintUrl = new URL("../components/vgc/showdown-tech-hint.tsx", import.meta.url);
 
 test("parses Showdown generated JS without eval or vm", () => {
   const items = parseEs3Export(
@@ -144,4 +146,21 @@ test("wires runtime refresh through the server and persists compressed rich data
   assert.ok(route.includes("saveStoredShowdownSnapshot"));
   assert.ok(script.includes('from "../lib/showdown-snapshot-builder.mjs"'));
   assert.ok(!script.includes('node:vm'));
+});
+
+test("surfaces move and ability technical details as hover hints on team cards", async () => {
+  const [card, hint] = await Promise.all([
+    readFile(pokemonCardUrl, "utf8"),
+    readFile(techHintUrl, "utf8"),
+  ]);
+
+  assert.ok(card.includes('ShowdownTechHint kind="ability"'));
+  assert.ok(card.includes('ShowdownTechHint kind="move"'));
+  assert.ok(hint.includes("getMoveData"));
+  assert.ok(hint.includes("getAbilityData"));
+  assert.ok(hint.includes("formatMoveAccuracy"));
+  assert.ok(hint.includes("BP"));
+  assert.ok(hint.includes("Acc"));
+  assert.ok(hint.includes("PP"));
+  assert.ok(hint.includes("title={hint || undefined}"));
 });
