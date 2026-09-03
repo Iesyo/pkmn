@@ -18,10 +18,30 @@ export interface ShowdownMove {
   name: string;
   type: PokemonType;
   category: "Physical" | "Special" | "Status";
+  basePower?: number;
+  accuracy?: number | true | null;
+  pp?: number;
+  priority?: number;
+  target?: string;
+  flags?: string[];
+  desc?: string;
+  shortDesc?: string;
+  effects?: Record<string, unknown>;
+  championsOverride?: Record<string, unknown>;
+}
+
+export interface ShowdownAbility {
+  name: string;
+  desc?: string;
+  shortDesc?: string;
+  rating?: number | null;
+  num?: number | null;
 }
 
 export interface ShowdownItem {
   name: string;
+  desc?: string;
+  shortDesc?: string;
 }
 
 export interface ShowdownSnapshot {
@@ -29,12 +49,14 @@ export interface ShowdownSnapshot {
     source: string;
     captured: string;
     format: string;
+    schema?: number;
     urls: Record<string, string>;
   };
   formats: Record<string, string[]>;
   itemFormats: Record<string, string[]>;
   species: Record<string, ShowdownSpecies>;
   moves: Record<string, ShowdownMove>;
+  abilities: Record<string, ShowdownAbility>;
   items: Record<string, ShowdownItem>;
 }
 
@@ -53,7 +75,14 @@ function validateSnapshot(value: unknown): ShowdownSnapshot {
   ) {
     throw new Error("La Pokédex de Pokémon Showdown está incompleta.");
   }
-  return snapshot as ShowdownSnapshot;
+  return {
+    ...snapshot,
+    metadata: {
+      ...snapshot.metadata,
+      schema: snapshot.metadata.schema ?? 2,
+    },
+    abilities: snapshot.abilities ?? {},
+  } as ShowdownSnapshot;
 }
 
 async function decodeSnapshotResponse(response: Response) {
@@ -96,7 +125,7 @@ export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean 
     // The bundled snapshot remains the safe fallback if D1 is unavailable.
   }
 
-  const response = await fetch("/data/showdown-dex.json.gz?schema=2", { cache: "force-cache" });
+  const response = await fetch("/data/showdown-dex.json.gz?schema=3", { cache: "force-cache" });
   if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
   return decodeSnapshotResponse(response);
 }
@@ -171,8 +200,26 @@ export function getLegalItems(snapshot: ShowdownSnapshot | null, format: string)
     .sort((left, right) => left.localeCompare(right));
 }
 
+export function getMoveData(snapshot: ShowdownSnapshot | null, moveName: string) {
+  return snapshot?.moves[toId(moveName)] ?? null;
+}
+
+export function getAbilityData(snapshot: ShowdownSnapshot | null, abilityName: string) {
+  return snapshot?.abilities?.[toId(abilityName)] ?? null;
+}
+
+export function getItemData(snapshot: ShowdownSnapshot | null, itemName: string) {
+  return snapshot?.items?.[toId(itemName)] ?? null;
+}
+
+export function formatMoveAccuracy(accuracy: ShowdownMove["accuracy"]) {
+  if (accuracy === true) return "—";
+  if (typeof accuracy === "number") return `${accuracy}%`;
+  return "?";
+}
+
 export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string): MoveSet {
-  const move = snapshot?.moves[toId(name)];
+  const move = getMoveData(snapshot, name);
   return {
     name: move?.name ?? name,
     type: move?.type ?? null,
