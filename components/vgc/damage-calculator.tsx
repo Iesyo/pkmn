@@ -30,9 +30,12 @@ import {
 } from "@/lib/damage-calculator";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
 import {
+  formatMoveAccuracy,
+  getAbilityData,
   getLegalAbilities,
   getLegalItems,
   getLegalMoves,
+  getMoveData,
   getSpecies,
   getSpeciesOptions,
   moveFromSnapshot,
@@ -175,6 +178,7 @@ function CalculatorPokemonPanel({
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
   const legalAbilities = megaActive ? battleSpecies?.abilities ?? [] : getLegalAbilities(dex, set.species);
   const displayedAbility = megaActive ? battleSpecies?.abilities[0] ?? set.ability : set.ability;
+  const abilityInfo = getAbilityData(dex, displayedAbility);
   const showAbilityOn = ABILITY_ON_ABILITIES.has(displayedAbility);
   const showAlliesFainted = displayedAbility === "Supreme Overlord";
   const showAdvancedPokemonState = showGender || showAbilityOn || showAlliesFainted;
@@ -262,8 +266,8 @@ function CalculatorPokemonPanel({
         <div className="grid gap-2"><Label>Objeto</Label><Combobox items={legalItems} value={set.item || null} onValueChange={(value) => updateSet({ ...set, item: value ?? "" })}><ComboboxInput placeholder="Buscar objeto..." className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2"><Label>Habilidad</Label><Select value={displayedAbility || "none"} disabled={megaActive} onValueChange={(value) => updateSet({ ...set, ability: value === "none" ? "" : value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{legalAbilities.map((ability) => <SelectItem key={ability} value={ability}>{ability}</SelectItem>)}</SelectContent></Select></div>
-          <div className="grid gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
+          <div className="grid content-start gap-2"><Label>Habilidad</Label><Select value={displayedAbility || "none"} disabled={megaActive} onValueChange={(value) => updateSet({ ...set, ability: value === "none" ? "" : value })}><SelectTrigger title={abilityInfo?.desc || abilityInfo?.shortDesc || undefined} className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">Sin definir</SelectItem>{legalAbilities.map((ability) => <SelectItem key={ability} value={ability}>{ability}</SelectItem>)}</SelectContent></Select>{abilityInfo?.shortDesc ? <p title={abilityInfo.desc || abilityInfo.shortDesc} className="line-clamp-2 text-[9px] leading-4 text-slate-500">{abilityInfo.shortDesc}</p> : null}</div>
+          <div className="grid content-start gap-2"><Label>Naturaleza</Label><Select value={set.nature || "Serious"} onValueChange={(value) => updateSet({ ...set, nature: value })}><SelectTrigger className="w-full border-white/10 bg-white/4"><SelectValue /></SelectTrigger><SelectContent>{NATURES.map((nature) => <SelectItem key={nature} value={nature}>{nature}</SelectItem>)}</SelectContent></Select></div>
         </div>
 
         {mechanics.includes("tera") || mechanics.includes("dynamax") ? (
@@ -303,13 +307,23 @@ function CalculatorPokemonPanel({
         </div>
 
         <div>
-          <div className="flex items-center justify-between gap-3"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">Resultados en vivo</span></div>
+          <div className="flex items-center justify-between gap-3"><Label>Movimientos</Label><span className="text-[9px] text-slate-600">Datos Showdown + resultados en vivo</span></div>
           <div className="mt-2 space-y-2">
             {set.moves.map((move, index) => {
               const selectedElsewhere = new Set(set.moves.filter((_, moveIndex) => moveIndex !== index).map((entry) => toId(entry.name)).filter(Boolean));
               const options = legalMoves.filter((name) => !selectedElsewhere.has(toId(name)));
               const outcome = outcomes.find((entry) => toId(entry.move) === toId(move.name));
-              return <div key={index} className="grid grid-cols-[minmax(0,1fr)_62px_88px] gap-2"><Combobox items={options} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput placeholder={`Movimiento ${index + 1}`} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible o repetido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type.slice(0, 3)}</TypeBadge> : <span className="text-[8px] text-slate-600">Status</span>}</div><InlineDamageRange move={move} outcome={outcome} ready={opponentReady} /></div>;
+              const technical = getMoveData(dex, move.name);
+              const technicalLine = technical && move.name
+                ? [
+                    technical.category,
+                    `${technical.basePower ?? 0} BP`,
+                    `${formatMoveAccuracy(technical.accuracy)} Acc`,
+                    `${technical.pp ?? 0} PP`,
+                    technical.priority ? `${technical.priority > 0 ? "+" : ""}${technical.priority} Pri` : "",
+                  ].filter(Boolean).join(" · ")
+                : "";
+              return <div key={index} className="rounded-xl border border-white/5 bg-white/[0.015] p-1.5"><div className="grid grid-cols-[minmax(0,1fr)_62px_88px] gap-2"><Combobox items={options} value={move.name || null} onValueChange={(value) => chooseMove(index, value)}><ComboboxInput title={technical?.desc || technical?.shortDesc || undefined} placeholder={`Movimiento ${index + 1}`} className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible o repetido.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><div className="flex items-center justify-center rounded-lg border border-white/7 bg-white/[0.025]">{move.type ? <TypeBadge type={move.type} className="text-[7px]">{move.type.slice(0, 3)}</TypeBadge> : <span className="text-[8px] text-slate-600">Status</span>}</div><InlineDamageRange move={move} outcome={outcome} ready={opponentReady} /></div>{technicalLine ? <div title={technical?.desc || technical?.shortDesc || undefined} className="mt-1 grid gap-0.5 px-1"><p className="font-mono text-[8px] leading-3 text-cyan-200/65">{technicalLine}</p>{technical?.shortDesc ? <p className="line-clamp-1 text-[8px] leading-3 text-slate-600">{technical.shortDesc}</p> : null}</div> : null}</div>;
             })}
           </div>
         </div>
