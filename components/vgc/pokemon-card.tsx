@@ -7,6 +7,7 @@ import { getSpriteUrl } from "@/lib/pokemon-data";
 import { winRate } from "@/lib/team-stats";
 import type { PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { ShowdownTechHint } from "./showdown-tech-hint";
 import { TypeBadge } from "./type-badge";
 
 const accents = {
@@ -77,7 +78,7 @@ export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: 
 
       <div className="relative space-y-2.5 p-3">
         <div className="grid gap-1 text-[10px] leading-4 text-slate-400">
-          <p className="flex items-center gap-1.5"><ShieldCheck className="size-3 text-slate-500" /><span className="text-slate-500">Ability</span><strong className="font-semibold text-slate-200">{pokemon.ability || "—"}</strong></p>
+          <p className="flex items-center gap-1.5"><ShieldCheck className="size-3 text-slate-500" /><span className="text-slate-500">Ability</span><strong className="font-semibold text-slate-200"><ShowdownTechHint kind="ability" name={pokemon.ability}>{pokemon.ability || "—"}</ShowdownTechHint></strong></p>
           <p className="flex items-center gap-1.5"><Gauge className="size-3 text-slate-500" /><span className="text-slate-500">Nivel</span><strong className="font-mono font-medium text-slate-200">{pokemon.level}</strong></p>
           <p className="flex items-start gap-1.5"><Activity className="mt-0.5 size-3 shrink-0 text-slate-500" /><span className="shrink-0 text-slate-500">EVs</span><strong className="font-mono font-medium text-slate-300">{pokemon.evs || "No indicados"}</strong></p>
           <p className="flex items-center gap-1.5"><Crosshair className="size-3 text-slate-500" /><strong className="font-semibold text-slate-200">{pokemon.nature || "Naturaleza no indicada"}</strong></p>
@@ -88,7 +89,7 @@ export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: 
             <div key={move.name} className="grid grid-cols-[minmax(0,1fr)_34px] items-center gap-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="truncate text-[11px] font-semibold text-slate-200">{move.name}</span>
+                  <span className="truncate text-[11px] font-semibold text-slate-200"><ShowdownTechHint kind="move" name={move.name}>{move.name}</ShowdownTechHint></span>
                   {move.type ? <TypeBadge type={move.type} className="px-1.5 py-0 text-[8px]">{move.type.slice(0, 3)}</TypeBadge> : null}
                 </div>
                 <Progress value={move.usage ?? 0} className={cn("mt-1 h-1 bg-white/6", style.bar)} />
