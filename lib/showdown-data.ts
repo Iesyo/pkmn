@@ -12,6 +12,7 @@ export interface ShowdownSpecies {
   baseSpecies?: string;
   learnset: Record<string, string>;
   championsMoves: string[];
+  championsOverride?: Record<string, unknown>;
 }
 
 export interface ShowdownMove {
@@ -27,6 +28,7 @@ export interface ShowdownMove {
   desc?: string;
   shortDesc?: string;
   effects?: Record<string, unknown>;
+  details?: Record<string, unknown>;
   championsOverride?: Record<string, unknown>;
 }
 
@@ -36,12 +38,16 @@ export interface ShowdownAbility {
   shortDesc?: string;
   rating?: number | null;
   num?: number | null;
+  details?: Record<string, unknown>;
+  championsOverride?: Record<string, unknown>;
 }
 
 export interface ShowdownItem {
   name: string;
   desc?: string;
   shortDesc?: string;
+  details?: Record<string, unknown>;
+  championsOverride?: Record<string, unknown>;
 }
 
 export interface ShowdownSnapshot {
