@@ -145,8 +145,37 @@ export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean 
   return decodeSnapshotResponse(response);
 }
 
+function isMegaBattleForm(value: string) {
+  return /-Mega(?:-|$)/i.test(value);
+}
+
+function championsEngineSpecies(speciesName: string): ShowdownSpecies | null {
+  try {
+    const pokemon = new Pokemon(0, speciesName);
+    return {
+      name: pokemon.name,
+      types: [...pokemon.types] as PokemonType[],
+      baseStats: {
+        hp: pokemon.species.baseStats.hp,
+        atk: pokemon.species.baseStats.atk,
+        def: pokemon.species.baseStats.def,
+        spa: pokemon.species.baseStats.spa,
+        spd: pokemon.species.baseStats.spd,
+        spe: pokemon.species.baseStats.spe,
+      },
+      abilities: pokemon.ability ? [pokemon.ability] : [],
+      learnset: {},
+      championsMoves: [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function getSpecies(snapshot: ShowdownSnapshot | null, value: string) {
-  return snapshot?.species[toId(value)] ?? null;
+  const species = snapshot?.species[toId(value)] ?? null;
+  if (species) return species;
+  return isMegaBattleForm(value) ? championsEngineSpecies(value) : null;
 }
 
 export function getSpeciesOptions(snapshot: ShowdownSnapshot | null, format: string) {
@@ -220,8 +249,9 @@ export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName
   if (!species) return [];
   const champions = championAbilityNames(species);
   if (format === "champions") {
-    if (champions.length) return champions;
     const engineAbility = championsEngineAbility(species.name);
+    if (isMegaBattleForm(species.name) && engineAbility) return [engineAbility];
+    if (champions.length) return champions;
     if (engineAbility && !species.abilities.includes(engineAbility)) return [engineAbility];
   }
   if (!format && champions.length) return [...new Set([...species.abilities, ...champions])];
