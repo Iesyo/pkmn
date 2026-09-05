@@ -1,3 +1,5 @@
+import { Pokemon } from "@smogon/calc";
+
 import type { MoveSet, PokemonSet, PokemonType } from "./types";
 import { toId } from "./pokemon-data";
 
@@ -205,11 +207,23 @@ function championAbilityNames(species: ShowdownSpecies) {
   return [...new Set(Object.values(abilities).filter((ability): ability is string => typeof ability === "string"))];
 }
 
+function championsEngineAbility(speciesName: string) {
+  try {
+    return new Pokemon(0, speciesName).ability ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName: string, format?: string) {
   const species = getSpecies(snapshot, speciesName);
   if (!species) return [];
   const champions = championAbilityNames(species);
-  if (format === "champions" && champions.length) return champions;
+  if (format === "champions") {
+    if (champions.length) return champions;
+    const engineAbility = championsEngineAbility(species.name);
+    if (engineAbility && !species.abilities.includes(engineAbility)) return [engineAbility];
+  }
   if (!format && champions.length) return [...new Set([...species.abilities, ...champions])];
   return species.abilities;
 }
