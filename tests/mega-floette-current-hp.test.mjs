@@ -116,8 +116,8 @@ test("current HP changes KO math while normal damage percentages stay based on m
   const wounded = createDamageDraft(defender);
   wounded.hpPercent = 10;
 
-  const fullOutcome = calculateDamage("champions", createDamageDraft(attacker), full, "Tackle", defaultDamageField());
-  const woundedOutcome = calculateDamage("champions", createDamageDraft(attacker), wounded, "Tackle", defaultDamageField());
+  const fullOutcome = calculateDamage("champions", createDamageDraft(attacker), full, "Stone Axe", defaultDamageField());
+  const woundedOutcome = calculateDamage("champions", createDamageDraft(attacker), wounded, "Stone Axe", defaultDamageField());
 
   assert.equal(fullOutcome.error, undefined);
   assert.equal(woundedOutcome.error, undefined);
@@ -125,6 +125,7 @@ test("current HP changes KO math while normal damage percentages stay based on m
   assert.equal(woundedOutcome.max, fullOutcome.max);
   assert.equal(woundedOutcome.minPercent, fullOutcome.minPercent);
   assert.equal(woundedOutcome.maxPercent, fullOutcome.maxPercent);
+  assert.ok(woundedOutcome.minPercent > wounded.hpPercent);
   assert.notEqual(woundedOutcome.koChance, fullOutcome.koChance);
   assert.match(woundedOutcome.koChance, /KO/);
 });
