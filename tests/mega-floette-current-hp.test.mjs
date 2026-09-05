@@ -39,7 +39,37 @@ function configureSet(base, values) {
   };
 }
 
-test("Champions uses the calc-engine ability when a battle form snapshot is stale", async () => {
+test("Champions synthesizes a missing Mega battle profile from the calc engine", async () => {
+  const { getLegalAbilities, getSpecies } = await showdownModule();
+  const snapshot = {
+    metadata: { source: "test", captured: "2026-09-05", format: "champions", schema: 3, urls: {} },
+    formats: { champions: ["floetteeternal"] },
+    itemFormats: { champions: [] },
+    species: {
+      floetteeternal: {
+        name: "Floette-Eternal",
+        types: ["Fairy"],
+        baseStats: { hp: 74, atk: 65, def: 67, spa: 125, spd: 128, spe: 92 },
+        abilities: ["Flower Veil"],
+        learnset: {},
+        championsMoves: [],
+      },
+    },
+    moves: {},
+    abilities: {},
+    items: {},
+  };
+
+  const mega = getSpecies(snapshot, "Floette-Mega");
+  assert.ok(mega);
+  assert.equal(mega.name, "Floette-Mega");
+  assert.deepEqual(mega.types, ["Fairy"]);
+  assert.deepEqual(mega.baseStats, { hp: 74, atk: 85, def: 87, spa: 155, spd: 148, spe: 102 });
+  assert.deepEqual(mega.abilities, ["Fairy Aura"]);
+  assert.deepEqual(getLegalAbilities(snapshot, "Floette-Mega", "champions"), ["Fairy Aura"]);
+});
+
+test("Champions Mega forms prefer the calc-engine ability over a stale snapshot override", async () => {
   const { getLegalAbilities } = await showdownModule();
   const snapshot = {
     metadata: { source: "test", captured: "2026-09-05", format: "champions", schema: 3, urls: {} },
@@ -53,6 +83,7 @@ test("Champions uses the calc-engine ability when a battle form snapshot is stal
         abilities: ["Flower Veil"],
         learnset: {},
         championsMoves: [],
+        championsOverride: { abilities: { 0: "Flower Veil" } },
       },
     },
     moves: {},
