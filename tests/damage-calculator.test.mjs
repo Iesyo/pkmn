@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 import { createServer } from "vite";
 
@@ -27,6 +28,58 @@ async function teamBuilderModule() {
   return vite.ssrLoadModule("/lib/team-builder.ts");
 }
 
+async function opponentMetaModule() {
+  return vite.ssrLoadModule("/lib/opponent-meta-presets.ts");
+}
+
+function battleDataRow(category, rank, name, percentage, extra = {}) {
+  return {
+    category,
+    rank,
+    name,
+    percentage: `${percentage}%`,
+    percentage_value: percentage,
+    ...extra,
+  };
+}
+
+function pyroarBattleData() {
+  return {
+    pokemon: "Pyroar",
+    rows: [
+      battleDataRow("move", 1, "Heat Wave", 97.2),
+      battleDataRow("move", 2, "Protect", 95.4),
+      battleDataRow("move", 3, "Overheat", 64.8),
+      battleDataRow("move", 4, "Solar Beam", 46.3),
+      battleDataRow("move", 5, "Hyper Voice", 23.8),
+      battleDataRow("move", 6, "Scorching Sands", 20),
+      battleDataRow("move", 7, "Flamethrower", 13),
+      battleDataRow("held_item", 1, "Pyroarite", 96.1),
+      battleDataRow("held_item", 2, "Charcoal", 0.9),
+      battleDataRow("ability", 1, "Unnerve", 82),
+      battleDataRow("ability", 2, "Moxie", 9.2),
+      battleDataRow("stat_alignment", 1, "Timid", 76.6),
+      battleDataRow("stat_alignment", 2, "Modest", 21),
+      battleDataRow("stat_points", 1, "", 64, {
+        hp_points: 2,
+        attack_points: 0,
+        defense_points: 0,
+        sp_atk_points: 32,
+        sp_def_points: 0,
+        speed_points: 32,
+      }),
+      battleDataRow("stat_points", 2, "", 5.2, {
+        hp_points: 0,
+        attack_points: 0,
+        defense_points: 2,
+        sp_atk_points: 32,
+        sp_def_points: 0,
+        speed_points: 32,
+      }),
+    ],
+  };
+}
+
 function configureSet(base, values) {
   return {
     ...base,
@@ -47,6 +100,87 @@ test("maps Pokémon Champions to the official generation zero engine", async () 
   assert.equal(generationForFormat("champions"), 0);
   assert.equal(generationForFormat("gen9"), 9);
   assert.equal(generationForFormat("gen6"), 6);
+});
+
+test("builds at most three ranked rival presets from Champions marginal usage", async () => {
+  const { buildOpponentMetaPresets, MAX_OPPONENT_META_PRESETS } = await opponentMetaModule();
+  const presets = buildOpponentMetaPresets(pyroarBattleData());
+
+  assert.equal(MAX_OPPONENT_META_PRESETS, 3);
+  assert.equal(presets.length, 3);
+  assert.deepEqual(presets[0].moves, ["Heat Wave", "Protect", "Overheat", "Solar Beam"]);
+  assert.equal(presets[0].item, "Pyroarite");
+  assert.equal(presets[0].ability, "Unnerve");
+  assert.equal(presets[0].nature, "Timid");
+  assert.equal(presets[0].evs, "2 HP / 32 SpA / 32 Spe");
+  assert.deepEqual(presets.map((preset) => preset.id), ["meta-1", "meta-2", "meta-3"]);
+  assert.equal(new Set(presets.map((preset) => JSON.stringify(preset))).size, 3);
+});
+
+test("maps the live Pyroar preset fields to the local Champions legality snapshot", async () => {
+  const { buildOpponentMetaPresets } = await opponentMetaModule();
+  const { getLegalAbilities, getLegalItems, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const compressed = await readFile(new URL("../public/data/showdown-dex.json.gz", import.meta.url));
+  const snapshot = JSON.parse(gunzipSync(compressed).toString("utf8"));
+  const first = buildOpponentMetaPresets(pyroarBattleData())[0];
+
+  assert.ok(getLegalItems(snapshot, "champions").includes(first.item));
+  assert.ok(getLegalAbilities(snapshot, "Pyroar", "champions").includes(first.ability));
+  assert.ok(first.moves.every((move) => getLegalMoves(snapshot, "Pyroar", "champions").includes(move)));
+});
+
+test("does not invent weak or incomplete rival meta variants", async () => {
+  const { buildOpponentMetaPresets } = await opponentMetaModule();
+  const payload = pyroarBattleData();
+  payload.rows = payload.rows.filter((row) => {
+    if (row.category === "move") return row.rank <= 4 || row.rank === 7;
+    return row.rank === 1;
+  });
+  const weakMove = payload.rows.find((row) => row.category === "move" && row.rank === 7);
+  weakMove.percentage = "1%";
+  weakMove.percentage_value = 1;
+
+  assert.equal(buildOpponentMetaPresets(payload).length, 1);
+  assert.deepEqual(buildOpponentMetaPresets({ rows: payload.rows.filter((row) => row.category !== "move" || row.rank <= 3) }), []);
+  assert.deepEqual(buildOpponentMetaPresets({ rows: [{ category: "move", name: "Heat Wave", percentage_value: "oops" }] }), []);
+});
+
+test("serves rival meta through the fixed Battle Data upstream with attribution", async () => {
+  const { GET } = await vite.ssrLoadModule("/app/api/opponent-meta/[species]/route.ts");
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async (input) => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify(pyroarBattleData()), {
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const response = await GET(
+      new Request("http://localhost/api/opponent-meta/pyroar"),
+      { params: Promise.resolve({ species: "Pyroar" }) },
+    );
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(requestedUrl, "https://championsbattledata.com/api/battle/Doubles/pyroar");
+    assert.equal(payload.methodology, "marginal-frequency-composite");
+    assert.equal(payload.source.label, "Pokémon Champions Battle Data");
+    assert.equal(payload.presets.length, 3);
+    assert.match(response.headers.get("cache-control"), /s-maxage=21600/);
+
+    globalThis.fetch = async () => new Response(null, { status: 404 });
+    const unavailableResponse = await GET(
+      new Request("http://localhost/api/opponent-meta/unavailabletest"),
+      { params: Promise.resolve({ species: "unavailabletest" }) },
+    );
+    const unavailable = await unavailableResponse.json();
+    assert.equal(unavailableResponse.status, 200);
+    assert.deepEqual(unavailable.presets, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("uses Showdown stage rounding for displayed effective stats and Tailwind speed", async () => {
@@ -282,4 +416,26 @@ test("keeps calculator drafts per Pokémon with one page scroll and inline damag
   assert.match(calculatorSource, /Forma Gigantamax/);
   assert.ok(calculatorSource.indexOf("<Label>Estado</Label>") < calculatorSource.indexOf("<Label>Nivel</Label>"));
   assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
+});
+
+test("offers a maximum of three auto-loadable meta presets only for the Champions rival", async () => {
+  const [calculatorSource, selectorSource, presetSource, routeSource] = await Promise.all([
+    readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/opponent-meta-set-select.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/opponent-meta-presets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/opponent-meta/[species]/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(calculatorSource, /side === "right" && format === "champions"/);
+  assert.match(calculatorSource, /<OpponentMetaSetSelect/);
+  assert.match(calculatorSource, /<PokemonLibraryVersionSelect/);
+  assert.match(calculatorSource, /manualMetaEditCountRef/);
+  assert.match(calculatorSource, /autoLoadMetaOnMount={autoLoadOpponentMetaOnMount}/);
+  assert.match(selectorSource, /onLoadRef\.current\(first, true\)/);
+  assert.match(selectorSource, /Estimación estadística/);
+  assert.match(presetSource, /MAX_OPPONENT_META_PRESETS = 3/);
+  assert.match(presetSource, /marginal-frequency-composite/);
+  assert.match(routeSource, /https:\/\/championsbattledata\.com\/api\/battle\/Doubles/);
+  assert.match(routeSource, /FRESH_CACHE_MS/);
+  assert.doesNotMatch(`${calculatorSource}\n${selectorSource}\n${presetSource}\n${routeSource}`, /pikalytics/i);
 });

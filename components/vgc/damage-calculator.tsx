@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, Crosshair, ShieldCheck, Sparkles, Swords, Zap } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +44,8 @@ import {
 import { NATURES, normalizeTeraType } from "@/lib/team-builder";
 import { POKEMON_TYPES, type BattleMechanic, type PokemonSet } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import type { OpponentMetaPreset } from "@/lib/opponent-meta-presets";
+import { OpponentMetaSetSelect } from "./opponent-meta-set-select";
 import { PokemonLibraryVersionSelect } from "./pokemon-library-dialog";
 import { PokemonStatEditor, type BoostableStat } from "./pokemon-stat-editor";
 import { TypeBadge } from "./type-badge";
@@ -153,6 +155,7 @@ function CalculatorPokemonPanel({
   effectiveStats,
   tailwind,
   showGender,
+  autoLoadMetaOnMount,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
@@ -165,8 +168,11 @@ function CalculatorPokemonPanel({
   effectiveStats: EffectiveStatValues | null;
   tailwind: boolean;
   showGender: boolean;
+  autoLoadMetaOnMount: boolean;
 }) {
   const set = draft.set;
+  const [selectedMetaPresetId, setSelectedMetaPresetId] = useState<string | null>(null);
+  const manualMetaEditCountRef = useRef(0);
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
   const selectedSpecies = getSpecies(dex, set.species);
   const megaForm = mechanics.includes("mega") ? getMegaForm(set) : null;
@@ -183,7 +189,16 @@ function CalculatorPokemonPanel({
   const showAlliesFainted = displayedAbility === "Supreme Overlord";
   const showAdvancedPokemonState = showGender || showAbilityOn || showAlliesFainted;
 
-  function updateSet(next: PokemonSet) {
+  function updateSet(next: PokemonSet, origin: "manual" | "species" | "meta" = "manual") {
+    if (side === "right") {
+      if (origin === "species") {
+        manualMetaEditCountRef.current = 0;
+        setSelectedMetaPresetId(null);
+      } else if (origin === "manual") {
+        manualMetaEditCountRef.current += 1;
+        setSelectedMetaPresetId(null);
+      }
+    }
     const nextMegaForm = mechanics.includes("mega") ? getMegaForm(next) : null;
     const abilityChanged = next.ability !== set.ability;
     onChange({
@@ -208,7 +223,7 @@ function CalculatorPokemonPanel({
       nature: set.nature || "Serious",
       evs: "",
       moves: Array.from({ length: 4 }, () => ({ name: "", type: null, damaging: false, usage: 0 })),
-    });
+    }, "species");
   }
 
   function chooseLibraryVersion(librarySet: PokemonSet) {
@@ -233,6 +248,26 @@ function CalculatorPokemonPanel({
       ...set,
       moves: set.moves.map((move, moveIndex) => moveIndex === index ? nextMove : move),
     });
+  }
+
+  function chooseOpponentMetaPreset(preset: OpponentMetaPreset, automatic: boolean) {
+    if (side !== "right" || (automatic && manualMetaEditCountRef.current > 0)) return;
+    const canonicalItem = legalItems.find((item) => toId(item) === toId(preset.item));
+    const canonicalAbility = getLegalAbilities(dex, set.species, format)
+      .find((ability) => toId(ability) === toId(preset.ability));
+    const canonicalNature = NATURES.find((nature) => toId(nature) === toId(preset.nature));
+    const canonicalMoves = preset.moves.map((move) => legalMoves.find((legalMove) => toId(legalMove) === toId(move)));
+    if (!canonicalItem || !canonicalAbility || !canonicalNature || canonicalMoves.some((move) => !move)) return;
+
+    updateSet({
+      ...set,
+      item: canonicalItem,
+      ability: canonicalAbility,
+      nature: canonicalNature,
+      evs: preset.evs,
+      moves: canonicalMoves.map((move) => moveFromSnapshot(dex, move!, format)),
+    }, "meta");
+    setSelectedMetaPresetId(preset.id);
   }
 
   return (
@@ -260,7 +295,16 @@ function CalculatorPokemonPanel({
               <ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible en este formato.</ComboboxEmpty><ComboboxList>{(name: string) => <ComboboxItem key={name} value={name}>{name}</ComboboxItem>}</ComboboxList></ComboboxContent>
             </Combobox>
           </div>
-          <PokemonLibraryVersionSelect species={set.species} format={format} onLoad={(librarySet) => chooseLibraryVersion(librarySet)} />
+          {side === "right" && format === "champions" ? (
+            <OpponentMetaSetSelect
+              species={set.species}
+              selectedPresetId={selectedMetaPresetId}
+              autoLoadOnMount={autoLoadMetaOnMount}
+              onLoad={chooseOpponentMetaPreset}
+            />
+          ) : (
+            <PokemonLibraryVersionSelect species={set.species} format={format} onLoad={(librarySet) => chooseLibraryVersion(librarySet)} />
+          )}
         </div>
 
         <div className="grid gap-2"><Label>Objeto</Label><Combobox items={legalItems} value={set.item || null} onValueChange={(value) => updateSet({ ...set, item: value ?? "" })}><ComboboxInput placeholder="Buscar objeto..." className="w-full border-white/10 bg-white/4" showClear /><ComboboxContent className="border-white/10 bg-slate-950"><ComboboxEmpty>No disponible.</ComboboxEmpty><ComboboxList>{(item: string) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
@@ -529,6 +573,7 @@ function createCalculatorSession(source: PokemonSet): DamageCalculatorSession {
 
 export function DamageCalculatorView({ source, format, dex, mechanics, session: savedSession, onSessionChange }: DamageCalculatorProps) {
   const [localSession, setLocalSession] = useState(() => createCalculatorSession(source));
+  const [autoLoadOpponentMetaOnMount] = useState(() => !savedSession);
   const session = savedSession ?? localSession;
   const { left, right, field } = session;
 
@@ -559,9 +604,9 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} effectiveStats={effectiveStats.left} tailwind={field.left.tailwind} showGender={showGender} />
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} effectiveStats={effectiveStats.left} tailwind={field.left.tailwind} showGender={showGender} autoLoadMetaOnMount={false} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} leftName={left.set.species} rightName={right.set.species} leftSpeed={leftSpeed} rightSpeed={rightSpeed} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} effectiveStats={effectiveStats.right} tailwind={field.right.tailwind} showGender={showGender} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} effectiveStats={effectiveStats.right} tailwind={field.right.tailwind} showGender={showGender} autoLoadMetaOnMount={autoLoadOpponentMetaOnMount} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
