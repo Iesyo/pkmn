@@ -4,6 +4,8 @@ import test from "node:test";
 
 const serviceUrl = new URL("../deploy/pkmn.service", import.meta.url);
 const buildScriptUrl = new URL("../scripts/build-verified.sh", import.meta.url);
+const viteConfigUrl = new URL("../vite.config.ts", import.meta.url);
+const sitesHostingConfigUrl = new URL("../.openai/hosting.json", import.meta.url);
 
 test("keeps the production runtime read-only except for Vite config scratch", async () => {
   const service = await readFile(serviceUrl, "utf8");
@@ -25,4 +27,12 @@ test("promotes Cloudflare's generated deploy redirect into the immutable runtime
   assert.match(build, /runtime_deploy_config="\$\{SITES_PROJECT_ROOT\}\/dist\/\.wrangler-deploy-config\.json"/);
   assert.match(build, /if \[\[ ! -f "\$\{deploy_config\}" \]\]; then/);
   assert.match(build, /install -m 0644 "\$\{deploy_config\}" "\$\{runtime_deploy_config\}"/);
+});
+
+test("keeps the VPS build independent from Sites project metadata", async () => {
+  const viteConfig = await readFile(viteConfigUrl, "utf8");
+
+  await assert.rejects(readFile(sitesHostingConfigUrl, "utf8"), { code: "ENOENT" });
+  assert.doesNotMatch(viteConfig, /\.openai\/hosting\.json/);
+  assert.match(viteConfig, /const D1_BINDING = "DB"/);
 });
