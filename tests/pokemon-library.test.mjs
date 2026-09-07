@@ -72,7 +72,7 @@ test("both calculator panels expose saved sets in a balanced Pokemon/Set row", a
   assert.ok(source.includes("id: set.id"));
   assert.ok(source.includes("slot: set.slot"));
   assert.ok(source.includes('className="grid gap-3 sm:grid-cols-2"'));
-  assert.ok(source.includes('className="grid min-w-0 gap-2"'));
+  assert.ok(source.includes('className="grid min-w-0 content-start gap-2"'));
   assert.ok(source.includes('className="w-full min-w-0 border-white/10 bg-white/4"'));
   assert.ok(source.includes("<PokemonLibraryVersionSelect species={set.species} format={format}"));
   assert.ok(!source.includes('side === "left" ? <PokemonLibraryVersionSelect'));

@@ -288,7 +288,7 @@ function CalculatorPokemonPanel({
 
       <div className="mt-4 space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid min-w-0 gap-2">
+          <div className="grid min-w-0 content-start gap-2">
             <Label>Pokémon</Label>
             <Combobox items={speciesOptions} value={set.species || null} onValueChange={chooseSpecies}>
               <ComboboxInput placeholder="Buscar especie..." className="w-full min-w-0 border-white/10 bg-white/4" />
@@ -610,7 +610,13 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />
-      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65"><Sparkles className="mr-2 inline size-3.5 text-amber-300" />Motor oficial de Pokémon Showdown · stats efectivos y daño se recalculan localmente con cada cambio.</div>
+      <div className="rounded-2xl border border-amber-300/10 bg-amber-300/5 px-4 py-3 text-[10px] leading-5 text-amber-100/65">
+        <Sparkles className="mr-2 inline size-3.5 text-amber-300" />
+        Motor oficial de Pokémon Showdown · stats efectivos y daño se recalculan localmente con cada cambio.
+        {format === "champions" ? (
+          <> Sets rivales: estimación estadística de <a href="https://championsbattledata.com/" target="_blank" rel="noreferrer" className="text-cyan-200/75 underline underline-offset-2">Pokémon Champions Battle Data</a>.</>
+        ) : null}
+      </div>
     </div>
   );
 }

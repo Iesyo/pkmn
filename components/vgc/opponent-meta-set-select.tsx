@@ -33,7 +33,7 @@ type LoadState = {
 };
 
 function cacheKey(speciesId: string) {
-  return `pkmn:opponent-meta:${speciesId}`;
+  return `pkmn:opponent-meta:v2:${speciesId}`;
 }
 
 function readCachedResponse(speciesId: string) {
@@ -176,15 +176,6 @@ export function OpponentMetaSetSelect({
       {selected ? (
         <p className="line-clamp-2 text-[9px] leading-4 text-slate-500">
           {selected.item} · {selected.ability} · {selected.nature} · {selected.evs || "sin SP"}
-        </p>
-      ) : null}
-      {response ? (
-        <p className="text-[8px] leading-3 text-slate-600">
-          Estimación estadística · {response.season === "Current" ? "temporada actual" : response.season}
-          {response.stale ? " · caché reciente" : ""} ·{" "}
-          <a href={response.source.url} target="_blank" rel="noreferrer" className="text-cyan-300/60 underline underline-offset-2">
-            {response.source.label}
-          </a>
         </p>
       ) : null}
     </div>
