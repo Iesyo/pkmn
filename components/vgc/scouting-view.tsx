@@ -2,18 +2,42 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, CircleCheck, Copy, ExternalLink, Microscope, Play, Radar, RefreshCw, ShieldQuestion, Swords } from "lucide-react";
+import { AlertTriangle, Check, CircleCheck, Copy, ExternalLink, Microscope, Play, Radar, RefreshCw, ShieldQuestion, Swords, Trophy } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TournamentScoutingBrowser } from "@/components/vgc/tournament-scouting-browser";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
 
 interface ScoutingCandidate {
   match: MatchRecord;
   version: TeamVersion;
+}
+
+type ScoutingMode = "tournaments" | "replays";
+
+function ScoutingModeSwitcher({
+  mode,
+  replayCount,
+  onChange,
+}: {
+  mode: ScoutingMode;
+  replayCount: number;
+  onChange: (mode: ScoutingMode) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="Fuente de scouting" className="inline-flex w-full gap-1 rounded-xl border border-white/8 bg-slate-950/60 p-1 sm:w-auto">
+      <button type="button" role="tab" aria-selected={mode === "tournaments"} onClick={() => onChange("tournaments")} className={mode === "tournaments" ? "inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-300/12 px-4 py-2 text-xs font-black text-amber-100 ring-1 ring-amber-300/20 sm:flex-none" : "inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-white/4 hover:text-slate-300 sm:flex-none"}>
+        <Trophy className="size-3.5" />Torneos
+      </button>
+      <button type="button" role="tab" aria-selected={mode === "replays"} onClick={() => onChange("replays")} className={mode === "replays" ? "inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-cyan-300/12 px-4 py-2 text-xs font-black text-cyan-100 ring-1 ring-cyan-300/20 sm:flex-none" : "inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-white/4 hover:text-slate-300 sm:flex-none"}>
+        <Play className="size-3.5" />Replays guardados{replayCount ? ` · ${replayCount}` : ""}
+      </button>
+    </div>
+  );
 }
 
 function CandidateLabel({ candidate }: { candidate: ScoutingCandidate }) {
@@ -71,10 +95,11 @@ export function ScoutingView({
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requestError, setRequestError] = useState("");
+  const [mode, setMode] = useState<ScoutingMode>(initialMatchId ? "replays" : "tournaments");
   const selected = candidates.find((candidate) => candidate.match.id === matchId) ?? candidates[0];
 
   useEffect(() => {
-    if (!selected) return;
+    if (mode !== "replays" || !selected) return;
     let active = true;
     const load = async () => {
       const response = await fetch(`/api/scouting?matchId=${encodeURIComponent(selected.match.id)}`, { cache: "no-store" });
@@ -89,7 +114,7 @@ export function ScoutingView({
       active = false;
       window.clearInterval(timer);
     };
-  }, [selected, analysis?.status]);
+  }, [selected, analysis?.status, mode]);
 
   async function startAnalysis() {
     if (!selected) return;
@@ -112,13 +137,22 @@ export function ScoutingView({
     }
   }
 
+  const modeSwitcher = <ScoutingModeSwitcher mode={mode} replayCount={candidates.length} onChange={setMode} />;
+
+  if (mode === "tournaments") {
+    return <div className="space-y-5">{modeSwitcher}<TournamentScoutingBrowser /></div>;
+  }
+
   if (!selected) {
     return (
-      <section className="rounded-[28px] border border-white/8 bg-slate-900/45 px-6 py-20 text-center">
-        <Radar className="mx-auto size-10 text-slate-700" />
-        <h1 className="mt-4 text-xl font-black text-white">Scouting rival</h1>
-        <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">Guarda primero una partida con replay. Desde ese replay podremos extraer el equipo observado y acotar información oculta.</p>
-      </section>
+      <div className="space-y-5">
+        {modeSwitcher}
+        <section className="rounded-[28px] border border-white/8 bg-slate-900/45 px-6 py-20 text-center">
+          <Radar className="mx-auto size-10 text-slate-700" />
+          <h1 className="mt-4 text-xl font-black text-white">Scouting rival</h1>
+          <p className="mx-auto mt-2 max-w-lg text-sm text-slate-500">Guarda primero una partida con replay. Desde ese replay podremos extraer el equipo observado y acotar información oculta.</p>
+        </section>
+      </div>
     );
   }
 
@@ -127,6 +161,7 @@ export function ScoutingView({
 
   return (
     <div className="space-y-5">
+      {modeSwitcher}
       <section className="overflow-hidden rounded-[28px] border border-white/8 bg-slate-900/45 shadow-[0_32px_90px_rgba(0,0,0,0.25)]">
         <div className="h-px bg-gradient-to-r from-cyan-300 via-violet-400 to-transparent" />
         <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-end lg:justify-between">
