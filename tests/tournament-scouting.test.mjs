@@ -54,9 +54,40 @@ function snapshot() {
 }
 
 function showdownPaste() {
-  return ["Venusaur", "Charizard", "Garchomp", "Sylveon", "Incineroar", "Farigiraf"]
-    .map((species) => `${species} @ Leftovers\nAbility: Pressure\nLevel: 50\nTimid Nature\n- Protect\n- Tackle\n- Growl\n- Substitute`)
+  return ["Charizard", "Garchomp", "Whimsicott", "Floette", "Incineroar", "Basculegion-M"]
+    .map((species, index) => `${species} @ Leftovers\nAbility: Pressure\nLevel: 50\n${index === 0 ? "Timid Nature\n" : ""}- Protect\n- Tackle\n- Growl\n- Substitute`)
     .join("\n\n");
+}
+
+function battleData() {
+  return {
+    rows: [
+      { category: "stat_alignment", rank: 1, name: "Modest", percentage_value: 20 },
+      { category: "stat_alignment", rank: 8, name: "Bold", percentage_value: 80 },
+      {
+        category: "stat_points",
+        rank: 1,
+        percentage_value: 20,
+        hp_points: 2,
+        attack_points: 0,
+        defense_points: 0,
+        sp_atk_points: 32,
+        sp_def_points: 0,
+        speed_points: 32,
+      },
+      {
+        category: "stat_points",
+        rank: 9,
+        percentage_value: 80,
+        hp_points: 29,
+        attack_points: 0,
+        defense_points: 21,
+        sp_atk_points: 0,
+        sp_def_points: 16,
+        speed_points: 0,
+      },
+    ],
+  };
 }
 
 test("groups real tournament teams, deduplicates pastes and orders by placement", async () => {
@@ -108,14 +139,18 @@ test("serves the bundled tournament snapshot without runtime network access", as
 test("downloads only a known tournament PokéPaste for direct import", async () => {
   const { POST } = await vite.ssrLoadModule("/app/api/tournament-team-import/route.ts");
   const originalFetch = globalThis.fetch;
-  let requestedUrl = "";
+  const requestedUrls = [];
   let requestedRedirect = "";
   let fetchCalls = 0;
   globalThis.fetch = async (input, init) => {
     fetchCalls += 1;
-    requestedUrl = String(input);
-    requestedRedirect = init?.redirect ?? "";
-    return new Response(showdownPaste(), { headers: { "content-type": "text/plain" } });
+    const url = String(input);
+    requestedUrls.push(url);
+    if (url.includes("pokepast.es")) {
+      requestedRedirect = init?.redirect ?? "";
+      return new Response(showdownPaste(), { headers: { "content-type": "text/plain" } });
+    }
+    return new Response(JSON.stringify(battleData()), { headers: { "content-type": "application/json" } });
   };
 
   try {
@@ -127,11 +162,16 @@ test("downloads only a known tournament PokéPaste for direct import", async () 
     const payload = await response.json();
 
     assert.equal(response.status, 200);
-    assert.equal(payload.paste, showdownPaste());
+    assert.equal((payload.paste.match(/^EVs: 29 HP \/ 21 Def \/ 16 SpD$/gm) ?? []).length, 6);
+    assert.equal((payload.paste.match(/^Bold Nature$/gm) ?? []).length, 5);
+    assert.equal((payload.paste.match(/^Timid Nature$/gm) ?? []).length, 1);
+    assert.match(payload.paste, /Charizard @ Leftovers\nAbility: Pressure/);
+    assert.deepEqual(payload.estimates, { nature: 5, statPoints: 6 });
     assert.equal(payload.team.id, "team-6016921c41817086");
-    assert.equal(requestedUrl, "https://pokepast.es/6016921c41817086/raw");
+    assert.equal(requestedUrls[0], "https://pokepast.es/6016921c41817086/raw");
+    assert.ok(requestedUrls.includes("https://championsbattledata.com/api/battle/Doubles/basculegionm"));
     assert.equal(requestedRedirect, "manual");
-    assert.equal(fetchCalls, 1);
+    assert.equal(fetchCalls, 7);
 
     const missingResponse = await POST(new Request("http://localhost/api/tournament-team-import", {
       method: "POST",
@@ -139,7 +179,7 @@ test("downloads only a known tournament PokéPaste for direct import", async () 
       body: JSON.stringify({ teamId: "team-not-in-snapshot" }),
     }));
     assert.equal(missingResponse.status, 404);
-    assert.equal(fetchCalls, 1);
+    assert.equal(fetchCalls, 7);
   } finally {
     globalThis.fetch = originalFetch;
   }

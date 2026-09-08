@@ -117,6 +117,28 @@ test("builds at most three ranked rival presets from Champions marginal usage", 
   assert.equal(new Set(presets.map((preset) => JSON.stringify(preset))).size, 3);
 });
 
+test("uses the highest percentage nature and Stat Points from the full candidate pool", async () => {
+  const { buildMostUsedOpponentMetaEstimate } = await opponentMetaModule();
+  const payload = pyroarBattleData();
+  payload.rows.push(
+    battleDataRow("stat_alignment", 9, "Quiet", 88),
+    battleDataRow("stat_points", 9, "", 82, {
+      hp_points: 29,
+      attack_points: 0,
+      defense_points: 21,
+      sp_atk_points: 0,
+      sp_def_points: 16,
+      speed_points: 0,
+    }),
+  );
+
+  assert.deepEqual(buildMostUsedOpponentMetaEstimate(payload), {
+    nature: "Quiet",
+    evs: "29 HP / 21 Def / 16 SpD",
+    evidence: { nature: 88, statPoints: 82 },
+  });
+});
+
 test("maps the live Pyroar preset fields to the local Champions legality snapshot", async () => {
   const { buildOpponentMetaPresets } = await opponentMetaModule();
   const { getLegalAbilities, getLegalItems, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");

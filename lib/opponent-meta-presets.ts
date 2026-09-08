@@ -59,6 +59,15 @@ export type OpponentMetaResponse = {
   presets: OpponentMetaPreset[];
 };
 
+export type OpponentMetaEstimate = {
+  nature: string;
+  evs: string;
+  evidence: {
+    nature: number | null;
+    statPoints: number | null;
+  };
+};
+
 type Candidate = {
   item: RankedValue;
   ability: RankedValue;
@@ -121,7 +130,7 @@ function rankedValues(rows: Record<string, unknown>[], category: string, limit: 
     .slice(0, limit);
 }
 
-function rankedSpreads(rows: Record<string, unknown>[]) {
+function rankedSpreads(rows: Record<string, unknown>[], limit = MAX_SPREAD_OPTIONS) {
   const seen = new Set<string>();
   return rows
     .filter((row) => asString(row.category) === "stat_points")
@@ -153,7 +162,31 @@ function rankedSpreads(rows: Record<string, unknown>[]) {
       seen.add(key);
       return true;
     })
-    .slice(0, MAX_SPREAD_OPTIONS);
+    .slice(0, limit);
+}
+
+function payloadRows(payload: unknown) {
+  const root = asRecord(payload);
+  const rawRows = root && Array.isArray(root.rows) ? root.rows : [];
+  return rawRows.map(asRecord).filter((row): row is Record<string, unknown> => Boolean(row));
+}
+
+export function buildMostUsedOpponentMetaEstimate(payload: unknown): OpponentMetaEstimate | null {
+  const rows = payloadRows(payload);
+  const nature = rankedValues(rows, "stat_alignment", Number.MAX_SAFE_INTEGER)
+    .sort((left, right) => right.percentage - left.percentage || left.rank - right.rank || left.name.localeCompare(right.name))[0];
+  const spread = rankedSpreads(rows, Number.MAX_SAFE_INTEGER)
+    .sort((left, right) => right.percentage - left.percentage || left.rank - right.rank)[0];
+
+  if (!nature && !spread) return null;
+  return {
+    nature: nature?.name ?? "",
+    evs: spread?.evs ?? "",
+    evidence: {
+      nature: nature?.percentage ?? null,
+      statPoints: spread?.percentage ?? null,
+    },
+  };
 }
 
 function combinations<T>(values: T[], size: number) {
@@ -181,9 +214,7 @@ function scorePercentages(percentages: number[]) {
 }
 
 export function buildOpponentMetaPresets(payload: unknown): OpponentMetaPreset[] {
-  const root = asRecord(payload);
-  const rawRows = root && Array.isArray(root.rows) ? root.rows : [];
-  const rows = rawRows.map(asRecord).filter((row): row is Record<string, unknown> => Boolean(row));
+  const rows = payloadRows(payload);
   const moves = rankedValues(rows, "move", MAX_MOVE_POOL);
   const items = rankedValues(rows, "held_item", MAX_CATEGORY_OPTIONS);
   const abilities = rankedValues(rows, "ability", MAX_CATEGORY_OPTIONS);

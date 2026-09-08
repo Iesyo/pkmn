@@ -24,6 +24,10 @@ export interface TournamentTeamBuilderImport {
   paste: string;
   suggestedName: string;
   sourceLabel: string;
+  estimates?: {
+    nature: number;
+    statPoints: number;
+  };
 }
 
 export interface TournamentScoutingResponse {

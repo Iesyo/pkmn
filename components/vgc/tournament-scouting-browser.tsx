@@ -151,11 +151,18 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
       if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
         throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
       }
+      const estimates = "estimates" in payload && payload.estimates && typeof payload.estimates === "object"
+        ? payload.estimates as Record<string, unknown>
+        : null;
       const suggestedName = `${team.playerName} · ${selectedTournament.name}`.slice(0, 80);
       onImportTeam({
         paste: payload.paste,
         suggestedName,
         sourceLabel: `${team.playerName} · ${selectedTournament.name}`,
+        estimates: estimates ? {
+          nature: typeof estimates.nature === "number" ? estimates.nature : 0,
+          statPoints: typeof estimates.statPoints === "number" ? estimates.statPoints : 0,
+        } : undefined,
       });
     } catch (caught) {
       setImportError(caught instanceof Error ? caught.message : "No pudimos importar ese equipo.");

@@ -38,6 +38,18 @@ type BuilderProps = {
   onVersionCreated: (version: TeamVersion) => void;
 };
 
+function importedDraftMessage(initialImport: TournamentTeamBuilderImport) {
+  const estimates = initialImport.estimates;
+  const estimatedFields = [
+    estimates?.nature ? `${estimates.nature} ${estimates.nature === 1 ? "naturaleza" : "naturalezas"}` : "",
+    estimates?.statPoints ? `${estimates.statPoints} ${estimates.statPoints === 1 ? "repartición" : "reparticiones"} de Stat Points` : "",
+  ].filter(Boolean);
+  const estimateNotice = estimatedFields.length
+    ? ` Se completaron ${estimatedFields.join(" y ")} con la opción meta de mayor uso; son estimaciones.`
+    : "";
+  return `${initialImport.sourceLabel} importado como borrador. Revisa el formato y guarda cuando esté listo.${estimateNotice}`;
+}
+
 function mechanicsForFormat(format: string): BattleMechanic[] {
   return [...(BATTLE_FORMATS.find((entry) => entry.id === format)?.mechanics ?? [])];
 }
@@ -218,7 +230,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
   const [calculatorSessions, setCalculatorSessions] = useState<Record<string, DamageCalculatorSession>>({});
   const [sharedRival, setSharedRival] = useState<DamageCalculatorRivalSession | null>(null);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState(initialImport && !initialImportState?.error ? `${initialImport.sourceLabel} importado como borrador. Revisa el formato y guarda cuando esté listo.` : "");
+  const [message, setMessage] = useState(initialImport && !initialImportState?.error ? importedDraftMessage(initialImport) : "");
   const [error, setError] = useState(initialImportState?.error ?? "");
   const selected = pokemon[selectedSlot];
   const calculatorSessionKey = `${selected.id}:${format}:${slotRevisions[selectedSlot]}`;
