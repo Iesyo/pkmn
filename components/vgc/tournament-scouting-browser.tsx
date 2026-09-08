@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, Hammer, Loader2, RefreshCw, Trophy, Users } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Hammer, Loader2, RefreshCw, Trophy, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, 
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import {
   isTournamentScoutingResponse,
+  isTournamentScoutingRefreshResponse,
   type TournamentScoutingResponse,
   type TournamentScoutingTeam,
   type TournamentTeamBuilderImport,
@@ -22,6 +23,17 @@ function displayDate(value: string) {
     month: "short",
     year: "numeric",
     timeZone: "UTC",
+  }).format(new Date(value));
+}
+
+function displayCheckedAt(value: string) {
+  if (!value || Number.isNaN(Date.parse(value))) return "Consulta no disponible";
+  return new Intl.DateTimeFormat("es-MX", {
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Mexico_City",
   }).format(new Date(value));
 }
 
@@ -102,6 +114,9 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState("");
+  const [refreshError, setRefreshError] = useState("");
   const [importingTeamId, setImportingTeamId] = useState("");
   const [importError, setImportError] = useState("");
 
@@ -135,6 +150,33 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
 
   const tournamentNames = useMemo(() => data?.tournaments.map((tournament) => tournament.name) ?? [], [data]);
   const selectedTournament = data?.tournaments.find((tournament) => tournament.name === tournamentName) ?? data?.tournaments[0];
+
+  async function refreshTournaments() {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshMessage("");
+    setRefreshError("");
+    try {
+      const response = await fetch("/api/tournament-scouting", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const payload = await readApiPayload(response);
+      if (!response.ok) throw new Error(upstreamError(payload));
+      if (!isTournamentScoutingRefreshResponse(payload)) {
+        throw new Error("El actualizador devolvió un archivo de torneos inesperado.");
+      }
+      setData(payload.data);
+      setTournamentName((current) => payload.data.tournaments.some((tournament) => tournament.name === current)
+        ? current
+        : payload.data.tournaments[0]?.name ?? "");
+      setRefreshMessage(payload.message);
+    } catch (caught) {
+      setRefreshError(caught instanceof Error ? caught.message : "No pudimos actualizar los torneos.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   async function importTeam(team: TournamentScoutingTeam) {
     if (!selectedTournament || importingTeamId) return;
@@ -195,32 +237,42 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
               <h1 className="mt-2 text-2xl font-black tracking-tight text-white">Equipos reales para scouting</h1>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Selecciona un torneo y revisa los equipos públicos encontrados. Puedes importar cualquiera directamente como borrador editable.</p>
             </div>
-            <div className="grid min-w-0 gap-2 lg:w-[480px]">
-              <label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Torneo</label>
-              <Combobox items={tournamentNames} value={selectedTournament?.name ?? null} onValueChange={(value) => setTournamentName(value ?? "")}>
-                <ComboboxInput aria-label="Torneo" placeholder="Buscar torneo..." className="w-full border-white/10 bg-slate-950/70" />
-                <ComboboxContent className="border-white/10 bg-slate-950">
-                  <ComboboxEmpty>No encontramos ese torneo.</ComboboxEmpty>
-                  <ComboboxList>{(name: string) => {
-                    const tournament = data.tournaments.find((entry) => entry.name === name);
-                    return <ComboboxItem key={name} value={name}><span className="min-w-0 flex-1 truncate">{name}</span><span className="shrink-0 text-[10px] text-slate-600">{tournament?.teams.length ?? 0}</span></ComboboxItem>;
-                  }}</ComboboxList>
-                </ComboboxContent>
-              </Combobox>
+            <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end lg:w-[620px]">
+              <div className="grid min-w-0 gap-2">
+                <label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Torneo</label>
+                <Combobox items={tournamentNames} value={selectedTournament?.name ?? null} onValueChange={(value) => setTournamentName(value ?? "")}>
+                  <ComboboxInput aria-label="Torneo" placeholder="Buscar torneo..." className="w-full border-white/10 bg-slate-950/70" />
+                  <ComboboxContent className="border-white/10 bg-slate-950">
+                    <ComboboxEmpty>No encontramos ese torneo.</ComboboxEmpty>
+                    <ComboboxList>{(name: string) => {
+                      const tournament = data.tournaments.find((entry) => entry.name === name);
+                      return <ComboboxItem key={name} value={name}><span className="min-w-0 flex-1 truncate">{name}</span><span className="shrink-0 text-[10px] text-slate-600">{tournament?.teams.length ?? 0}</span></ComboboxItem>;
+                    }}</ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
+              <Button type="button" variant="outline" disabled={refreshing} onClick={() => void refreshTournaments()} className="h-10 gap-2 border-cyan-300/20 bg-cyan-300/7 text-xs font-black text-cyan-200 hover:bg-cyan-300/12">
+                {refreshing ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                {refreshing ? "Actualizando" : "Actualizar torneos"}
+              </Button>
             </div>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-white/7 pt-4 text-[10px] text-slate-500">
             <span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-cyan-300" /><strong className="text-slate-300">{selectedTournament?.teams.length ?? 0}</strong> equipos con paste disponibles</span>
             <span className="inline-flex items-center gap-1.5"><CalendarDays className="size-3.5" />Snapshot del {displayDate(data.generatedAt)}</span>
+            <span className="inline-flex items-center gap-1.5"><RefreshCw className="size-3.5" />Revisado {displayCheckedAt(data.archive.checkedAt)}</span>
             <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Regulación {data.regulation}</Badge>
+            <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{data.archive.storage === "persisted" ? "Actualización guardada" : "Snapshot integrado"}</Badge>
             {data.stale ? <Badge variant="outline" className="border-amber-300/20 bg-amber-300/8 text-[9px] text-amber-200">Caché de respaldo</Badge> : null}
-            {loading ? <span className="inline-flex items-center gap-1.5 text-cyan-300"><RefreshCw className="size-3 animate-spin" />Actualizando</span> : null}
+            {loading ? <span className="inline-flex items-center gap-1.5 text-cyan-300"><RefreshCw className="size-3 animate-spin" />Cargando</span> : null}
           </div>
         </div>
       </section>
 
       {error ? <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-4 py-3 text-xs text-amber-100"><span className="flex items-center gap-2"><AlertTriangle className="size-4" />{error}</span><Button type="button" variant="ghost" size="sm" onClick={() => setReloadKey((value) => value + 1)} className="text-amber-100"><RefreshCw className="size-3.5" />Reintentar</Button></div> : null}
+      {refreshMessage ? <div role="status" className="flex items-center gap-2 rounded-xl border border-emerald-300/15 bg-emerald-300/7 px-4 py-3 text-xs text-emerald-100"><CheckCircle2 className="size-4" />{refreshMessage}</div> : null}
+      {refreshError ? <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-4 py-3 text-xs text-amber-100"><span className="flex items-center gap-2"><AlertTriangle className="size-4" />{refreshError}</span><Button type="button" variant="ghost" size="sm" disabled={refreshing} onClick={() => void refreshTournaments()} className="text-amber-100"><RefreshCw className="size-3.5" />Reintentar</Button></div> : null}
       {importError ? <div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-300/15 bg-rose-300/7 px-4 py-3 text-xs text-rose-200"><AlertTriangle className="size-4" />{importError}</div> : null}
 
       <section>

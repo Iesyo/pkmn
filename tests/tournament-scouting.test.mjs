@@ -103,6 +103,8 @@ test("groups real tournament teams, deduplicates pastes and orders by placement"
   assert.equal(result.tournaments.flatMap((entry) => entry.teams).length, 3);
   assert.equal(result.source.label, "LabMaus");
   assert.equal(result.snapshotSource.label, "VS Recorder");
+  assert.equal(result.archive.storage, "bundled");
+  assert.equal(result.archive.sourceFile, "tournamentTeams-regM-B.json");
 });
 
 test("rejects snapshots without any complete, safe PokéPaste teams", async () => {
@@ -111,7 +113,7 @@ test("rejects snapshots without any complete, safe PokéPaste teams", async () =
   assert.throws(() => buildTournamentScoutingResponse({ nope: true }), /formato esperado/);
 });
 
-test("serves the bundled tournament snapshot without runtime network access", async () => {
+test("serves the last known tournament snapshot without runtime network access", async () => {
   const { GET } = await vite.ssrLoadModule("/app/api/tournament-scouting/route.ts");
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
@@ -129,11 +131,90 @@ test("serves the bundled tournament snapshot without runtime network access", as
     assert.equal(fetchCalls, 0);
     assert.equal(payload.tournaments.length, 207);
     assert.equal(payload.tournaments.reduce((total, tournament) => total + tournament.teams.length, 0), 621);
-    assert.equal(payload.stale, false);
-    assert.match(response.headers.get("cache-control"), /s-maxage=43200/);
+    assert.equal(typeof payload.stale, "boolean");
+    assert.equal(payload.archive.sourceFile, "tournamentTeams-regM-B.json");
+    assert.equal(response.headers.get("cache-control"), "no-store");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("discovers the newest regulation and validates the GitHub blob before building it", async () => {
+  const { fetchLatestTournamentScoutingSnapshot, TOURNAMENT_DATA_DIRECTORY_API } = await vite.ssrLoadModule("/lib/tournament-scouting-refresh.ts");
+  const oldSha = "a".repeat(40);
+  const currentSha = "b".repeat(40);
+  const source = JSON.stringify({
+    ...snapshot(),
+    regulation: "N-A",
+    generatedAt: "2026-09-08",
+  });
+  const requested = [];
+  const fetcher = async (input, init) => {
+    requested.push({ url: String(input), redirect: init?.redirect });
+    if (String(input) === TOURNAMENT_DATA_DIRECTORY_API) {
+      return Response.json([
+        { name: "tournamentTeams-regM-B.json", sha: oldSha, size: 100, type: "file" },
+        { name: "notes.json", sha: oldSha, size: 100, type: "file" },
+        { name: "tournamentTeams-regN-A.json", sha: currentSha, size: Buffer.byteLength(source), type: "file" },
+      ]);
+    }
+    return Response.json({
+      sha: currentSha,
+      encoding: "base64",
+      content: Buffer.from(source).toString("base64"),
+      size: Buffer.byteLength(source),
+    });
+  };
+
+  const result = await fetchLatestTournamentScoutingSnapshot(fetcher, "2026-09-08T18:30:00.000Z");
+
+  assert.equal(result.regulation, "N-A");
+  assert.equal(result.archive.sourceFile, "tournamentTeams-regN-A.json");
+  assert.equal(result.archive.sourceRevision, currentSha);
+  assert.equal(result.archive.storage, "persisted");
+  assert.equal(result.archive.checkedAt, "2026-09-08T18:30:00.000Z");
+  assert.match(result.snapshotSource.url, /tournamentTeams-regN-A\.json$/);
+  assert.deepEqual(requested, [
+    { url: TOURNAMENT_DATA_DIRECTORY_API, redirect: "manual" },
+    { url: `https://api.github.com/repos/Pocolip/vs-recorder/git/blobs/${currentSha}`, redirect: "manual" },
+  ]);
+});
+
+test("rejects a same-regulation refresh that loses most of the last known teams", async () => {
+  const { assertSafeTournamentSnapshotUpdate } = await vite.ssrLoadModule("/lib/tournament-scouting-refresh.ts");
+  const { buildTournamentScoutingResponse } = await vite.ssrLoadModule("/lib/tournament-scouting.ts");
+  const previous = buildTournamentScoutingResponse(snapshot(), { retrievedAt: "2026-09-08T00:00:00.000Z" });
+  const expanded = {
+    ...previous,
+    tournaments: Array.from({ length: 10 }, (_, tournamentIndex) => ({
+      ...previous.tournaments[0],
+      id: `previous-${tournamentIndex}`,
+      teams: Array.from({ length: 4 }, (_, teamIndex) => ({
+        ...previous.tournaments[0].teams[0],
+        id: `previous-${tournamentIndex}-${teamIndex}`,
+      })),
+    })),
+  };
+  const candidate = {
+    ...previous,
+    archive: { ...previous.archive, storage: "persisted" },
+    tournaments: previous.tournaments.slice(0, 1),
+  };
+
+  assert.throws(() => assertSafeTournamentSnapshotUpdate(candidate, expanded), /perdió demasiados equipos/);
+  assert.doesNotThrow(() => assertSafeTournamentSnapshotUpdate({ ...candidate, regulation: "N-A" }, expanded));
+});
+
+test("turns upstream transport failures into a safe refresh error", async () => {
+  const { fetchLatestTournamentScoutingSnapshot } = await vite.ssrLoadModule("/lib/tournament-scouting-refresh.ts");
+  await assert.rejects(
+    () => fetchLatestTournamentScoutingSnapshot(async () => {
+      throw new Error("internal resolver reference 123");
+    }),
+    (error) => error instanceof Error
+      && error.message === "El catálogo de VS Recorder no está disponible"
+      && !error.message.includes("reference 123"),
+  );
 });
 
 test("downloads only a known tournament PokéPaste for direct import", async () => {
@@ -185,17 +266,29 @@ test("downloads only a known tournament PokéPaste for direct import", async () 
   }
 });
 
-test("connects tournament scouting to a new editable Team Builder draft", async () => {
-  const [scouting, tournamentBrowser, teamBuilder, dashboard] = await Promise.all([
+test("connects persistent tournament scouting to a new editable Team Builder draft", async () => {
+  const [scouting, tournamentBrowser, teamBuilder, dashboard, route, storage, importer] = await Promise.all([
     readFile(new URL("../components/vgc/scouting-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/tournament-scouting-browser.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/tournament-scouting/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/tournament-snapshot.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/tournament-team-import/route.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(scouting, /<TournamentScoutingBrowser onImportTeam=\{onTournamentTeamImport\}/);
   assert.match(scouting, />Torneos/);
   assert.match(tournamentBrowser, /\/api\/tournament-scouting/);
+  assert.match(tournamentBrowser, /method: "POST"/);
+  assert.match(tournamentBrowser, /Actualizar torneos/);
+  assert.match(tournamentBrowser, /Actualización guardada/);
+  assert.match(route, /saveStoredTournamentScoutingSnapshot/);
+  assert.match(route, /assertSafeTournamentSnapshotUpdate/);
+  assert.match(storage, /tournament_scouting_snapshot_gzip_base64_v1/);
+  assert.match(storage, /CompressionStream\("gzip"\)/);
+  assert.match(storage, /app_settings/);
+  assert.match(importer, /loadCurrentTournamentScoutingSnapshot/);
   assert.match(tournamentBrowser, /\/api\/tournament-team-import/);
   assert.match(tournamentBrowser, /content-type/);
   assert.match(tournamentBrowser, /respondió con una página en lugar del archivo de torneos/);

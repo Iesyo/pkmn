@@ -1,7 +1,8 @@
 import { buildMostUsedOpponentMetaEstimate, type OpponentMetaEstimate } from "@/lib/opponent-meta-presets";
 import { parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_MECHANICS, serializeShowdownPaste } from "@/lib/team-builder";
-import { findTournamentScoutingTeam } from "@/lib/tournament-scouting-snapshot";
+import { findTournamentScoutingTeam } from "@/lib/tournament-scouting";
+import { loadCurrentTournamentScoutingSnapshot } from "@/lib/tournament-scouting-server";
 import type { PokemonSet } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -111,7 +112,7 @@ export async function POST(request: Request) {
     return errorResponse("La solicitud de importación no es válida.", 400);
   }
 
-  const selected = findTournamentScoutingTeam(teamId);
+  const selected = findTournamentScoutingTeam(await loadCurrentTournamentScoutingSnapshot(), teamId);
   if (!selected) return errorResponse("No encontramos ese equipo en el snapshot de torneos.", 404);
 
   try {

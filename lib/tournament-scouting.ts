@@ -1,5 +1,7 @@
 export const LABMAUS_TOURNAMENTS_URL = "https://labmaus.net/tournaments";
 export const TOURNAMENT_SNAPSHOT_PAGE_URL = "https://github.com/Pocolip/vs-recorder/blob/develop/frontend/src/data/tournamentTeams-regM-B.json";
+export const BUNDLED_TOURNAMENT_SOURCE_FILE = "tournamentTeams-regM-B.json";
+export const BUNDLED_TOURNAMENT_SOURCE_REVISION = "fd61c8396b25945794728548eb8444579f90bedf";
 
 const MAX_TOURNAMENTS = 250;
 const MAX_TEAMS_PER_TOURNAMENT = 48;
@@ -45,9 +47,21 @@ export interface TournamentScoutingResponse {
   };
   snapshotSource: {
     label: "VS Recorder";
-    url: typeof TOURNAMENT_SNAPSHOT_PAGE_URL;
+    url: string;
+  };
+  archive: {
+    sourceFile: string;
+    sourceRevision: string;
+    storage: "bundled" | "persisted";
+    checkedAt: string;
   };
   tournaments: TournamentScoutingEvent[];
+}
+
+export interface TournamentScoutingRefreshResponse {
+  status: "updated" | "current";
+  message: string;
+  data: TournamentScoutingResponse;
 }
 
 function recordValue(value: unknown) {
@@ -110,7 +124,15 @@ function isoDate(value: unknown) {
 
 export function buildTournamentScoutingResponse(
   payload: unknown,
-  options: { stale?: boolean; retrievedAt?: string } = {},
+  options: {
+    stale?: boolean;
+    retrievedAt?: string;
+    snapshotUrl?: string;
+    sourceFile?: string;
+    sourceRevision?: string;
+    storage?: "bundled" | "persisted";
+    checkedAt?: string;
+  } = {},
 ): TournamentScoutingResponse {
   const root = recordValue(payload);
   if (!root || !Array.isArray(root.compositions)) {
@@ -175,32 +197,90 @@ export function buildTournamentScoutingResponse(
   const generatedAt = isoDate(root.generatedAt);
   const from = isoDate(dateRange?.from);
   const to = isoDate(dateRange?.to);
+  const retrievedAt = options.retrievedAt ?? new Date().toISOString();
   return {
     regulation: cleanText(root.regulation, "M-B"),
     generatedAt: generatedAt || new Date(0).toISOString(),
-    retrievedAt: options.retrievedAt ?? new Date().toISOString(),
+    retrievedAt,
     dateRange: { from, to },
     stale: options.stale ?? false,
     source: { label: "LabMaus", url: LABMAUS_TOURNAMENTS_URL },
-    snapshotSource: { label: "VS Recorder", url: TOURNAMENT_SNAPSHOT_PAGE_URL },
+    snapshotSource: { label: "VS Recorder", url: options.snapshotUrl ?? TOURNAMENT_SNAPSHOT_PAGE_URL },
+    archive: {
+      sourceFile: cleanText(options.sourceFile, BUNDLED_TOURNAMENT_SOURCE_FILE),
+      sourceRevision: cleanText(options.sourceRevision, BUNDLED_TOURNAMENT_SOURCE_REVISION),
+      storage: options.storage ?? "bundled",
+      checkedAt: options.checkedAt ?? retrievedAt,
+    },
     tournaments,
   };
 }
 
 export function isTournamentScoutingResponse(value: unknown): value is TournamentScoutingResponse {
   const root = recordValue(value);
+  const archive = recordValue(root?.archive);
+  const dateRange = recordValue(root?.dateRange);
+  const source = recordValue(root?.source);
+  const snapshotSource = recordValue(root?.snapshotSource);
   return Boolean(
     root
-    && typeof root.regulation === "string"
-    && typeof root.generatedAt === "string"
+    && typeof root.regulation === "string" && root.regulation.length <= 32
+    && typeof root.generatedAt === "string" && !Number.isNaN(Date.parse(root.generatedAt))
+    && typeof root.retrievedAt === "string" && !Number.isNaN(Date.parse(root.retrievedAt))
     && typeof root.stale === "boolean"
-    && Array.isArray(root.tournaments)
+    && dateRange
+    && typeof dateRange.from === "string"
+    && typeof dateRange.to === "string"
+    && source
+    && source.label === "LabMaus"
+    && source.url === LABMAUS_TOURNAMENTS_URL
+    && snapshotSource
+    && snapshotSource.label === "VS Recorder"
+    && typeof snapshotSource.url === "string"
+    && snapshotSource.url.startsWith("https://github.com/Pocolip/vs-recorder/blob/")
+    && archive
+    && typeof archive.sourceFile === "string" && /^tournamentTeams-reg[a-z]+-[a-z]+\.json$/i.test(archive.sourceFile)
+    && typeof archive.sourceRevision === "string" && /^[a-f0-9]{40}$/i.test(archive.sourceRevision)
+    && (archive.storage === "bundled" || archive.storage === "persisted")
+    && typeof archive.checkedAt === "string" && !Number.isNaN(Date.parse(archive.checkedAt))
+    && Array.isArray(root.tournaments) && root.tournaments.length > 0 && root.tournaments.length <= MAX_TOURNAMENTS
     && root.tournaments.every((entry) => {
       const tournament = recordValue(entry);
       return tournament
         && typeof tournament.id === "string"
-        && typeof tournament.name === "string"
-        && Array.isArray(tournament.teams);
+        && typeof tournament.name === "string" && tournament.name.length > 0 && tournament.name.length <= MAX_TEXT_LENGTH
+        && Array.isArray(tournament.teams) && tournament.teams.length > 0 && tournament.teams.length <= MAX_TEAMS_PER_TOURNAMENT
+        && tournament.teams.every((teamValue) => {
+          const team = recordValue(teamValue);
+          return team
+            && typeof team.id === "string"
+            && typeof team.playerName === "string"
+            && (team.placement === null || numericPlacement(team.placement) === team.placement)
+            && typeof team.record === "string"
+            && Array.isArray(team.pokemon)
+            && team.pokemon.length === 6
+            && team.pokemon.every((species) => typeof species === "string" && species.length > 0 && species.length <= 64)
+            && typeof team.pokepasteUrl === "string"
+            && normalizePokepasteUrl(team.pokepasteUrl) === team.pokepasteUrl;
+        });
     }),
+  );
+}
+
+export function findTournamentScoutingTeam(response: TournamentScoutingResponse, teamId: string) {
+  for (const tournament of response.tournaments) {
+    const team = tournament.teams.find((entry) => entry.id === teamId);
+    if (team) return { team, tournamentName: tournament.name };
+  }
+  return null;
+}
+
+export function isTournamentScoutingRefreshResponse(value: unknown): value is TournamentScoutingRefreshResponse {
+  const root = recordValue(value);
+  return Boolean(
+    root
+    && (root.status === "updated" || root.status === "current")
+    && typeof root.message === "string"
+    && isTournamentScoutingResponse(root.data),
   );
 }
