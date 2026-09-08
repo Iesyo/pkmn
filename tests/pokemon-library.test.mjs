@@ -53,6 +53,8 @@ test("saved sets are exposed as a contextual version selector", async () => {
   assert.ok(source.includes("PokemonLibraryVersionSelect"));
   assert.ok(source.includes("/api/pokemon-library?format="));
   assert.ok(source.includes("encodeURIComponent(format)"));
+  assert.ok(source.includes("const libraryRequests = new Map"));
+  assert.ok(source.includes("loadPokemonLibraryEntries(format)"));
   assert.ok(source.includes("toId(candidate.species) === toId(species)"));
   assert.ok(source.includes("<Label>Set</Label>"));
   assert.ok(source.includes('"Elegir versión"'));

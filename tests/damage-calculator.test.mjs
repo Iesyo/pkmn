@@ -102,19 +102,19 @@ test("maps Pokémon Champions to the official generation zero engine", async () 
   assert.equal(generationForFormat("gen6"), 6);
 });
 
-test("builds at most five ranked rival presets from Champions marginal usage", async () => {
+test("builds at most three ranked rival presets from Champions marginal usage", async () => {
   const { buildOpponentMetaPresets, MAX_OPPONENT_META_PRESETS } = await opponentMetaModule();
   const presets = buildOpponentMetaPresets(pyroarBattleData());
 
-  assert.equal(MAX_OPPONENT_META_PRESETS, 5);
-  assert.equal(presets.length, 5);
+  assert.equal(MAX_OPPONENT_META_PRESETS, 3);
+  assert.equal(presets.length, 3);
   assert.deepEqual(presets[0].moves, ["Heat Wave", "Protect", "Overheat", "Solar Beam"]);
   assert.equal(presets[0].item, "Pyroarite");
   assert.equal(presets[0].ability, "Unnerve");
   assert.equal(presets[0].nature, "Timid");
   assert.equal(presets[0].evs, "2 HP / 32 SpA / 32 Spe");
-  assert.deepEqual(presets.map((preset) => preset.id), ["meta-1", "meta-2", "meta-3", "meta-4", "meta-5"]);
-  assert.equal(new Set(presets.map((preset) => JSON.stringify(preset))).size, 5);
+  assert.deepEqual(presets.map((preset) => preset.id), ["meta-1", "meta-2", "meta-3"]);
+  assert.equal(new Set(presets.map((preset) => JSON.stringify(preset))).size, 3);
 });
 
 test("maps the live Pyroar preset fields to the local Champions legality snapshot", async () => {
@@ -167,7 +167,7 @@ test("serves rival meta through the fixed Battle Data upstream with attribution"
     assert.equal(requestedUrl, "https://championsbattledata.com/api/battle/Doubles/pyroar");
     assert.equal(payload.methodology, "marginal-frequency-composite");
     assert.equal(payload.source.label, "Pokémon Champions Battle Data");
-    assert.equal(payload.presets.length, 5);
+    assert.equal(payload.presets.length, 3);
     assert.match(response.headers.get("cache-control"), /s-maxage=21600/);
 
     globalThis.fetch = async () => new Response(null, { status: 404 });
@@ -395,12 +395,12 @@ test("keeps own drafts per Pokémon while sharing one fixed rival", async () => 
   assert.match(builderSource, /session=\{calculatorSessions\[calculatorSessionKey\]\}/);
   assert.match(builderSource, /rivalSession=\{sharedRival\}/);
   assert.match(builderSource, /right: nextSession\.right/);
-  assert.match(builderSource, /opponentMetaPresetId: nextSession\.opponentMetaPresetId/);
+  assert.match(builderSource, /opponentSetSelectionId: nextSession\.opponentSetSelectionId/);
   assert.match(builderSource, /onSessionChange=/);
   assert.match(builderSource, /\.\.\.nextSession\.left\.set/);
   assert.match(calculatorSource, /export type DamageCalculatorSession/);
   assert.match(calculatorSource, /export type DamageCalculatorRivalSession/);
-  assert.match(calculatorSource, /opponentMetaPresetId: string \| null/);
+  assert.match(calculatorSource, /opponentSetSelectionId: string \| null/);
   assert.match(calculatorSource, /const session = rivalSession \? \{ \.\.\.baseSession, \.\.\.rivalSession \} : baseSession/);
   assert.doesNotMatch(calculatorSource, /Modo Pro · Calculadora de daño/);
   assert.doesNotMatch(calculatorSource, /Vista integrada/);
@@ -425,7 +425,7 @@ test("keeps own drafts per Pokémon while sharing one fixed rival", async () => 
   assert.ok(calculatorSource.indexOf("<Label>Nivel</Label>") < calculatorSource.indexOf("<Label>HP actual</Label>"));
 });
 
-test("offers a maximum of five auto-loadable meta presets only for the Champions rival", async () => {
+test("offers three meta presets before saved rival sets in Champions", async () => {
   const [calculatorSource, selectorSource, presetSource, routeSource] = await Promise.all([
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/opponent-meta-set-select.tsx", import.meta.url), "utf8"),
@@ -438,11 +438,19 @@ test("offers a maximum of five auto-loadable meta presets only for the Champions
   assert.match(calculatorSource, /<PokemonLibraryVersionSelect/);
   assert.match(calculatorSource, /manualMetaEditCountRef/);
   assert.match(calculatorSource, /autoLoadMetaOnMount={autoLoadOpponentMetaOnMount}/);
-  assert.match(selectorSource, /onLoadRef\.current\(first, true\)/);
+  assert.match(calculatorSource, /setSelectionId \? "library" : "manual"/);
+  assert.match(calculatorSource, /`meta:\$\{preset\.id\}`/);
+  assert.match(calculatorSource, /selectedSetId=\{selectedOpponentSetId\}/);
+  assert.match(selectorSource, /onLoadMetaRef\.current\(first, true\)/);
+  assert.match(selectorSource, /loadPokemonLibraryEntries\(format\)/);
+  assert.match(selectorSource, /right\.version - left\.version/);
+  assert.ok(selectorSource.indexOf("Meta estimado") < selectorSource.indexOf("Mis sets guardados"));
+  assert.ok(selectorSource.indexOf("presets.map") < selectorSource.indexOf("versions.map"));
+  assert.match(selectorSource, /onLoadLibrary\(version\.set, value\)/);
   assert.doesNotMatch(selectorSource, /Estimación estadística/);
   assert.match(calculatorSource, /Sets rivales: estimación estadística de/);
   assert.match(calculatorSource, /Pokémon Champions Battle Data/);
-  assert.match(presetSource, /MAX_OPPONENT_META_PRESETS = 5/);
+  assert.match(presetSource, /MAX_OPPONENT_META_PRESETS = 3/);
   assert.match(presetSource, /marginal-frequency-composite/);
   assert.match(routeSource, /https:\/\/championsbattledata\.com\/api\/battle\/Doubles/);
   assert.match(routeSource, /FRESH_CACHE_MS/);

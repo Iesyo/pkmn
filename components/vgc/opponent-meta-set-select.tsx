@@ -1,18 +1,36 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   isOpponentMetaResponse,
   type OpponentMetaPreset,
   type OpponentMetaResponse,
 } from "@/lib/opponent-meta-presets";
 import { toId } from "@/lib/pokemon-data";
+import type { PokemonSet } from "@/lib/types";
+import {
+  loadPokemonLibraryEntries,
+  type PokemonLibraryEntry,
+  type PokemonLibraryVersion,
+} from "./pokemon-library-dialog";
 
 const LOCAL_CACHE_MS = 7 * 24 * 60 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const META_VALUE_PREFIX = "meta:";
+const LIBRARY_VALUE_PREFIX = "library:";
 
 type CachedResponse = {
   cachedAt: number;
@@ -21,19 +39,34 @@ type CachedResponse = {
 
 type OpponentMetaSetSelectProps = {
   species: string;
-  selectedPresetId: string | null;
+  format: string;
+  selectedSetId: string | null;
   autoLoadOnMount: boolean;
-  onLoad: (preset: OpponentMetaPreset, automatic: boolean) => void;
+  onLoadMeta: (preset: OpponentMetaPreset, automatic: boolean) => void;
+  onLoadLibrary: (set: PokemonSet, selectionId: string) => void;
 };
 
-type LoadState = {
+type MetaLoadState = {
   speciesId: string;
   response: OpponentMetaResponse | null;
   status: "idle" | "loading" | "ready" | "failed";
 };
 
+type LibraryState = {
+  format: string;
+  entries: PokemonLibraryEntry[];
+};
+
 function cacheKey(speciesId: string) {
-  return `pkmn:opponent-meta:v2:${speciesId}`;
+  return `pkmn:opponent-meta:v3:${speciesId}`;
+}
+
+function metaValue(presetId: string) {
+  return `${META_VALUE_PREFIX}${presetId}`;
+}
+
+function libraryValue(versionId: string) {
+  return `${LIBRARY_VALUE_PREFIX}${versionId}`;
 }
 
 function readCachedResponse(speciesId: string) {
@@ -66,23 +99,43 @@ function presetHint(preset: OpponentMetaPreset, primary: OpponentMetaPreset) {
   return preset.moves[3];
 }
 
+function versionLabel(version: PokemonLibraryVersion) {
+  const source = version.sources[0];
+  return `v${version.version}${source ? ` · ${source.teamName}` : " · Guardado"}`;
+}
+
 export function OpponentMetaSetSelect({
   species,
-  selectedPresetId,
+  format,
+  selectedSetId,
   autoLoadOnMount,
-  onLoad,
+  onLoadMeta,
+  onLoadLibrary,
 }: OpponentMetaSetSelectProps) {
   const speciesId = toId(species);
-  const [loadState, setLoadState] = useState<LoadState>({ speciesId: "", response: null, status: "idle" });
+  const [metaState, setMetaState] = useState<MetaLoadState>({ speciesId: "", response: null, status: "idle" });
+  const [library, setLibrary] = useState<LibraryState>({ format: "", entries: [] });
   const initialAutoLoadRef = useRef(autoLoadOnMount);
   const previousSpeciesRef = useRef(speciesId);
   const speciesChangeCountRef = useRef(0);
   const lastAutoLoadTokenRef = useRef("");
-  const onLoadRef = useRef(onLoad);
+  const onLoadMetaRef = useRef(onLoadMeta);
 
   useEffect(() => {
-    onLoadRef.current = onLoad;
-  }, [onLoad]);
+    onLoadMetaRef.current = onLoadMeta;
+  }, [onLoadMeta]);
+
+  useEffect(() => {
+    let active = true;
+
+    loadPokemonLibraryEntries(format).then((entries) => {
+      if (active) setLibrary({ format, entries });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [format]);
 
   useEffect(() => {
     if (previousSpeciesRef.current !== speciesId) {
@@ -95,12 +148,12 @@ export function OpponentMetaSetSelect({
     const autoLoadToken = `${speciesId}:${speciesChangeCountRef.current}`;
     const shouldAutoLoad = initialAutoLoadRef.current || speciesChangeCountRef.current > 0;
     const accept = (next: OpponentMetaResponse, phase: "cache" | "network") => {
-      setLoadState({ speciesId, response: next, status: "ready" });
+      setMetaState({ speciesId, response: next, status: "ready" });
       const first = next.presets[0];
       const phaseToken = `${autoLoadToken}:${phase}`;
       if (shouldAutoLoad && first && lastAutoLoadTokenRef.current !== phaseToken) {
         lastAutoLoadTokenRef.current = phaseToken;
-        onLoadRef.current(first, true);
+        onLoadMetaRef.current(first, true);
       }
     };
 
@@ -112,7 +165,7 @@ export function OpponentMetaSetSelect({
     queueMicrotask(() => {
       if (!active) return;
       if (cached) accept({ ...cached, stale: true }, "cache");
-      else setLoadState({ speciesId, response: null, status: "loading" });
+      else setMetaState({ speciesId, response: null, status: "loading" });
     });
 
     void fetch(`/api/opponent-meta/${encodeURIComponent(speciesId)}`, {
@@ -129,7 +182,7 @@ export function OpponentMetaSetSelect({
         accept(payload, "network");
       })
       .catch(() => {
-        if (active && !cached) setLoadState({ speciesId, response: null, status: "failed" });
+        if (active && !cached) setMetaState({ speciesId, response: null, status: "failed" });
       })
       .finally(() => {
         window.clearTimeout(timeout);
@@ -142,42 +195,88 @@ export function OpponentMetaSetSelect({
     };
   }, [speciesId]);
 
-  const response = loadState.speciesId === speciesId ? loadState.response : null;
-  const loading = Boolean(speciesId) && (loadState.speciesId !== speciesId || loadState.status === "loading");
-  const failed = loadState.speciesId === speciesId && loadState.status === "failed";
+  const response = metaState.speciesId === speciesId ? metaState.response : null;
+  const metaLoading = Boolean(speciesId) && (metaState.speciesId !== speciesId || metaState.status === "loading");
   const presets = response?.presets ?? [];
-  const selected = presets.find((preset) => preset.id === selectedPresetId) ?? null;
   const primary = presets[0];
-  const disabledLabel = loading ? "Buscando meta…" : failed || response ? "Meta no disponible" : "Elige un Pokémon";
+  const libraryLoading = library.format !== format;
+  const libraryEntry = useMemo(
+    () => library.entries.find((candidate) => toId(candidate.species) === speciesId),
+    [library.entries, speciesId],
+  );
+  const versions = useMemo(
+    () => libraryLoading ? [] : [...(libraryEntry?.versions ?? [])]
+      .sort((left, right) => right.version - left.version || right.createdAt.localeCompare(left.createdAt)),
+    [libraryEntry?.versions, libraryLoading],
+  );
+  const selectedMeta = presets.find((preset) => metaValue(preset.id) === selectedSetId) ?? null;
+  const selectedLibrary = versions.find((version) => libraryValue(version.id) === selectedSetId) ?? null;
+  const selectedValue = selectedMeta
+    ? metaValue(selectedMeta.id)
+    : selectedLibrary
+      ? libraryValue(selectedLibrary.id)
+      : "";
+  const loading = metaLoading || libraryLoading;
+  const hasOptions = presets.length > 0 || versions.length > 0;
+  const placeholder = !speciesId
+    ? "Elige un Pokémon"
+    : loading && !hasOptions
+      ? "Cargando sets…"
+      : hasOptions
+        ? "Personalizado"
+        : "Sin sets disponibles";
+  const selectedDetails = selectedMeta
+    ? `${selectedMeta.item} · ${selectedMeta.ability} · ${selectedMeta.nature} · ${selectedMeta.evs || "sin SP"}`
+    : selectedLibrary
+      ? `${versionLabel(selectedLibrary)} · ${selectedLibrary.set.item || "sin objeto"} · ${selectedLibrary.set.ability} · ${selectedLibrary.set.nature} · ${selectedLibrary.set.evs || "sin SP"}`
+      : "";
+
+  function chooseSet(value: string) {
+    if (value.startsWith(META_VALUE_PREFIX)) {
+      const preset = presets.find((entry) => metaValue(entry.id) === value);
+      if (preset) onLoadMeta(preset, false);
+      return;
+    }
+
+    const version = versions.find((entry) => libraryValue(entry.id) === value);
+    if (version) onLoadLibrary(version.set, value);
+  }
 
   return (
     <div className="grid min-w-0 content-start gap-2">
-      <Label>Set rival</Label>
-      <Select
-        value={selected?.id ?? "custom"}
-        disabled={!speciesId || !presets.length}
-        onValueChange={(value) => {
-          const preset = presets.find((entry) => entry.id === value);
-          if (preset) onLoad(preset, false);
-        }}
-      >
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <Label>Set rival</Label>
+        {loading ? <Loader2 className="size-3 shrink-0 animate-spin text-slate-600" /> : hasOptions ? <span className="shrink-0 text-[9px] text-slate-600">{presets.length} meta · {versions.length} propios</span> : null}
+      </div>
+      <Select value={selectedValue} disabled={!speciesId || !hasOptions} onValueChange={chooseSet}>
         <SelectTrigger className="w-full border-white/10 bg-white/4">
-          <SelectValue />
+          <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="custom" disabled>{presets.length ? "Personalizado" : disabledLabel}</SelectItem>
-          {presets.map((preset) => (
-            <SelectItem key={preset.id} value={preset.id}>
-              {preset.rank === 1 ? "★ " : ""}#{preset.rank} {preset.label} · {presetHint(preset, primary)}
-            </SelectItem>
-          ))}
+          {presets.length ? (
+            <SelectGroup>
+              <SelectLabel className="text-[9px] font-black uppercase tracking-[0.12em] text-cyan-300/60">Meta estimado</SelectLabel>
+              {presets.map((preset) => (
+                <SelectItem key={metaValue(preset.id)} value={metaValue(preset.id)}>
+                  {preset.rank === 1 ? "★ " : ""}#{preset.rank} Meta · {presetHint(preset, primary)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          ) : null}
+          {presets.length && versions.length ? <SelectSeparator /> : null}
+          {versions.length ? (
+            <SelectGroup>
+              <SelectLabel className="text-[9px] font-black uppercase tracking-[0.12em] text-violet-300/60">Mis sets guardados</SelectLabel>
+              {versions.map((version) => (
+                <SelectItem key={libraryValue(version.id)} value={libraryValue(version.id)}>
+                  {versionLabel(version)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          ) : null}
         </SelectContent>
       </Select>
-      {selected ? (
-        <p className="line-clamp-2 text-[9px] leading-4 text-slate-500">
-          {selected.item} · {selected.ability} · {selected.nature} · {selected.evs || "sin SP"}
-        </p>
-      ) : null}
+      {selectedDetails ? <p className="line-clamp-2 text-[9px] leading-4 text-slate-500">{selectedDetails}</p> : null}
     </div>
   );
 }

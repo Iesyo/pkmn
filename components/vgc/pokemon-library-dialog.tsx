@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toId } from "@/lib/pokemon-data";
 import type { PokemonSet } from "@/lib/types";
 
-interface PokemonLibrarySource {
+export interface PokemonLibrarySource {
   teamId: string;
   teamName: string;
   teamVersionId: string;
@@ -16,7 +16,7 @@ interface PokemonLibrarySource {
   slot: number;
 }
 
-interface PokemonLibraryVersion {
+export interface PokemonLibraryVersion {
   id: string;
   version: number;
   paste: string;
@@ -25,7 +25,7 @@ interface PokemonLibraryVersion {
   sources: PokemonLibrarySource[];
 }
 
-interface PokemonLibraryEntry {
+export interface PokemonLibraryEntry {
   id: string;
   species: string;
   format: string;
@@ -48,21 +48,34 @@ type LibraryState = {
   entries: PokemonLibraryEntry[];
 };
 
+const libraryRequests = new Map<string, Promise<PokemonLibraryEntry[]>>();
+
+export function loadPokemonLibraryEntries(format: string) {
+  const pending = libraryRequests.get(format);
+  if (pending) return pending;
+
+  const request = fetch(`/api/pokemon-library?format=${encodeURIComponent(format)}`, { cache: "no-store" })
+    .then(async (response) => {
+      const payload = (await response.json()) as { pokemon?: PokemonLibraryEntry[] };
+      return response.ok ? payload.pokemon ?? [] : [];
+    })
+    .catch(() => [])
+    .finally(() => {
+      libraryRequests.delete(format);
+    });
+  libraryRequests.set(format, request);
+  return request;
+}
+
 export function PokemonLibraryVersionSelect({ species, format, onLoad }: PokemonLibraryVersionSelectProps) {
   const [library, setLibrary] = useState<LibraryState>({ format: "", entries: [] });
 
   useEffect(() => {
     let active = true;
 
-    fetch(`/api/pokemon-library?format=${encodeURIComponent(format)}`, { cache: "no-store" })
-      .then(async (response) => {
-        const payload = (await response.json()) as { pokemon?: PokemonLibraryEntry[] };
-        if (!active) return;
-        setLibrary({ format, entries: response.ok ? payload.pokemon ?? [] : [] });
-      })
-      .catch(() => {
-        if (active) setLibrary({ format, entries: [] });
-      });
+    loadPokemonLibraryEntries(format).then((entries) => {
+      if (active) setLibrary({ format, entries });
+    });
 
     return () => {
       active = false;

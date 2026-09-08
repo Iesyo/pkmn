@@ -45,7 +45,7 @@ test("shares the configured rival across all six own Pokémon", async () => {
   assert.ok(source.includes("rivalSession={sharedRival}"));
   assert.ok(source.includes("setSharedRival({"));
   assert.ok(source.includes("right: nextSession.right"));
-  assert.ok(source.includes("opponentMetaPresetId: nextSession.opponentMetaPresetId"));
+  assert.ok(source.includes("opponentSetSelectionId: nextSession.opponentSetSelectionId"));
 });
 
 test("keeps import and export dialogs fixed while the paste scrolls internally", async () => {

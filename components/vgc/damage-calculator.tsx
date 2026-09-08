@@ -54,10 +54,10 @@ export type DamageCalculatorSession = {
   left: DamagePokemonDraft;
   right: DamagePokemonDraft;
   field: DamageFieldState;
-  opponentMetaPresetId: string | null;
+  opponentSetSelectionId: string | null;
 };
 
-export type DamageCalculatorRivalSession = Pick<DamageCalculatorSession, "right" | "opponentMetaPresetId">;
+export type DamageCalculatorRivalSession = Pick<DamageCalculatorSession, "right" | "opponentSetSelectionId">;
 
 type DamageCalculatorProps = {
   source: PokemonSet;
@@ -160,11 +160,11 @@ function CalculatorPokemonPanel({
   tailwind,
   showGender,
   autoLoadMetaOnMount,
-  selectedMetaPresetId,
+  selectedOpponentSetId,
 }: {
   side: "left" | "right";
   draft: DamagePokemonDraft;
-  onChange: (next: DamagePokemonDraft, opponentMetaPresetId?: string | null) => void;
+  onChange: (next: DamagePokemonDraft, opponentSetSelectionId?: string | null) => void;
   format: string;
   dex: ShowdownSnapshot;
   mechanics: BattleMechanic[];
@@ -174,7 +174,7 @@ function CalculatorPokemonPanel({
   tailwind: boolean;
   showGender: boolean;
   autoLoadMetaOnMount: boolean;
-  selectedMetaPresetId: string | null;
+  selectedOpponentSetId: string | null;
 }) {
   const set = draft.set;
   const manualMetaEditCountRef = useRef(0);
@@ -196,25 +196,30 @@ function CalculatorPokemonPanel({
 
   function updateSet(
     next: PokemonSet,
-    origin: "manual" | "species" | "meta" = "manual",
-    metaPresetId?: string,
+    origin: "manual" | "species" | "meta" | "library" = "manual",
+    setSelectionId?: string,
   ) {
     if (side === "right") {
       if (origin === "species") {
         manualMetaEditCountRef.current = 0;
-      } else if (origin === "manual") {
+      } else if (origin === "manual" || origin === "library") {
         manualMetaEditCountRef.current += 1;
       }
     }
     const nextMegaForm = mechanics.includes("mega") ? getMegaForm(next) : null;
     const abilityChanged = next.ability !== set.ability;
+    const nextSelectionId = side !== "right"
+      ? undefined
+      : origin === "meta" || origin === "library"
+        ? setSelectionId ?? null
+        : null;
     onChange({
       ...draft,
       set: next,
       megaActive: draft.megaActive && Boolean(nextMegaForm),
       abilityOn: abilityChanged ? false : Boolean(draft.abilityOn),
       alliesFainted: abilityChanged && next.ability !== "Supreme Overlord" ? 0 : draft.alliesFainted ?? 0,
-    }, side === "right" ? (origin === "meta" ? metaPresetId ?? null : null) : undefined);
+    }, nextSelectionId);
   }
 
   function chooseSpecies(value: string | null) {
@@ -233,7 +238,7 @@ function CalculatorPokemonPanel({
     }, "species");
   }
 
-  function chooseLibraryVersion(librarySet: PokemonSet) {
+  function chooseLibraryVersion(librarySet: PokemonSet, setSelectionId?: string) {
     updateSet({
       ...librarySet,
       id: set.id,
@@ -244,7 +249,7 @@ function CalculatorPokemonPanel({
         : { name: "", type: null, damaging: false, usage: 0 }),
       types: [...librarySet.types],
       performance: set.performance,
-    });
+    }, setSelectionId ? "library" : "manual", setSelectionId);
   }
 
   function chooseMove(index: number, value: string | null) {
@@ -273,7 +278,7 @@ function CalculatorPokemonPanel({
       nature: canonicalNature,
       evs: preset.evs,
       moves: canonicalMoves.map((move) => moveFromSnapshot(dex, move!, format)),
-    }, "meta", preset.id);
+    }, "meta", `meta:${preset.id}`);
   }
 
   return (
@@ -304,9 +309,11 @@ function CalculatorPokemonPanel({
           {side === "right" && format === "champions" ? (
             <OpponentMetaSetSelect
               species={set.species}
-              selectedPresetId={selectedMetaPresetId}
+              format={format}
+              selectedSetId={selectedOpponentSetId}
               autoLoadOnMount={autoLoadMetaOnMount}
-              onLoad={chooseOpponentMetaPreset}
+              onLoadMeta={chooseOpponentMetaPreset}
+              onLoadLibrary={chooseLibraryVersion}
             />
           ) : (
             <PokemonLibraryVersionSelect species={set.species} format={format} onLoad={(librarySet) => chooseLibraryVersion(librarySet)} />
@@ -574,7 +581,7 @@ function createCalculatorSession(source: PokemonSet): DamageCalculatorSession {
     left: createDamageDraft(source),
     right: createDamageDraft(source),
     field: defaultDamageField(),
-    opponentMetaPresetId: null,
+    opponentSetSelectionId: null,
   };
 }
 
@@ -594,13 +601,13 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
     updateSession({ ...session, left: next });
   }
 
-  function setRight(next: DamagePokemonDraft, opponentMetaPresetId?: string | null) {
+  function setRight(next: DamagePokemonDraft, opponentSetSelectionId?: string | null) {
     updateSession({
       ...session,
       right: next,
-      opponentMetaPresetId: opponentMetaPresetId === undefined
-        ? session.opponentMetaPresetId ?? null
-        : opponentMetaPresetId,
+      opponentSetSelectionId: opponentSetSelectionId === undefined
+        ? session.opponentSetSelectionId ?? null
+        : opponentSetSelectionId,
     });
   }
 
@@ -618,9 +625,9 @@ export function DamageCalculatorView({ source, format, dex, mechanics, session: 
   return (
     <div className="w-full min-w-0 space-y-4 p-4 text-slate-100 sm:p-5">
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_190px_minmax(0,1fr)]">
-        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} effectiveStats={effectiveStats.left} tailwind={field.left.tailwind} showGender={showGender} autoLoadMetaOnMount={false} selectedMetaPresetId={null} />
+        <CalculatorPokemonPanel side="left" draft={left} onChange={setLeft} format={format} dex={dex} mechanics={mechanics} outcomes={leftOutcomes} opponentReady={Boolean(right.set.species)} effectiveStats={effectiveStats.left} tailwind={field.left.tailwind} showGender={showGender} autoLoadMetaOnMount={false} selectedOpponentSetId={null} />
         <div className="order-first xl:order-none"><FieldPanel value={field} onChange={setField} leftName={left.set.species} rightName={right.set.species} leftSpeed={leftSpeed} rightSpeed={rightSpeed} /><div className="mt-3 hidden items-center justify-center gap-2 text-[9px] font-black uppercase tracking-[0.13em] text-slate-700 xl:flex"><ShieldCheck className="size-3.5" /><ArrowLeftRight className="size-3.5" /><Swords className="size-3.5" /></div></div>
-        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} effectiveStats={effectiveStats.right} tailwind={field.right.tailwind} showGender={showGender} autoLoadMetaOnMount={autoLoadOpponentMetaOnMount} selectedMetaPresetId={session.opponentMetaPresetId ?? null} />
+        <CalculatorPokemonPanel side="right" draft={right} onChange={setRight} format={format} dex={dex} mechanics={mechanics} outcomes={rightOutcomes} opponentReady={Boolean(left.set.species)} effectiveStats={effectiveStats.right} tailwind={field.right.tailwind} showGender={showGender} autoLoadMetaOnMount={autoLoadOpponentMetaOnMount} selectedOpponentSetId={session.opponentSetSelectionId ?? null} />
       </div>
       <OutcomeList title="Daño infligido" attacker={left.set.species} defender={right.set.species} outcomes={leftOutcomes} />
       <OutcomeList title="Daño recibido" attacker={right.set.species} defender={left.set.species} outcomes={rightOutcomes} />

@@ -363,7 +363,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
                       setCalculatorSessions((current) => ({ ...current, [calculatorSessionKey]: nextSession }));
                       setSharedRival({
                         right: nextSession.right,
-                        opponentMetaPresetId: nextSession.opponentMetaPresetId,
+                        opponentSetSelectionId: nextSession.opponentSetSelectionId,
                       });
                       setPokemon((current) => current.map((set, index) => index === selectedSlot ? { ...nextSession.left.set, id: set.id, slot: set.slot } : set));
                       setMessage("");

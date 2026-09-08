@@ -1,4 +1,4 @@
-export const MAX_OPPONENT_META_PRESETS = 5;
+export const MAX_OPPONENT_META_PRESETS = 3;
 
 const MAX_MOVE_POOL = 7;
 const MAX_CATEGORY_OPTIONS = 3;
