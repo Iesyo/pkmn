@@ -53,6 +53,12 @@ function snapshot() {
   };
 }
 
+function showdownPaste() {
+  return ["Venusaur", "Charizard", "Garchomp", "Sylveon", "Incineroar", "Farigiraf"]
+    .map((species) => `${species} @ Leftovers\nAbility: Pressure\nLevel: 50\nTimid Nature\n- Protect\n- Tackle\n- Growl\n- Substitute`)
+    .join("\n\n");
+}
+
 test("groups real tournament teams, deduplicates pastes and orders by placement", async () => {
   const { buildTournamentScoutingResponse } = await vite.ssrLoadModule("/lib/tournament-scouting.ts");
   const result = buildTournamentScoutingResponse(snapshot(), { retrievedAt: "2026-09-08T00:00:00.000Z" });
@@ -99,19 +105,67 @@ test("serves the bundled tournament snapshot without runtime network access", as
   }
 });
 
-test("places the tournament browser in Scouting without coupling it to Team Builder", async () => {
-  const [scouting, tournamentBrowser, teamBuilder] = await Promise.all([
+test("downloads only a known tournament PokéPaste for direct import", async () => {
+  const { POST } = await vite.ssrLoadModule("/app/api/tournament-team-import/route.ts");
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  let requestedRedirect = "";
+  let fetchCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    fetchCalls += 1;
+    requestedUrl = String(input);
+    requestedRedirect = init?.redirect ?? "";
+    return new Response(showdownPaste(), { headers: { "content-type": "text/plain" } });
+  };
+
+  try {
+    const response = await POST(new Request("http://localhost/api/tournament-team-import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamId: "team-6016921c41817086" }),
+    }));
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.paste, showdownPaste());
+    assert.equal(payload.team.id, "team-6016921c41817086");
+    assert.equal(requestedUrl, "https://pokepast.es/6016921c41817086/raw");
+    assert.equal(requestedRedirect, "manual");
+    assert.equal(fetchCalls, 1);
+
+    const missingResponse = await POST(new Request("http://localhost/api/tournament-team-import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamId: "team-not-in-snapshot" }),
+    }));
+    assert.equal(missingResponse.status, 404);
+    assert.equal(fetchCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("connects tournament scouting to a new editable Team Builder draft", async () => {
+  const [scouting, tournamentBrowser, teamBuilder, dashboard] = await Promise.all([
     readFile(new URL("../components/vgc/scouting-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/tournament-scouting-browser.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(scouting, /<TournamentScoutingBrowser/);
+  assert.match(scouting, /<TournamentScoutingBrowser onImportTeam=\{onTournamentTeamImport\}/);
   assert.match(scouting, />Torneos/);
   assert.match(tournamentBrowser, /\/api\/tournament-scouting/);
+  assert.match(tournamentBrowser, /\/api\/tournament-team-import/);
   assert.match(tournamentBrowser, /content-type/);
   assert.match(tournamentBrowser, /respondió con una página en lugar del archivo de torneos/);
   assert.match(tournamentBrowser, /Buscar torneo/);
-  assert.match(tournamentBrowser, /Cada tarjeta abre el PokéPaste original/);
-  assert.doesNotMatch(teamBuilder, /TournamentScoutingBrowser|tournament-scouting/);
+  assert.match(tournamentBrowser, /Importar al Builder/);
+  assert.doesNotMatch(tournamentBrowser, />Ver equipo/);
+  assert.match(dashboard, /function importTournamentTeam\(request: TournamentTeamBuilderImport\)/);
+  assert.match(dashboard, /setActiveView\("builder"\)/);
+  assert.match(dashboard, /initialImport=\{builderImport \?\? undefined\}/);
+  assert.match(teamBuilder, /initialImport \? "" : initialVersion\?\.demo/);
+  assert.match(teamBuilder, /importado como borrador/);
+  assert.doesNotMatch(teamBuilder, /<TournamentScoutingBrowser|\/api\/tournament-team-import/);
 });

@@ -71,3 +71,15 @@ test("groups My Teams by team before choosing an exact version", async () => {
   assert.match(source, /<MyTeamsDialog groups=\{groups\} onLoad=\{loadVersion\} \/>/);
   assert.doesNotMatch(source, /<MyTeamsDialog versions=\{storedVersions\}/);
 });
+
+test("loads a tournament import as a new unsaved Builder draft", async () => {
+  const source = await readFile(builderSourceUrl, "utf8");
+
+  assert.match(source, /initialImport\?: TournamentTeamBuilderImport/);
+  assert.match(source, /cloneForBuilder\(parseShowdownPaste\(initialImport\.paste\)\)/);
+  assert.match(source, /initialImport\?\.suggestedName/);
+  assert.match(source, /const \[sourceTeamId, setSourceTeamId\] = useState\(initialImport \? ""/);
+  assert.match(source, /initialImport \? DEFAULT_BATTLE_FORMAT/);
+  assert.match(source, /initialImport \? \[\.\.\.DEFAULT_BATTLE_MECHANICS\]/);
+  assert.match(source, /importado como borrador/);
+});

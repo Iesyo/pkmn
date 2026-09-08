@@ -20,6 +20,12 @@ export interface TournamentScoutingEvent {
   teams: TournamentScoutingTeam[];
 }
 
+export interface TournamentTeamBuilderImport {
+  paste: string;
+  suggestedName: string;
+  sourceLabel: string;
+}
+
 export interface TournamentScoutingResponse {
   regulation: string;
   generatedAt: string;

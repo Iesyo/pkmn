@@ -14,9 +14,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
+import { parseShowdownPaste } from "@/lib/paste";
 import { getLegalAbilities, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
 import { analyzeTypes } from "@/lib/team-stats";
 import { BATTLE_FORMATS, DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, MECHANIC_LABELS, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
+import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 import { type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { TypeBadge } from "./type-badge";
@@ -31,6 +33,7 @@ const DamageCalculatorView = lazy(async () => {
 type BuilderProps = {
   groups: TeamGroup[];
   initialVersion?: TeamVersion;
+  initialImport?: TournamentTeamBuilderImport;
   onTeamCreated: (team: TeamGroup) => void;
   onVersionCreated: (version: TeamVersion) => void;
 };
@@ -190,12 +193,23 @@ function MyTeamsDialog({ groups, onLoad }: { groups: TeamGroup[]; onLoad: (versi
   );
 }
 
-export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCreated }: BuilderProps) {
-  const [teamName, setTeamName] = useState(initialVersion?.demo ? `${initialVersion.name} Copy` : initialVersion?.name ?? "");
-  const [sourceTeamId, setSourceTeamId] = useState(initialVersion?.demo ? "" : initialVersion?.teamId ?? "");
-  const [format, setFormat] = useState(initialVersion?.format ?? DEFAULT_BATTLE_FORMAT);
-  const [mechanics, setMechanics] = useState<BattleMechanic[]>(initialVersion?.mechanics ?? [...DEFAULT_BATTLE_MECHANICS]);
-  const [pokemon, setPokemon] = useState<PokemonSet[]>(initialVersion ? cloneForBuilder(initialVersion.pokemon) : Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1)));
+export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreated, onVersionCreated }: BuilderProps) {
+  const [initialImportState] = useState(() => {
+    if (!initialImport) return null;
+    try {
+      return { pokemon: cloneForBuilder(parseShowdownPaste(initialImport.paste)), error: "" };
+    } catch (caught) {
+      return {
+        pokemon: Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1)),
+        error: caught instanceof Error ? caught.message : "No pudimos importar el PokéPaste.",
+      };
+    }
+  });
+  const [teamName, setTeamName] = useState(initialImport?.suggestedName ?? (initialVersion?.demo ? `${initialVersion.name} Copy` : initialVersion?.name ?? ""));
+  const [sourceTeamId, setSourceTeamId] = useState(initialImport ? "" : initialVersion?.demo ? "" : initialVersion?.teamId ?? "");
+  const [format, setFormat] = useState(initialImport ? DEFAULT_BATTLE_FORMAT : initialVersion?.format ?? DEFAULT_BATTLE_FORMAT);
+  const [mechanics, setMechanics] = useState<BattleMechanic[]>(initialImport ? [...DEFAULT_BATTLE_MECHANICS] : initialVersion?.mechanics ?? [...DEFAULT_BATTLE_MECHANICS]);
+  const [pokemon, setPokemon] = useState<PokemonSet[]>(initialImportState?.pokemon ?? (initialVersion ? cloneForBuilder(initialVersion.pokemon) : Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))));
   const [selectedSlot, setSelectedSlot] = useState(0);
   const [slotRevisions, setSlotRevisions] = useState(() => Array.from({ length: 6 }, () => 0));
   const [dex, setDex] = useState<ShowdownSnapshot | null>(null);
@@ -204,8 +218,8 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [calculatorSessions, setCalculatorSessions] = useState<Record<string, DamageCalculatorSession>>({});
   const [sharedRival, setSharedRival] = useState<DamageCalculatorRivalSession | null>(null);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [message, setMessage] = useState(initialImport && !initialImportState?.error ? `${initialImport.sourceLabel} importado como borrador. Revisa el formato y guarda cuando esté listo.` : "");
+  const [error, setError] = useState(initialImportState?.error ?? "");
   const selected = pokemon[selectedSlot];
   const calculatorSessionKey = `${selected.id}:${format}:${slotRevisions[selectedSlot]}`;
   const storedVersions = groups.filter((team) => !team.versions[0]?.demo).flatMap((team) => team.versions);
@@ -269,7 +283,6 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   async function importPaste(value: string) {
     setError("");
     try {
-      const { parseShowdownPaste } = await import("@/lib/paste");
       const imported = cloneForBuilder(parseShowdownPaste(value));
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
       setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");

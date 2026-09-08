@@ -1,14 +1,7 @@
-import tournamentSnapshot from "@/data/tournament-teams-reg-m-b.json";
-import {
-  buildTournamentScoutingResponse,
-  type TournamentScoutingResponse,
-} from "@/lib/tournament-scouting";
+import type { TournamentScoutingResponse } from "@/lib/tournament-scouting";
+import { TOURNAMENT_SCOUTING_RESPONSE } from "@/lib/tournament-scouting-snapshot";
 
 export const dynamic = "force-dynamic";
-
-const tournamentResponse = buildTournamentScoutingResponse(tournamentSnapshot, {
-  retrievedAt: "2026-09-08T17:40:00.000Z",
-});
 
 function jsonResponse(response: TournamentScoutingResponse) {
   return Response.json(response, {
@@ -19,5 +12,5 @@ function jsonResponse(response: TournamentScoutingResponse) {
 }
 
 export async function GET() {
-  return jsonResponse(tournamentResponse);
+  return jsonResponse(TOURNAMENT_SCOUTING_RESPONSE);
 }

@@ -10,6 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TournamentScoutingBrowser } from "@/components/vgc/tournament-scouting-browser";
 import { getSpriteUrl } from "@/lib/pokemon-data";
+import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
 
 interface ScoutingCandidate {
@@ -81,10 +82,12 @@ export function ScoutingView({
   groups,
   initialMatchId,
   onJobStarted,
+  onTournamentTeamImport,
 }: {
   groups: TeamGroup[];
   initialMatchId?: string;
   onJobStarted: (matchId: string) => void;
+  onTournamentTeamImport: (request: TournamentTeamBuilderImport) => void;
 }) {
   const candidates = useMemo<ScoutingCandidate[]>(() => groups
     .flatMap((group) => group.versions.flatMap((version) => version.matches.map((match) => ({ match, version }))))
@@ -140,7 +143,7 @@ export function ScoutingView({
   const modeSwitcher = <ScoutingModeSwitcher mode={mode} replayCount={candidates.length} onChange={setMode} />;
 
   if (mode === "tournaments") {
-    return <div className="space-y-5">{modeSwitcher}<TournamentScoutingBrowser /></div>;
+    return <div className="space-y-5">{modeSwitcher}<TournamentScoutingBrowser onImportTeam={onTournamentTeamImport} /></div>;
   }
 
   if (!selected) {

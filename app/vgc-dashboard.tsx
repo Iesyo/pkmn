@@ -18,10 +18,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { MatchRecord, ScoutingAnalysis, TeamFolder, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
+import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 
 type ConnectionState = "checking" | "ready" | "error";
 type TeamsPayload = { teams?: TeamGroup[]; folders?: TeamFolder[] };
 type TeamOrganization = Record<string, { folderId: string | null; sortOrder: number }>;
+type PendingBuilderImport = TournamentTeamBuilderImport & { token: number };
 
 function sortFolders(folders: TeamFolder[]) {
   return [...folders].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
@@ -125,6 +127,8 @@ export function VgcDashboard() {
   const [libraryTeamId, setLibraryTeamId] = useState("");
   const [libraryVersionId, setLibraryVersionId] = useState("");
   const [builderVersionId, setBuilderVersionId] = useState("");
+  const [builderImport, setBuilderImport] = useState<PendingBuilderImport | null>(null);
+  const builderImportSequence = useRef(0);
   const [scoutingMatchId, setScoutingMatchId] = useState("");
   const [runningScoutingIds, setRunningScoutingIds] = useState<string[]>([]);
 
@@ -372,8 +376,17 @@ export function VgcDashboard() {
   }
 
   function openInBuilder(version: TeamVersion) {
+    setBuilderImport(null);
     setBuilderVersionId(version.id);
     setActiveView("builder");
+  }
+
+  function importTournamentTeam(request: TournamentTeamBuilderImport) {
+    builderImportSequence.current += 1;
+    setBuilderVersionId("");
+    setBuilderImport({ ...request, token: builderImportSequence.current });
+    setActiveView("builder");
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
   }
 
   function openScouting(_version: TeamVersion, match: MatchRecord) {
@@ -490,11 +503,11 @@ export function VgcDashboard() {
         </TabsContent>
 
         <TabsContent value="builder" forceMount className="mt-0 outline-none">
-          <TeamBuilder key={builderVersionId} groups={storedGroups} initialVersion={versions.find((version) => version.id === builderVersionId)} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
+          <TeamBuilder key={builderImport ? `tournament-${builderImport.token}` : builderVersionId} groups={storedGroups} initialVersion={versions.find((version) => version.id === builderVersionId)} initialImport={builderImport ?? undefined} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
         </TabsContent>
 
         <TabsContent value="scouting" className="mt-0 outline-none">
-          <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} />
+          <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} onTournamentTeamImport={importTournamentTeam} />
         </TabsContent>
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · datos de tipos basados en un snapshot local de Pokémon Showdown · análisis descriptivo</footer>

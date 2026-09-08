@@ -52,7 +52,7 @@ test("removes demo teams from every runtime team surface and separates team from
   assert.match(librarySection, /\{storedGroups\.length\} equipos/);
   assert.match(librarySection, /<TeamFolderSection/);
   assert.match(librarySection, /storedGroups\.filter\(\(team\) => team\.folderId === folder\.id\)/);
-  assert.match(dashboard, /<TeamBuilder key=\{builderVersionId\} groups=\{storedGroups\}/);
+  assert.match(dashboard, /<TeamBuilder key=\{builderImport \? `tournament-\$\{builderImport\.token\}` : builderVersionId\} groups=\{storedGroups\}/);
   assert.match(dashboard, /No hay Teams guardados/);
   assert.match(selector, />Equipo<\/span>/);
   assert.match(selector, />Versión<\/span>/);

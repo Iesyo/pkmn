@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, ExternalLink, RefreshCw, Trophy, Users } from "lucide-react";
+import { AlertTriangle, CalendarDays, Hammer, Loader2, RefreshCw, Trophy, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
   isTournamentScoutingResponse,
   type TournamentScoutingResponse,
   type TournamentScoutingTeam,
+  type TournamentTeamBuilderImport,
 } from "@/lib/tournament-scouting";
 
 function displayDate(value: string) {
@@ -44,7 +45,17 @@ async function readApiPayload(response: Response) {
   }
 }
 
-function TournamentTeamCard({ team }: { team: TournamentScoutingTeam }) {
+function TournamentTeamCard({
+  team,
+  importing,
+  importDisabled,
+  onImport,
+}: {
+  team: TournamentScoutingTeam;
+  importing: boolean;
+  importDisabled: boolean;
+  onImport: () => void;
+}) {
   return (
     <article className="group flex min-w-0 flex-col rounded-2xl border border-white/8 bg-slate-950/65 p-4 transition hover:border-cyan-300/20 hover:bg-slate-950/85">
       <div className="flex items-start justify-between gap-3">
@@ -55,8 +66,9 @@ function TournamentTeamCard({ team }: { team: TournamentScoutingTeam }) {
           </div>
           <p className="mt-1 text-[10px] font-semibold text-slate-500">{team.record ? `Récord ${team.record}` : "Récord no publicado"}</p>
         </div>
-        <Button asChild variant="outline" size="sm" className="shrink-0 gap-1.5 border-white/10 bg-white/3 text-[10px] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/8 hover:text-cyan-200">
-          <a href={team.pokepasteUrl} target="_blank" rel="noreferrer">Ver equipo <ExternalLink className="size-3" /></a>
+        <Button type="button" variant="outline" size="sm" disabled={importDisabled} onClick={onImport} className="shrink-0 gap-1.5 border-white/10 bg-white/3 text-[10px] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/8 hover:text-cyan-200">
+          {importing ? <Loader2 className="size-3 animate-spin" /> : <Hammer className="size-3" />}
+          {importing ? "Importando" : "Importar al Builder"}
         </Button>
       </div>
 
@@ -84,12 +96,14 @@ function TournamentLoading() {
   );
 }
 
-export function TournamentScoutingBrowser() {
+export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (request: TournamentTeamBuilderImport) => void }) {
   const [data, setData] = useState<TournamentScoutingResponse | null>(null);
   const [tournamentName, setTournamentName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
+  const [importingTeamId, setImportingTeamId] = useState("");
+  const [importError, setImportError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -122,6 +136,34 @@ export function TournamentScoutingBrowser() {
   const tournamentNames = useMemo(() => data?.tournaments.map((tournament) => tournament.name) ?? [], [data]);
   const selectedTournament = data?.tournaments.find((tournament) => tournament.name === tournamentName) ?? data?.tournaments[0];
 
+  async function importTeam(team: TournamentScoutingTeam) {
+    if (!selectedTournament || importingTeamId) return;
+    setImportingTeamId(team.id);
+    setImportError("");
+    try {
+      const response = await fetch("/api/tournament-team-import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ teamId: team.id }),
+      });
+      const payload = await readApiPayload(response);
+      if (!response.ok) throw new Error(upstreamError(payload));
+      if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
+        throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
+      }
+      const suggestedName = `${team.playerName} · ${selectedTournament.name}`.slice(0, 80);
+      onImportTeam({
+        paste: payload.paste,
+        suggestedName,
+        sourceLabel: `${team.playerName} · ${selectedTournament.name}`,
+      });
+    } catch (caught) {
+      setImportError(caught instanceof Error ? caught.message : "No pudimos importar ese equipo.");
+    } finally {
+      setImportingTeamId("");
+    }
+  }
+
   if (loading && !data) return <TournamentLoading />;
 
   if (!data) {
@@ -144,7 +186,7 @@ export function TournamentScoutingBrowser() {
             <div>
               <div className="flex items-center gap-2"><Trophy className="size-5 text-amber-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-200">Archivo de torneo</p></div>
               <h1 className="mt-2 text-2xl font-black tracking-tight text-white">Equipos reales para scouting</h1>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Selecciona un torneo y revisa los equipos públicos encontrados. Cada tarjeta abre el PokéPaste original.</p>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Selecciona un torneo y revisa los equipos públicos encontrados. Puedes importar cualquiera directamente como borrador editable.</p>
             </div>
             <div className="grid min-w-0 gap-2 lg:w-[480px]">
               <label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Torneo</label>
@@ -172,6 +214,7 @@ export function TournamentScoutingBrowser() {
       </section>
 
       {error ? <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-4 py-3 text-xs text-amber-100"><span className="flex items-center gap-2"><AlertTriangle className="size-4" />{error}</span><Button type="button" variant="ghost" size="sm" onClick={() => setReloadKey((value) => value + 1)} className="text-amber-100"><RefreshCw className="size-3.5" />Reintentar</Button></div> : null}
+      {importError ? <div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-300/15 bg-rose-300/7 px-4 py-3 text-xs text-rose-200"><AlertTriangle className="size-4" />{importError}</div> : null}
 
       <section>
         <div className="mb-3 flex items-end justify-between gap-3">
@@ -182,7 +225,7 @@ export function TournamentScoutingBrowser() {
           <span className="shrink-0 font-mono text-[10px] text-slate-600">Ordenados por puesto</span>
         </div>
         <div className="grid gap-3 xl:grid-cols-2">
-          {selectedTournament?.teams.map((team) => <TournamentTeamCard key={team.id} team={team} />)}
+          {selectedTournament?.teams.map((team) => <TournamentTeamCard key={team.id} team={team} importing={importingTeamId === team.id} importDisabled={Boolean(importingTeamId)} onImport={() => void importTeam(team)} />)}
         </div>
       </section>
 
