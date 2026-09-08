@@ -74,15 +74,13 @@ test("rejects snapshots without any complete, safe PokéPaste teams", async () =
   assert.throws(() => buildTournamentScoutingResponse({ nope: true }), /formato esperado/);
 });
 
-test("serves the tournament snapshot through a fixed cached backend route", async () => {
+test("serves the bundled tournament snapshot without runtime network access", async () => {
   const { GET } = await vite.ssrLoadModule("/app/api/tournament-scouting/route.ts");
   const originalFetch = globalThis.fetch;
-  let requestedUrl = "";
-  globalThis.fetch = async (input) => {
-    requestedUrl = String(input);
-    return new Response(JSON.stringify(snapshot()), {
-      headers: { "content-type": "application/json" },
-    });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("The bundled route must not fetch at runtime");
   };
 
   try {
@@ -90,8 +88,10 @@ test("serves the tournament snapshot through a fixed cached backend route", asyn
     const payload = await response.json();
 
     assert.equal(response.status, 200);
-    assert.equal(requestedUrl, "https://raw.githubusercontent.com/Pocolip/vs-recorder/develop/frontend/src/data/tournamentTeams-regM-B.json");
-    assert.equal(payload.tournaments[0].teams.length, 2);
+    assert.match(response.headers.get("content-type"), /application\/json/);
+    assert.equal(fetchCalls, 0);
+    assert.equal(payload.tournaments.length, 207);
+    assert.equal(payload.tournaments.reduce((total, tournament) => total + tournament.teams.length, 0), 621);
     assert.equal(payload.stale, false);
     assert.match(response.headers.get("cache-control"), /s-maxage=43200/);
   } finally {

@@ -55,7 +55,7 @@ verify_tournament_api() {
     "${APP_URL}/api/tournament-scouting")" || return 1
 
   case "${response_metadata}" in
-    "200 application/json"*|"502 application/json"*) return 0 ;;
+    "200 application/json"*) return 0 ;;
     *)
       printf 'Tournament API returned unexpected metadata: %s\n' "${response_metadata}" >&2
       return 1

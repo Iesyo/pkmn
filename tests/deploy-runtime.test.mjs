@@ -44,5 +44,6 @@ test("rejects an HTML fallback from the tournament API after a deployment", asyn
   assert.match(deploy, /verify_tournament_api/);
   assert.match(deploy, /\/api\/tournament-scouting/);
   assert.match(deploy, /%\{http_code\} %\{content_type\}/);
-  assert.match(deploy, /"200 application\/json"\*\|"502 application\/json"\*/);
+  assert.match(deploy, /"200 application\/json"\*\) return 0/);
+  assert.doesNotMatch(deploy, /"502 application\/json"/);
 });
