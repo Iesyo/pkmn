@@ -6,6 +6,7 @@ const serviceUrl = new URL("../deploy/pkmn.service", import.meta.url);
 const buildScriptUrl = new URL("../scripts/build-verified.sh", import.meta.url);
 const viteConfigUrl = new URL("../vite.config.ts", import.meta.url);
 const sitesHostingConfigUrl = new URL("../.openai/hosting.json", import.meta.url);
+const deployScriptUrl = new URL("../deploy/pkmdeploy.sh", import.meta.url);
 
 test("keeps the production runtime read-only except for Vite config scratch", async () => {
   const service = await readFile(serviceUrl, "utf8");
@@ -35,4 +36,13 @@ test("keeps the VPS build independent from Sites project metadata", async () => 
   await assert.rejects(readFile(sitesHostingConfigUrl, "utf8"), { code: "ENOENT" });
   assert.doesNotMatch(viteConfig, /\.openai\/hosting\.json/);
   assert.match(viteConfig, /const D1_BINDING = "DB"/);
+});
+
+test("rejects an HTML fallback from the tournament API after a deployment", async () => {
+  const deploy = await readFile(deployScriptUrl, "utf8");
+
+  assert.match(deploy, /verify_tournament_api/);
+  assert.match(deploy, /\/api\/tournament-scouting/);
+  assert.match(deploy, /%\{http_code\} %\{content_type\}/);
+  assert.match(deploy, /"200 application\/json"\*\|"502 application\/json"\*/);
 });

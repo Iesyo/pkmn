@@ -48,6 +48,21 @@ wait_for_app() {
   return 1
 }
 
+verify_tournament_api() {
+  local response_metadata
+  response_metadata="$(curl --silent --show-error --output /dev/null \
+    --write-out '%{http_code} %{content_type}' \
+    "${APP_URL}/api/tournament-scouting")" || return 1
+
+  case "${response_metadata}" in
+    "200 application/json"*|"502 application/json"*) return 0 ;;
+    *)
+      printf 'Tournament API returned unexpected metadata: %s\n' "${response_metadata}" >&2
+      return 1
+      ;;
+  esac
+}
+
 run_as_app() {
   runuser -u "${APP_USER}" -- env \
     CI=1 \
@@ -250,6 +265,10 @@ main() {
 
   printf '[8/9] Verifying page and D1-backed API health...\n'
   wait_for_app || {
+    journalctl -u "${APP_SERVICE}" --no-pager -n 100 >&2
+    return 1
+  }
+  verify_tournament_api || {
     journalctl -u "${APP_SERVICE}" --no-pager -n 100 >&2
     return 1
   }

@@ -31,6 +31,19 @@ function upstreamError(payload: unknown) {
   return "No pudimos cargar los torneos ahora.";
 }
 
+async function readApiPayload(response: Response) {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  const body = await response.text();
+  if (!contentType.includes("json")) {
+    throw new Error("El servidor respondió con una página en lugar del archivo de torneos. Recarga la aplicación e inténtalo nuevamente.");
+  }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new Error("El servidor devolvió un archivo de torneos incompleto. Inténtalo nuevamente.");
+  }
+}
+
 function TournamentTeamCard({ team }: { team: TournamentScoutingTeam }) {
   return (
     <article className="group flex min-w-0 flex-col rounded-2xl border border-white/8 bg-slate-950/65 p-4 transition hover:border-cyan-300/20 hover:bg-slate-950/85">
@@ -84,11 +97,11 @@ export function TournamentScoutingBrowser() {
       setLoading(true);
       setError("");
       try {
-        const response = await fetch("/api/scouting/tournaments", {
+        const response = await fetch("/api/tournament-scouting", {
           cache: "no-store",
           signal: controller.signal,
         });
-        const payload = await response.json() as unknown;
+        const payload = await readApiPayload(response);
         if (!response.ok) throw new Error(upstreamError(payload));
         if (!isTournamentScoutingResponse(payload)) throw new Error("Los torneos llegaron en un formato inesperado.");
         setData(payload);

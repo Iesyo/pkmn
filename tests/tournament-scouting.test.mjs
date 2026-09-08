@@ -75,7 +75,7 @@ test("rejects snapshots without any complete, safe PokéPaste teams", async () =
 });
 
 test("serves the tournament snapshot through a fixed cached backend route", async () => {
-  const { GET } = await vite.ssrLoadModule("/app/api/scouting/tournaments/route.ts");
+  const { GET } = await vite.ssrLoadModule("/app/api/tournament-scouting/route.ts");
   const originalFetch = globalThis.fetch;
   let requestedUrl = "";
   globalThis.fetch = async (input) => {
@@ -108,8 +108,10 @@ test("places the tournament browser in Scouting without coupling it to Team Buil
 
   assert.match(scouting, /<TournamentScoutingBrowser/);
   assert.match(scouting, />Torneos/);
-  assert.match(tournamentBrowser, /\/api\/scouting\/tournaments/);
+  assert.match(tournamentBrowser, /\/api\/tournament-scouting/);
+  assert.match(tournamentBrowser, /content-type/);
+  assert.match(tournamentBrowser, /respondió con una página en lugar del archivo de torneos/);
   assert.match(tournamentBrowser, /Buscar torneo/);
   assert.match(tournamentBrowser, /Cada tarjeta abre el PokéPaste original/);
-  assert.doesNotMatch(teamBuilder, /TournamentScoutingBrowser|scouting\/tournaments/);
+  assert.doesNotMatch(teamBuilder, /TournamentScoutingBrowser|tournament-scouting/);
 });
