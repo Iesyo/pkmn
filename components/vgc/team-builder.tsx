@@ -21,7 +21,7 @@ import { type BattleMechanic, type PokemonSet, type TeamGroup, type TeamVersion 
 import { cn } from "@/lib/utils";
 import { TypeBadge } from "./type-badge";
 import { PokemonLibraryDialog } from "./pokemon-library-dialog";
-import type { DamageCalculatorSession } from "./damage-calculator";
+import type { DamageCalculatorRivalSession, DamageCalculatorSession } from "./damage-calculator";
 
 const DamageCalculatorView = lazy(async () => {
   const calculator = await import("./damage-calculator");
@@ -202,6 +202,7 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
   const [dexError, setDexError] = useState("");
   const [refreshingDex, setRefreshingDex] = useState(false);
   const [calculatorSessions, setCalculatorSessions] = useState<Record<string, DamageCalculatorSession>>({});
+  const [sharedRival, setSharedRival] = useState<DamageCalculatorRivalSession | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -227,11 +228,11 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setSlotRevisions((current) => current.map((revision) => revision + 1)); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
-    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setCalculatorSessions({}); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage(""); setError("");
+    setTeamName(""); setSourceTeamId(""); setFormat(DEFAULT_BATTLE_FORMAT); setMechanics([...DEFAULT_BATTLE_MECHANICS]); setPokemon(Array.from({ length: 6 }, (_, index) => emptyPokemon(index + 1))); setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage(""); setError("");
   }
 
   function clearSlot(index: number) {
@@ -271,14 +272,14 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
       const { parseShowdownPaste } = await import("@/lib/paste");
       const imported = cloneForBuilder(parseShowdownPaste(value));
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
-      setSelectedSlot(0); setCalculatorSessions({}); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
+      setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
 
   function changeFormat(nextFormat: string) {
     const previousRules = getStatRules(format);
     const nextRules = getStatRules(nextFormat);
-    setFormat(nextFormat); setCalculatorSessions({});
+    setFormat(nextFormat); setCalculatorSessions({}); setSharedRival(null);
     if (nextFormat !== "custom") setMechanics(mechanicsForFormat(nextFormat));
     if (previousRules.totalMax !== nextRules.totalMax) {
       setPokemon((current) => current.map((set) => ({ ...set, evs: "" })));
@@ -357,8 +358,13 @@ export function TeamBuilder({ groups, initialVersion, onTeamCreated, onVersionCr
                     dex={dex}
                     mechanics={mechanics}
                     session={calculatorSessions[calculatorSessionKey]}
+                    rivalSession={sharedRival}
                     onSessionChange={(nextSession) => {
                       setCalculatorSessions((current) => ({ ...current, [calculatorSessionKey]: nextSession }));
+                      setSharedRival({
+                        right: nextSession.right,
+                        opponentMetaPresetId: nextSession.opponentMetaPresetId,
+                      });
                       setPokemon((current) => current.map((set, index) => index === selectedSlot ? { ...nextSession.left.set, id: set.id, slot: set.slot } : set));
                       setMessage("");
                     }}

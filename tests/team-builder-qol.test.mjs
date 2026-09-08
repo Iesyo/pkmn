@@ -37,6 +37,17 @@ test("resetting a slot also resets its calculator session", async () => {
   assert.match(source, /currentIndex === index \? revision \+ 1 : revision/);
 });
 
+test("shares the configured rival across all six own Pokémon", async () => {
+  const source = await readFile(builderSourceUrl, "utf8");
+
+  assert.ok(source.includes("DamageCalculatorRivalSession"));
+  assert.ok(source.includes("const [sharedRival, setSharedRival]"));
+  assert.ok(source.includes("rivalSession={sharedRival}"));
+  assert.ok(source.includes("setSharedRival({"));
+  assert.ok(source.includes("right: nextSession.right"));
+  assert.ok(source.includes("opponentMetaPresetId: nextSession.opponentMetaPresetId"));
+});
+
 test("keeps import and export dialogs fixed while the paste scrolls internally", async () => {
   const source = await readFile(builderSourceUrl, "utf8");
 

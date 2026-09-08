@@ -382,7 +382,7 @@ test("uses the integrated calculator as the only Team Builder editor", async () 
   assert.doesNotMatch(calculatorSource, /<Label>Boosts<\/Label>/);
 });
 
-test("keeps calculator drafts per Pokémon with one page scroll and inline damage", async () => {
+test("keeps own drafts per Pokémon while sharing one fixed rival", async () => {
   const [builderSource, calculatorSource, statEditorSource] = await Promise.all([
     readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/damage-calculator.tsx", import.meta.url), "utf8"),
@@ -391,10 +391,17 @@ test("keeps calculator drafts per Pokémon with one page scroll and inline damag
 
   assert.match(builderSource, /calculatorSessions/);
   assert.match(builderSource, /const calculatorSessionKey = `\$\{selected\.id\}:\$\{format\}:\$\{slotRevisions\[selectedSlot\]\}`/);
+  assert.match(builderSource, /const \[sharedRival, setSharedRival\]/);
   assert.match(builderSource, /session=\{calculatorSessions\[calculatorSessionKey\]\}/);
+  assert.match(builderSource, /rivalSession=\{sharedRival\}/);
+  assert.match(builderSource, /right: nextSession\.right/);
+  assert.match(builderSource, /opponentMetaPresetId: nextSession\.opponentMetaPresetId/);
   assert.match(builderSource, /onSessionChange=/);
   assert.match(builderSource, /\.\.\.nextSession\.left\.set/);
   assert.match(calculatorSource, /export type DamageCalculatorSession/);
+  assert.match(calculatorSource, /export type DamageCalculatorRivalSession/);
+  assert.match(calculatorSource, /opponentMetaPresetId: string \| null/);
+  assert.match(calculatorSource, /const session = rivalSession \? \{ \.\.\.baseSession, \.\.\.rivalSession \} : baseSession/);
   assert.doesNotMatch(calculatorSource, /Modo Pro · Calculadora de daño/);
   assert.doesNotMatch(calculatorSource, /Vista integrada/);
   assert.ok(calculatorSource.lastIndexOf("<CalculatorPokemonPanel") < calculatorSource.lastIndexOf("<OutcomeList"));
