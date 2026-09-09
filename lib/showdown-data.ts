@@ -1,5 +1,11 @@
 import { Pokemon } from "@smogon/calc";
 
+import {
+  CHAMPIONS_M_C_MEGA_ABILITIES,
+  CHAMPIONS_REGULATION_CACHE_ID,
+  SHOWDOWN_SNAPSHOT_SCHEMA,
+  assertChampionsRegulationSnapshot,
+} from "./champions-regulation.mjs";
 import type { MoveSet, PokemonSet, PokemonType } from "./types";
 import { toId } from "./pokemon-data";
 
@@ -58,6 +64,9 @@ export interface ShowdownSnapshot {
     captured: string;
     format: string;
     schema?: number;
+    regulation?: string;
+    regulationStartedAt?: string;
+    sourceRevision?: string;
     urls: Record<string, string>;
   };
   formats: Record<string, string[]>;
@@ -75,7 +84,7 @@ const MOVE_EFFECT_KEYS = [
   "stealsBoosts", "thawsTarget",
 ] as const;
 
-function validateSnapshot(value: unknown): ShowdownSnapshot {
+export function validateSnapshot(value: unknown): ShowdownSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("La Pokédex de Pokémon Showdown tiene un formato inválido.");
   }
@@ -90,7 +99,7 @@ function validateSnapshot(value: unknown): ShowdownSnapshot {
   ) {
     throw new Error("La Pokédex de Pokémon Showdown está incompleta.");
   }
-  return {
+  const normalized = {
     ...snapshot,
     metadata: {
       ...snapshot.metadata,
@@ -98,6 +107,8 @@ function validateSnapshot(value: unknown): ShowdownSnapshot {
     },
     abilities: snapshot.abilities ?? {},
   } as ShowdownSnapshot;
+  assertChampionsRegulationSnapshot(normalized);
+  return normalized;
 }
 
 async function decodeSnapshotResponse(response: Response) {
@@ -140,7 +151,10 @@ export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean 
     // The bundled snapshot remains the safe fallback if D1 is unavailable.
   }
 
-  const response = await fetch("/data/showdown-dex.json.gz?schema=3", { cache: "force-cache" });
+  const response = await fetch(
+    `/data/showdown-dex.json.gz?schema=${SHOWDOWN_SNAPSHOT_SCHEMA}&regulation=${CHAMPIONS_REGULATION_CACHE_ID}`,
+    { cache: "force-cache" },
+  );
   if (!response.ok) throw new Error("No pudimos cargar la Pokédex de Pokémon Showdown.");
   return decodeSnapshotResponse(response);
 }
@@ -172,9 +186,25 @@ function championsEngineSpecies(speciesName: string): ShowdownSpecies | null {
   }
 }
 
-export function getSpecies(snapshot: ShowdownSnapshot | null, value: string) {
+function applySpeciesFormat(species: ShowdownSpecies, format?: string): ShowdownSpecies {
+  if (format !== "champions" || !species.championsOverride) return species;
+  const override = species.championsOverride;
+  const abilities = override.abilities && typeof override.abilities === "object" && !Array.isArray(override.abilities)
+    ? [...new Set(Object.values(override.abilities).filter((ability): ability is string => typeof ability === "string"))]
+    : species.abilities;
+  return {
+    ...species,
+    types: Array.isArray(override.types) ? override.types as PokemonType[] : species.types,
+    baseStats: override.baseStats && typeof override.baseStats === "object" && !Array.isArray(override.baseStats)
+      ? override.baseStats as BaseStats
+      : species.baseStats,
+    abilities,
+  };
+}
+
+export function getSpecies(snapshot: ShowdownSnapshot | null, value: string, format?: string) {
   const species = snapshot?.species[toId(value)] ?? null;
-  if (species) return species;
+  if (species) return applySpeciesFormat(species, format);
   return isMegaBattleForm(value) ? championsEngineSpecies(value) : null;
 }
 
@@ -205,7 +235,7 @@ function inheritedSpeciesData<T>(
 }
 
 export function getLegalMoveIds(snapshot: ShowdownSnapshot | null, speciesName: string, format: string) {
-  const species = getSpecies(snapshot, speciesName);
+  const species = getSpecies(snapshot, speciesName, format);
   if (!snapshot || !species) return [];
   if (format === "champions") {
     return inheritedSpeciesData(snapshot, species, (entry) => entry.championsMoves, (moves) => moves.length > 0);
@@ -245,11 +275,13 @@ function championsEngineAbility(speciesName: string) {
 }
 
 export function getLegalAbilities(snapshot: ShowdownSnapshot | null, speciesName: string, format?: string) {
-  const species = getSpecies(snapshot, speciesName);
+  const species = getSpecies(snapshot, speciesName, format);
   if (!species) return [];
   const champions = championAbilityNames(species);
   if (format === "champions") {
     const engineAbility = championsEngineAbility(species.name);
+    const regulationAbilities = CHAMPIONS_M_C_MEGA_ABILITIES[species.name];
+    if (isMegaBattleForm(species.name) && regulationAbilities?.length) return [...regulationAbilities];
     if (isMegaBattleForm(species.name) && engineAbility) return [engineAbility];
     if (champions.length) return champions;
     if (engineAbility && !species.abilities.includes(engineAbility)) return [engineAbility];
@@ -336,7 +368,7 @@ export function moveFromSnapshot(snapshot: ShowdownSnapshot | null, name: string
 }
 
 export function hydrateSetFromSnapshot(snapshot: ShowdownSnapshot, set: PokemonSet, format?: string): PokemonSet {
-  const species = getSpecies(snapshot, set.species);
+  const species = getSpecies(snapshot, set.species, format);
   if (!species) return set;
   return {
     ...set,

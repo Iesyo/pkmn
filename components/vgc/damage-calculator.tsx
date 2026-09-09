@@ -179,11 +179,11 @@ function CalculatorPokemonPanel({
   const set = draft.set;
   const manualMetaEditCountRef = useRef(0);
   const speciesOptions = useMemo(() => getSpeciesOptions(dex, format), [dex, format]);
-  const selectedSpecies = getSpecies(dex, set.species);
+  const selectedSpecies = getSpecies(dex, set.species, format);
   const megaForm = mechanics.includes("mega") ? getMegaForm(set) : null;
   const megaActive = Boolean(megaForm && draft.megaActive);
   const battleSpeciesName = megaActive ? megaForm! : set.species;
-  const battleSpecies = getSpecies(dex, battleSpeciesName) ?? selectedSpecies;
+  const battleSpecies = getSpecies(dex, battleSpeciesName, format) ?? selectedSpecies;
   const displayTypes = megaActive ? battleSpecies?.types ?? set.types : set.types;
   const legalMoves = useMemo(() => getLegalMoves(dex, set.species, format), [dex, set.species, format]);
   const legalItems = useMemo(() => getLegalItems(dex, format), [dex, format]);
@@ -223,7 +223,7 @@ function CalculatorPokemonPanel({
   }
 
   function chooseSpecies(value: string | null) {
-    const nextSpecies = value ? getSpecies(dex, value) : null;
+    const nextSpecies = value ? getSpecies(dex, value, format) : null;
     if (!nextSpecies) return;
     updateSet({
       ...set,

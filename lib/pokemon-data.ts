@@ -2,7 +2,7 @@ import type { PokemonType } from "./types";
 
 export const SHOWDOWN_SNAPSHOT = {
   source: "Pokémon Showdown data",
-  label: "snapshot 2026-08",
+  label: "Regulación M-C · snapshot 2026-09",
   url: "https://github.com/smogon/pokemon-showdown/tree/master/data",
 } as const;
 

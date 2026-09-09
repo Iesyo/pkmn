@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { gunzipSync } from "node:zlib";
 
+import {
+  CHAMPIONS_REGULATION,
+  CHAMPIONS_REQUIRED_ITEM_IDS,
+  CHAMPIONS_REQUIRED_SPECIES_IDS,
+  SHOWDOWN_SNAPSHOT_SCHEMA,
+  assertChampionsRegulationSnapshot,
+} from "../lib/champions-regulation.mjs";
 import {
   buildShowdownSnapshot,
   parseEs3Export,
@@ -12,6 +20,8 @@ const clientUrl = new URL("../lib/showdown-data.ts", import.meta.url);
 const storageUrl = new URL("../db/showdown-snapshot.ts", import.meta.url);
 const routeUrl = new URL("../app/api/showdown-data/route.ts", import.meta.url);
 const scriptUrl = new URL("../scripts/update-showdown-data.mjs", import.meta.url);
+const checkoutScriptUrl = new URL("../scripts/update-showdown-data-from-checkout.mjs", import.meta.url);
+const snapshotUrl = new URL("../public/data/showdown-dex.json.gz", import.meta.url);
 const pokemonCardUrl = new URL("../components/vgc/pokemon-card.tsx", import.meta.url);
 const techHintUrl = new URL("../components/vgc/showdown-tech-hint.tsx", import.meta.url);
 
@@ -99,7 +109,8 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   };
 
   const snapshot = await buildShowdownSnapshot(fetcher);
-  assert.equal(snapshot.metadata.schema, 3);
+  assert.equal(snapshot.metadata.schema, SHOWDOWN_SNAPSHOT_SCHEMA);
+  assert.equal(snapshot.metadata.regulation, "M-B");
   assert.equal(snapshot.species.pikachu.name, "Pikachu");
   assert.deepEqual(snapshot.species.pikachu.types, ["Electric"]);
   assert.deepEqual(snapshot.species.pikachu.championsOverride.types, ["Electric", "Fairy"]);
@@ -126,27 +137,52 @@ test("builds a normalized rich snapshot from fetched Showdown sources", async ()
   assert.deepEqual(snapshot.formats.champions, ["pikachu"]);
 });
 
-test("wires runtime refresh through the server and persists compressed rich data in D1", async () => {
-  const [client, storage, route, script] = await Promise.all([
+test("ships the complete M-C legality delta and rejects a regressive snapshot", async () => {
+  const compressed = await readFile(snapshotUrl);
+  const snapshot = JSON.parse(gunzipSync(compressed).toString("utf8"));
+
+  assert.doesNotThrow(() => assertChampionsRegulationSnapshot(snapshot));
+  assert.equal(snapshot.metadata.regulation, CHAMPIONS_REGULATION);
+  assert.equal(snapshot.metadata.schema, SHOWDOWN_SNAPSHOT_SCHEMA);
+  assert.match(snapshot.metadata.sourceRevision, /^[a-f0-9]{40}$/);
+  assert.equal(snapshot.formats.champions.length, 351);
+  assert.equal(snapshot.itemFormats.champions.length, 166);
+  assert.ok(CHAMPIONS_REQUIRED_SPECIES_IDS.every((id) => snapshot.formats.champions.includes(id)));
+  assert.ok(CHAMPIONS_REQUIRED_ITEM_IDS.every((id) => snapshot.itemFormats.champions.includes(id)));
+  assert.deepEqual(snapshot.species.golisopodmega.championsOverride.abilities, { 0: "Tough Claws" });
+  assert.deepEqual(snapshot.species.lucariomegaz.championsOverride.abilities, { 0: "Aura Guard" });
+
+  const regressed = structuredClone(snapshot);
+  regressed.formats.champions = regressed.formats.champions.filter((id) => id !== "pawmot");
+  assert.throws(() => assertChampionsRegulationSnapshot(regressed), /pawmot/);
+});
+
+test("wires regulation-scoped refresh through the server and D1", async () => {
+  const [client, storage, route, script, checkoutScript] = await Promise.all([
     readFile(clientUrl, "utf8"),
     readFile(storageUrl, "utf8"),
     readFile(routeUrl, "utf8"),
     readFile(scriptUrl, "utf8"),
+    readFile(checkoutScriptUrl, "utf8"),
   ]);
 
   assert.ok(client.includes('fetch("/api/showdown-data"'));
   assert.ok(client.includes('method: "POST"'));
-  assert.ok(client.includes('fetch("/data/showdown-dex.json.gz?schema=3"'));
+  assert.ok(client.includes("regulation=${CHAMPIONS_REGULATION_CACHE_ID}"));
   assert.ok(client.includes("abilities: snapshot.abilities ?? {}"));
   assert.ok(client.includes("getMoveData"));
   assert.ok(client.includes("getAbilityData"));
   assert.ok(client.includes('format !== "champions"'));
-  assert.ok(storage.includes("showdown_snapshot_gzip_base64_v1"));
+  assert.ok(storage.includes("showdown_snapshot_gzip_base64_v2_"));
+  assert.ok(storage.includes("assertChampionsRegulationSnapshot(snapshot)"));
   assert.ok(storage.includes('new CompressionStream("gzip")'));
   assert.ok(storage.includes("app_settings"));
   assert.ok(route.includes("buildShowdownSnapshot"));
   assert.ok(route.includes("saveStoredShowdownSnapshot"));
   assert.ok(script.includes('from "../lib/showdown-snapshot-builder.mjs"'));
+  assert.ok(script.includes("assertChampionsRegulationSnapshot(snapshot)"));
+  assert.ok(checkoutScript.includes("CHAMPIONS_SHOWDOWN_COMMIT"));
+  assert.ok(checkoutScript.includes("assertChampionsRegulationSnapshot(snapshot)"));
   assert.ok(!script.includes('node:vm'));
 });
 

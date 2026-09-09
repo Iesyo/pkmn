@@ -69,7 +69,13 @@ Para actualizar el snapshot de Pokémon Showdown usado por el Team Builder:
 npm run data:showdown
 ```
 
-El snapshot se guarda comprimido en `public/data/showdown-dex.json.gz`, por lo que la interfaz sigue funcionando sin consultar servicios externos durante cada edición y descarga menos de 400 KB.
+Durante una transición de regulación en la que el CDN público todavía no esté actualizado, puede generarse desde un checkout oficial de `pokemon-showdown` ya compilado:
+
+```bash
+npm run data:showdown:checkout -- ../pokemon-showdown
+```
+
+Ambos caminos validan la regulación vigente antes de reemplazar el archivo. El snapshot se guarda comprimido en `public/data/showdown-dex.json.gz`, por lo que la interfaz sigue funcionando sin consultar servicios externos durante cada edición y descarga menos de 600 KB.
 
 ## Núcleo Python
 

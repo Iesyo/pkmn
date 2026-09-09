@@ -187,6 +187,7 @@ test("serves rival meta through the fixed Battle Data upstream with attribution"
 
     assert.equal(response.status, 200);
     assert.equal(requestedUrl, "https://championsbattledata.com/api/battle/Doubles/pyroar");
+    assert.equal(payload.regulation, "M-C");
     assert.equal(payload.methodology, "marginal-frequency-composite");
     assert.equal(payload.source.label, "Pokémon Champions Battle Data");
     assert.equal(payload.presets.length, 3);
@@ -199,6 +200,7 @@ test("serves rival meta through the fixed Battle Data upstream with attribution"
     );
     const unavailable = await unavailableResponse.json();
     assert.equal(unavailableResponse.status, 200);
+    assert.equal(unavailable.regulation, "M-C");
     assert.deepEqual(unavailable.presets, []);
   } finally {
     globalThis.fetch = originalFetch;
@@ -469,6 +471,8 @@ test("offers three meta presets before saved rival sets in Champions", async () 
   assert.ok(selectorSource.indexOf("Meta estimado") < selectorSource.indexOf("Mis sets guardados"));
   assert.ok(selectorSource.indexOf("presets.map") < selectorSource.indexOf("versions.map"));
   assert.match(selectorSource, /onLoadLibrary\(version\.set, value\)/);
+  assert.match(selectorSource, /opponent-meta:v4/);
+  assert.match(selectorSource, /regulation=\$\{CHAMPIONS_REGULATION_CACHE_ID\}/);
   assert.doesNotMatch(selectorSource, /Estimación estadística/);
   assert.match(calculatorSource, /Sets rivales: estimación estadística de/);
   assert.match(calculatorSource, /Pokémon Champions Battle Data/);

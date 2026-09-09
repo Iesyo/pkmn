@@ -1,3 +1,5 @@
+import { CHAMPIONS_REGULATION } from "./champions-regulation.mjs";
+
 export const MAX_OPPONENT_META_PRESETS = 3;
 
 const MAX_MOVE_POOL = 7;
@@ -48,6 +50,7 @@ export type OpponentMetaPreset = {
 export type OpponentMetaResponse = {
   pokemon: string;
   format: "Doubles";
+  regulation: typeof CHAMPIONS_REGULATION;
   season: string;
   retrievedAt: string;
   stale: boolean;
@@ -292,7 +295,13 @@ export function buildOpponentMetaPresets(payload: unknown): OpponentMetaPreset[]
 export function isOpponentMetaResponse(value: unknown): value is OpponentMetaResponse {
   const root = asRecord(value);
   if (!root || !Array.isArray(root.presets) || root.presets.length > MAX_OPPONENT_META_PRESETS) return false;
-  if (!asString(root.pokemon) || root.format !== "Doubles" || !asString(root.season) || !asString(root.retrievedAt)) return false;
+  if (
+    !asString(root.pokemon)
+    || root.format !== "Doubles"
+    || root.regulation !== CHAMPIONS_REGULATION
+    || !asString(root.season)
+    || !asString(root.retrievedAt)
+  ) return false;
   const source = asRecord(root.source);
   if (
     typeof root.stale !== "boolean"

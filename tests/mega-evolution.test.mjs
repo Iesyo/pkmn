@@ -3,6 +3,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 
+import { calculate, Field, Move, Pokemon } from "@smogon/calc";
 import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -76,8 +77,8 @@ test("Mega Stone mapping distinguishes split Mega forms", async () => {
   assert.equal(getMegaForm({ ...charizard, item: "Venusaurite" }), null);
 });
 
-test("vendored engine exposes representative Legends ZA Mega mappings", async () => {
-  const { getMegaForm } = await damageModule();
+test("vendored engine exposes every new Regulation M-C Mega mapping", async () => {
+  const { getMegaForm, resolveChampionsBattleFormAbility } = await damageModule();
   const { emptyPokemon } = await teamBuilderModule();
 
   const setFor = (species, item) => configureSet(emptyPokemon(1), {
@@ -98,6 +99,26 @@ test("vendored engine exposes representative Legends ZA Mega mappings", async ()
   assert.equal(getMegaForm(setFor("Zeraora", "Zeraorite")), "Zeraora-Mega");
   assert.equal(getMegaForm(setFor("Lucario", "Lucarionite Z")), "Lucario-Mega-Z");
   assert.equal(getMegaForm(setFor("Garchomp", "Garchompite Z")), "Garchomp-Mega-Z");
+  assert.equal(getMegaForm(setFor("Absol", "Absolite Z")), "Absol-Mega-Z");
+  assert.equal(getMegaForm(setFor("Salamence", "Salamencite")), "Salamence-Mega");
+  assert.equal(getMegaForm(setFor("Golisopod", "Golisopite")), "Golisopod-Mega");
+
+  assert.equal(resolveChampionsBattleFormAbility("Absol-Mega-Z", "Super Luck"), "Sharpness");
+  assert.equal(resolveChampionsBattleFormAbility("Lucario-Mega-Z", "Inner Focus"), "Aura Guard");
+  assert.equal(resolveChampionsBattleFormAbility("Golisopod-Mega", "Emergency Exit"), "Tough Claws");
+  assert.equal(resolveChampionsBattleFormAbility("Baxcalibur-Mega", "Ice Body"), "Ice Body");
+});
+
+test("updated Champions mechanics apply Aura Guard to contact damage", () => {
+  const attacker = new Pokemon(0, "Garchomp", { level: 50, nature: "Serious" });
+  const auraGuard = new Pokemon(0, "Lucario-Mega-Z", { level: 50, ability: "Aura Guard", nature: "Serious" });
+  const control = new Pokemon(0, "Lucario-Mega-Z", { level: 50, ability: "Inner Focus", nature: "Serious" });
+  const move = new Move(0, "Close Combat");
+  const field = new Field({ gameType: "Doubles" });
+
+  const guarded = calculate(0, attacker, auraGuard, move, field).range();
+  const unguarded = calculate(0, attacker, control, move, field).range();
+  assert.ok(guarded[1] < unguarded[0]);
 });
 
 test("Rayquaza is the no-stone exception and requires Dragon Ascent", async () => {

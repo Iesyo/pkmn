@@ -19,6 +19,7 @@ import {
   type OpponentMetaPreset,
   type OpponentMetaResponse,
 } from "@/lib/opponent-meta-presets";
+import { CHAMPIONS_REGULATION_CACHE_ID } from "@/lib/champions-regulation.mjs";
 import { toId } from "@/lib/pokemon-data";
 import type { PokemonSet } from "@/lib/types";
 import {
@@ -58,7 +59,7 @@ type LibraryState = {
 };
 
 function cacheKey(speciesId: string) {
-  return `pkmn:opponent-meta:v3:${speciesId}`;
+  return `pkmn:opponent-meta:v4:${CHAMPIONS_REGULATION_CACHE_ID}:${speciesId}`;
 }
 
 function metaValue(presetId: string) {
@@ -168,7 +169,7 @@ export function OpponentMetaSetSelect({
       else setMetaState({ speciesId, response: null, status: "loading" });
     });
 
-    void fetch(`/api/opponent-meta/${encodeURIComponent(speciesId)}`, {
+    void fetch(`/api/opponent-meta/${encodeURIComponent(speciesId)}?regulation=${CHAMPIONS_REGULATION_CACHE_ID}`, {
       headers: { accept: "application/json" },
       signal: controller.signal,
     })

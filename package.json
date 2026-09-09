@@ -13,7 +13,8 @@
     "test": "npm run build && node --test --test-concurrency=1 tests/*.test.mjs",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
-    "data:showdown": "node scripts/update-showdown-data.mjs"
+    "data:showdown": "node scripts/update-showdown-data.mjs",
+    "data:showdown:checkout": "node scripts/update-showdown-data-from-checkout.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

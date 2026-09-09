@@ -10142,7 +10142,7 @@ var ZA_PATCH = {
         types: ['Dark', 'Ghost'],
         bs: { hp: 65, at: 154, df: 60, sa: 75, sd: 60, sp: 151 },
         weightkg: 49.0,
-        abilities: { 0: 'Magic Bounce' },
+        abilities: { 0: 'Sharpness' },
         baseSpecies: 'Absol'
     },
     'Barbaracle-Mega': {
@@ -10286,7 +10286,7 @@ var ZA_PATCH = {
         types: ['Dragon'],
         bs: { hp: 108, at: 130, df: 85, sa: 141, sd: 85, sp: 151 },
         weightkg: 99.0,
-        abilities: { 0: 'Sand Force' },
+        abilities: { 0: 'Levitate' },
         baseSpecies: 'Garchomp'
     },
     'Glimmora-Mega': {
@@ -10336,7 +10336,7 @@ var ZA_PATCH = {
         types: ['Fighting', 'Steel'],
         bs: { hp: 70, at: 100, df: 70, sa: 164, sd: 70, sp: 151 },
         weightkg: 49.4,
-        abilities: { 0: 'Adaptability' },
+        abilities: { 0: 'Aura Guard' },
         baseSpecies: 'Lucario'
     },
     'Magearna-Mega': {
@@ -10500,6 +10500,7 @@ var CHAMPIONS_LIST = [
     'Abomasnow-Mega',
     'Absol',
     'Absol-Mega',
+    'Absol-Mega-Z',
     'Aegislash-Blade',
     'Aegislash-Both',
     'Aegislash-Shield',
@@ -10612,6 +10613,7 @@ var CHAMPIONS_LIST = [
     'Garbodor',
     'Garchomp',
     'Garchomp-Mega',
+    'Garchomp-Mega-Z',
     'Gardevoir',
     'Gardevoir-Mega',
     'Garganacl',
@@ -10665,6 +10667,7 @@ var CHAMPIONS_LIST = [
     'Lopunny-Mega',
     'Lucario',
     'Lucario-Mega',
+    'Lucario-Mega-Z',
     'Luxray',
     'Lycanroc',
     'Lycanroc-Dusk',

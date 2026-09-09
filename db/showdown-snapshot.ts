@@ -1,7 +1,11 @@
 import type { ShowdownSnapshot } from "@/lib/showdown-data";
+import {
+  CHAMPIONS_REGULATION_CACHE_ID,
+  assertChampionsRegulationSnapshot,
+} from "@/lib/champions-regulation.mjs";
 import { getDatabase } from "./raw";
 
-const SNAPSHOT_KEY = "showdown_snapshot_gzip_base64_v1";
+const SNAPSHOT_KEY = `showdown_snapshot_gzip_base64_v2_${CHAMPIONS_REGULATION_CACHE_ID.replace("-", "_")}`;
 const MAX_D1_VALUE_BYTES = 1_900_000;
 const BASE64_CHUNK_SIZE = 0x8000;
 
@@ -45,6 +49,7 @@ export async function getStoredShowdownSnapshotBytes() {
 }
 
 export async function saveStoredShowdownSnapshot(snapshot: ShowdownSnapshot) {
+  assertChampionsRegulationSnapshot(snapshot);
   const bytes = await gzipSnapshot(snapshot);
   const encoded = bytesToBase64(bytes);
   if (new TextEncoder().encode(encoded).byteLength > MAX_D1_VALUE_BYTES) {

@@ -69,8 +69,11 @@ export function ChampionsQuickMatchDialog({
   useEffect(() => {
     if (!open || championsSpecies.length) return;
     let active = true;
-    setLoadingSpecies(true);
-    setSpeciesError("");
+    queueMicrotask(() => {
+      if (!active) return;
+      setLoadingSpecies(true);
+      setSpeciesError("");
+    });
     loadShowdownSnapshot()
       .then((snapshot) => {
         if (!active) return;

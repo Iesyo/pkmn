@@ -2,6 +2,7 @@ import {
   buildOpponentMetaPresets,
   type OpponentMetaResponse,
 } from "@/lib/opponent-meta-presets";
+import { CHAMPIONS_REGULATION } from "@/lib/champions-regulation.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,7 @@ async function fetchMeta(id: string): Promise<OpponentMetaResponse> {
     return {
       pokemon: id,
       format: "Doubles",
+      regulation: CHAMPIONS_REGULATION,
       season: "Current",
       retrievedAt: new Date().toISOString(),
       stale: false,
@@ -77,6 +79,7 @@ async function fetchMeta(id: string): Promise<OpponentMetaResponse> {
   return {
     pokemon: pokemon || id,
     format: "Doubles",
+    regulation: CHAMPIONS_REGULATION,
     season: season || "Current",
     retrievedAt: new Date().toISOString(),
     stale: false,
@@ -103,12 +106,13 @@ export async function GET(
   }
 
   const now = Date.now();
-  const cached = responseCache.get(id);
+  const cacheId = `${CHAMPIONS_REGULATION}:${id}`;
+  const cached = responseCache.get(cacheId);
   if (cached && cached.freshUntil > now) return jsonResponse(cached.response);
 
   try {
     const response = await fetchMeta(id);
-    responseCache.set(id, {
+    responseCache.set(cacheId, {
       response,
       freshUntil: now + FRESH_CACHE_MS,
       staleUntil: now + STALE_CACHE_MS,

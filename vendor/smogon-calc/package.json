@@ -1,6 +1,6 @@
 {
   "name": "@smogon/calc",
-  "version": "0.11.0-champions.2c50a89",
+  "version": "0.11.0-champions.111407c",
   "description": "Vendored build of the official Pokémon Showdown damage calculator with Champions support.",
   "main": "dist/index.js",
   "module": "dist/browser-entry.mjs",

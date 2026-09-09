@@ -729,7 +729,8 @@ function calculateFinalModsChampions(gen, attacker, defender, move, field, desc,
         finalMods.push(2048);
         desc.defenderAbility = defender.ability;
     }
-    if (defender.hasAbility('Fluffy') && move.flags.contact && !attacker.hasAbility('Long Reach')) {
+    var halveContactMoveDmg = defender.hasAbility('Fluffy') || defender.hasAbility('Aura Guard');
+    if (halveContactMoveDmg && move.flags.contact && !attacker.hasAbility('Long Reach')) {
         finalMods.push(2048);
         desc.defenderAbility = defender.ability;
     }

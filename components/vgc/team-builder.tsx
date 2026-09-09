@@ -244,17 +244,17 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
       .then((snapshot) => {
         if (!active) return;
         setDex(snapshot);
-        setPokemon((current) => current.map((set) => hydrateSetFromSnapshot(snapshot, set)));
+        setPokemon((current) => current.map((set) => hydrateSetFromSnapshot(snapshot, set, format)));
       })
       .catch((caught) => { if (active) setDexError(caught instanceof Error ? caught.message : "No pudimos cargar la Pokédex."); });
     return () => { active = false; };
-  }, []);
+  }, [format]);
 
   function loadVersion(versionId: string) {
     const version = storedVersions.find((entry) => entry.id === versionId);
     if (!version) return;
     const nextPokemon = cloneForBuilder(version.pokemon);
-    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
+    setTeamName(version.name); setSourceTeamId(version.teamId); setFormat(version.format ?? DEFAULT_BATTLE_FORMAT); setMechanics(version.mechanics ?? mechanicsForFormat(version.format ?? DEFAULT_BATTLE_FORMAT)); setPokemon(dex ? nextPokemon.map((set) => hydrateSetFromSnapshot(dex, set, version.format ?? DEFAULT_BATTLE_FORMAT)) : nextPokemon); setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setError(""); setMessage(`Cargado ${version.name} v${formatVersion(version)}. Los cambios crearán una versión nueva.`);
   }
 
   function resetBuilder() {
@@ -284,7 +284,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
       types: [...librarySet.types],
       performance: { games: 0, wins: 0, leadGames: 0, leadWins: 0, selectionRate: 0 },
     };
-    const hydrated = dex ? hydrateSetFromSnapshot(dex, nextSet) : nextSet;
+    const hydrated = dex ? hydrateSetFromSnapshot(dex, nextSet, format) : nextSet;
     setPokemon((current) => current.map((set, index) => index === selectedSlot ? hydrated : set));
     setCalculatorSessions((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${slot.id}:`))));
     setSlotRevisions((current) => current.map((revision, index) => index === selectedSlot ? revision + 1 : revision));
@@ -296,7 +296,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
     setError("");
     try {
       const imported = cloneForBuilder(parseShowdownPaste(value));
-      setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set)) : imported);
+      setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set, format)) : imported);
       setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
@@ -316,7 +316,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
     setRefreshingDex(true); setDexError(""); setMessage("");
     try {
       const snapshot = await loadShowdownSnapshot({ fresh: true });
-      setDex(snapshot); setPokemon((current) => current.map((set) => hydrateSetFromSnapshot(snapshot, set)));
+      setDex(snapshot); setPokemon((current) => current.map((set) => hydrateSetFromSnapshot(snapshot, set, format)));
       setMessage(`Bases actualizadas: ${Object.keys(snapshot.species).length.toLocaleString("es-MX")} Pokémon, ${Object.keys(snapshot.moves).length.toLocaleString("es-MX")} movimientos y ${Object.keys(snapshot.items ?? {}).length.toLocaleString("es-MX")} objetos · ${snapshot.metadata.captured}.`);
     } catch (caught) { setDexError(caught instanceof Error ? caught.message : "No pudimos actualizar las bases de datos."); }
     finally { setRefreshingDex(false); }
@@ -332,7 +332,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
     if (pokemon.some((set) => Object.values(parseEvs(set.evs)).some((value) => value > statRules.perStatMax))) { setError(`Revisa ${statRules.label}: ningún stat puede superar ${statRules.perStatMax}.`); return; }
     const unavailable = pokemon.find((set) => !isSpeciesAvailable(dex, set.species, format));
     if (unavailable) { setError(`${unavailable.species} no está disponible en ${BATTLE_FORMATS.find((entry) => entry.id === format)?.label ?? format}.`); return; }
-    const invalidAbility = pokemon.find((set) => set.ability && !getLegalAbilities(dex, set.species).includes(set.ability));
+    const invalidAbility = pokemon.find((set) => set.ability && !getLegalAbilities(dex, set.species, format).includes(set.ability));
     if (invalidAbility) { setError(`${invalidAbility.ability} no es una habilidad válida de ${invalidAbility.species}.`); return; }
     const invalidItem = pokemon.find((set) => !isItemLegal(dex, set.item, format));
     if (invalidItem) { setError(`${invalidItem.item} no está disponible en ${BATTLE_FORMATS.find((entry) => entry.id === format)?.label ?? format}.`); return; }

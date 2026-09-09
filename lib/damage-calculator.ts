@@ -1,5 +1,6 @@
 import { calculate, Field, MEGA_STONES, Move, Pokemon, type GenerationNum, type State } from "@smogon/calc";
 
+import { CHAMPIONS_M_C_MEGA_ABILITIES } from "./champions-regulation.mjs";
 import { parseEvs } from "./team-builder";
 import type { PokemonSet } from "./types";
 
@@ -236,6 +237,12 @@ function allocationsFor(set: PokemonSet) {
   };
 }
 
+export function resolveChampionsBattleFormAbility(speciesName: string, selectedAbility: string) {
+  const abilities = CHAMPIONS_M_C_MEGA_ABILITIES[speciesName];
+  if (!abilities?.length) return undefined;
+  return abilities.includes(selectedAbility) ? selectedAbility : abilities[0];
+}
+
 function sideToCalc(side: DamageSideConditions): State.Side {
   return {
     isReflect: side.reflect,
@@ -289,7 +296,9 @@ function createPokemon(
   const protoQuark = set.ability === "Protosynthesis" || set.ability === "Quark Drive";
   const options = {
     level: format === "champions" ? 50 : set.level || 50,
-    ability: transformed ? undefined : set.ability || undefined,
+    ability: transformed
+      ? (format === "champions" ? resolveChampionsBattleFormAbility(speciesName, set.ability) : undefined)
+      : set.ability || undefined,
     abilityOn: Boolean(draft.abilityOn),
     alliesFainted: Math.max(0, Math.min(5, Math.trunc(draft.alliesFainted ?? 0))),
     boostedStat: protoQuark ? "auto" as const : undefined,
