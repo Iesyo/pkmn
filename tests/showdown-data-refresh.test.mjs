@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
 
+import { Generations, toID } from "@smogon/calc";
+
 import {
   CHAMPIONS_REGULATION,
   CHAMPIONS_REQUIRED_ITEM_IDS,
@@ -157,13 +159,39 @@ test("ships the complete M-C legality delta and rejects a regressive snapshot", 
   assert.throws(() => assertChampionsRegulationSnapshot(regressed), /pawmot/);
 });
 
+test("vendored damage engine covers the complete M-C catalog", async () => {
+  const compressed = await readFile(snapshotUrl);
+  const snapshot = JSON.parse(gunzipSync(compressed).toString("utf8"));
+  const generation = Generations.get(0);
+
+  for (const id of CHAMPIONS_REQUIRED_SPECIES_IDS) {
+    const species = snapshot.species[id];
+    assert.ok(species, `snapshot species: ${id}`);
+    assert.ok(generation.species.get(toID(species.name)), `calc species: ${species.name}`);
+
+    for (const moveId of species.championsMoves) {
+      assert.ok(generation.moves.get(moveId), `calc move: ${snapshot.moves[moveId]?.name ?? moveId}`);
+    }
+    for (const ability of Object.values(species.championsOverride?.abilities ?? {})) {
+      assert.ok(generation.abilities.get(toID(ability)), `calc ability: ${ability}`);
+    }
+  }
+
+  for (const id of CHAMPIONS_REQUIRED_ITEM_IDS) {
+    const item = snapshot.items[id];
+    assert.ok(item, `snapshot item: ${id}`);
+    assert.ok(generation.items.get(toID(item.name)), `calc item: ${item.name}`);
+  }
+});
+
 test("wires regulation-scoped refresh through the server and D1", async () => {
-  const [client, storage, route, script, checkoutScript] = await Promise.all([
+  const [client, storage, route, script, checkoutScript, builder] = await Promise.all([
     readFile(clientUrl, "utf8"),
     readFile(storageUrl, "utf8"),
     readFile(routeUrl, "utf8"),
     readFile(scriptUrl, "utf8"),
     readFile(checkoutScriptUrl, "utf8"),
+    readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.ok(client.includes('fetch("/api/showdown-data"'));
@@ -179,6 +207,11 @@ test("wires regulation-scoped refresh through the server and D1", async () => {
   assert.ok(storage.includes("app_settings"));
   assert.ok(route.includes("buildShowdownSnapshot"));
   assert.ok(route.includes("saveStoredShowdownSnapshot"));
+  assert.ok(route.includes("isChampionsRegulationSnapshotError"));
+  assert.ok(route.includes('status: "unchanged"'));
+  assert.ok(route.includes("status: 409"));
+  assert.ok(client.includes("ShowdownRefreshUnchangedError"));
+  assert.ok(builder.includes("caught instanceof ShowdownRefreshUnchangedError"));
   assert.ok(script.includes('from "../lib/showdown-snapshot-builder.mjs"'));
   assert.ok(script.includes("assertChampionsRegulationSnapshot(snapshot)"));
   assert.ok(checkoutScript.includes("CHAMPIONS_SHOWDOWN_COMMIT"));

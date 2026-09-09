@@ -15,7 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
 import { parseShowdownPaste } from "@/lib/paste";
-import { getLegalAbilities, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
+import { ShowdownRefreshUnchangedError, getLegalAbilities, hydrateSetFromSnapshot, isItemLegal, isMoveLegal, isSpeciesAvailable, loadShowdownSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
 import { analyzeTypes } from "@/lib/team-stats";
 import { BATTLE_FORMATS, DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, MECHANIC_LABELS, cloneForBuilder, emptyPokemon, formatVersion, getStatRules, isCompleteTeam, parseEvs, serializeShowdownPaste } from "@/lib/team-builder";
 import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
@@ -318,7 +318,10 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
       const snapshot = await loadShowdownSnapshot({ fresh: true });
       setDex(snapshot); setPokemon((current) => current.map((set) => hydrateSetFromSnapshot(snapshot, set, format)));
       setMessage(`Bases actualizadas: ${Object.keys(snapshot.species).length.toLocaleString("es-MX")} Pokémon, ${Object.keys(snapshot.moves).length.toLocaleString("es-MX")} movimientos y ${Object.keys(snapshot.items ?? {}).length.toLocaleString("es-MX")} objetos · ${snapshot.metadata.captured}.`);
-    } catch (caught) { setDexError(caught instanceof Error ? caught.message : "No pudimos actualizar las bases de datos."); }
+    } catch (caught) {
+      if (caught instanceof ShowdownRefreshUnchangedError) setMessage(caught.message);
+      else setDexError(caught instanceof Error ? caught.message : "No pudimos actualizar las bases de datos.");
+    }
     finally { setRefreshingDex(false); }
   }
 

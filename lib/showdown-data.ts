@@ -122,10 +122,17 @@ async function decodeSnapshotResponse(response: Response) {
 
 async function readRefreshError(response: Response) {
   try {
-    const payload = (await response.json()) as { error?: string };
-    return payload.error || "No pudimos actualizar las bases desde Pokémon Showdown.";
+    const payload = (await response.json()) as { error?: string; message?: string };
+    return payload.message || payload.error || "No pudimos actualizar las bases desde Pokémon Showdown.";
   } catch {
     return "No pudimos actualizar las bases desde Pokémon Showdown.";
+  }
+}
+
+export class ShowdownRefreshUnchangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ShowdownRefreshUnchangedError";
   }
 }
 
@@ -139,6 +146,9 @@ export async function loadShowdownSnapshot({ fresh = false }: { fresh?: boolean 
       });
     } catch {
       throw new Error("No pudimos contactar el actualizador de Pokémon Showdown en el servidor.");
+    }
+    if (response.status === 409) {
+      throw new ShowdownRefreshUnchangedError(await readRefreshError(response));
     }
     if (!response.ok) throw new Error(await readRefreshError(response));
     return decodeSnapshotResponse(response);

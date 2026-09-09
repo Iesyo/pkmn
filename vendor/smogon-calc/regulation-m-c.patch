@@ -1,0 +1,164 @@
+diff --git a/calc/src/data/abilities.ts b/calc/src/data/abilities.ts
+index 9d7dbe1..99f7aa5 100644
+--- a/calc/src/data/abilities.ts
++++ b/calc/src/data/abilities.ts
+@@ -549,6 +549,21 @@ const CHAMPIONS = [
+   'Weak Armor',
+   'White Smoke',
+   'Zero to Hero',
++  // Pokemon Champions Regulation M-C
++  'Rattled',
++  'Liquid Ooze',
++  'Grass Pelt',
++  'Emergency Exit',
++  'Grassy Surge',
++  'Libero',
++  'Run Away',
++  'Stakeout',
++  'Punk Rock',
++  'Steely Spirit',
++  'Psychic Surge',
++  'Seed Sower',
++  'Guard Dog',
++  'Thermal Exchange',
+ ];
+ 
+ export const ABILITIES = [CHAMPIONS, RBY, GSC, ADV, DPP, BW, XY, SM, SS, SV];
+diff --git a/calc/src/data/items.ts b/calc/src/data/items.ts
+index 0118bad..08a221a 100644
+--- a/calc/src/data/items.ts
++++ b/calc/src/data/items.ts
+@@ -697,6 +697,25 @@ const CHAMPIONS = [
+   'Wise Glasses',
+   'Yache Berry',
+   'Zoom Lens',
++  // Pokemon Champions Regulation M-C
++  'Absolite Z',
++  'Baxcalibrite',
++  'Garchompite Z',
++  'Golisopite',
++  'Leek',
++  'Lucarionite Z',
++  'Salamencite',
++  'Air Balloon',
++  'Binding Band',
++  'Eject Button',
++  'Electric Seed',
++  'Grassy Seed',
++  'Misty Seed',
++  'Normal Gem',
++  'Psychic Seed',
++  'Red Card',
++  'Rocky Helmet',
++  'Terrain Extender',
+ ].sort();
+ 
+ const BERRIES: {[berry: string]: {t: I.TypeName; p: number}} = {
+diff --git a/calc/src/data/moves.ts b/calc/src/data/moves.ts
+index 64f5839..d7f09a2 100644
+--- a/calc/src/data/moves.ts
++++ b/calc/src/data/moves.ts
+@@ -5439,6 +5439,23 @@ const CHAMPIONS_LIST = [
+   'Zen Headbutt',
+ ];
+ 
++const CHAMPIONS_REGULATION_M_C = [
++  'Slash',
++  'Drum Beating',
++  'Court Change',
++  'Pyro Ball',
++  'Overdrive',
++  'Shift Gear',
++  'Octolock',
++  'Zing Zap',
++  'Double Shock',
++  'Revival Blessing',
++  'Jaw Lock',
++  'Glaive Rush',
++];
++
++const CHAMPIONS_MOVES = [...new Set([...CHAMPIONS_LIST, ...CHAMPIONS_REGULATION_M_C])];
++
+ const CHAMPIONS_PATCH: {[name: string]: DeepPartial<MoveData>} = {
+   'Anchor Shot': {bp: 90},
+   'Apple Acid': {bp: 90},
+@@ -5475,7 +5492,7 @@ const CHAMPIONS_PATCH: {[name: string]: DeepPartial<MoveData>} = {
+ 
+ const CHAMPIONS: {[name: string]: MoveData} = extend(
+   true, {},
+-  Object.fromEntries(CHAMPIONS_LIST.map(m => [m, SV[m]])), CHAMPIONS_PATCH
++  Object.fromEntries(CHAMPIONS_MOVES.map(m => [m, SV[m]])), CHAMPIONS_PATCH
+ );
+ 
+ // @ts-expect-error readonly
+diff --git a/calc/src/data/species.ts b/calc/src/data/species.ts
+index 3abd732..f6d4c53 100644
+--- a/calc/src/data/species.ts
++++ b/calc/src/data/species.ts
+@@ -10803,6 +10803,49 @@ const CHAMPIONS_LIST = [
+   'Zoroark-Hisui',
+ ];
+ 
++// Pokemon Champions Regulation M-C landed in Pokemon Showdown before the
++// calculator's generation 0 roster was updated. Keep this delta separate so
++// rebuilding the vendored package cannot silently omit otherwise legal sets.
++const CHAMPIONS_REGULATION_M_C = [
++  'Wigglytuff',
++  'Persian',
++  'Persian-Alola',
++  'Farfetch\u2019d',
++  'Mr. Mime',
++  'Swalot',
++  'Absol-Mega-Z',
++  'Salamence',
++  'Salamence-Mega',
++  'Garchomp-Mega-Z',
++  'Lucario-Mega-Z',
++  'Gogoat',
++  'Golisopod',
++  'Golisopod-Mega',
++  'Rillaboom',
++  'Cinderace',
++  'Inteleon',
++  'Thievul',
++  'Toxtricity',
++  'Toxtricity-Low-Key',
++  'Grapploct',
++  'Perrserker',
++  'Sirfetch\u2019d',
++  'Pincurchin',
++  'Indeedee',
++  'Indeedee-F',
++  'Pawmot',
++  'Arboliva',
++  'Squawkabilly',
++  'Squawkabilly-Blue',
++  'Squawkabilly-Yellow',
++  'Squawkabilly-White',
++  'Mabosstiff',
++  'Baxcalibur',
++  'Baxcalibur-Mega',
++];
++
++const CHAMPIONS_SPECIES = [...new Set([...CHAMPIONS_LIST, ...CHAMPIONS_REGULATION_M_C])];
++
+ const CHAMPIONS_PATCH: {[name: string]: DeepPartial<SpeciesData>} = {
+   'Floette-Eternal': {otherFormes: ['Floette-Mega']},
+   'Floette-Mega': {baseSpecies: 'Floette-Eternal'},
+@@ -10810,14 +10853,14 @@ const CHAMPIONS_PATCH: {[name: string]: DeepPartial<SpeciesData>} = {
+ 
+ const CHAMPIONS: {[name: string]: SpeciesData} = extend(
+   true, {},
+-  Object.fromEntries(CHAMPIONS_LIST.map(s => [s, SV[s]])), CHAMPIONS_PATCH
++  Object.fromEntries(CHAMPIONS_SPECIES.map(s => [s, SV[s]])), CHAMPIONS_PATCH
+ );
+ 
+ removeAttr(CHAMPIONS, 'Floette-Eternal', 'baseSpecies');
+ for (const species of Object.values(CHAMPIONS)) {
+   if (species.otherFormes) {
+     // @ts-expect-error readonly
+-    species.otherFormes = [...new Set(species.otherFormes)].filter(f => CHAMPIONS_LIST.includes(f));
++    species.otherFormes = [...new Set(species.otherFormes)].filter(f => CHAMPIONS_SPECIES.includes(f));
+     // @ts-expect-error readonly
+     if (!species.otherFormes.length) delete species.otherFormes;
+   }

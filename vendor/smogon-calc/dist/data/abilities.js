@@ -579,6 +579,20 @@ var CHAMPIONS = [
     'Weak Armor',
     'White Smoke',
     'Zero to Hero',
+    'Rattled',
+    'Liquid Ooze',
+    'Grass Pelt',
+    'Emergency Exit',
+    'Grassy Surge',
+    'Libero',
+    'Run Away',
+    'Stakeout',
+    'Punk Rock',
+    'Steely Spirit',
+    'Psychic Surge',
+    'Seed Sower',
+    'Guard Dog',
+    'Thermal Exchange',
 ];
 exports.ABILITIES = [CHAMPIONS, RBY, GSC, ADV, DPP, BW, XY, SM, SS, SV];
 var Abilities = (function () {

@@ -240,6 +240,22 @@ test("keeps calculator edits isolated from the Team Builder set", async () => {
   assert.equal(source.performance.games, 0);
 });
 
+test("treats a lagging public Showdown catalog as an unchanged M-C snapshot", async () => {
+  const { loadShowdownSnapshot, ShowdownRefreshUnchangedError } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const originalFetch = globalThis.fetch;
+  const message = "Las bases instaladas ya están en Regulación M-C. Conservamos el snapshot vigente.";
+  globalThis.fetch = async () => Response.json({ status: "unchanged", regulation: "M-C", message }, { status: 409 });
+
+  try {
+    await assert.rejects(
+      () => loadShowdownSnapshot({ fresh: true }),
+      (error) => error instanceof ShowdownRefreshUnchangedError && error.message === message,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("calculates a Champions damage range with Stat Points", async () => {
   const { calculateDamage, createDamageDraft, defaultDamageField } = await damageModule();
   const { emptyPokemon } = await teamBuilderModule();
@@ -275,6 +291,52 @@ test("calculates a Champions damage range with Stat Points", async () => {
   assert.ok(outcome.minPercent > 0);
   assert.match(outcome.description, /Kleavor Stone Axe vs\..*Abomasnow/);
   assert.ok(outcome.rolls.length > 1);
+});
+
+test("calculates the production-reported Indeedee and Sneasler M-C matchup", async () => {
+  const { calculateDamage, createDamageDraft, defaultDamageField } = await damageModule();
+  const { emptyPokemon } = await teamBuilderModule();
+  const indeedee = configureSet(emptyPokemon(1), {
+    species: "Indeedee",
+    ability: "Psychic Surge",
+    item: "Choice Scarf",
+    nature: "Modest",
+    evs: "2 HP / 32 SpA / 32 Spe",
+    moves: ["Expanding Force", "Protect", "Helping Hand", "Dazzling Gleam"],
+  });
+  const sneasler = configureSet(emptyPokemon(2), {
+    species: "Sneasler",
+    ability: "Unburden",
+    item: "White Herb",
+    nature: "Jolly",
+    evs: "32 Atk / 2 Def / 32 Spe",
+    moves: ["Close Combat", "Dire Claw", "Fake Out", "Protect"],
+  });
+  const field = defaultDamageField();
+  field.terrain = "Psychic";
+
+  const outgoing = calculateDamage(
+    "champions",
+    createDamageDraft(indeedee),
+    createDamageDraft(sneasler),
+    "Expanding Force",
+    field,
+  );
+  const incoming = calculateDamage(
+    "champions",
+    createDamageDraft(sneasler),
+    createDamageDraft(indeedee),
+    "Close Combat",
+    field,
+    true,
+  );
+
+  assert.equal(outgoing.error, undefined);
+  assert.equal(incoming.error, undefined);
+  assert.ok(outgoing.min > 0);
+  assert.ok(incoming.min > 0);
+  assert.match(outgoing.description, /Indeedee Expanding Force.*Sneasler/);
+  assert.match(incoming.description, /Sneasler Close Combat.*Indeedee/);
 });
 
 test("maps base Aegislash to its attacking and defending Champions stances", async () => {

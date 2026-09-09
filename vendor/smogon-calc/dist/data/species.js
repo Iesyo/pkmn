@@ -10824,17 +10824,55 @@ var CHAMPIONS_LIST = [
     'Zoroark',
     'Zoroark-Hisui',
 ];
+var CHAMPIONS_REGULATION_M_C = [
+    'Wigglytuff',
+    'Persian',
+    'Persian-Alola',
+    'Farfetch\u2019d',
+    'Mr. Mime',
+    'Swalot',
+    'Absol-Mega-Z',
+    'Salamence',
+    'Salamence-Mega',
+    'Garchomp-Mega-Z',
+    'Lucario-Mega-Z',
+    'Gogoat',
+    'Golisopod',
+    'Golisopod-Mega',
+    'Rillaboom',
+    'Cinderace',
+    'Inteleon',
+    'Thievul',
+    'Toxtricity',
+    'Toxtricity-Low-Key',
+    'Grapploct',
+    'Perrserker',
+    'Sirfetch\u2019d',
+    'Pincurchin',
+    'Indeedee',
+    'Indeedee-F',
+    'Pawmot',
+    'Arboliva',
+    'Squawkabilly',
+    'Squawkabilly-Blue',
+    'Squawkabilly-Yellow',
+    'Squawkabilly-White',
+    'Mabosstiff',
+    'Baxcalibur',
+    'Baxcalibur-Mega',
+];
+var CHAMPIONS_SPECIES = __spreadArray([], __read(new Set(__spreadArray(__spreadArray([], __read(CHAMPIONS_LIST), false), __read(CHAMPIONS_REGULATION_M_C), false))), false);
 var CHAMPIONS_PATCH = {
     'Floette-Eternal': { otherFormes: ['Floette-Mega'] },
     'Floette-Mega': { baseSpecies: 'Floette-Eternal' }
 };
-var CHAMPIONS = (0, util_1.extend)(true, {}, Object.fromEntries(CHAMPIONS_LIST.map(function (s) { return [s, SV[s]]; })), CHAMPIONS_PATCH);
+var CHAMPIONS = (0, util_1.extend)(true, {}, Object.fromEntries(CHAMPIONS_SPECIES.map(function (s) { return [s, SV[s]]; })), CHAMPIONS_PATCH);
 removeAttr(CHAMPIONS, 'Floette-Eternal', 'baseSpecies');
 try {
     for (var _d = __values(Object.values(CHAMPIONS)), _e = _d.next(); !_e.done; _e = _d.next()) {
         var species = _e.value;
         if (species.otherFormes) {
-            species.otherFormes = __spreadArray([], __read(new Set(species.otherFormes)), false).filter(function (f) { return CHAMPIONS_LIST.includes(f); });
+            species.otherFormes = __spreadArray([], __read(new Set(species.otherFormes)), false).filter(function (f) { return CHAMPIONS_SPECIES.includes(f); });
             if (!species.otherFormes.length)
                 delete species.otherFormes;
         }

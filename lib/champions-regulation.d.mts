@@ -6,6 +6,7 @@ export const CHAMPIONS_REGULATION_SOURCE: string;
 export const CHAMPIONS_SHOWDOWN_COMMIT: string;
 export const CHAMPIONS_CALC_COMMIT: string;
 export const SHOWDOWN_SNAPSHOT_SCHEMA: 4;
+export const CHAMPIONS_REGULATION_SNAPSHOT_ERROR_CODE: "CHAMPIONS_REGULATION_SNAPSHOT_INCOMPLETE";
 export const CHAMPIONS_REQUIRED_SPECIES_IDS: readonly string[];
 export const CHAMPIONS_REQUIRED_ITEM_IDS: readonly string[];
 export const CHAMPIONS_M_C_MEGA_ABILITIES: Readonly<Record<string, readonly string[]>>;
@@ -16,4 +17,11 @@ export function championsRegulationSnapshotIssues(snapshot: unknown): {
 };
 
 export function detectChampionsRegulation(snapshot: unknown): "M-C" | "M-B";
+export class ChampionsRegulationSnapshotError extends Error {
+  readonly code: typeof CHAMPIONS_REGULATION_SNAPSHOT_ERROR_CODE;
+  readonly missingSpecies: string[];
+  readonly missingItems: string[];
+  constructor(missingSpecies: string[], missingItems: string[]);
+}
+export function isChampionsRegulationSnapshotError(error: unknown): error is ChampionsRegulationSnapshotError;
 export function assertChampionsRegulationSnapshot(snapshot: unknown): void;

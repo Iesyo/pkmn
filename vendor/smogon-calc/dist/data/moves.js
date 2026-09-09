@@ -37,6 +37,31 @@ var __values = (this && this.__values) || function(o) {
     };
     throw new TypeError(s ? "Object is not iterable." : "Symbol.iterator is not defined.");
 };
+var __read = (this && this.__read) || function (o, n) {
+    var m = typeof Symbol === "function" && o[Symbol.iterator];
+    if (!m) return o;
+    var i = m.call(o), r, ar = [], e;
+    try {
+        while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value);
+    }
+    catch (error) { e = { error: error }; }
+    finally {
+        try {
+            if (r && !r.done && (m = i["return"])) m.call(i);
+        }
+        finally { if (e) throw e.error; }
+    }
+    return ar;
+};
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 var e_1, _a, e_2, _b;
 exports.__esModule = true;
 exports.Moves = exports.MOVES = void 0;
@@ -5423,6 +5448,21 @@ var CHAMPIONS_LIST = [
     'Zap Cannon',
     'Zen Headbutt',
 ];
+var CHAMPIONS_REGULATION_M_C = [
+    'Slash',
+    'Drum Beating',
+    'Court Change',
+    'Pyro Ball',
+    'Overdrive',
+    'Shift Gear',
+    'Octolock',
+    'Zing Zap',
+    'Double Shock',
+    'Revival Blessing',
+    'Jaw Lock',
+    'Glaive Rush',
+];
+var CHAMPIONS_MOVES = __spreadArray([], __read(new Set(__spreadArray(__spreadArray([], __read(CHAMPIONS_LIST), false), __read(CHAMPIONS_REGULATION_M_C), false))), false);
 var CHAMPIONS_PATCH = {
     'Anchor Shot': { bp: 90 },
     'Apple Acid': { bp: 90 },
@@ -5456,7 +5496,7 @@ var CHAMPIONS_PATCH = {
     'Triple Dive': { bp: 35 },
     'Trop Kick': { bp: 85 }
 };
-var CHAMPIONS = (0, util_1.extend)(true, {}, Object.fromEntries(CHAMPIONS_LIST.map(function (m) { return [m, SV[m]]; })), CHAMPIONS_PATCH);
+var CHAMPIONS = (0, util_1.extend)(true, {}, Object.fromEntries(CHAMPIONS_MOVES.map(function (m) { return [m, SV[m]]; })), CHAMPIONS_PATCH);
 delete CHAMPIONS['Freeze-Dry'].secondaries;
 exports.MOVES = [CHAMPIONS, RBY, GSC, ADV, DPP, BW, XY, SM, SS, SV];
 var Moves = (function () {
