@@ -119,7 +119,7 @@ function PasteDialog({ mode, paste, onImport }: { mode: "import" | "export"; pas
     <Dialog onOpenChange={(open) => { if (open) { setValue(paste); setCopied(false); } }}>
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4">{mode === "import" ? <Download className="size-4" /> : <Upload className="size-4" />}{mode === "import" ? "Importar" : "Exportar"}</Button></DialogTrigger>
       <DialogContent className="grid h-[88vh] max-h-[40rem] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden border-white/10 bg-slate-950 text-slate-100 sm:h-[38rem] sm:max-w-2xl">
-        <DialogHeader className="pr-8 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
+        <DialogHeader className="pr-8 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos o una URL de PokéPaste para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
         <div className="min-h-0"><Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="field-sizing-fixed h-full min-h-0 resize-none overflow-y-auto rounded-2xl border-white/10 bg-black/35 font-mono text-[11px] leading-5 scrollbar-thin" /></div>
         <div className="grid grid-cols-2 gap-2 border-t border-white/8 pt-4">{action}<DialogClose asChild><Button variant="outline" className="w-full border-white/10 bg-white/4 text-slate-300 hover:bg-white/8 hover:text-white">Cerrar</Button></DialogClose></div>
       </DialogContent>
@@ -295,9 +295,27 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
   async function importPaste(value: string) {
     setError("");
     try {
-      const imported = cloneForBuilder(parseShowdownPaste(value));
+      const input = value.trim();
+      let pasteToImport = value;
+      let importedFromUrl = false;
+
+      if (/^https?:\/\//i.test(input)) {
+        const response = await fetch("/api/pokepaste-import", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: input }),
+        });
+        const payload = (await response.json()) as { paste?: string; error?: string };
+        if (!response.ok || !payload.paste) {
+          throw new Error(payload.error || "No pudimos importar ese PokéPaste.");
+        }
+        pasteToImport = payload.paste;
+        importedFromUrl = true;
+      }
+
+      const imported = cloneForBuilder(parseShowdownPaste(pasteToImport));
       setPokemon(dex ? imported.map((set) => hydrateSetFromSnapshot(dex, set, format)) : imported);
-      setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage("Paste importado. Revisa el formato y guarda cuando esté listo.");
+      setSelectedSlot(0); setCalculatorSessions({}); setSharedRival(null); setSlotRevisions((current) => current.map((revision) => revision + 1)); setMessage(importedFromUrl ? "PokéPaste importado desde URL. Revisa el formato y guarda cuando esté listo." : "Paste importado. Revisa el formato y guarda cuando esté listo.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "No pudimos importar el paste."); }
   }
 
