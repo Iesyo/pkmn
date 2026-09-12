@@ -2,13 +2,14 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, CircleCheck, Copy, ExternalLink, Microscope, Play, Radar, RefreshCw, ShieldQuestion, Swords, Trophy } from "lucide-react";
+import { AlertTriangle, Check, CircleCheck, Copy, ExternalLink, Microscope, Play, Radar, RefreshCw, ShieldQuestion, Swords, Trophy, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TournamentScoutingBrowser } from "@/components/vgc/tournament-scouting-browser";
+import { VgcPastesScoutingBrowser } from "@/components/vgc/vgcpastes-scouting-browser";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 import type { MatchRecord, ScoutingAnalysis, TeamGroup, TeamVersion } from "@/lib/types";
@@ -18,7 +19,7 @@ interface ScoutingCandidate {
   version: TeamVersion;
 }
 
-type ScoutingMode = "tournaments" | "replays";
+type ScoutingMode = "repository" | "tournaments" | "replays";
 
 function ScoutingModeSwitcher({
   mode,
@@ -30,7 +31,10 @@ function ScoutingModeSwitcher({
   onChange: (mode: ScoutingMode) => void;
 }) {
   return (
-    <div role="tablist" aria-label="Fuente de scouting" className="inline-flex w-full gap-1 rounded-xl border border-white/8 bg-slate-950/60 p-1 sm:w-auto">
+    <div role="tablist" aria-label="Fuente de scouting" className="inline-flex w-full flex-wrap gap-1 rounded-xl border border-white/8 bg-slate-950/60 p-1 sm:w-auto">
+      <button type="button" role="tab" aria-selected={mode === "repository"} onClick={() => onChange("repository")} className={mode === "repository" ? "inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-cyan-300/12 px-4 py-2 text-xs font-black text-cyan-100 ring-1 ring-cyan-300/20 sm:flex-none" : "inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-white/4 hover:text-slate-300 sm:flex-none"}>
+        <Users className="size-3.5" />Equipos
+      </button>
       <button type="button" role="tab" aria-selected={mode === "tournaments"} onClick={() => onChange("tournaments")} className={mode === "tournaments" ? "inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-300/12 px-4 py-2 text-xs font-black text-amber-100 ring-1 ring-amber-300/20 sm:flex-none" : "inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-xs font-bold text-slate-500 transition hover:bg-white/4 hover:text-slate-300 sm:flex-none"}>
         <Trophy className="size-3.5" />Torneos
       </button>
@@ -98,7 +102,7 @@ export function ScoutingView({
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requestError, setRequestError] = useState("");
-  const [mode, setMode] = useState<ScoutingMode>(initialMatchId ? "replays" : "tournaments");
+  const [mode, setMode] = useState<ScoutingMode>(initialMatchId ? "replays" : "repository");
   const selected = candidates.find((candidate) => candidate.match.id === matchId) ?? candidates[0];
 
   useEffect(() => {
@@ -141,6 +145,10 @@ export function ScoutingView({
   }
 
   const modeSwitcher = <ScoutingModeSwitcher mode={mode} replayCount={candidates.length} onChange={setMode} />;
+
+  if (mode === "repository") {
+    return <div className="space-y-5">{modeSwitcher}<VgcPastesScoutingBrowser onImportTeam={onTournamentTeamImport} /></div>;
+  }
 
   if (mode === "tournaments") {
     return <div className="space-y-5">{modeSwitcher}<TournamentScoutingBrowser onImportTeam={onTournamentTeamImport} /></div>;
