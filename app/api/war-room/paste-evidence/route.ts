@@ -162,6 +162,9 @@ export async function POST(request: Request) {
   if (!candidates || !candidates.length) {
     return errorResponse(`Envía entre 1 y ${MAX_WAR_ROOM_PASTE_EVIDENCE_CANDIDATES} referencias de paste válidas.`, 400);
   }
+  if (candidates.some((candidate) => !candidate.setEvidenceEligible)) {
+    return errorResponse("Los pastes de SV Regulation I solo aportan relaciones históricas; sus spreads no se transfieren a Champions.", 400);
+  }
 
   const savedIds = new Set(candidates.map((candidate) => candidate.savedPasteId).filter(Boolean));
   const savedPastes = savedIds.size
@@ -183,12 +186,13 @@ export async function POST(request: Request) {
     const sourceText = `${saved?.sourceLabel ?? ""} ${saved?.name ?? ""} ${candidate.tournament}`;
     const tier = sourceTier(candidate, sourceText);
     const rank = candidate.rank;
+    const baseSourceLabel = saved?.sourceLabel || (candidate.source === "vgcpastes" && tier === "tournament" ? "VGCPastes · torneo" : tier === "tournament" ? "Paste de torneo" : tier === "curated" ? "VGCPastes" : "Mis pastes");
     return {
       ...candidate,
       sourceTier: tier,
-      sourceLabel: saved?.sourceLabel || (candidate.source === "vgcpastes" && tier === "tournament" ? "VGCPastes · torneo" : tier === "tournament" ? "Paste de torneo" : tier === "curated" ? "VGCPastes" : "Mis pastes"),
+      sourceLabel: `${baseSourceLabel} · ${candidate.formatLabel}${candidate.historical ? " (histórico)" : ""}`,
       sourceUrl: safeSourceUrl(saved?.sourceUrl) || candidate.pokepasteUrl,
-      quality: evidenceQuality(tier, rank),
+      quality: Math.round(evidenceQuality(tier, rank) * candidate.regulationWeight),
       sets,
     };
   });
