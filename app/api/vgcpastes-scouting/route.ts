@@ -1,6 +1,7 @@
 import {
   buildVgcPastesScoutingResponse,
   DEFAULT_VGCPASTES_FORMAT_ID,
+  DEFAULT_VGCPASTES_PAGE_SIZE,
   getVgcPastesFormat,
 } from "@/lib/vgcpastes-scouting";
 import { loadVgcPastesFormat } from "@/lib/vgcpastes-scouting-server";
@@ -11,9 +12,9 @@ function errorResponse(error: string, status: number) {
   return Response.json({ error }, { status, headers: { "cache-control": "no-store" } });
 }
 
-function positiveInteger(value: string | null, fallback: number) {
+function positiveInteger(value: string | null, fallback: number, maximum: number) {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
 }
 
 export async function GET(request: Request) {
@@ -24,8 +25,8 @@ export async function GET(request: Request) {
   }
 
   const pokemon = (url.searchParams.get("pokemon") ?? "").trim().slice(0, 64);
-  const page = positiveInteger(url.searchParams.get("page"), 1);
-  const pageSize = positiveInteger(url.searchParams.get("pageSize"), 24);
+  const page = positiveInteger(url.searchParams.get("page"), 1, 10_000);
+  const pageSize = positiveInteger(url.searchParams.get("pageSize"), DEFAULT_VGCPASTES_PAGE_SIZE, 48);
   const refresh = url.searchParams.get("refresh") === "1";
 
   try {
