@@ -247,6 +247,38 @@ test("keeps locked identities, searches real partners and labels set packages as
   assert.match(result.notes.join(" "), /no representan sets observados/i);
 });
 
+test("limits Mega partner cards according to the Megas already configured on the team", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const partnerCorpus = [
+    corpusTeam("mega-a", ["Rillaboom", "Incineroar", "Salamence-Mega", "Golisopod-Mega", "Sneasler", "Pelipper"]),
+    corpusTeam("mega-b", ["Rillaboom", "Incineroar", "Mawile-Mega", "Venusaur-Mega", "Basculegion", "Indeedee-F"]),
+    corpusTeam("mega-c", ["Rillaboom", "Incineroar", "Metagross-Mega", "Blastoise-Mega", "Sneasler", "Basculegion"]),
+    corpusTeam("mega-d", ["Rillaboom", "Incineroar", "Salamence-Mega", "Mawile-Mega", "Pelipper", "Basculegion"]),
+  ];
+  const locks = (team) => [team[1].id, team[2].id];
+
+  const noMegas = ownTeam();
+  const noMegaResult = optimizeTeam(noMegas, locks(noMegas), partnerCorpus, snapshot);
+  assert.deepEqual(noMegaResult.megaPolicy, { configured: 0, maximum: 2, recommendationSlots: 2 });
+  assert.ok(noMegaResult.members.filter((member) => member.isMega).length <= 2);
+
+  const oneMega = ownTeam();
+  oneMega[0].item = "Charizardite X";
+  const oneMegaResult = optimizeTeam(oneMega, locks(oneMega), partnerCorpus, snapshot);
+  assert.deepEqual(oneMegaResult.megaPolicy, { configured: 1, maximum: 2, recommendationSlots: 1 });
+  assert.ok(oneMegaResult.members.filter((member) => member.isMega).length <= 1);
+
+  const twoMegas = ownTeam();
+  twoMegas[0].item = "Charizardite X";
+  twoMegas[4].item = "Garchompite Z";
+  const twoMegaResult = optimizeTeam(twoMegas, locks(twoMegas), partnerCorpus, snapshot);
+  assert.deepEqual(twoMegaResult.megaPolicy, { configured: 2, maximum: 2, recommendationSlots: 0 });
+  assert.ok(twoMegaResult.members.length > 0);
+  assert.ok(twoMegaResult.members.every((member) => !member.isMega));
+  assert.match(twoMegaResult.notes.join(" "), /limita las alternativas Mega a dos/i);
+});
+
 test("preserves individual fields and move slots while building a legal set proposal", async () => {
   const snapshot = await readSnapshot();
   const {
@@ -395,5 +427,7 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Movimiento 4/);
   assert.match(warRoom, /Preservado por tus bloqueos/);
   assert.match(warRoom, /Probar este set en Builder/);
+  assert.match(warRoom, /dos Megas por Team/);
+  assert.match(warRoom, /member\.isMega/);
   assert.match(warRoom, /serializeShowdownPaste/);
 });
