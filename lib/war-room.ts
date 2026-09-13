@@ -30,11 +30,17 @@ import type {
   WarRoomPasteEvidenceTeam,
   WarRoomPasteSource,
 } from "./war-room-paste-evidence";
+import {
+  WAR_ROOM_CURRENT_FORMAT_ID,
+  getWarRoomRegulationEvidence,
+  inferWarRoomRegulationEvidence,
+} from "./war-room-regulations";
 
-export const WAR_ROOM_SCHEMA_VERSION = 2;
-export const WAR_ROOM_FORMAT_ID = "champions-m-c";
+export const WAR_ROOM_SCHEMA_VERSION = 3;
+export const WAR_ROOM_FORMAT_ID = WAR_ROOM_CURRENT_FORMAT_ID;
 export const WAR_ROOM_BATTLE_FORMAT = "champions";
 export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
+export const MAX_WAR_ROOM_HISTORICAL_TEAMS = 5_000;
 export const MAX_WAR_ROOM_TEAM_MEGAS = 2;
 export const MAX_WAR_ROOM_LOCKED_IDENTITIES = 5;
 export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 12;
@@ -52,6 +58,17 @@ export interface WarRoomCorpusTeam {
   dateShared: string;
   pokepasteUrl: string;
   pokemon: string[];
+  formatId: string;
+  formatLabel: string;
+  regulationWeight: number;
+  historical: boolean;
+  setEvidenceEligible: boolean;
+}
+
+export interface WarRoomHistoricalCorpusSource {
+  format: VgcPastesFormat;
+  teams: VgcPastesTeam[];
+  fetchedAt: string;
 }
 
 export interface WarRoomCorpusResponse {
@@ -64,11 +81,19 @@ export interface WarRoomCorpusResponse {
   vgcPastesTeamCount: number;
   tournamentTeamCount: number;
   savedTeamCount: number;
+  historicalTeamCount: number;
+  historicalFormats: Array<{
+    formatId: string;
+    formatLabel: string;
+    regulationWeight: number;
+    teamCount: number;
+  }>;
   source: {
     label: "VGCPastes Repository";
     url: string;
   };
   teams: WarRoomCorpusTeam[];
+  historicalTeams: WarRoomCorpusTeam[];
 }
 
 export interface WarRoomLegalityIssue {
@@ -187,7 +212,10 @@ export interface WarRoomMemberSuggestion {
   replaces: string;
   replacesSetId: string;
   patchedTypes: PokemonType[];
-  evidenceMode: "core" | "expanded";
+  evidenceMode: "core" | "historical" | "expanded";
+  evidenceRegulations: string[];
+  currentAppearances: number;
+  historicalAppearances: number;
   reasons: string[];
 }
 
@@ -201,6 +229,7 @@ export interface WarRoomMemberApplicationResult {
 export interface WarRoomOptimizationOptions {
   excludedMemberSpecies?: readonly string[];
   pasteEvidence?: readonly WarRoomPasteEvidenceTeam[];
+  historicalCorpus?: readonly WarRoomCorpusTeam[];
 }
 
 export type WarRoomMoveSlot = 0 | 1 | 2 | 3;
@@ -275,6 +304,8 @@ export interface WarRoomSetSuggestion {
     rank: string;
     observations: number;
     contextFit: number;
+    formatLabel: string;
+    historical: boolean;
   } | null;
   patchedFields: Array<Exclude<WarRoomLockField, "identity">>;
 }
@@ -745,7 +776,12 @@ export function buildWarRoomMemberReplacement(
       patched,
       score: evidenceTeam.quality + overlap * 12 + contextFit * 0.55 + context.score * 0.35,
     }];
-  })).sort((left, right) => right.score - left.score || right.evidenceTeam.quality - left.evidenceTeam.quality || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id));
+  })).sort((left, right) => (
+    Number(left.evidenceTeam.historical) - Number(right.evidenceTeam.historical)
+    || right.score - left.score
+    || right.evidenceTeam.quality - left.evidenceTeam.quality
+    || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id)
+  ));
 
   const observedBest = observedCandidates[0];
   if (observedBest) {
@@ -892,6 +928,7 @@ function usageBySpecies(teams: WarRoomCorpusTeam[]) {
 
 function isValidCorpusTeam(value: unknown): value is WarRoomCorpusTeam {
   const team = recordValue(value);
+  const regulation = getWarRoomRegulationEvidence(team?.formatId);
   return Boolean(
     team
     && typeof team.id === "string"
@@ -905,7 +942,12 @@ function isValidCorpusTeam(value: unknown): value is WarRoomCorpusTeam {
     && typeof team.pokepasteUrl === "string"
     && Array.isArray(team.pokemon)
     && team.pokemon.length === 6
-    && team.pokemon.every((species) => typeof species === "string" && species.length > 0 && species.length <= 64),
+    && team.pokemon.every((species) => typeof species === "string" && species.length > 0 && species.length <= 64)
+    && regulation
+    && team.formatLabel === regulation.formatLabel
+    && team.regulationWeight === regulation.regulationWeight
+    && team.historical === regulation.historical
+    && team.setEvidenceEligible === regulation.setEvidenceEligible
   );
 }
 
@@ -925,9 +967,19 @@ export function buildWarRoomCorpusResponse(
   fetchedAt = new Date().toISOString(),
   savedPastes: ScoutingPasteSummary[] = [],
   tournamentSnapshot?: TournamentScoutingResponse | null,
+  historicalSources: readonly WarRoomHistoricalCorpusSource[] = [],
 ): WarRoomCorpusResponse {
   if (format.id !== WAR_ROOM_FORMAT_ID) throw new Error("War Room solo admite la regulación vigente M-C");
   if (teams.length > MAX_WAR_ROOM_CORPUS_TEAMS) throw new Error("El corpus público de War Room supera el límite seguro");
+  const currentRegulation = getWarRoomRegulationEvidence(WAR_ROOM_FORMAT_ID);
+  if (!currentRegulation) throw new Error("No existe configuración para la regulación vigente");
+  const regulationFields = (regulation: NonNullable<ReturnType<typeof getWarRoomRegulationEvidence>>) => ({
+    formatId: regulation.formatId,
+    formatLabel: regulation.formatLabel,
+    regulationWeight: regulation.regulationWeight,
+    historical: regulation.historical,
+    setEvidenceEligible: regulation.setEvidenceEligible,
+  });
   const tournamentTeams: WarRoomCorpusTeam[] = tournamentSnapshot
     && toId(tournamentSnapshot.regulation) === toId(CHAMPIONS_REGULATION)
     ? tournamentSnapshot.tournaments.flatMap((event) => event.teams.map((team): WarRoomCorpusTeam => ({
@@ -940,6 +992,7 @@ export function buildWarRoomCorpusResponse(
       dateShared: tournamentSnapshot.generatedAt.slice(0, 10),
       pokepasteUrl: team.pokepasteUrl,
       pokemon: [...team.pokemon],
+      ...regulationFields(currentRegulation),
     })))
     : [];
   const tournamentPasteUrls = new Set(tournamentTeams.map((team) => safePokepasteUrl(team.pokepasteUrl)).filter(Boolean));
@@ -956,15 +1009,15 @@ export function buildWarRoomCorpusResponse(
     dateShared: team.dateShared,
     pokepasteUrl: team.pokepasteUrl,
     pokemon: [...team.pokemon],
+    ...regulationFields(currentRegulation),
   })).slice(0, Math.max(0, MAX_WAR_ROOM_CORPUS_TEAMS - tournamentTeams.length));
   const boundedTournamentTeams = tournamentTeams.slice(0, MAX_WAR_ROOM_CORPUS_TEAMS);
   const publicTeams = [...boundedTournamentTeams, ...vgcPastesTeams];
   const publicPasteUrls = new Set(publicTeams.map((team) => safePokepasteUrl(team.pokepasteUrl)).filter(Boolean));
   const privateTeams: WarRoomCorpusTeam[] = savedPastes.flatMap((paste): WarRoomCorpusTeam[] => {
-    const formatKey = toId(paste.format);
-    const currentFormat = formatKey === "mc" || formatKey.includes("championsmc");
+    const pasteRegulation = inferWarRoomRegulationEvidence(paste.format);
     const pokepasteUrl = safePokepasteUrl(paste.sourceUrl);
-    if (!currentFormat || paste.pokemon.length !== 6 || (pokepasteUrl && publicPasteUrls.has(pokepasteUrl))) return [];
+    if (pasteRegulation?.formatId !== WAR_ROOM_FORMAT_ID || paste.pokemon.length !== 6 || (pokepasteUrl && publicPasteUrls.has(pokepasteUrl))) return [];
     return [{
       id: `saved-${paste.id}`,
       source: "scouting-library",
@@ -975,9 +1028,63 @@ export function buildWarRoomCorpusResponse(
       dateShared: paste.updatedAt.slice(0, 10),
       pokepasteUrl,
       pokemon: [...paste.pokemon],
+      ...regulationFields(currentRegulation),
     }];
   }).slice(0, MAX_WAR_ROOM_CORPUS_TEAMS - publicTeams.length);
   const merged = [...publicTeams, ...privateTeams];
+  const seenPasteUrls = new Set(merged.map((team) => safePokepasteUrl(team.pokepasteUrl)).filter(Boolean));
+  const historicalTeams: WarRoomCorpusTeam[] = [];
+  const appendHistorical = (team: WarRoomCorpusTeam) => {
+    if (historicalTeams.length >= MAX_WAR_ROOM_HISTORICAL_TEAMS) return;
+    const url = safePokepasteUrl(team.pokepasteUrl);
+    if (url && seenPasteUrls.has(url)) return;
+    if (url) seenPasteUrls.add(url);
+    historicalTeams.push(team);
+  };
+  for (const source of historicalSources) {
+    const sourceRegulation = getWarRoomRegulationEvidence(source.format.id);
+    if (!sourceRegulation?.historical) continue;
+    for (const team of source.teams) {
+      appendHistorical({
+        id: `${sourceRegulation.formatId}-${team.id}`,
+        source: "vgcpastes",
+        savedPasteId: "",
+        playerName: team.playerName,
+        tournament: team.tournament,
+        rank: team.rank,
+        dateShared: team.dateShared,
+        pokepasteUrl: team.pokepasteUrl,
+        pokemon: [...team.pokemon],
+        ...regulationFields(sourceRegulation),
+      });
+    }
+  }
+  for (const paste of savedPastes) {
+    const pasteRegulation = inferWarRoomRegulationEvidence(paste.format);
+    if (!pasteRegulation?.historical || paste.pokemon.length !== 6) continue;
+    appendHistorical({
+      id: `${pasteRegulation.formatId}-saved-${paste.id}`,
+      source: "scouting-library",
+      savedPasteId: paste.id,
+      playerName: paste.creator || paste.name,
+      tournament: paste.name,
+      rank: "",
+      dateShared: paste.updatedAt.slice(0, 10),
+      pokepasteUrl: safePokepasteUrl(paste.sourceUrl),
+      pokemon: [...paste.pokemon],
+      ...regulationFields(pasteRegulation),
+    });
+  }
+  const historicalFormats = historicalSources.flatMap((source) => {
+    const sourceRegulation = getWarRoomRegulationEvidence(source.format.id);
+    if (!sourceRegulation?.historical) return [];
+    return [{
+      formatId: sourceRegulation.formatId,
+      formatLabel: sourceRegulation.formatLabel,
+      regulationWeight: sourceRegulation.regulationWeight,
+      teamCount: historicalTeams.filter((team) => team.formatId === sourceRegulation.formatId).length,
+    }];
+  });
   return {
     schemaVersion: WAR_ROOM_SCHEMA_VERSION,
     regulation: CHAMPIONS_REGULATION,
@@ -988,11 +1095,14 @@ export function buildWarRoomCorpusResponse(
     vgcPastesTeamCount: vgcPastesTeams.length,
     tournamentTeamCount: boundedTournamentTeams.length,
     savedTeamCount: privateTeams.length,
+    historicalTeamCount: historicalTeams.length,
+    historicalFormats,
     source: {
       label: "VGCPastes Repository",
       url: buildVgcPastesSheetUrl(format),
     },
     teams: merged,
+    historicalTeams,
   };
 }
 
@@ -1027,11 +1137,33 @@ export function isWarRoomCorpusResponse(value: unknown): value is WarRoomCorpusR
     && Number.isInteger(root.savedTeamCount)
     && root.savedTeamCount >= 0
     && root.publicTeamCount + root.savedTeamCount === root.totalTeams
+    && typeof root.historicalTeamCount === "number"
+    && Number.isInteger(root.historicalTeamCount)
+    && root.historicalTeamCount >= 0
+    && root.historicalTeamCount <= MAX_WAR_ROOM_HISTORICAL_TEAMS
+    && Array.isArray(root.historicalFormats)
+    && root.historicalFormats.every((value) => {
+      const entry = recordValue(value);
+      const regulation = getWarRoomRegulationEvidence(entry?.formatId);
+      return Boolean(
+        entry
+        && regulation?.historical
+        && entry.formatLabel === regulation.formatLabel
+        && entry.regulationWeight === regulation.regulationWeight
+        && typeof entry.teamCount === "number"
+        && Number.isInteger(entry.teamCount)
+        && entry.teamCount >= 0,
+      );
+    })
     && source?.label === "VGCPastes Repository"
     && typeof source.url === "string"
     && Array.isArray(root.teams)
     && root.teams.length === root.totalTeams
-    && root.teams.every(isValidCorpusTeam),
+    && root.teams.every(isValidCorpusTeam)
+    && root.teams.every((team) => recordValue(team)?.historical === false)
+    && Array.isArray(root.historicalTeams)
+    && root.historicalTeams.length === root.historicalTeamCount
+    && root.historicalTeams.every((team) => isValidCorpusTeam(team) && team.historical)
   );
 }
 
@@ -1945,8 +2077,8 @@ function setSuggestions(
       baseSpeciesKey(observed.species) === baseSpeciesKey(set.species) ? [{ evidenceTeam, observed }] : []
     )));
     const signatureCounts = new Map<string, number>();
-    for (const { observed } of observedSets) {
-      const signature = [toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
+    for (const { evidenceTeam, observed } of observedSets) {
+      const signature = [evidenceTeam.formatId, toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
       signatureCounts.set(signature, (signatureCounts.get(signature) ?? 0) + 1);
     }
     let hasObservedCurrentMatch = false;
@@ -1974,7 +2106,7 @@ function setSuggestions(
       const contextFit = clamp(round((strategyContextSimilarity(targetContext, evidenceContext) + context.score) / 2));
       const currentKeys = new Set(team.filter((entry) => entry.id !== set.id).map((entry) => baseSpeciesKey(entry.species)));
       const overlap = evidenceTeam.pokemon.filter((species) => currentKeys.has(baseSpeciesKey(species))).length;
-      const signature = [toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
+      const signature = [evidenceTeam.formatId, toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
       const observations = signatureCounts.get(signature) ?? 1;
       const patchedFields = changes.filter((change) => change.source === "battle-data").map((change) => change.key);
       return [{
@@ -1989,7 +2121,12 @@ function setSuggestions(
         evidenceTeam,
         rankScore: structural + contextFit * 0.55 + evidenceTeam.quality * 0.25 + overlap * 7 + Math.min(10, observations * 2),
       }];
-    }).sort((left, right) => right.rankScore - left.rankScore || right.evidenceTeam.quality - left.evidenceTeam.quality || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id));
+    }).sort((left, right) => (
+      Number(left.evidenceTeam.historical) - Number(right.evidenceTeam.historical)
+      || right.rankScore - left.rankScore
+      || right.evidenceTeam.quality - left.evidenceTeam.quality
+      || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id)
+    ));
 
     const observedBest = observedCandidates[0];
     if (observedBest) {
@@ -2025,6 +2162,8 @@ function setSuggestions(
           rank: observedBest.evidenceTeam.rank,
           observations: observedBest.observations,
           contextFit: observedBest.contextFit,
+          formatLabel: observedBest.evidenceTeam.formatLabel,
+          historical: observedBest.evidenceTeam.historical,
         },
         patchedFields: observedBest.patchedFields,
       }];
@@ -2102,30 +2241,54 @@ function memberSuggestions(
     recommendationSlots,
   };
   const lockedKeys = new Set(locked.map((set) => baseSpeciesKey(set.species)));
-  const exact = corpus.filter((entry) => {
-    const keys = new Set(normalizedTeamSpecies(entry).map(baseSpeciesKey));
-    return [...lockedKeys].every((key) => keys.has(key));
-  });
   const threshold = Math.max(1, Math.ceil(lockedKeys.size / 2));
-  const pool = exact.length ? exact : corpus.filter((entry) => {
-    const keys = new Set(normalizedTeamSpecies(entry).map(baseSpeciesKey));
-    return [...lockedKeys].filter((key) => keys.has(key)).length >= threshold;
-  });
-  const mode = exact.length ? "exact" as const : pool.length ? "partial" as const : "none" as const;
+  const comparablePool = (entries: readonly WarRoomCorpusTeam[]) => {
+    const exact = entries.filter((entry) => {
+      const keys = new Set(normalizedTeamSpecies(entry).map(baseSpeciesKey));
+      return [...lockedKeys].every((key) => keys.has(key));
+    });
+    const partial = exact.length ? [] : entries.filter((entry) => {
+      const keys = new Set(normalizedTeamSpecies(entry).map(baseSpeciesKey));
+      return [...lockedKeys].filter((key) => keys.has(key)).length >= threshold;
+    });
+    return { exact, pool: exact.length ? exact : partial };
+  };
+  const currentComparison = comparablePool(corpus);
+  const historicalCorpus = (options.historicalCorpus ?? []).filter((entry) => entry.historical);
+  const historicalComparison = comparablePool(historicalCorpus);
+  const pool = currentComparison.pool;
+  const historicalPool = historicalComparison.pool;
+  const mode = currentComparison.exact.length || historicalComparison.exact.length
+    ? "exact" as const
+    : pool.length || historicalPool.length
+      ? "partial" as const
+      : "none" as const;
 
   const currentKeys = new Set(team.map((set) => baseSpeciesKey(set.species)));
   const excludedKeys = new Set((options.excludedMemberSpecies ?? []).map(baseSpeciesKey));
   const candidates = new Map<string, {
     species: string;
     observedAs: string;
-    coreAppearances: number;
-    corpusAppearances: number;
-    weightedCoreAppearances: number;
-    weightedCorpusAppearances: number;
+    observedPriority: number;
+    observedWeight: number;
+    currentCoreAppearances: number;
+    historicalCoreAppearances: number;
+    currentCorpusAppearances: number;
+    weightedCurrentCoreAppearances: number;
+    weightedHistoricalCoreAppearances: number;
+    weightedCurrentCorpusAppearances: number;
+    regulations: Set<string>;
   }>();
-  const collectCandidates = (teams: WarRoomCorpusTeam[], scope: "core" | "corpus") => {
+  const sourceWeight = (entry: WarRoomCorpusTeam) => (
+    entry.source === "tournament"
+    || (entry.source === "vgcpastes" && Boolean(entry.rank) && Boolean(entry.tournament) && entry.tournament !== "-")
+  ) ? 1.2 : entry.source === "vgcpastes" ? 1 : 0.65;
+  const collectCandidates = (teams: readonly WarRoomCorpusTeam[], scope: "current-core" | "historical-core" | "current-corpus") => {
     for (const entry of teams) {
-      const sourceWeight = entry.source === "tournament" ? 1.2 : entry.source === "vgcpastes" ? 1 : 0.65;
+      const regulation = getWarRoomRegulationEvidence(entry.formatId || WAR_ROOM_FORMAT_ID);
+      const regulationWeight = regulation?.regulationWeight ?? 1;
+      const evidenceWeight = sourceWeight(entry) * regulationWeight;
+      const regulationLabel = regulation?.shortLabel ?? "M-C";
       const seen = new Set<string>();
       for (const observedAs of entry.pokemon) {
         const species = baseSpeciesLabel(observedAs);
@@ -2135,37 +2298,64 @@ function memberSuggestions(
         const current = candidates.get(key) ?? {
           species,
           observedAs,
-          coreAppearances: 0,
-          corpusAppearances: 0,
-          weightedCoreAppearances: 0,
-          weightedCorpusAppearances: 0,
+          observedPriority: 0,
+          observedWeight: 0,
+          currentCoreAppearances: 0,
+          historicalCoreAppearances: 0,
+          currentCorpusAppearances: 0,
+          weightedCurrentCoreAppearances: 0,
+          weightedHistoricalCoreAppearances: 0,
+          weightedCurrentCorpusAppearances: 0,
+          regulations: new Set<string>(),
         };
-        if (scope === "core") {
-          current.coreAppearances += 1;
-          current.weightedCoreAppearances += sourceWeight;
+        const observedPriority = scope === "historical-core" ? 1 : 2;
+        if (observedPriority > current.observedPriority || (observedPriority === current.observedPriority && evidenceWeight > current.observedWeight)) {
+          current.species = species;
+          current.observedAs = observedAs;
+          current.observedPriority = observedPriority;
+          current.observedWeight = evidenceWeight;
+        }
+        if (scope === "current-core") {
+          current.currentCoreAppearances += 1;
+          current.weightedCurrentCoreAppearances += evidenceWeight;
+        } else if (scope === "historical-core") {
+          current.historicalCoreAppearances += 1;
+          current.weightedHistoricalCoreAppearances += evidenceWeight;
+          current.regulations.add(regulationLabel);
         } else {
-          current.corpusAppearances += 1;
-          current.weightedCorpusAppearances += sourceWeight;
+          current.currentCorpusAppearances += 1;
+          current.weightedCurrentCorpusAppearances += evidenceWeight;
         }
         candidates.set(key, current);
       }
     }
   };
-  // Exact/partial core partners are ranked first. The full corpus only fills
-  // the empty spaces once a small core sample or an earlier batch is exhausted.
-  collectCandidates(pool, "core");
-  collectCandidates(corpus, "corpus");
+  // M-C is authoritative. Historical teams can contribute only comparable
+  // partner relationships; current global frequency fills any remaining cards.
+  collectCandidates(pool, "current-core");
+  collectCandidates(historicalPool, "historical-core");
+  collectCandidates(corpus, "current-corpus");
 
   const currentPenalty = teamDefensePenalty(teamProfiles);
   const unlocked = teamProfiles.filter((profile) => !lockedIds.has(profile.id));
   const openSlots = unlocked.filter((profile) => !profile.species.trim());
   const replacementPool = openSlots.length ? openSlots : unlocked;
-  const maxCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCoreAppearances));
-  const maxCorpusAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCorpusAppearances));
-  const poolWeight = Math.max(1, pool.reduce((sum, entry) => sum + (entry.source === "tournament" ? 1.2 : entry.source === "vgcpastes" ? 1 : 0.65), 0));
+  const maxCurrentCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCurrentCoreAppearances));
+  const maxHistoricalCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedHistoricalCoreAppearances));
+  const maxCorpusAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCurrentCorpusAppearances));
+  const currentPoolWeight = Math.max(1, pool.reduce((sum, entry) => sum + sourceWeight(entry), 0));
+  const historicalPoolWeight = Math.max(1, historicalPool.reduce((sum, entry) => {
+    const regulation = getWarRoomRegulationEvidence(entry.formatId);
+    return sum + sourceWeight(entry) * (regulation?.regulationWeight ?? 0);
+  }, 0));
   const members = [...candidates.values()].flatMap((candidate): WarRoomMemberSuggestion[] => {
     const profile = profileFromPreview(snapshot, candidate.observedAs);
     if (!profile.types.length || !isSpeciesAvailable(snapshot, candidate.species, WAR_ROOM_BATTLE_FORMAT)) return [];
+    if (profile.megaActive) {
+      const rayquazaMega = toId(candidate.species) === "rayquaza" && toId(candidate.observedAs) === "rayquazamega";
+      const megaItem = itemForObservedMega(snapshot, candidate.species, candidate.observedAs);
+      if (!rayquazaMega && (!megaItem || !isItemLegal(snapshot, megaItem, WAR_ROOM_BATTLE_FORMAT))) return [];
+    }
     const replacements = replacementPool.map((removed) => {
       const next = [...teamProfiles.filter((entry) => entry.id !== removed.id), profile];
       return { removed, delta: currentPenalty - teamDefensePenalty(next), next };
@@ -2179,39 +2369,74 @@ function memberSuggestions(
       const afterSafe = best.next.filter((entry) => defensiveMultiplier(type, entry) < 1).length;
       return afterWeak - afterSafe < beforeWeak - beforeSafe;
     });
-    const evidenceMode = candidate.coreAppearances > 0 ? "core" as const : "expanded" as const;
-    const appearances = evidenceMode === "core" ? candidate.coreAppearances : candidate.corpusAppearances;
-    const weightedAppearances = evidenceMode === "core" ? candidate.weightedCoreAppearances : candidate.weightedCorpusAppearances;
-    const sampleSize = evidenceMode === "core" ? pool.length : corpus.length;
-    const synergy = evidenceMode === "core" ? weightedAppearances / poolWeight : 0;
-    const frequency = weightedAppearances / (evidenceMode === "core" ? maxCoreAppearances : maxCorpusAppearances);
+    const evidenceMode = candidate.currentCoreAppearances > 0
+      ? "core" as const
+      : candidate.historicalCoreAppearances > 0
+        ? "historical" as const
+        : "expanded" as const;
+    const appearances = evidenceMode === "core"
+      ? candidate.currentCoreAppearances
+      : evidenceMode === "historical"
+        ? candidate.historicalCoreAppearances
+        : candidate.currentCorpusAppearances;
+    const weightedAppearances = evidenceMode === "core"
+      ? candidate.weightedCurrentCoreAppearances
+      : evidenceMode === "historical"
+        ? candidate.weightedHistoricalCoreAppearances
+        : candidate.weightedCurrentCorpusAppearances;
+    const sampleSize = evidenceMode === "core" ? pool.length : evidenceMode === "historical" ? historicalPool.length : corpus.length;
+    const synergy = evidenceMode === "core"
+      ? weightedAppearances / currentPoolWeight
+      : evidenceMode === "historical"
+        ? weightedAppearances / historicalPoolWeight
+        : 0;
+    const frequency = weightedAppearances / (evidenceMode === "core"
+      ? maxCurrentCoreAppearances
+      : evidenceMode === "historical"
+        ? maxHistoricalCoreAppearances
+        : maxCorpusAppearances);
+    const historicalRegulations = [...candidate.regulations];
+    const persistence = historicalRegulations.length / 3;
     const balance = clamp(50 + best.delta * 8) / 100;
     const score = clamp(round(100 * (evidenceMode === "core"
-      ? 0.45 * synergy + 0.25 * frequency + 0.30 * balance
-      : 0.35 * frequency + 0.65 * balance)));
+      ? 0.41 * synergy + 0.23 * frequency + 0.30 * balance + 0.06 * persistence
+      : evidenceMode === "historical"
+        ? 0.38 * synergy + 0.20 * frequency + 0.32 * balance + 0.10 * persistence
+        : 0.35 * frequency + 0.65 * balance)));
     const replacementLabel = best.removed.species || `Slot ${best.removed.slot}`;
+    const sortedHistoricalRegulations = historicalRegulations.sort((left, right) => ["M-B", "M-A", "SV-I"].indexOf(left) - ["M-B", "M-A", "SV-I"].indexOf(right));
+    const evidenceRegulations = evidenceMode === "core"
+      ? ["M-C", ...sortedHistoricalRegulations]
+      : evidenceMode === "historical"
+        ? sortedHistoricalRegulations
+        : ["M-C"];
     return [{
       species: candidate.species,
       observedAs: candidate.observedAs,
       isMega: profile.megaActive,
       score,
-      appearancesWithCore: candidate.coreAppearances,
+      appearancesWithCore: candidate.currentCoreAppearances + candidate.historicalCoreAppearances,
       sampleSize,
       usageRate: round(appearances / Math.max(1, sampleSize) * 100, 1),
       replaces: replacementLabel,
       replacesSetId: best.removed.id,
       patchedTypes: patchedTypes.slice(0, 4),
       evidenceMode,
+      evidenceRegulations,
+      currentAppearances: candidate.currentCoreAppearances,
+      historicalAppearances: candidate.historicalCoreAppearances,
       reasons: [
         evidenceMode === "core"
-          ? `Aparece junto al core en ${candidate.coreAppearances}/${pool.length} equipos comparables.`
-          : `El lote del core se agotó; aparece en ${candidate.corpusAppearances}/${corpus.length} equipos del corpus ampliado.`,
+          ? `Aparece junto al core en ${candidate.currentCoreAppearances}/${pool.length} equipos M-C comparables${historicalRegulations.length ? ` y persiste en ${historicalRegulations.join(", ")}` : ""}.`
+          : evidenceMode === "historical"
+            ? `La relación con el core aparece en ${candidate.historicalCoreAppearances}/${historicalPool.length} equipos históricos (${historicalRegulations.join(", ")}); se pondera por antigüedad y solo pasa si la especie es legal en M-C.`
+            : `El lote del core se agotó; aparece en ${candidate.currentCorpusAppearances}/${corpus.length} equipos M-C del corpus ampliado.`,
         best.delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${replacementLabel}.` : `La mejor prueba estructural es reemplazar a ${replacementLabel}, sin mejora defensiva garantizada.`,
-        patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : evidenceMode === "core" ? "Su valor procede de coaparición; no corrige una debilidad de tipos directa." : "Se propone por frecuencia global y encaje estructural; no por coaparición directa con el core.",
+        patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : evidenceMode === "expanded" ? "Se propone por frecuencia M-C y encaje estructural; no por coaparición directa con el core." : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
       ],
     }];
   }).sort((left, right) => (
-    Number(left.evidenceMode === "expanded") - Number(right.evidenceMode === "expanded")
+    (["core", "historical", "expanded"].indexOf(left.evidenceMode) - ["core", "historical", "expanded"].indexOf(right.evidenceMode))
     || right.score - left.score
     || right.appearancesWithCore - left.appearancesWithCore
     || left.species.localeCompare(right.species)
@@ -2225,7 +2450,7 @@ function memberSuggestions(
   }).slice(0, MAX_WAR_ROOM_MEMBER_SUGGESTIONS);
   return {
     members: limitedMembers,
-    sampleSize: pool.length,
+    sampleSize: pool.length + historicalPool.length,
     mode,
     configuredMegas,
     recommendationSlots,
@@ -2289,7 +2514,9 @@ export function optimizeTeam(
       "Identidad controla reemplazos de integrantes; los bloqueos de set conservan objeto, habilidad, naturaleza, Stat Points y cada movimiento de forma independiente.",
       memberResult.mode === "partial"
         ? "No hay equipos con el core completo en el corpus: las altas propuestas usan coincidencia parcial y están marcadas como exploratorias."
-        : "Las altas se ordenan por coaparición real con el core y por balance defensivo; torneo pesa más que VGCPastes y una colección privada actúa como evidencia auxiliar.",
+        : "Las altas se ordenan por coaparición M-C, relación histórica ponderada y frecuencia general M-C; dentro de cada grupo decide el encaje contextual y defensivo.",
+      "M-B pesa 0.65, M-A 0.45 y SV-I 0.20. El histórico nunca modifica las frecuencias actuales, la auditoría ni los matchups.",
+      "Toda especie histórica pasa primero la legalidad M-C. Los sets M-C tienen prioridad; SV-I solo aporta relaciones porque su sistema de Stat Points no es transferible.",
       "Partner Search limita las alternativas Mega a dos y descuenta las Megas que ya están configuradas en el Team.",
       pasteEvidence.length
         ? `Los sets priorizan ${pasteEvidence.length} pastes completos comparables; Battle Data solo rellena campos ausentes o actúa cuando no sobrevive ningún set observado.`
