@@ -46,6 +46,8 @@ test("paginates the private paste library and filters a Pokemon core with AND se
   const filtered = buildScoutingPasteLibraryResponse(records, { pokemon: ["Aerodactyl-Mega", "Sneasler", "Indeedee-F"], pageSize: 24 });
   assert.deepEqual(filtered.query.pokemon, ["Aerodactyl", "Sneasler", "Indeedee-F"]);
   assert.equal(filtered.pagination.totalItems, 15);
+  assert.equal(filtered.pagination.totalPages, 1);
+  assert.equal(filtered.items.length, 15);
   assert.ok(filtered.items.every((item) => item.pokemon.some((species) => species === "Aerodactyl") && item.pokemon.includes("Sneasler") && item.pokemon.includes("Indeedee-F")));
 });
 
@@ -64,7 +66,8 @@ test("filters private pastes by creator/source text and exact format", async () 
   const { buildScoutingPasteLibraryResponse } = await vite.ssrLoadModule("/lib/scouting-paste-library.ts");
   const records = [record(1), record(2), record(3, { creator: "Other", sourceLabel: "VGCPastes", format: "Champions M-C" })];
   const creator = buildScoutingPasteLibraryResponse(records, { search: "lenVGC" });
-  assert.equal(creator.pagination.totalItems, 2);
+  assert.equal(creator.pagination.totalItems, 1);
+  assert.equal(creator.items[0].creator, "lenVGC");
   const source = buildScoutingPasteLibraryResponse(records, { search: "VGCPastes", format: "Champions M-C" });
   assert.equal(source.pagination.totalItems, 1);
   assert.equal(source.items[0].creator, "Other");
