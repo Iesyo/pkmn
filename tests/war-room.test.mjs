@@ -965,7 +965,7 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   ]);
 
   assert.match(dashboard, /<TabsTrigger value="war-room"/);
-  assert.match(dashboard, /<TabsContent value="war-room"/);
+  assert.match(dashboard, /<TabsContent value="war-room" forceMount/);
   assert.match(dashboard, /<WarRoom key=\{warRoomTeam/);
   assert.match(dashboard, /groups=\{storedGroups\} initialTeam=\{warRoomTeam\?\.team\}/);
   assert.match(dashboard, /onBuildDraft=\{importTournamentTeam\}/);
