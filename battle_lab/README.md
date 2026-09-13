@@ -24,9 +24,10 @@ el más lento; los reintentos dentro del mismo runtime reutilizan la instalació
 Todas las operaciones largas y los combates muestran progreso, tiempo
 transcurrido y ETA.
 
-El notebook instala `poke-env` en un entorno virtual dentro del runtime, sin
-alterar el Python global de Colab. La instalación muestra su salida completa y
-reintenta fallos transitorios de GitHub o PyPI hasta tres veces.
+El notebook instala `poke-env` en un directorio aislado dentro del runtime con
+`pip --target`, sin alterar los paquetes globales de Colab ni depender de
+`venv`/`ensurepip`. La instalación muestra su salida completa y reintenta fallos
+transitorios de GitHub o PyPI hasta tres veces.
 
 ## Ejecutar en Colab
 
