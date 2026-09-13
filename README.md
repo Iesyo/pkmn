@@ -114,12 +114,13 @@ PYTHONPATH=backend python -m unittest discover -s backend/tests -t .
 
 ## Battle Lab en Colab
 
-La Fase 1 levanta una instancia privada de Pokémon Showdown en el runtime de
-Colab, valida Champions M-C y ejecuta combates WebSocket reproducibles con el
-stack de VGC-Bench. Incluye barra de progreso, ETA, métricas y persistencia de
-resultados/replays en Google Drive.
+La libreta canónica levanta una instancia privada de Pokémon Showdown, valida
+Champions M-C y enfrenta el checkpoint final de VGC-Bench contra sí mismo con
+Team Preview y acciones deterministas. Usa GPU automáticamente cuando está
+disponible e incluye barra de progreso, ETA, métricas verificables y replays en
+Google Drive.
 
-[Abrir Battle Lab Fase 1 en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab_Phase_1.ipynb)
+[Abrir Battle Lab en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab.ipynb)
 
 La implementación y las rutas están documentadas en
 [battle_lab/README.md](battle_lab/README.md).

@@ -57,8 +57,8 @@ test("ships two complete M-C smoke teams with legal Stat Point envelopes", async
   }
 });
 
-test("keeps the Colab launcher reproducible and free of saved output", async () => {
-  const notebookPath = new URL("../colab/Battle_Lab_Phase_1.ipynb", import.meta.url);
+test("keeps the canonical Colab launcher reproducible and free of saved output", async () => {
+  const notebookPath = new URL("../colab/Battle_Lab.ipynb", import.meta.url);
   const notebook = JSON.parse(await readFile(notebookPath, "utf8"));
   const notebookSource = notebook.cells.flatMap((cell) => cell.source).join("");
 
@@ -66,22 +66,49 @@ test("keeps the Colab launcher reproducible and free of saved output", async () 
   assert.ok(notebook.cells.length >= 5);
   assert.ok(notebook.cells.every((cell) => cell.cell_type !== "code" || cell.execution_count === null));
   assert.ok(notebook.cells.every((cell) => cell.cell_type !== "code" || cell.outputs.length === 0));
-  assert.match(notebookSource, /battle_lab\/showdown_smoke\.py/);
-  assert.match(notebookSource, /Pokemon VGC\/BattleLab\/results\/phase-1/);
+  assert.match(notebookSource, /battle_lab\/vgc_bench_battle\.py/);
+  assert.match(notebookSource, /Pokemon VGC\/BattleLab\/results\/phase-2/);
   assert.match(notebookSource, /--battles/);
+  assert.match(notebookSource, /--device/);
+  assert.match(notebookSource, /--seed/);
   assert.match(notebookSource, /packages_root = runtime_root \/ "python-packages"/);
   assert.match(notebookSource, /battle_lab_python = Path\(sys\.executable\)/);
   assert.match(notebookSource, /battle_lab_env\["PYTHONPATH"\]/);
   assert.match(notebookSource, /"--target", packages_root, "--upgrade"/);
   assert.doesNotMatch(notebookSource, /"-m", "venv"/);
-  assert.match(notebookSource, /Instalar dependencias del Battle Lab/);
+  assert.match(notebookSource, /Instalar dependencias base del Battle Lab/);
+  assert.match(notebookSource, /requirements-phase2\.txt/);
+  assert.match(notebookSource, /"--no-deps"/);
   assert.match(notebookSource, /attempts=3/);
   assert.match(notebookSource, /stdout=subprocess\.PIPE, stderr=subprocess\.STDOUT/);
   assert.match(notebookSource, /str\(battle_lab_python\)/);
   assert.match(notebookSource, /env=battle_lab_env/);
   assert.match(notebookSource, /Node\.js y npm listos/);
-  assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Ejecutar smoke test M-C"/);
+  assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Soltar a VGC-Bench sin piedad"/);
   assert.match(notebookSource, /NODE_VERSION = "24\.21\.0"/);
   assert.match(notebookSource, /"npm", "install", "--global", "n@latest"/);
   assert.match(notebookSource, /if node_major < 24/);
+});
+
+test("pins and verifies the merciless VGC-Bench inference path", async () => {
+  const [runner, requirements, readme] = await Promise.all([
+    text("battle_lab/vgc_bench_battle.py"),
+    text("battle_lab/requirements-phase2.txt"),
+    text("battle_lab/README.md"),
+  ]);
+
+  assert.match(runner, /VGC_BENCH_COMMIT = "[0-9a-f]{40}"/);
+  assert.match(runner, /VGC_BENCH_CHECKPOINT_REVISION = "[0-9a-f]{40}"/);
+  assert.match(runner, /VGC_BENCH_CHECKPOINT_SHA256 = \(/);
+  assert.match(runner, /57f5edcab415cf6ccc1b6231923c8b66d/);
+  assert.match(runner, /deterministic": True/);
+  assert.match(runner, /choose_on_teampreview/);
+  assert.match(runner, /EXPECTED_OBSERVATION_LENGTH = 6_936/);
+  assert.match(runner, /EXPECTED_ACTION_BRANCHES = \(107, 107\)/);
+  assert.match(runner, /collapse_species_aliases/);
+  assert.match(runner, /os\.replace\(partial, destination\)/);
+  assert.doesNotMatch(runner, /RandomPlayer|MaxBasePowerPlayer/);
+  assert.equal(requirements.trim().split("\n").at(-1), "stable-baselines3==2.8.0");
+  assert.match(readme, /VGC-Bench vs\. VGC-Bench/);
+  assert.match(readme, /M-A\/M-B/);
 });

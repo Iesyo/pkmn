@@ -1,0 +1,4 @@
+# VGC-Bench inference only. The Colab notebook installs this file with
+# --no-deps so it reuses Colab's preinstalled PyTorch/GPU runtime instead of
+# downloading a second multi-gigabyte CUDA stack.
+stable-baselines3==2.8.0
