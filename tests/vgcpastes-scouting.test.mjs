@@ -83,18 +83,38 @@ test("parses the public VGCPastes Champions column layout", async () => {
   assert.deepEqual(teams[0].pokemon, ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo", "Incineroar", "Salamence-Mega"]);
 });
 
+test("uses the verified sheet ids and a deterministic A:AS public CSV query", async () => {
+  const { buildVgcPastesCsvUrl, buildVgcPastesSheetUrl, VGCPASTES_FORMATS } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  assert.deepEqual(VGCPASTES_FORMATS.map(({ label, gid }) => [label, gid]), [
+    ["Champions M-C", "2001945654"],
+    ["Champions M-B", "1458357160"],
+    ["Champions M-A", "791705272"],
+    ["SV Regulation I", "972834435"],
+  ]);
+
+  const csvUrl = new URL(buildVgcPastesCsvUrl(VGCPASTES_FORMATS[0]));
+  assert.equal(csvUrl.hostname, "docs.google.com");
+  assert.equal(csvUrl.searchParams.get("gid"), "2001945654");
+  assert.equal(csvUrl.searchParams.get("headers"), "3");
+  assert.equal(csvUrl.searchParams.get("range"), "A:AS");
+  assert.equal(csvUrl.searchParams.get("tqx"), "out:csv");
+  assert.match(buildVgcPastesSheetUrl(VGCPASTES_FORMATS[0]), /gid=2001945654#gid=2001945654$/);
+});
+
 test("filters by one Pokemon and paginates before sending cards to the client", async () => {
-  const { buildVgcPastesScoutingResponse, getVgcPastesFormat, parseVgcPastesTeams } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  const { buildVgcPastesScoutingResponse, getVgcPastesFormat, isVgcPastesScoutingResponse, parseVgcPastesTeams } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
   const teams = parseVgcPastesTeams(vgcpastesCsv(30));
   const format = getVgcPastesFormat("champions-m-c");
   assert.ok(format);
 
-  const pageTwo = buildVgcPastesScoutingResponse(format, teams, { page: 2, pageSize: 12 });
+  const pageTwo = buildVgcPastesScoutingResponse(format, teams, { page: 2, pageSize: 12, fetchedAt: "2026-09-12T23:00:00.000Z" });
   assert.equal(pageTwo.pagination.totalAvailable, 30);
   assert.equal(pageTwo.pagination.totalItems, 30);
   assert.equal(pageTwo.pagination.totalPages, 3);
   assert.equal(pageTwo.teams.length, 12);
   assert.equal(pageTwo.teams[0].id, "MC018");
+  assert.equal(pageTwo.source.url, "https://docs.google.com/spreadsheets/d/1axlwmzPA49rYkqXh7zHvAtSP-TKbM0ijGYBPRflLSWw/htmlview?gid=2001945654#gid=2001945654");
+  assert.equal(isVgcPastesScoutingResponse(pageTwo), true);
 
   const filtered = buildVgcPastesScoutingResponse(format, teams, { pokemon: "Sneasler", page: 1, pageSize: 12 });
   assert.equal(filtered.pagination.totalItems, 29);
@@ -121,8 +141,11 @@ test("serves VGCPastes by format with bounded upstream fetch", async () => {
     assert.equal(payload.query.pokemon, "Sneasler");
     assert.equal(payload.pagination.page, 2);
     assert.equal(payload.teams.length, 12);
-    assert.match(requested[0], /docs\.google\.com\/spreadsheets\/d\/1axlwmzPA49rYkqXh7zHvAtSP-TKbM0ijGYBPRflLSWw\/gviz\/tq/);
-    assert.match(requested[0], /gid=2001945654/);
+    const upstream = new URL(requested[0]);
+    assert.equal(upstream.hostname, "docs.google.com");
+    assert.equal(upstream.searchParams.get("gid"), "2001945654");
+    assert.equal(upstream.searchParams.get("headers"), "3");
+    assert.equal(upstream.searchParams.get("range"), "A:AS");
   } finally {
     globalThis.fetch = originalFetch;
     serverModule.clearVgcPastesScoutingCache();
