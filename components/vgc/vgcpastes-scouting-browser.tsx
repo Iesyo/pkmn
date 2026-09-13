@@ -43,6 +43,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { parseShowdownPaste } from "@/lib/paste";
 import { getSpriteUrl } from "@/lib/pokemon-data";
@@ -96,16 +97,20 @@ async function readApiPayload(response: Response) {
   }
 }
 
+function countCompetitiveFilters(filters: CompetitiveFilters) {
+  return [
+    filters.player.trim(),
+    filters.event.trim(),
+    filters.rank.trim(),
+    filters.date.trim(),
+    filters.hasEvs,
+    filters.hasPaste,
+    filters.hasReplica,
+  ].filter(Boolean).length;
+}
+
 function hasCompetitiveFilters(filters: CompetitiveFilters) {
-  return Boolean(
-    filters.player
-    || filters.event
-    || filters.rank
-    || filters.date
-    || filters.hasEvs
-    || filters.hasPaste
-    || filters.hasReplica,
-  );
+  return countCompetitiveFilters(filters) > 0;
 }
 
 function TeamCard({
@@ -218,6 +223,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
   const [pokemon, setPokemon] = useState<string[]>([]);
   const [filterDraft, setFilterDraft] = useState<CompetitiveFilters>(EMPTY_FILTERS);
   const [filters, setFilters] = useState<CompetitiveFilters>(EMPTY_FILTERS);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -385,12 +391,14 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
       rank: filterDraft.rank.trim(),
       date: filterDraft.date.trim(),
     });
+    setFilterMenuOpen(false);
     setPage(1);
   }
 
   function clearCompetitiveFilters() {
     setFilterDraft(EMPTY_FILTERS);
     setFilters(EMPTY_FILTERS);
+    setFilterMenuOpen(false);
     setPage(1);
   }
 
@@ -399,6 +407,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     setPokemon([]);
     setFilterDraft(EMPTY_FILTERS);
     setFilters(EMPTY_FILTERS);
+    setFilterMenuOpen(false);
     setPage(1);
   }
 
@@ -420,6 +429,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     : "Sin resultados";
   const filterLabel = pokemon.length ? pokemon.join(" + ") : "";
   const competitiveActive = hasCompetitiveFilters(filters);
+  const activeFilterCount = countCompetitiveFilters(filters);
 
   return (
     <div className="space-y-4">
@@ -477,30 +487,51 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
               </Combobox>
             </div>
 
-            <Button type="button" variant="outline" onClick={() => { refreshNextRequest.current = true; setReloadKey((value) => value + 1); }} disabled={loading} className="h-10 gap-2 border-cyan-300/20 bg-cyan-300/7 text-xs font-black text-cyan-200 hover:bg-cyan-300/12">
-              <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />Actualizar
-            </Button>
-          </div>
+            <div className="flex items-center gap-2">
+              <Popover open={filterMenuOpen} onOpenChange={setFilterMenuOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className={`h-10 gap-2 border-violet-300/20 bg-violet-300/7 text-xs font-black text-violet-200 hover:bg-violet-300/12 ${competitiveActive ? "ring-1 ring-violet-300/20" : ""}`}
+                  >
+                    <Filter className="size-4" />
+                    Filtros
+                    {activeFilterCount > 0 ? <Badge variant="outline" className="ml-0.5 border-violet-200/20 bg-violet-200/10 px-1.5 text-[9px] text-violet-100">{activeFilterCount}</Badge> : null}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" sideOffset={8} className="w-[min(92vw,36rem)] border-white/10 bg-slate-950 p-4 text-slate-200 shadow-2xl">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2"><Filter className="size-4 text-violet-300" /><p className="text-xs font-black text-white">Filtros competitivos</p></div>
+                      <p className="mt-1 text-[10px] leading-4 text-slate-500">Refina el archivo sin ocupar espacio cuando no los necesitas.</p>
+                    </div>
+                    {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">{activeFilterCount} activos</Badge> : null}
+                  </div>
 
-          <div className="mt-4 rounded-2xl border border-white/7 bg-slate-950/35 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2"><Filter className="size-4 text-violet-300" /><span className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Filtros competitivos</span></div>
-              {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Activos</Badge> : null}
-            </div>
-            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-              <Input type="search" value={filterDraft.player} onChange={(event) => setFilterDraft((value) => ({ ...value, player: event.target.value }))} placeholder="Jugador / owner" aria-label="Filtrar por jugador" className="border-white/10 bg-slate-950/70" />
-              <Input type="search" value={filterDraft.event} onChange={(event) => setFilterDraft((value) => ({ ...value, event: event.target.value }))} placeholder="Torneo / evento" aria-label="Filtrar por evento" className="border-white/10 bg-slate-950/70" />
-              <Input type="search" value={filterDraft.rank} onChange={(event) => setFilterDraft((value) => ({ ...value, rank: event.target.value }))} placeholder="Rank / placement" aria-label="Filtrar por rank" className="border-white/10 bg-slate-950/70" />
-              <Input type="search" value={filterDraft.date} onChange={(event) => setFilterDraft((value) => ({ ...value, date: event.target.value }))} placeholder="Fecha, ej. 10 Sep 2026" aria-label="Filtrar por fecha" className="border-white/10 bg-slate-950/70" />
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-3">
-              <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasEvs} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasEvs: checked === true }))} />Con EVs</label>
-              <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasPaste} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasPaste: checked === true }))} />Con PokéPaste</label>
-              <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasReplica} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasReplica: checked === true }))} />Con Replica Code</label>
-              <div className="ml-auto flex gap-2">
-                <Button type="button" variant="ghost" size="sm" onClick={clearCompetitiveFilters} disabled={!hasCompetitiveFilters(filterDraft) && !competitiveActive} className="text-[10px] text-slate-500">Limpiar</Button>
-                <Button type="button" variant="outline" size="sm" onClick={applyCompetitiveFilters} className="gap-1.5 border-violet-300/20 bg-violet-300/7 text-[10px] font-black text-violet-200"><Filter className="size-3.5" />Aplicar filtros</Button>
-              </div>
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    <Input type="search" value={filterDraft.player} onChange={(event) => setFilterDraft((value) => ({ ...value, player: event.target.value }))} placeholder="Jugador / owner" aria-label="Filtrar por jugador" className="border-white/10 bg-slate-900/70" />
+                    <Input type="search" value={filterDraft.event} onChange={(event) => setFilterDraft((value) => ({ ...value, event: event.target.value }))} placeholder="Torneo / evento" aria-label="Filtrar por evento" className="border-white/10 bg-slate-900/70" />
+                    <Input type="search" value={filterDraft.rank} onChange={(event) => setFilterDraft((value) => ({ ...value, rank: event.target.value }))} placeholder="Rank / placement" aria-label="Filtrar por rank" className="border-white/10 bg-slate-900/70" />
+                    <Input type="search" value={filterDraft.date} onChange={(event) => setFilterDraft((value) => ({ ...value, date: event.target.value }))} placeholder="Fecha, ej. 10 Sep 2026" aria-label="Filtrar por fecha" className="border-white/10 bg-slate-900/70" />
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasEvs} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasEvs: checked === true }))} />Con EVs</label>
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasPaste} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasPaste: checked === true }))} />Con PokéPaste</label>
+                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasReplica} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasReplica: checked === true }))} />Con Replica Code</label>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-end gap-2 border-t border-white/7 pt-4">
+                    <Button type="button" variant="ghost" size="sm" onClick={clearCompetitiveFilters} disabled={!hasCompetitiveFilters(filterDraft) && !competitiveActive} className="text-[10px] text-slate-500">Limpiar</Button>
+                    <Button type="button" variant="outline" size="sm" onClick={applyCompetitiveFilters} className="gap-1.5 border-violet-300/20 bg-violet-300/7 text-[10px] font-black text-violet-200"><Filter className="size-3.5" />Aplicar filtros</Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+
+              <Button type="button" variant="outline" onClick={() => { refreshNextRequest.current = true; setReloadKey((value) => value + 1); }} disabled={loading} className="h-10 gap-2 border-cyan-300/20 bg-cyan-300/7 text-xs font-black text-cyan-200 hover:bg-cyan-300/12">
+                <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />Actualizar
+              </Button>
             </div>
           </div>
 
@@ -508,7 +539,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
             <span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-cyan-300" /><strong className="text-slate-300">{data.pagination.totalItems}</strong> resultados</span>
             <span>{data.pagination.totalAvailable} equipos en {data.format.label}</span>
             {pokemon.length ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Core AND · {filterLabel}</Badge> : null}
-            {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Filtros competitivos</Badge> : null}
+            {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Filtros · {activeFilterCount}</Badge> : null}
             <span className="font-mono text-slate-600">{pageLabel}</span>
           </div>
         </div>
