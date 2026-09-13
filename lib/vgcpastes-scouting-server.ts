@@ -8,7 +8,7 @@ import {
 
 const SOURCE_TIMEOUT_MS = 12_000;
 const MAX_CSV_BYTES = 4 * 1024 * 1024;
-const CACHE_TTL_MS = 5 * 60 * 1_000;
+export const VGCPASTES_SOURCE_CACHE_TTL_MS = 60 * 60 * 1_000;
 
 type FormatCacheEntry = {
   format: VgcPastesFormat;
@@ -66,7 +66,7 @@ export async function loadVgcPastesFormat(
     format,
     teams,
     fetchedAt: new Date(now).toISOString(),
-    expiresAt: now + CACHE_TTL_MS,
+    expiresAt: now + VGCPASTES_SOURCE_CACHE_TTL_MS,
   };
   cache.set(format.id, entry);
   return entry;
