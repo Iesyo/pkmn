@@ -45,6 +45,8 @@ backend/pkmn_vgc/    núcleo Python, FastAPI y SQLite
 docs/                decisiones técnicas
 tests/               pruebas del sitio y del parser TypeScript
 backend/tests/       pruebas del dominio Python
+battle_lab/          runners y contratos del Battle Lab en Colab
+colab/               notebooks reproducibles
 ```
 
 La arquitectura completa está en [docs/architecture.md](docs/architecture.md).
@@ -109,6 +111,18 @@ repositorio porque usan `unittest` y `sqlite3` de la biblioteca estándar:
 ```bash
 PYTHONPATH=backend python -m unittest discover -s backend/tests -t .
 ```
+
+## Battle Lab en Colab
+
+La Fase 1 levanta una instancia privada de Pokémon Showdown en el runtime de
+Colab, valida Champions M-C y ejecuta combates WebSocket reproducibles con el
+stack de VGC-Bench. Incluye barra de progreso, ETA, métricas y persistencia de
+resultados/replays en Google Drive.
+
+[Abrir Battle Lab Fase 1 en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab_Phase_1.ipynb)
+
+La implementación y las rutas están documentadas en
+[battle_lab/README.md](battle_lab/README.md).
 
 La base local se crea en `data/pkmn.db`. Usa `PKMN_DB_PATH` para cambiar la
 ruta.

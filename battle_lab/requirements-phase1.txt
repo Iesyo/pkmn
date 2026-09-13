@@ -1,0 +1,2 @@
+poke_env @ git+https://github.com/cameronangliss/poke-env.git@379a04628e42b2a2c94790c0788204b652f7ae1b
+psutil>=6.0,<8

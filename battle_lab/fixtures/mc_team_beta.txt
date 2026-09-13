@@ -1,0 +1,59 @@
+Charizard @ Charizardite X
+Ability: Blaze
+Level: 50
+EVs: 2 HP / 32 SpA / 32 Spe
+Timid Nature
+- Heat Wave
+- Air Slash
+- Dragon Pulse
+- Protect
+
+Blastoise @ Sitrus Berry
+Ability: Torrent
+Level: 50
+EVs: 32 HP / 32 SpA / 2 SpD
+Modest Nature
+- Muddy Water
+- Ice Beam
+- Aura Sphere
+- Protect
+
+Venusaur @ Wide Lens
+Ability: Overgrow
+Level: 50
+EVs: 2 HP / 32 SpA / 32 Spe
+Timid Nature
+- Energy Ball
+- Sludge Bomb
+- Sleep Powder
+- Protect
+
+Garchomp @ Soft Sand
+Ability: Rough Skin
+Level: 50
+EVs: 2 HP / 32 Atk / 32 Spe
+Jolly Nature
+- Earthquake
+- Dragon Claw
+- Rock Slide
+- Protect
+
+Raichu @ Focus Sash
+Ability: Lightning Rod
+Level: 50
+EVs: 2 HP / 32 SpA / 32 Spe
+Timid Nature
+- Fake Out
+- Thunderbolt
+- Nuzzle
+- Protect
+
+Gyarados @ Lum Berry
+Ability: Intimidate
+Level: 50
+EVs: 2 HP / 32 Atk / 32 Spe
+Jolly Nature
+- Waterfall
+- Ice Fang
+- Thunder Wave
+- Protect

@@ -20,6 +20,8 @@ flowchart TD
     API --> PY[Núcleo Python]
     PY --> SQL[(SQLite local)]
     API --> D1[(D1 / SQLite alojado)]
+    DRIVE[(Google Drive)] --> LAB[Battle Lab en Colab]
+    LAB --> DRIVE
 ```
 
 - `app/` y `components/vgc/`: interfaz React/Vinext y adaptador alojado.
@@ -40,6 +42,10 @@ flowchart TD
   calculadas desde el archivo público.
 - `scripts/update-showdown-data.mjs`: generador del snapshot desde las tablas
   públicas oficiales de Pokémon Showdown.
+- `battle_lab/` y `colab/`: runner reproducible y notebooks del Battle Lab. El
+  motor Showdown escucha únicamente en loopback dentro de Colab; Google Drive
+  persiste equipos, resultados, replays y checkpoints, mientras Gradio será la
+  única superficie web temporal en las fases interactivas.
 
 ## Invariantes
 
@@ -88,3 +94,5 @@ flowchart TD
 - Importador de replays de Showdown.
 - Actualización programada del snapshot de Pokémon Showdown.
 - Importación opcional de las hojas PASRS existentes.
+- Adaptador universal Team Builder/VGCPastes y primera interfaz Gradio del
+  Battle Lab.

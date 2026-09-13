@@ -41,6 +41,8 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
+/.battle-lab-runtime/
+.venv-battle-lab/
 
 # python
 __pycache__/
