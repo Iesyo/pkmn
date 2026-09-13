@@ -7,6 +7,7 @@ import {
   getLegalAbilities,
   getMoveData,
   getSpecies,
+  hydrateSetFromSnapshot,
   isItemLegal,
   isMoveLegal,
   isSpeciesAvailable,
@@ -28,6 +29,8 @@ export const WAR_ROOM_FORMAT_ID = "champions-m-c";
 export const WAR_ROOM_BATTLE_FORMAT = "champions";
 export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
 export const MAX_WAR_ROOM_TEAM_MEGAS = 2;
+export const MAX_WAR_ROOM_LOCKED_IDENTITIES = 5;
+export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 12;
 
 export type WarRoomEvidenceScope = "exact-set" | "team-preview" | "corpus";
 export type WarRoomSeverity = "blocker" | "high" | "medium" | "low";
@@ -173,8 +176,13 @@ export interface WarRoomMemberSuggestion {
   sampleSize: number;
   usageRate: number;
   replaces: string;
+  replacesSetId: string;
   patchedTypes: PokemonType[];
   reasons: string[];
+}
+
+export interface WarRoomOptimizationOptions {
+  excludedMemberSpecies?: readonly string[];
 }
 
 export type WarRoomMoveSlot = 0 | 1 | 2 | 3;
@@ -340,17 +348,22 @@ function normalizeOptimizationLocks(
   const normalized: WarRoomOptimizationLocks = {};
   if (isLegacyLockInput(input)) {
     const identities = new Set(input);
+    let identityCount = 0;
     for (const set of team) {
-      if (identities.has(set.id)) normalized[set.id] = createWarRoomPokemonLocks(true);
+      if (identities.has(set.id) && identityCount < MAX_WAR_ROOM_LOCKED_IDENTITIES) {
+        normalized[set.id] = createWarRoomPokemonLocks(true);
+        identityCount += 1;
+      }
     }
     return normalized;
   }
 
+  let identityCount = 0;
   for (const set of team) {
     const source = input[set.id];
     if (!source) continue;
     const locks: WarRoomPokemonLocks = {
-      identity: source.identity === true,
+      identity: source.identity === true && identityCount < MAX_WAR_ROOM_LOCKED_IDENTITIES,
       item: source.item === true,
       ability: source.ability === true,
       nature: source.nature === true,
@@ -362,6 +375,7 @@ function normalizeOptimizationLocks(
         source.moves?.[3] === true,
       ],
     };
+    if (locks.identity) identityCount += 1;
     if (locks.identity || locks.item || locks.ability || locks.nature || locks.statPoints || locks.moves.some(Boolean)) {
       normalized[set.id] = locks;
     }
@@ -467,6 +481,69 @@ function resolveSetSpecies(snapshot: ShowdownSnapshot, set: PokemonSet) {
   if (!megaStone) return set.species;
   const match = Object.entries(megaStone).find(([species]) => toId(species) === toId(set.species));
   return typeof match?.[1] === "string" ? match[1] : set.species;
+}
+
+function itemForObservedMega(
+  snapshot: ShowdownSnapshot,
+  species: string,
+  observedAs: string,
+) {
+  if (!isMegaSpeciesLabel(observedAs)) return "";
+  const speciesKey = toId(species);
+  const observedKey = toId(observedAs);
+  for (const itemId of snapshot.itemFormats[WAR_ROOM_BATTLE_FORMAT] ?? []) {
+    const item = snapshot.items[itemId];
+    const megaStone = recordValue(item?.details?.megaStone);
+    if (!item || !megaStone) continue;
+    const matches = Object.entries(megaStone).some(([baseSpecies, megaSpecies]) => (
+      toId(baseSpecies) === speciesKey
+      && typeof megaSpecies === "string"
+      && toId(megaSpecies) === observedKey
+    ));
+    if (matches) return item.name;
+  }
+  return "";
+}
+
+/**
+ * Applies a partner-search choice to a disposable War Room draft. The slot and
+ * id stay stable so field locks and undo history can follow that exact card.
+ */
+export function applyWarRoomMemberSuggestion(
+  team: PokemonSet[],
+  suggestion: WarRoomMemberSuggestion,
+  snapshot: ShowdownSnapshot,
+) {
+  const targetIndex = team.findIndex((set) => set.id === suggestion.replacesSetId);
+  if (targetIndex < 0) return team;
+  const species = baseSpeciesLabel(suggestion.species);
+  const speciesKey = baseSpeciesKey(species);
+  if (team.some((set, index) => index !== targetIndex && baseSpeciesKey(set.species) === speciesKey)) return team;
+
+  const source = team[targetIndex];
+  const rayquazaMega = toId(species) === "rayquaza" && toId(suggestion.observedAs) === "rayquazamega";
+  const moves = Array.from({ length: 4 }, (_, index) => ({
+    name: rayquazaMega && index === 0 ? "Dragon Ascent" : "",
+    type: null,
+    damaging: false,
+    usage: 0,
+  }));
+  const replacement = hydrateSetFromSnapshot(snapshot, {
+    ...source,
+    nickname: species,
+    species,
+    item: itemForObservedMega(snapshot, species, suggestion.observedAs),
+    ability: getLegalAbilities(snapshot, species, WAR_ROOM_BATTLE_FORMAT)[0] ?? "",
+    level: 50,
+    teraType: null,
+    mechanics: { dynamaxLevel: 10, gigantamax: false, megaEvolution: false, zMove: false },
+    evs: "",
+    nature: "",
+    moves,
+    types: [],
+    performance: { games: 0, wins: 0, leadGames: 0, leadWins: 0, selectionRate: 0 },
+  }, WAR_ROOM_BATTLE_FORMAT);
+  return team.map((set, index) => index === targetIndex ? replacement : set);
 }
 
 function rolesForSet(snapshot: ShowdownSnapshot, set: PokemonSet) {
@@ -1376,6 +1453,7 @@ function memberSuggestions(
   lockedIds: Set<string>,
   corpus: WarRoomCorpusTeam[],
   snapshot: ShowdownSnapshot,
+  options: WarRoomOptimizationOptions,
 ) {
   const teamProfiles = team.map((set) => profileFromSet(snapshot, set));
   const configuredMegas = teamProfiles.filter((profile) => profile.megaActive).length;
@@ -1408,13 +1486,14 @@ function memberSuggestions(
   };
 
   const currentKeys = new Set(team.map((set) => baseSpeciesKey(set.species)));
+  const excludedKeys = new Set((options.excludedMemberSpecies ?? []).map(baseSpeciesKey));
   const candidates = new Map<string, { species: string; observedAs: string; appearances: number }>();
   for (const entry of pool) {
     const seen = new Set<string>();
     for (const observedAs of entry.pokemon) {
       const species = baseSpeciesLabel(observedAs);
       const key = baseSpeciesKey(species);
-      if (!key || seen.has(key) || currentKeys.has(key) || lockedKeys.has(key)) continue;
+      if (!key || seen.has(key) || currentKeys.has(key) || lockedKeys.has(key) || excludedKeys.has(key)) continue;
       seen.add(key);
       const current = candidates.get(key) ?? { species, observedAs, appearances: 0 };
       current.appearances += 1;
@@ -1424,11 +1503,13 @@ function memberSuggestions(
 
   const currentPenalty = teamDefensePenalty(teamProfiles);
   const unlocked = teamProfiles.filter((profile) => !lockedIds.has(profile.id));
+  const openSlots = unlocked.filter((profile) => !profile.species.trim());
+  const replacementPool = openSlots.length ? openSlots : unlocked;
   const maxAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.appearances));
   const members = [...candidates.values()].flatMap((candidate): WarRoomMemberSuggestion[] => {
     const profile = profileFromPreview(snapshot, candidate.observedAs);
     if (!profile.types.length || !isSpeciesAvailable(snapshot, candidate.species, WAR_ROOM_BATTLE_FORMAT)) return [];
-    const replacements = unlocked.map((removed) => {
+    const replacements = replacementPool.map((removed) => {
       const next = [...teamProfiles.filter((entry) => entry.id !== removed.id), profile];
       return { removed, delta: currentPenalty - teamDefensePenalty(next), next };
     }).sort((left, right) => right.delta - left.delta || left.removed.species.localeCompare(right.removed.species));
@@ -1445,6 +1526,7 @@ function memberSuggestions(
     const frequency = candidate.appearances / maxAppearances;
     const balance = clamp(50 + best.delta * 8) / 100;
     const score = clamp(round(100 * (0.45 * synergy + 0.25 * frequency + 0.30 * balance)));
+    const replacementLabel = best.removed.species || `Slot ${best.removed.slot}`;
     return [{
       species: candidate.species,
       observedAs: candidate.observedAs,
@@ -1453,11 +1535,12 @@ function memberSuggestions(
       appearancesWithCore: candidate.appearances,
       sampleSize: pool.length,
       usageRate: round(candidate.appearances / Math.max(1, pool.length) * 100, 1),
-      replaces: best.removed.species,
+      replaces: replacementLabel,
+      replacesSetId: best.removed.id,
       patchedTypes: patchedTypes.slice(0, 4),
       reasons: [
         `Aparece junto al core en ${candidate.appearances}/${pool.length} equipos comparables.`,
-        best.delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${best.removed.species}.` : `La mejor prueba estructural es reemplazar a ${best.removed.species}, sin mejora defensiva garantizada.`,
+        best.delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${replacementLabel}.` : `La mejor prueba estructural es reemplazar a ${replacementLabel}, sin mejora defensiva garantizada.`,
         patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
       ],
     }];
@@ -1468,7 +1551,7 @@ function memberSuggestions(
     if (recommendedMegas >= recommendationSlots) return false;
     recommendedMegas += 1;
     return true;
-  }).slice(0, 8);
+  }).slice(0, MAX_WAR_ROOM_MEMBER_SUGGESTIONS);
   return {
     members: limitedMembers,
     sampleSize: pool.length,
@@ -1484,11 +1567,12 @@ export function optimizeTeam(
   corpus: WarRoomCorpusTeam[],
   snapshot: ShowdownSnapshot,
   metaBySpecies: Record<string, OpponentMetaResponse | undefined> = {},
+  options: WarRoomOptimizationOptions = {},
 ): WarRoomOptimizationResult {
   const optimizationLocks = normalizeOptimizationLocks(team, lockInput);
   const lockedIds = new Set(team.filter((set) => locksForSet(optimizationLocks, set.id).identity).map((set) => set.id));
   const statistics = statisticalCorpus(corpus);
-  const memberResult = memberSuggestions(team, lockedIds, statistics, snapshot);
+  const memberResult = memberSuggestions(team, lockedIds, statistics, snapshot, options);
   const lockedSpecies = team.filter((set) => lockedIds.has(set.id)).map((set) => set.species);
   const locks = team.map((set): WarRoomPokemonLockSummary => {
     const setLocks = locksForSet(optimizationLocks, set.id);

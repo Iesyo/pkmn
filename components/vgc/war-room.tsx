@@ -12,6 +12,7 @@ import {
   Info,
   Loader2,
   Lock,
+  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -20,6 +21,7 @@ import {
   Swords,
   Unlock,
   Users,
+  X,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +39,9 @@ import type { PokemonSet, TeamGroup, TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   WAR_ROOM_FORMAT_ID,
+  MAX_WAR_ROOM_LOCKED_IDENTITIES,
+  MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
+  applyWarRoomMemberSuggestion,
   auditTeam,
   createWarRoomPokemonLocks,
   isWarRoomCorpusResponse,
@@ -48,6 +53,7 @@ import {
   type WarRoomCorpusTeam,
   type WarRoomLockField,
   type WarRoomMatchupResult,
+  type WarRoomMemberSuggestion,
   type WarRoomOptimizationLocks,
   type WarRoomOptimizationResult,
   type WarRoomPokemonLocks,
@@ -70,6 +76,14 @@ type MetaState = {
   loaded: number;
   error: string;
 };
+
+type MemberReplacementStep = {
+  previousSet: PokemonSet;
+  previousLocks: WarRoomPokemonLocks | null;
+  excludedMemberSpecies: string[];
+};
+
+type MemberReplacementHistory = Record<string, MemberReplacementStep[]>;
 
 const MODES: Array<{
   id: WarRoomMode;
@@ -395,14 +409,18 @@ function PokemonLockCard({
   set,
   locks,
   identityCount,
+  previousSpecies,
   onToggle,
   onToggleWholeSet,
+  onUndo,
 }: {
   set: PokemonSet;
   locks: WarRoomPokemonLocks;
   identityCount: number;
+  previousSpecies?: string;
   onToggle: (field: WarRoomLockField) => void;
   onToggleWholeSet: (locked: boolean) => void;
+  onUndo?: () => void;
 }) {
   const fullyLocked = locks.item && locks.ability && locks.nature && locks.statPoints && locks.moves.every(Boolean);
   const lockedCount = Number(locks.identity)
@@ -419,20 +437,25 @@ function PokemonLockCard({
   ];
 
   return (
-    <article className={cn("rounded-2xl border p-3", lockedCount ? "border-cyan-300/20 bg-cyan-300/[0.035]" : "border-white/7 bg-slate-950/45")}>
+    <article className={cn("rounded-2xl border p-3", onUndo ? "border-violet-300/25 bg-violet-300/[0.045]" : lockedCount ? "border-cyan-300/20 bg-cyan-300/[0.035]" : "border-white/7 bg-slate-950/45")}>
       <div className="flex items-center gap-3">
-        <Image src={getSpriteUrl(set.species)} alt={set.species} width={48} height={48} unoptimized className="size-12 shrink-0 object-contain" />
+        {set.species
+          ? <Image src={getSpriteUrl(set.species)} alt={set.species} width={48} height={48} unoptimized className="size-12 shrink-0 object-contain" />
+          : <div className="flex size-12 shrink-0 items-center justify-center rounded-full border border-dashed border-white/10 text-slate-700"><Plus className="size-5" /></div>}
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-xs font-black text-white">{set.species}</h3>
-          <p className="mt-0.5 text-[8px] text-slate-600">{lockedCount ? `${lockedCount} ${lockedCount === 1 ? "campo protegido" : "campos protegidos"}` : "Sin restricciones"}</p>
+          <h3 className="truncate text-xs font-black text-white">{set.species || `Slot ${set.slot} libre`}</h3>
+          <p className={cn("mt-0.5 text-[8px]", onUndo ? "text-violet-200" : "text-slate-600")}>{onUndo ? `Reemplazó a ${previousSpecies || `Slot ${set.slot} libre`}` : lockedCount ? `${lockedCount} ${lockedCount === 1 ? "campo protegido" : "campos protegidos"}` : "Sin restricciones"}</p>
         </div>
-        <button type="button" onClick={() => onToggleWholeSet(!fullyLocked)} className="rounded-lg border border-white/8 px-2 py-1 text-[8px] font-bold text-slate-500 transition hover:border-cyan-300/20 hover:text-cyan-200">
-          {fullyLocked ? "Liberar set" : "Bloquear set"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          {onUndo ? <button type="button" onClick={onUndo} aria-label={`Deshacer cambio de ${set.species || `Slot ${set.slot}`}`} title={`Volver a ${previousSpecies || `Slot ${set.slot} libre`}`} className="flex size-7 items-center justify-center rounded-lg border border-violet-300/20 bg-violet-300/7 text-violet-200 transition hover:bg-violet-300/15"><X className="size-3.5" /></button> : null}
+          <button type="button" onClick={() => onToggleWholeSet(!fullyLocked)} className="rounded-lg border border-white/8 px-2 py-1 text-[8px] font-bold text-slate-500 transition hover:border-cyan-300/20 hover:text-cyan-200">
+            {fullyLocked ? "Liberar set" : "Bloquear set"}
+          </button>
+        </div>
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-1.5">
-        <FieldLockButton label="Identidad" value={set.species} locked={locks.identity} disabled={!locks.identity && identityCount >= 4} onToggle={() => onToggle("identity")} />
+        <FieldLockButton label="Identidad" value={set.species || "Slot libre"} locked={locks.identity} disabled={!set.species || (!locks.identity && identityCount >= MAX_WAR_ROOM_LOCKED_IDENTITIES)} onToggle={() => onToggle("identity")} />
         <FieldLockButton label="Objeto" value={set.item || "Sin objeto"} locked={locks.item} onToggle={() => onToggle("item")} />
         <FieldLockButton label="Habilidad" value={set.ability || "Sin declarar"} locked={locks.ability} onToggle={() => onToggle("ability")} />
         <FieldLockButton label="Naturaleza" value={set.nature || "Sin declarar"} locked={locks.nature} onToggle={() => onToggle("nature")} />
@@ -489,26 +512,53 @@ function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSugg
   );
 }
 
+function MemberSuggestionCard({ member, onApply }: { member: WarRoomMemberSuggestion; onApply: () => void }) {
+  return (
+    <article className="flex flex-col rounded-2xl border border-white/7 bg-slate-950/55 p-4 transition hover:border-violet-300/20">
+      <div className="flex items-center gap-3">
+        <Image src={getSpriteUrl(member.observedAs)} alt={member.species} width={54} height={54} unoptimized className="size-13 object-contain" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="truncate text-sm font-black text-white">{member.species}</h3>
+            {member.isMega ? <Badge variant="outline" className="shrink-0 border-fuchsia-300/18 bg-fuchsia-300/7 px-1.5 text-[8px] text-fuchsia-200">Mega</Badge> : null}
+          </div>
+          <p className="mt-0.5 text-[9px] text-violet-200">por {member.replaces}</p>
+          <div className="mt-2 flex items-center gap-2"><Progress value={member.score} className="h-1.5 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300" /><span className="font-mono text-[9px] text-violet-200">{member.score}</span></div>
+        </div>
+      </div>
+      <p className="mt-3 flex-1 text-[10px] leading-4 text-slate-500">{member.reasons.join(" ")}</p>
+      {member.patchedTypes.length ? <div className="mt-3 flex flex-wrap gap-1">{member.patchedTypes.map((type) => <Badge key={type} variant="outline" className="border-emerald-300/12 bg-emerald-300/5 text-[8px] text-emerald-200">+ {type}</Badge>)}</div> : null}
+      <Button type="button" variant="outline" size="sm" onClick={onApply} className="mt-3 w-full gap-2 border-violet-300/18 bg-violet-300/7 text-[9px] font-black text-violet-100 hover:bg-violet-300/14"><Plus className="size-3.5" />Elegir y recalcular</Button>
+    </article>
+  );
+}
+
 function OptimizationView({
   team,
   result,
   optimizationLocks,
   metaState,
+  replacementHistory,
   onToggleLock,
   onToggleWholeSet,
   onLoadMeta,
   onOpenBuilder,
   onBuildSuggestion,
+  onApplyMember,
+  onUndoMember,
 }: {
   team: TeamVersion;
   result: WarRoomOptimizationResult;
   optimizationLocks: WarRoomOptimizationLocks;
   metaState: MetaState;
+  replacementHistory: MemberReplacementHistory;
   onToggleLock: (id: string, field: WarRoomLockField) => void;
   onToggleWholeSet: (id: string, locked: boolean) => void;
   onLoadMeta: () => void;
   onOpenBuilder: () => void;
   onBuildSuggestion: (suggestion: WarRoomSetSuggestion) => void;
+  onApplyMember: (member: WarRoomMemberSuggestion) => void;
+  onUndoMember: (setId: string) => void;
 }) {
   const identityCount = result.lockedSpecies.length;
   return (
@@ -518,9 +568,9 @@ function OptimizationView({
           <div>
             <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Bloqueos por Pokémon</p>
             <h2 className="mt-1 text-lg font-black text-white">Protege solo lo que quieres conservar</h2>
-            <p className="mt-1 max-w-3xl text-[10px] leading-4 text-slate-500">Identidad evita reemplazar al integrante y admite hasta cuatro miembros del core. Objeto, habilidad, naturaleza, Stat Points y cada movimiento restringen únicamente las propuestas de set.</p>
+            <p className="mt-1 max-w-3xl text-[10px] leading-4 text-slate-500">Identidad evita reemplazar al integrante y admite hasta cinco miembros del core. Objeto, habilidad, naturaleza, Stat Points y cada movimiento restringen únicamente las propuestas de set.</p>
           </div>
-          <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{identityCount}/4 identidades</Badge>
+          <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{identityCount}/{MAX_WAR_ROOM_LOCKED_IDENTITIES} identidades</Badge>
         </div>
         <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           {team.pokemon.map((set) => (
@@ -529,8 +579,10 @@ function OptimizationView({
               set={set}
               locks={optimizationLocks[set.id] ?? createWarRoomPokemonLocks()}
               identityCount={identityCount}
+              previousSpecies={replacementHistory[set.id]?.length ? replacementHistory[set.id].at(-1)?.previousSet.species || `Slot ${set.slot} libre` : undefined}
               onToggle={(field) => onToggleLock(set.id, field)}
               onToggleWholeSet={(locked) => onToggleWholeSet(set.id, locked)}
+              onUndo={replacementHistory[set.id]?.length ? () => onUndoMember(set.id) : undefined}
             />
           ))}
         </div>
@@ -538,8 +590,8 @@ function OptimizationView({
 
       {!identityCount ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Bloquea al menos una identidad para buscar partners</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Los bloqueos de set ya se respetan. Al proteger una identidad, el motor además buscará compañeros observados con ese núcleo sin proponer reemplazarla.</p></section> : (
         <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Las alternativas respetan un máximo práctico de dos Megas por Team.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {result.coreSample.mode === "exact" ? "core exacto" : "coincidencia parcial"}</Badge></div></div>
-          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <article key={member.species} className="rounded-2xl border border-white/7 bg-slate-950/55 p-4"><div className="flex items-center gap-3"><Image src={getSpriteUrl(member.observedAs)} alt={member.species} width={54} height={54} unoptimized className="size-13 object-contain" /><div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h3 className="truncate text-sm font-black text-white">{member.species}</h3>{member.isMega ? <Badge variant="outline" className="shrink-0 border-fuchsia-300/18 bg-fuchsia-300/7 px-1.5 text-[8px] text-fuchsia-200">Mega</Badge> : null}</div><p className="mt-0.5 text-[9px] text-violet-200">por {member.replaces}</p><div className="mt-2 flex items-center gap-2"><Progress value={member.score} className="h-1.5 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300" /><span className="font-mono text-[9px] text-violet-200">{member.score}</span></div></div></div><p className="mt-3 text-[10px] leading-4 text-slate-500">{member.reasons.join(" ")}</p>{member.patchedTypes.length ? <div className="mt-3 flex flex-wrap gap-1">{member.patchedTypes.map((type) => <Badge key={type} variant="outline" className="border-emerald-300/12 bg-emerald-300/5 text-[8px] text-emerald-200">+ {type}</Badge>)}</div> : null}</article>)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">No hay una muestra suficiente para proponer integrantes con ese core y el cupo Mega actual.</p>}
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} alternativas por ronda y dos Megas por Team; al elegir una, el lote se consume y se recalcula con el Team actual.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {result.coreSample.mode === "exact" ? "core exacto" : "coincidencia parcial"}</Badge></div></div>
+          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={member.species} member={member} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">No hay nuevas alternativas con ese core, el cupo Mega actual y los lotes que ya probaste.</p>}
         </section>
       )}
 
@@ -567,10 +619,15 @@ function OptimizationView({
   );
 }
 
-export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamGroup[]; onOpenBuilder: (version: TeamVersion) => void; onBuildDraft: (request: TournamentTeamBuilderImport) => void }) {
-  const versions = useMemo(() => groups.flatMap((group) => group.versions), [groups]);
+export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { groups: TeamGroup[]; initialTeam?: TeamVersion; onOpenBuilder: (version: TeamVersion) => void; onBuildDraft: (request: TournamentTeamBuilderImport) => void }) {
+  const versions = useMemo(() => {
+    const stored = groups.flatMap((group) => group.versions);
+    return initialTeam && !stored.some((version) => version.id === initialTeam.id)
+      ? [initialTeam, ...stored]
+      : stored;
+  }, [groups, initialTeam]);
   const [mode, setMode] = useState<WarRoomMode>("audit");
-  const [teamId, setTeamId] = useState("");
+  const [teamId, setTeamId] = useState(initialTeam?.id ?? "");
   const [resources, setResources] = useState<{ corpus: WarRoomCorpusResponse; snapshot: ShowdownSnapshot } | null>(null);
   const [resourceError, setResourceError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -579,10 +636,24 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
   const [rivalState, setRivalState] = useState<RivalSetState>(EMPTY_RIVAL_STATE);
   const rivalRequest = useRef(0);
   const [optimizationLocks, setOptimizationLocks] = useState<WarRoomOptimizationLocks>({});
+  const [optimizationPokemon, setOptimizationPokemon] = useState<PokemonSet[] | null>(null);
+  const [replacementHistory, setReplacementHistory] = useState<MemberReplacementHistory>({});
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
   const metaRequest = useRef(0);
 
   const selectedTeam = versions.find((version) => version.id === teamId) ?? versions[0] ?? null;
+  const workingTeam = useMemo(() => {
+    if (!selectedTeam) return null;
+    const pokemon = optimizationPokemon ?? selectedTeam.pokemon;
+    return pokemon === selectedTeam.pokemon ? selectedTeam : {
+      ...selectedTeam,
+      pokemon,
+      paste: serializeShowdownPaste(pokemon, selectedTeam.mechanics ?? ["mega"]),
+    };
+  }, [optimizationPokemon, selectedTeam]);
+  const excludedMemberSpecies = useMemo(() => [...new Set(
+    Object.values(replacementHistory).flatMap((steps) => steps.flatMap((step) => step.excludedMemberSpecies)),
+  )], [replacementHistory]);
   const selectedRival = resources?.corpus.teams.find((team) => team.id === rivalId) ?? null;
 
   useEffect(() => {
@@ -606,27 +677,30 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
     return () => { active = false; };
   }, [reloadKey]);
 
-  const audit = useMemo(() => selectedTeam && resources
-    ? auditTeam(selectedTeam.pokemon, resources.corpus.teams, resources.snapshot, { teamFormat: selectedTeam.format })
-    : null, [resources, selectedTeam]);
+  const audit = useMemo(() => workingTeam && resources
+    ? auditTeam(workingTeam.pokemon.filter((set) => set.species.trim()), resources.corpus.teams, resources.snapshot, { teamFormat: workingTeam.format })
+    : null, [resources, workingTeam]);
 
-  const matchup = useMemo(() => selectedTeam && selectedRival && resources
-    ? prepareMatchup(selectedTeam.pokemon, selectedRival, resources.snapshot, rivalState.teamId === selectedRival.id ? rivalState.sets : null)
-    : null, [resources, rivalState.sets, rivalState.teamId, selectedRival, selectedTeam]);
+  const matchup = useMemo(() => workingTeam && selectedRival && resources
+    ? prepareMatchup(workingTeam.pokemon.filter((set) => set.species.trim()), selectedRival, resources.snapshot, rivalState.teamId === selectedRival.id ? rivalState.sets : null)
+    : null, [resources, rivalState.sets, rivalState.teamId, selectedRival, workingTeam]);
 
-  const optimization = useMemo(() => selectedTeam && resources
+  const optimization = useMemo(() => workingTeam && resources
     ? optimizeTeam(
-      selectedTeam.pokemon,
+      workingTeam.pokemon,
       optimizationLocks,
       resources.corpus.teams,
       resources.snapshot,
-      metaState.teamId === selectedTeam.id ? metaState.values : {},
+      metaState.teamId === workingTeam.id ? metaState.values : {},
+      { excludedMemberSpecies },
     )
-    : null, [metaState.teamId, metaState.values, optimizationLocks, resources, selectedTeam]);
+    : null, [excludedMemberSpecies, metaState.teamId, metaState.values, optimizationLocks, resources, workingTeam]);
 
   function changeTeam(value: string) {
     setTeamId(value);
     setOptimizationLocks({});
+    setOptimizationPokemon(null);
+    setReplacementHistory({});
     setMetaState(EMPTY_META_STATE);
   }
 
@@ -679,7 +753,7 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
     updatePokemonLocks(id, (locks, allLocks) => {
       if (field === "identity") {
         const identityCount = Object.values(allLocks).filter((entry) => entry.identity).length;
-        if (!locks.identity && identityCount >= 4) return locks;
+        if (!locks.identity && identityCount >= MAX_WAR_ROOM_LOCKED_IDENTITIES) return locks;
         return { ...locks, identity: !locks.identity };
       }
       if (field === "item") return { ...locks, item: !locks.item };
@@ -706,11 +780,11 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
   }
 
   async function loadMeta() {
-    if (!selectedTeam) return;
+    if (!workingTeam) return;
     metaRequest.current += 1;
     const requestId = metaRequest.current;
-    setMetaState({ teamId: selectedTeam.id, status: "loading", values: {}, loaded: 0, error: "" });
-    const results = await Promise.all(selectedTeam.pokemon.map(async (set) => {
+    setMetaState({ teamId: workingTeam.id, status: "loading", values: {}, loaded: 0, error: "" });
+    const results = await Promise.all(workingTeam.pokemon.filter((set) => set.species).map(async (set) => {
       try {
         const response = await fetch(`/api/opponent-meta/${encodeURIComponent(set.species)}`, { cache: "no-store" });
         const payload = await readJson(response);
@@ -723,7 +797,7 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
     if (requestId !== metaRequest.current) return;
     const available = results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
     setMetaState({
-      teamId: selectedTeam.id,
+      teamId: workingTeam.id,
       status: "ready",
       values: Object.fromEntries(available),
       loaded: available.length,
@@ -732,8 +806,8 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
   }
 
   function buildSuggestion(suggestion: WarRoomSetSuggestion) {
-    if (!selectedTeam) return;
-    const pokemon = selectedTeam.pokemon.map((set) => set.id === suggestion.setId ? {
+    if (!workingTeam) return;
+    const pokemon = workingTeam.pokemon.map((set) => set.id === suggestion.setId ? {
       ...set,
       item: suggestion.proposal.item,
       ability: suggestion.proposal.ability,
@@ -742,14 +816,62 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
       moves: suggestion.proposal.moves.map((name) => ({ name, type: null, damaging: false, usage: 0 })),
     } : set);
     onBuildDraft({
-      paste: serializeShowdownPaste(pokemon, selectedTeam.mechanics ?? ["mega"]),
-      suggestedName: `${selectedTeam.name} · War Room ${suggestion.species}`.slice(0, 80),
+      paste: serializeShowdownPaste(pokemon, workingTeam.mechanics ?? ["mega"]),
+      suggestedName: `${workingTeam.name} · War Room ${suggestion.species}`.slice(0, 80),
       sourceLabel: `War Room ${suggestion.methodology} · ${suggestion.presetId}`,
     });
   }
 
+  function applyMember(member: WarRoomMemberSuggestion) {
+    if (!workingTeam || !resources || !optimization) return;
+    const previousSet = workingTeam.pokemon.find((set) => set.id === member.replacesSetId);
+    if (!previousSet) return;
+    const nextPokemon = applyWarRoomMemberSuggestion(workingTeam.pokemon, member, resources.snapshot);
+    if (nextPokemon === workingTeam.pokemon) return;
+    const previousLocks = optimizationLocks[member.replacesSetId];
+    setReplacementHistory((current) => ({
+      ...current,
+      [member.replacesSetId]: [
+        ...(current[member.replacesSetId] ?? []),
+        {
+          previousSet: { ...previousSet, mechanics: { ...previousSet.mechanics }, moves: previousSet.moves.map((move) => ({ ...move })), performance: { ...previousSet.performance } },
+          previousLocks: previousLocks ? { ...previousLocks, moves: [...previousLocks.moves] as WarRoomPokemonLocks["moves"] } : null,
+          excludedMemberSpecies: optimization.members.map((suggestion) => suggestion.species),
+        },
+      ],
+    }));
+    setOptimizationPokemon(nextPokemon);
+    setOptimizationLocks((current) => {
+      const next = { ...current };
+      delete next[member.replacesSetId];
+      return next;
+    });
+    setMetaState(EMPTY_META_STATE);
+  }
+
+  function undoMember(setId: string) {
+    const steps = replacementHistory[setId] ?? [];
+    const previous = steps.at(-1);
+    if (!previous || !workingTeam) return;
+    setOptimizationPokemon(workingTeam.pokemon.map((set) => set.id === setId ? previous.previousSet : set));
+    setOptimizationLocks((current) => {
+      const next = { ...current };
+      if (previous.previousLocks) next[setId] = previous.previousLocks;
+      else delete next[setId];
+      return next;
+    });
+    setReplacementHistory((current) => {
+      const next = { ...current };
+      const remaining = (next[setId] ?? []).slice(0, -1);
+      if (remaining.length) next[setId] = remaining;
+      else delete next[setId];
+      return next;
+    });
+    setMetaState(EMPTY_META_STATE);
+  }
+
   if (!versions.length) {
-    return <section className="rounded-[28px] border border-dashed border-white/10 bg-slate-900/35 px-6 py-24 text-center"><Swords className="mx-auto size-10 text-slate-700" /><h1 className="mt-4 text-xl font-black text-white">War Room necesita un Team</h1><p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-slate-600">Guarda al menos una versión completa en Teams o Team Builder para poder auditarla, preparar matchups y bloquear un core.</p></section>;
+    return <section className="rounded-[28px] border border-dashed border-white/10 bg-slate-900/35 px-6 py-24 text-center"><Swords className="mx-auto size-10 text-slate-700" /><h1 className="mt-4 text-xl font-black text-white">War Room necesita un Team</h1><p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-slate-600">Guarda una versión en Teams o envía el borrador actual desde Team Builder para auditarlo, preparar matchups y bloquear un core.</p></section>;
   }
 
   return (
@@ -759,7 +881,7 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
         <div className="p-5">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
             <div className="max-w-3xl"><div className="flex flex-wrap items-center gap-2"><Swords className="size-5 text-rose-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-rose-200">War Room</p><Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Champions M-C</Badge></div><h1 className="mt-2 text-2xl font-black tracking-tight text-white">Del dato a una decisión de torneo</h1><p className="mt-1 text-xs leading-5 text-slate-500">Audita, prepara y optimiza con un motor determinista. Cada conclusión declara si proviene del set exacto, del team preview o del corpus.</p></div>
-            <div className="min-w-0 xl:w-[420px]"><label className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Team y versión de trabajo</label><Select value={selectedTeam?.id ?? ""} onValueChange={changeTeam}><SelectTrigger className="mt-2 w-full border-white/10 bg-slate-950/70"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{groups.flatMap((group) => group.versions.map((version) => <SelectItem key={version.id} value={version.id}>{group.name} · v{formatVersion(version)}</SelectItem>))}</SelectContent></Select></div>
+            <div className="min-w-0 xl:w-[420px]"><label className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Team y versión de trabajo</label><Select value={selectedTeam?.id ?? ""} onValueChange={changeTeam}><SelectTrigger className="mt-2 w-full border-white/10 bg-slate-950/70"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{versions.map((version) => { const storedGroup = groups.find((group) => group.versions.some((entry) => entry.id === version.id)); return <SelectItem key={version.id} value={version.id}>{storedGroup ? `${storedGroup.name} · v${formatVersion(version)}` : `${version.name} · borrador`}</SelectItem>; })}</SelectContent></Select></div>
           </div>
           <div className="mt-5 grid gap-2 border-t border-white/7 pt-5 lg:grid-cols-3">
             {MODES.map((entry) => {
@@ -781,11 +903,11 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
         </section>
       ) : null}
 
-      {resources && selectedTeam && mode === "audit" && audit ? <AuditView result={audit} /> : null}
+      {resources && workingTeam && mode === "audit" && audit ? <AuditView result={audit} /> : null}
 
-      {resources && selectedTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
+      {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && selectedTeam && mode === "optimize" && optimization ? <OptimizationView team={selectedTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === selectedTeam.id ? metaState : EMPTY_META_STATE} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(selectedTeam)} onBuildSuggestion={buildSuggestion} /> : null}
+      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={applyMember} onUndoMember={undoMember} /> : null}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, Clipboard, Database, Download, Eraser, FolderOpen, Loader2, Plus, RefreshCw, Save, Shield, Swords, Upload, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ type BuilderProps = {
   initialImport?: TournamentTeamBuilderImport;
   onTeamCreated: (team: TeamGroup) => void;
   onVersionCreated: (version: TeamVersion) => void;
+  onOpenWarRoom: (version: TeamVersion) => void;
 };
 
 function importedDraftMessage(initialImport: TournamentTeamBuilderImport) {
@@ -205,7 +206,7 @@ function MyTeamsDialog({ groups, onLoad }: { groups: TeamGroup[]; onLoad: (versi
   );
 }
 
-export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreated, onVersionCreated }: BuilderProps) {
+export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreated, onVersionCreated, onOpenWarRoom }: BuilderProps) {
   const [initialImportState] = useState(() => {
     if (!initialImport) return null;
     try {
@@ -375,6 +376,31 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
     finally { setSaving(false); }
   }
 
+  function openWarRoom() {
+    setError("");
+    setMessage("");
+    if (!pokemon.some((set) => set.species.trim())) {
+      setError("Agrega al menos un Pokémon antes de enviar el borrador a War Room.");
+      return;
+    }
+    onOpenWarRoom({
+      id: `builder-war-room-${Date.now()}`,
+      teamId: sourceTeamId,
+      name: teamName.trim() || "Borrador de Team Builder",
+      version: initialVersion?.version ?? 0,
+      minorVersion: initialVersion?.minorVersion,
+      format,
+      mechanics: [...mechanics],
+      paste,
+      createdAt: new Date().toISOString(),
+      pokemon: cloneForBuilder(pokemon),
+      matches: [],
+      games: 0,
+      wins: 0,
+      leads: [],
+    });
+  }
+
   return (
     <section className="space-y-4">
       <div className="rounded-[24px] border border-white/8 bg-slate-900/45 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.24)]">
@@ -383,7 +409,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
             <div className="grid gap-1.5"><Label htmlFor="builder-name" className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Nombre del Team</Label><Input id="builder-name" value={teamName} onChange={(event) => setTeamName(event.target.value)} disabled={Boolean(sourceTeamId)} placeholder="Ej. Aurora Protocol" className="border-white/10 bg-black/20" /></div>
             <div className="grid gap-1.5"><Label className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Formato</Label><Select value={format} onValueChange={changeFormat}><SelectTrigger className="w-full border-white/10 bg-black/20"><SelectValue /></SelectTrigger><SelectContent>{BATTLE_FORMATS.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.label}</SelectItem>)}</SelectContent></Select></div>
           </div>
-          <div className="flex flex-wrap gap-2"><MyTeamsDialog groups={groups} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} /><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
+          <div className="flex flex-wrap gap-2"><MyTeamsDialog groups={groups} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} /><Button variant="outline" onClick={openWarRoom} className="gap-2 rounded-full border-violet-300/15 bg-violet-300/5 text-violet-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2"><span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Mecánicas</span>{(["tera", "dynamax", "mega", "zmove"] as BattleMechanic[]).map((mechanic) => <label key={mechanic} className={cn("flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px]", mechanics.includes(mechanic) ? "border-cyan-300/20 bg-cyan-300/8 text-cyan-100" : "border-white/7 bg-white/3 text-slate-600", format !== "custom" && "pointer-events-none opacity-75")}><Checkbox checked={mechanics.includes(mechanic)} disabled={format !== "custom"} onCheckedChange={(checked) => setMechanics((current) => checked ? [...new Set([...current, mechanic])] : current.filter((entry) => entry !== mechanic))} />{MECHANIC_LABELS[mechanic]}</label>)}<div className="ml-auto flex items-center gap-2"><span className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px]", dex ? "bg-emerald-300/7 text-emerald-300" : "bg-white/4 text-slate-500")}>{dex ? <Database className="size-3" /> : <Loader2 className="size-3 animate-spin" />}{dex ? `Showdown · ${dex.metadata.captured}` : "Cargando Pokédex"}</span><Button type="button" variant="ghost" size="sm" onClick={refreshDatabases} disabled={refreshingDex} className="h-7 gap-1.5 rounded-full border border-white/8 bg-white/3 px-2.5 text-[9px] text-slate-400 hover:bg-cyan-300/8 hover:text-cyan-100">{refreshingDex ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}Actualizar bases</Button></div></div>
         {message ? <p className="mt-3 rounded-xl border border-emerald-300/15 bg-emerald-300/5 px-3 py-2 text-xs text-emerald-200">{message}</p> : null}{error ? <p role="alert" className="mt-3 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}{dexError ? <p role="alert" className="mt-3 flex items-center gap-2 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200"><AlertTriangle className="size-4" />{dexError}</p> : null}

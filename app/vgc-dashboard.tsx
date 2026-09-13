@@ -25,6 +25,8 @@ type ConnectionState = "checking" | "ready" | "error";
 type TeamsPayload = { teams?: TeamGroup[]; folders?: TeamFolder[] };
 type TeamOrganization = Record<string, { folderId: string | null; sortOrder: number }>;
 type PendingBuilderImport = TournamentTeamBuilderImport & { token: number };
+type PendingBuilderVersion = { version: TeamVersion; token: number };
+type PendingWarRoomTeam = { team: TeamVersion; token: number };
 
 function sortFolders(folders: TeamFolder[]) {
   return [...folders].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
@@ -129,7 +131,11 @@ export function VgcDashboard() {
   const [libraryVersionId, setLibraryVersionId] = useState("");
   const [builderVersionId, setBuilderVersionId] = useState("");
   const [builderImport, setBuilderImport] = useState<PendingBuilderImport | null>(null);
+  const [builderDraft, setBuilderDraft] = useState<PendingBuilderVersion | null>(null);
   const builderImportSequence = useRef(0);
+  const builderDraftSequence = useRef(0);
+  const [warRoomTeam, setWarRoomTeam] = useState<PendingWarRoomTeam | null>(null);
+  const warRoomSequence = useRef(0);
   const [scoutingMatchId, setScoutingMatchId] = useState("");
   const [runningScoutingIds, setRunningScoutingIds] = useState<string[]>([]);
 
@@ -378,13 +384,31 @@ export function VgcDashboard() {
 
   function openInBuilder(version: TeamVersion) {
     setBuilderImport(null);
+    setBuilderDraft(null);
     setBuilderVersionId(version.id);
     setActiveView("builder");
+  }
+
+  function openWarRoomDraftInBuilder(version: TeamVersion) {
+    builderDraftSequence.current += 1;
+    setBuilderImport(null);
+    setBuilderVersionId("");
+    setBuilderDraft({ version, token: builderDraftSequence.current });
+    setActiveView("builder");
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+  }
+
+  function openInWarRoom(team: TeamVersion) {
+    warRoomSequence.current += 1;
+    setWarRoomTeam({ team, token: warRoomSequence.current });
+    setActiveView("war-room");
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
   }
 
   function importTournamentTeam(request: TournamentTeamBuilderImport) {
     builderImportSequence.current += 1;
     setBuilderVersionId("");
+    setBuilderDraft(null);
     setBuilderImport({ ...request, token: builderImportSequence.current });
     setActiveView("builder");
     window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
@@ -499,13 +523,13 @@ export function VgcDashboard() {
               </ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select><NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /></div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button>} /></> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-12 text-center"><BookOpen className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm font-semibold text-slate-400">Todavía no hay equipos guardados</p><p className="mt-1 text-xs text-slate-600">Crea tu primer Team para ver aquí sus versiones, estadísticas e historial.</p></div>}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select><NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /></div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openInWarRoom(libraryVersion)} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button></div>} /></> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-12 text-center"><BookOpen className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm font-semibold text-slate-400">Todavía no hay equipos guardados</p><p className="mt-1 text-xs text-slate-600">Crea tu primer Team para ver aquí sus versiones, estadísticas e historial.</p></div>}
             </div>
           </div>
         </TabsContent>
 
         <TabsContent value="builder" forceMount className="mt-0 outline-none">
-          <TeamBuilder key={builderImport ? `tournament-${builderImport.token}` : builderVersionId} groups={storedGroups} initialVersion={versions.find((version) => version.id === builderVersionId)} initialImport={builderImport ?? undefined} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} />
+          <TeamBuilder key={builderImport ? `tournament-${builderImport.token}` : builderDraft ? `war-room-${builderDraft.token}` : builderVersionId} groups={storedGroups} initialVersion={builderDraft?.version ?? versions.find((version) => version.id === builderVersionId)} initialImport={builderImport ?? undefined} onTeamCreated={handleBuilderTeamCreated} onVersionCreated={handleVersionCreated} onOpenWarRoom={openInWarRoom} />
         </TabsContent>
 
         <TabsContent value="scouting" className="mt-0 outline-none">
@@ -513,7 +537,7 @@ export function VgcDashboard() {
         </TabsContent>
 
         <TabsContent value="war-room" className="mt-0 outline-none">
-          <WarRoom groups={storedGroups} onOpenBuilder={openInBuilder} onBuildDraft={importTournamentTeam} />
+          <WarRoom key={warRoomTeam ? `team-${warRoomTeam.token}` : "war-room"} groups={storedGroups} initialTeam={warRoomTeam?.team} onOpenBuilder={openWarRoomDraftInBuilder} onBuildDraft={importTournamentTeam} />
         </TabsContent>
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · evidencia de Pokémon Showdown, VGCPastes y Battle Data · los índices orientan decisiones, no predicen victorias</footer>

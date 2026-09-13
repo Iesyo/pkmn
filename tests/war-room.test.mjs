@@ -279,6 +279,90 @@ test("limits Mega partner cards according to the Megas already configured on the
   assert.match(twoMegaResult.notes.join(" "), /limita las alternativas Mega a dos/i);
 });
 
+test("caps identity locks at five even when a caller submits all six", async () => {
+  const snapshot = await readSnapshot();
+  const { createWarRoomPokemonLocks, MAX_WAR_ROOM_LOCKED_IDENTITIES, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const team = ownTeam();
+  const requestedLocks = Object.fromEntries(team.map((pokemon) => [pokemon.id, createWarRoomPokemonLocks(true)]));
+  const result = optimizeTeam(team, requestedLocks, corpus(), snapshot);
+
+  assert.equal(MAX_WAR_ROOM_LOCKED_IDENTITIES, 5);
+  assert.deepEqual(result.lockedSpecies, team.slice(0, 5).map((pokemon) => pokemon.species));
+  assert.equal(result.locks[5].fields.some((field) => field.key === "identity"), false);
+});
+
+test("offers up to twelve partners and can consume the previous recommendation batch", async () => {
+  const snapshot = await readSnapshot();
+  const { MAX_WAR_ROOM_MEMBER_SUGGESTIONS, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const team = ownTeam();
+  const candidates = [
+    "Abomasnow", "Absol", "Aegislash", "Aerodactyl", "Aggron",
+    "Alakazam", "Alcremie", "Altaria", "Ampharos", "Annihilape",
+    "Appletun", "Araquanid", "Arbok", "Arboliva", "Arcanine",
+  ];
+  const partnerCorpus = Array.from({ length: 3 }, (_, index) => corpusTeam(
+    `large-${index}`,
+    ["Rillaboom", ...candidates.slice(index * 5, index * 5 + 5)],
+  ));
+  const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
+
+  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS, 12);
+  assert.equal(first.members.length, 12);
+  assert.ok(first.members.every((member) => member.replacesSetId));
+
+  const previousBatch = first.members.map((member) => member.species);
+  const next = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
+  assert.equal(next.members.length, 3);
+  assert.ok(next.members.every((member) => !previousBatch.includes(member.species)));
+});
+
+test("applies a partner to its recommended slot while preserving slot identity and Mega intent", async () => {
+  const snapshot = await readSnapshot();
+  const { applyWarRoomMemberSuggestion, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const team = ownTeam();
+  const partnerCorpus = [
+    corpusTeam("partners-a", ["Rillaboom", "Sneasler", "Basculegion", "Pelipper", "Farigiraf", "Salamence-Mega"]),
+    corpusTeam("partners-b", ["Rillaboom", "Sneasler", "Basculegion", "Dragonite", "Indeedee-F", "Salamence-Mega"]),
+  ];
+  const result = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
+  const suggestion = result.members.find((member) => !member.isMega);
+  assert.ok(suggestion);
+  const previous = team.find((pokemon) => pokemon.id === suggestion.replacesSetId);
+  const changed = applyWarRoomMemberSuggestion(team, suggestion, snapshot);
+  const replacement = changed.find((pokemon) => pokemon.id === suggestion.replacesSetId);
+
+  assert.ok(previous);
+  assert.ok(replacement);
+  assert.equal(replacement.id, previous.id);
+  assert.equal(replacement.slot, previous.slot);
+  assert.equal(replacement.species, suggestion.species);
+  assert.equal(replacement.moves.length, 4);
+  assert.ok(replacement.moves.every((move) => move.name === ""));
+  assert.notEqual(changed, team);
+  assert.equal(team.find((pokemon) => pokemon.id === suggestion.replacesSetId)?.species, previous.species);
+
+  const recalculated = optimizeTeam(changed, [team[1].id], partnerCorpus, snapshot);
+  assert.equal(recalculated.members.some((member) => member.species === suggestion.species), false);
+
+  const megaSuggestion = {
+    species: "Salamence",
+    observedAs: "Salamence-Mega",
+    isMega: true,
+    score: 80,
+    appearancesWithCore: 2,
+    sampleSize: 2,
+    usageRate: 100,
+    replaces: team[5].species,
+    replacesSetId: team[5].id,
+    patchedTypes: [],
+    reasons: [],
+  };
+  const megaTeam = applyWarRoomMemberSuggestion(team, megaSuggestion, snapshot);
+  assert.equal(megaTeam[5].species, "Salamence");
+  assert.equal(megaTeam[5].item, "Salamencite");
+  assert.equal(optimizeTeam(megaTeam, [team[1].id], partnerCorpus, snapshot).megaPolicy.configured, 1);
+});
+
 test("preserves individual fields and move slots while building a legal set proposal", async () => {
   const snapshot = await readSnapshot();
   const {
@@ -409,15 +493,23 @@ test("does not emit an empty proposal when every set field is locked", async () 
 });
 
 test("exposes War Room as a top-level dashboard section, separate from Scouting", async () => {
-  const [dashboard, warRoom] = await Promise.all([
+  const [dashboard, warRoom, builder] = await Promise.all([
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/vgc/war-room.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/vgc/team-builder.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(dashboard, /<TabsTrigger value="war-room"/);
   assert.match(dashboard, /<TabsContent value="war-room"/);
-  assert.match(dashboard, /<WarRoom groups=\{storedGroups\}/);
+  assert.match(dashboard, /<WarRoom key=\{warRoomTeam/);
+  assert.match(dashboard, /groups=\{storedGroups\} initialTeam=\{warRoomTeam\?\.team\}/);
   assert.match(dashboard, /onBuildDraft=\{importTournamentTeam\}/);
+  assert.match(dashboard, /function openInWarRoom\(team: TeamVersion\)/);
+  assert.match(dashboard, /Enviar a War Room/);
+  assert.match(dashboard, /onOpenWarRoom=\{openInWarRoom\}/);
+  assert.match(builder, /function openWarRoom\(\)/);
+  assert.match(builder, /onOpenWarRoom\(\{/);
+  assert.match(builder, /Enviar a War Room/);
   assert.match(dashboard, /<ScoutingView /);
   assert.match(warRoom, /Auditar mi Team/);
   assert.match(warRoom, /Preparar un matchup/);
@@ -429,5 +521,12 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Probar este set en Builder/);
   assert.match(warRoom, /dos Megas por Team/);
   assert.match(warRoom, /member\.isMega/);
+  assert.match(warRoom, /MAX_WAR_ROOM_LOCKED_IDENTITIES/);
+  assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS/);
+  assert.match(warRoom, /Elegir y recalcular/);
+  assert.match(warRoom, /applyWarRoomMemberSuggestion/);
+  assert.match(warRoom, /function undoMember\(setId: string\)/);
+  assert.match(warRoom, /Deshacer cambio de/);
+  assert.match(warRoom, /excludedMemberSpecies: optimization\.members\.map/);
   assert.match(warRoom, /serializeShowdownPaste/);
 });

@@ -20,7 +20,10 @@ histórico de equipos de Pokémon VGC.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los
   mejores cuatro/lead/backline ante un rival y explorar cambios manteniendo un
   core bloqueado. El optimizador permite proteger por integrante la identidad,
-  objeto, habilidad, naturaleza, Stat Points y cada slot de movimiento.
+  objeto, habilidad, naturaleza, Stat Points y cada slot de movimiento. Teams y
+  Team Builder pueden enviar una versión o borrador directamente; se bloquean
+  hasta cinco identidades y Partner Search ofrece hasta 12 alternativas por
+  ronda, con reemplazo reversible y recálculo sobre el borrador actualizado.
 - Recomendaciones explicables con tres niveles de evidencia: set exacto, team
   preview y frecuencia del corpus. Sus índices ordenan alternativas; nunca se
   presentan como probabilidad de victoria.

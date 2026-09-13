@@ -99,7 +99,7 @@ test("starts a wide calculator-only Team Builder in Champions with current summa
   assert.equal(DEFAULT_BATTLE_FORMAT, "champions");
   assert.deepEqual(DEFAULT_BATTLE_MECHANICS, ["mega"]);
   assert.match(dashboardSource, /const \[builderVersionId, setBuilderVersionId\] = useState\(""\)/);
-  assert.match(dashboardSource, /initialVersion=\{versions\.find\(\(version\) => version\.id === builderVersionId\)\}/);
+  assert.match(dashboardSource, /initialVersion=\{builderDraft\?\.version \?\? versions\.find\(\(version\) => version\.id === builderVersionId\)\}/);
   assert.doesNotMatch(dashboardSource, /initialVersion=.*\?\? left/);
   assert.match(dashboardSource, /w-full max-w-none/);
   assert.match(builderSource, /xl:grid-cols-\[270px_minmax\(0,1fr\)\]/);
