@@ -278,9 +278,10 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
   }, [formatId, pokemon, filters, page, reloadKey]);
 
   async function downloadTeamPaste(team: VgcPastesTeam, signal?: AbortSignal) {
-    const cached = pasteCache.current.get(team.id);
+    const cacheKey = team.pokepasteUrl;
+    if (!cacheKey) throw new Error("Este equipo no tiene PokéPaste público.");
+    const cached = pasteCache.current.get(cacheKey);
     if (cached) return cached;
-    if (!team.pokepasteUrl) throw new Error("Este equipo no tiene PokéPaste público.");
 
     const response = await fetch("/api/pokepaste-import", {
       method: "POST",
@@ -293,7 +294,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
       throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
     }
-    pasteCache.current.set(team.id, payload.paste);
+    pasteCache.current.set(cacheKey, payload.paste);
     return payload.paste;
   }
 
@@ -329,9 +330,9 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     setInspectorSets([]);
     setInspectorError("");
     setCopyDone(false);
+    setInspectorLoading(Boolean(team.pokepasteUrl));
     if (!team.pokepasteUrl) return;
 
-    setInspectorLoading(true);
     try {
       const paste = await downloadTeamPaste(team, controller.signal);
       if (controller.signal.aborted) return;
@@ -341,6 +342,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
       if (controller.signal.aborted) return;
       setInspectorError(caught instanceof Error ? caught.message : "No pudimos inspeccionar ese equipo.");
     } finally {
+      if (inspectorAbort.current === controller) inspectorAbort.current = null;
       if (!controller.signal.aborted) setInspectorLoading(false);
     }
   }
@@ -365,6 +367,14 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     } catch {
       setInspectorError("El navegador no permitió copiar el paste al portapapeles.");
     }
+  }
+
+  function importInspectedTeam() {
+    if (!inspectorTeam || !inspectorPaste) return;
+    const team = inspectorTeam;
+    const paste = inspectorPaste;
+    closeInspector();
+    sendTeamToBuilder(team, paste);
   }
 
   function applyCompetitiveFilters() {
@@ -573,7 +583,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" size="sm" disabled={!inspectorPaste} onClick={() => void copyInspectorPaste()} className="gap-1.5 border-white/10 text-[10px] text-slate-300">{copyDone ? <Check className="size-3.5 text-emerald-300" /> : <Clipboard className="size-3.5" />}{copyDone ? "Copiado" : "Copiar Paste"}</Button>
-                <Button type="button" size="sm" disabled={!inspectorPaste} onClick={() => { if (inspectorPaste) sendTeamToBuilder(inspectorTeam, inspectorPaste); }} className="gap-1.5 bg-cyan-300 text-[10px] font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-3.5" />Importar al Builder</Button>
+                <Button type="button" size="sm" disabled={!inspectorPaste} onClick={importInspectedTeam} className="gap-1.5 bg-cyan-300 text-[10px] font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-3.5" />Importar al Builder</Button>
               </div>
             </DialogFooter>
           </> : null}
