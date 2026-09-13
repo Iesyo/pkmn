@@ -281,5 +281,5 @@ test("connects Scouting v3 to competitive filters and an on-demand Pokepaste ins
   assert.match(browser, /pasteCache/);
   assert.match(browser, /Página \$\{data\.pagination\.page\} de/);
   assert.match(scouting, /VgcPastesScoutingBrowser/);
-  assert.match(scouting, />Equipos/);
+  assert.match(scouting, />Públicos/);
 });

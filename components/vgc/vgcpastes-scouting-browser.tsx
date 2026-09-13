@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookmarkPlus,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -118,15 +119,21 @@ function TeamCard({
   formatLabel,
   importing,
   importDisabled,
+  saving,
+  saved,
   onInspect,
   onImport,
+  onSave,
 }: {
   team: VgcPastesTeam;
   formatLabel: string;
   importing: boolean;
   importDisabled: boolean;
+  saving: boolean;
+  saved: boolean;
   onInspect: () => void;
   onImport: () => void;
+  onSave: () => void;
 }) {
   const context = team.tournament && team.tournament !== "-" ? team.tournament : formatLabel;
   return (
@@ -145,11 +152,15 @@ function TeamCard({
             {team.sourceUrl ? <a href={team.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 hover:text-cyan-200">Fuente <ExternalLink className="size-3" /></a> : null}
           </div>
         </div>
-        <div className="flex shrink-0 flex-col gap-1.5 sm:flex-row">
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <Button type="button" variant="outline" size="sm" onClick={onInspect} className="h-8 gap-1.5 border-cyan-300/15 bg-cyan-300/5 px-2.5 text-[9px] text-cyan-200 hover:bg-cyan-300/10">
             <Eye className="size-3" />Inspector
           </Button>
           {team.pokepasteUrl ? <a href={team.pokepasteUrl} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-white/10 bg-white/3 px-2.5 text-[9px] font-bold text-slate-400 transition hover:border-cyan-300/20 hover:text-cyan-200">Paste <ExternalLink className="size-3" /></a> : null}
+          <Button type="button" variant="outline" size="sm" disabled={saving || saved || !team.pokepasteUrl} onClick={onSave} className="h-8 gap-1.5 border-violet-300/15 bg-violet-300/5 px-2.5 text-[9px] text-violet-200 hover:bg-violet-300/10">
+            {saving ? <Loader2 className="size-3 animate-spin" /> : saved ? <Check className="size-3 text-emerald-300" /> : <BookmarkPlus className="size-3" />}
+            {saving ? "Guardando" : saved ? "Guardado" : "Guardar"}
+          </Button>
           <Button type="button" variant="outline" size="sm" disabled={importDisabled || !team.pokepasteUrl} onClick={onImport} className="h-8 gap-1.5 border-white/10 bg-white/3 px-2.5 text-[9px] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/8 hover:text-cyan-200">
             {importing ? <Loader2 className="size-3 animate-spin" /> : <Hammer className="size-3" />}
             {importing ? "Importando" : "Builder"}
@@ -229,7 +240,10 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [importingTeamId, setImportingTeamId] = useState("");
+  const [savingTeamId, setSavingTeamId] = useState("");
+  const [savedTeamIds, setSavedTeamIds] = useState<Set<string>>(() => new Set());
   const [importError, setImportError] = useState("");
+  const [libraryNotice, setLibraryNotice] = useState("");
   const [inspectorTeam, setInspectorTeam] = useState<VgcPastesTeam | null>(null);
   const [inspectorPaste, setInspectorPaste] = useState("");
   const [inspectorSets, setInspectorSets] = useState<PokemonSet[]>([]);
@@ -260,17 +274,13 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
           params.set("refresh", "1");
           refreshNextRequest.current = false;
         }
-        const response = await fetch(`/api/vgcpastes-scouting?${params.toString()}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
+        const response = await fetch(`/api/vgcpastes-scouting?${params.toString()}`, { cache: "no-store", signal: controller.signal });
         const payload = await readApiPayload(response);
         if (!response.ok) throw new Error(upstreamError(payload));
         if (!isVgcPastesScoutingResponse(payload)) throw new Error("VGCPastes llegó en un formato inesperado.");
         setData(payload);
         if (payload.query.page !== page) setPage(payload.query.page);
-        const normalizedFilterChanged = payload.query.pokemon.length !== pokemon.length
-          || payload.query.pokemon.some((species, index) => species !== pokemon[index]);
+        const normalizedFilterChanged = payload.query.pokemon.length !== pokemon.length || payload.query.pokemon.some((species, index) => species !== pokemon[index]);
         if (normalizedFilterChanged) setPokemon(payload.query.pokemon);
       } catch (caught) {
         if (controller.signal.aborted) return;
@@ -288,7 +298,6 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     if (!cacheKey) throw new Error("Este equipo no tiene PokéPaste público.");
     const cached = pasteCache.current.get(cacheKey);
     if (cached) return cached;
-
     const response = await fetch("/api/pokepaste-import", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -297,20 +306,14 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     });
     const payload = await readApiPayload(response);
     if (!response.ok) throw new Error(upstreamError(payload));
-    if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
-      throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
-    }
+    if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
     pasteCache.current.set(cacheKey, payload.paste);
     return payload.paste;
   }
 
   function sendTeamToBuilder(team: VgcPastesTeam, paste: string) {
     const context = team.tournament && team.tournament !== "-" ? team.tournament : data?.format.label ?? "VGCPastes";
-    onImportTeam({
-      paste,
-      suggestedName: `${team.playerName} · ${context}`.slice(0, 80),
-      sourceLabel: `VGCPastes · ${team.playerName} · ${team.id}`,
-    });
+    onImportTeam({ paste, suggestedName: `${team.playerName} · ${context}`.slice(0, 80), sourceLabel: `VGCPastes · ${team.playerName} · ${team.id}` });
   }
 
   async function importTeam(team: VgcPastesTeam) {
@@ -327,6 +330,42 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     }
   }
 
+  async function saveTeam(team: VgcPastesTeam) {
+    if (!team.pokepasteUrl || savingTeamId || savedTeamIds.has(team.id)) return;
+    setSavingTeamId(team.id);
+    setLibraryNotice("");
+    try {
+      const paste = await downloadTeamPaste(team);
+      const context = team.tournament && team.tournament !== "-" ? team.tournament : data?.format.label ?? "VGCPastes";
+      const notes = [
+        team.rank && team.rank !== "-" ? `Rank: ${team.rank}` : "",
+        team.replicaCode ? `Replica: ${team.replicaCode}` : "",
+        team.sourceUrl ? `Fuente original: ${team.sourceUrl}` : "",
+      ].filter(Boolean).join(" · ");
+      const response = await fetch("/api/scouting-pastes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          paste,
+          name: `${team.playerName} · ${context}`.slice(0, 80),
+          creator: team.owner || team.playerName,
+          format: data?.format.label ?? "VGCPastes",
+          sourceUrl: team.pokepasteUrl,
+          sourceLabel: "VGCPastes",
+          notes,
+        }),
+      });
+      const payload = await readApiPayload(response);
+      if (!response.ok && response.status !== 409) throw new Error(upstreamError(payload));
+      setSavedTeamIds((current) => new Set(current).add(team.id));
+      setLibraryNotice(response.status === 409 ? "Ese paste ya estaba guardado en Mis pastes." : `Guardado en Mis pastes: ${team.playerName}.`);
+    } catch (caught) {
+      setLibraryNotice(caught instanceof Error ? caught.message : "No pudimos guardar ese equipo.");
+    } finally {
+      setSavingTeamId("");
+    }
+  }
+
   async function inspectTeam(team: VgcPastesTeam) {
     inspectorAbort.current?.abort();
     const controller = new AbortController();
@@ -338,15 +377,13 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
     setCopyDone(false);
     setInspectorLoading(Boolean(team.pokepasteUrl));
     if (!team.pokepasteUrl) return;
-
     try {
       const paste = await downloadTeamPaste(team, controller.signal);
       if (controller.signal.aborted) return;
       setInspectorPaste(paste);
       setInspectorSets(parseShowdownPaste(paste));
     } catch (caught) {
-      if (controller.signal.aborted) return;
-      setInspectorError(caught instanceof Error ? caught.message : "No pudimos inspeccionar ese equipo.");
+      if (!controller.signal.aborted) setInspectorError(caught instanceof Error ? caught.message : "No pudimos inspeccionar ese equipo.");
     } finally {
       if (inspectorAbort.current === controller) inspectorAbort.current = null;
       if (!controller.signal.aborted) setInspectorLoading(false);
@@ -384,13 +421,7 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
   }
 
   function applyCompetitiveFilters() {
-    setFilters({
-      ...filterDraft,
-      player: filterDraft.player.trim(),
-      event: filterDraft.event.trim(),
-      rank: filterDraft.rank.trim(),
-      date: filterDraft.date.trim(),
-    });
+    setFilters({ ...filterDraft, player: filterDraft.player.trim(), event: filterDraft.event.trim(), rank: filterDraft.rank.trim(), date: filterDraft.date.trim() });
     setFilterMenuOpen(false);
     setPage(1);
   }
@@ -414,19 +445,10 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
   if (loading && !data) return <LoadingState />;
 
   if (!data) {
-    return (
-      <section className="rounded-[28px] border border-rose-300/12 bg-slate-900/45 px-6 py-16 text-center">
-        <AlertTriangle className="mx-auto size-9 text-rose-300" />
-        <h2 className="mt-4 text-lg font-black text-white">No pudimos abrir VGCPastes</h2>
-        <p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-slate-500">{error}</p>
-        <Button type="button" onClick={() => setReloadKey((value) => value + 1)} className="mt-5 gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><RefreshCw className="size-4" />Reintentar</Button>
-      </section>
-    );
+    return <section className="rounded-[28px] border border-rose-300/12 bg-slate-900/45 px-6 py-16 text-center"><AlertTriangle className="mx-auto size-9 text-rose-300" /><h2 className="mt-4 text-lg font-black text-white">No pudimos abrir VGCPastes</h2><p className="mx-auto mt-2 max-w-lg text-xs leading-5 text-slate-500">{error}</p><Button type="button" onClick={() => setReloadKey((value) => value + 1)} className="mt-5 gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><RefreshCw className="size-4" />Reintentar</Button></section>;
   }
 
-  const pageLabel = data.pagination.totalPages > 0
-    ? `Página ${data.pagination.page} de ${data.pagination.totalPages}`
-    : "Sin resultados";
+  const pageLabel = data.pagination.totalPages > 0 ? `Página ${data.pagination.page} de ${data.pagination.totalPages}` : "Sin resultados";
   const filterLabel = pokemon.length ? pokemon.join(" + ") : "";
   const competitiveActive = hasCompetitiveFilters(filters);
   const activeFilterCount = countCompetitiveFilters(filters);
@@ -436,187 +458,36 @@ export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (requ
       <section className="overflow-hidden rounded-[28px] border border-white/8 bg-slate-900/45 shadow-[0_32px_90px_rgba(0,0,0,0.25)]">
         <div className="h-px bg-gradient-to-r from-cyan-300 via-violet-400 to-transparent" />
         <div className="p-5">
-          <div>
-            <div className="flex items-center gap-2"><Search className="size-5 text-cyan-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200">VGCPastes Repository</p></div>
-            <h1 className="mt-2 text-2xl font-black tracking-tight text-white">Archivo de equipos por formato</h1>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">Explora equipos públicos, filtra cores y abre el Inspector para leer el PokéPaste real sin salir de Scouting.</p>
-          </div>
-
+          <div><div className="flex items-center gap-2"><Search className="size-5 text-cyan-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-200">VGCPastes Repository</p></div><h1 className="mt-2 text-2xl font-black tracking-tight text-white">Archivo de equipos por formato</h1><p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">Explora equipos públicos, filtra cores y guarda referencias en tu biblioteca personal.</p></div>
           <div className="mt-5 grid gap-3 border-t border-white/7 pt-5 lg:grid-cols-[minmax(220px,0.8fr)_minmax(320px,1.4fr)_auto] lg:items-end">
-            <div className="grid gap-2">
-              <label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Formato</label>
-              <Select value={formatId} onValueChange={changeFormat}>
-                <SelectTrigger className="w-full border-white/10 bg-slate-950/70"><SelectValue /></SelectTrigger>
-                <SelectContent className="border-white/10 bg-slate-950 text-slate-200">
-                  {data.formats.map((format) => <SelectItem key={format.id} value={format.id}>{format.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid min-w-0 gap-2">
-              <div className="flex items-center justify-between gap-3">
-                <label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Buscar core · hasta {MAX_VGCPASTES_POKEMON_FILTERS} Pokémon</label>
-                <span className="text-[9px] font-semibold text-slate-600">AND · deben aparecer todos</span>
-              </div>
-              <Combobox
-                items={data.pokemonOptions}
-                multiple
-                value={pokemon}
-                onValueChange={(value: string[]) => {
-                  setPokemon(value.slice(0, MAX_VGCPASTES_POKEMON_FILTERS));
-                  setPage(1);
-                }}
-              >
-                <ComboboxValue>
-                  {(selectedValue: string[]) => (
-                    <ComboboxChips ref={pokemonAnchor} aria-label={selectedValue.length ? "Pokémon seleccionados para el core" : undefined} className="min-h-10 border-white/10 bg-slate-950/70">
-                      {selectedValue.map((species) => <ComboboxChip key={species} aria-label={species} aria-description="Presiona Backspace o Delete para quitarlo" className="bg-cyan-300/10 text-cyan-100">{species}</ComboboxChip>)}
-                      <ComboboxChipsInput
-                        aria-label="Añadir Pokémon al core"
-                        aria-description={selectedValue.length ? `${selectedValue.length} Pokémon seleccionados de un máximo de ${MAX_VGCPASTES_POKEMON_FILTERS}` : undefined}
-                        placeholder={selectedValue.length ? (selectedValue.length >= MAX_VGCPASTES_POKEMON_FILTERS ? "Máximo 3 Pokémon" : "Añadir otro Pokémon") : "Ej. Sneasler"}
-                        disabled={selectedValue.length >= MAX_VGCPASTES_POKEMON_FILTERS}
-                      />
-                    </ComboboxChips>
-                  )}
-                </ComboboxValue>
-                <ComboboxContent anchor={pokemonAnchor} className="border-white/10 bg-slate-950">
-                  <ComboboxEmpty>No encontramos ese Pokémon en este formato.</ComboboxEmpty>
-                  <ComboboxList>{(species: string) => <ComboboxItem key={species} value={species} disabled={pokemon.length >= MAX_VGCPASTES_POKEMON_FILTERS && !pokemon.includes(species)}>{species}</ComboboxItem>}</ComboboxList>
-                </ComboboxContent>
-              </Combobox>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Popover open={filterMenuOpen} onOpenChange={setFilterMenuOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className={`h-10 gap-2 border-violet-300/20 bg-violet-300/7 text-xs font-black text-violet-200 hover:bg-violet-300/12 ${competitiveActive ? "ring-1 ring-violet-300/20" : ""}`}
-                  >
-                    <Filter className="size-4" />
-                    Filtros
-                    {activeFilterCount > 0 ? <Badge variant="outline" className="ml-0.5 border-violet-200/20 bg-violet-200/10 px-1.5 text-[9px] text-violet-100">{activeFilterCount}</Badge> : null}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" sideOffset={8} className="w-[min(92vw,36rem)] border-white/10 bg-slate-950 p-4 text-slate-200 shadow-2xl">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2"><Filter className="size-4 text-violet-300" /><p className="text-xs font-black text-white">Filtros competitivos</p></div>
-                      <p className="mt-1 text-[10px] leading-4 text-slate-500">Refina el archivo sin ocupar espacio cuando no los necesitas.</p>
-                    </div>
-                    {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">{activeFilterCount} activos</Badge> : null}
-                  </div>
-
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                    <Input type="search" value={filterDraft.player} onChange={(event) => setFilterDraft((value) => ({ ...value, player: event.target.value }))} placeholder="Jugador / owner" aria-label="Filtrar por jugador" className="border-white/10 bg-slate-900/70" />
-                    <Input type="search" value={filterDraft.event} onChange={(event) => setFilterDraft((value) => ({ ...value, event: event.target.value }))} placeholder="Torneo / evento" aria-label="Filtrar por evento" className="border-white/10 bg-slate-900/70" />
-                    <Input type="search" value={filterDraft.rank} onChange={(event) => setFilterDraft((value) => ({ ...value, rank: event.target.value }))} placeholder="Rank / placement" aria-label="Filtrar por rank" className="border-white/10 bg-slate-900/70" />
-                    <Input type="search" value={filterDraft.date} onChange={(event) => setFilterDraft((value) => ({ ...value, date: event.target.value }))} placeholder="Fecha, ej. 10 Sep 2026" aria-label="Filtrar por fecha" className="border-white/10 bg-slate-900/70" />
-                  </div>
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasEvs} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasEvs: checked === true }))} />Con EVs</label>
-                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasPaste} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasPaste: checked === true }))} />Con PokéPaste</label>
-                    <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-semibold text-slate-400"><Checkbox checked={filterDraft.hasReplica} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasReplica: checked === true }))} />Con Replica Code</label>
-                  </div>
-
-                  <div className="mt-4 flex items-center justify-end gap-2 border-t border-white/7 pt-4">
-                    <Button type="button" variant="ghost" size="sm" onClick={clearCompetitiveFilters} disabled={!hasCompetitiveFilters(filterDraft) && !competitiveActive} className="text-[10px] text-slate-500">Limpiar</Button>
-                    <Button type="button" variant="outline" size="sm" onClick={applyCompetitiveFilters} className="gap-1.5 border-violet-300/20 bg-violet-300/7 text-[10px] font-black text-violet-200"><Filter className="size-3.5" />Aplicar filtros</Button>
-                  </div>
-                </PopoverContent>
-              </Popover>
-
-              <Button type="button" variant="outline" onClick={() => { refreshNextRequest.current = true; setReloadKey((value) => value + 1); }} disabled={loading} className="h-10 gap-2 border-cyan-300/20 bg-cyan-300/7 text-xs font-black text-cyan-200 hover:bg-cyan-300/12">
-                <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />Actualizar
-              </Button>
-            </div>
+            <div className="grid gap-2"><label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Formato</label><Select value={formatId} onValueChange={changeFormat}><SelectTrigger className="w-full border-white/10 bg-slate-950/70"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{data.formats.map((format) => <SelectItem key={format.id} value={format.id}>{format.label}</SelectItem>)}</SelectContent></Select></div>
+            <div className="grid min-w-0 gap-2"><div className="flex items-center justify-between gap-3"><label className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">Buscar core · hasta {MAX_VGCPASTES_POKEMON_FILTERS} Pokémon</label><span className="text-[9px] font-semibold text-slate-600">AND · deben aparecer todos</span></div><Combobox items={data.pokemonOptions} multiple value={pokemon} onValueChange={(value: string[]) => { setPokemon(value.slice(0, MAX_VGCPASTES_POKEMON_FILTERS)); setPage(1); }}><ComboboxValue>{(selectedValue: string[]) => <ComboboxChips ref={pokemonAnchor} className="min-h-10 border-white/10 bg-slate-950/70">{selectedValue.map((species) => <ComboboxChip key={species} className="bg-cyan-300/10 text-cyan-100">{species}</ComboboxChip>)}<ComboboxChipsInput placeholder={selectedValue.length ? (selectedValue.length >= MAX_VGCPASTES_POKEMON_FILTERS ? "Máximo 3 Pokémon" : "Añadir otro Pokémon") : "Ej. Sneasler"} disabled={selectedValue.length >= MAX_VGCPASTES_POKEMON_FILTERS} /></ComboboxChips>}</ComboboxValue><ComboboxContent anchor={pokemonAnchor} className="border-white/10 bg-slate-950"><ComboboxEmpty>No encontramos ese Pokémon en este formato.</ComboboxEmpty><ComboboxList>{(species: string) => <ComboboxItem key={species} value={species} disabled={pokemon.length >= MAX_VGCPASTES_POKEMON_FILTERS && !pokemon.includes(species)}>{species}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div>
+            <div className="flex items-center gap-2"><Popover open={filterMenuOpen} onOpenChange={setFilterMenuOpen}><PopoverTrigger asChild><Button type="button" variant="outline" className={`h-10 gap-2 border-violet-300/20 bg-violet-300/7 text-xs font-black text-violet-200 hover:bg-violet-300/12 ${competitiveActive ? "ring-1 ring-violet-300/20" : ""}`}><Filter className="size-4" />Filtros{activeFilterCount > 0 ? <Badge variant="outline" className="ml-0.5 border-violet-200/20 bg-violet-200/10 px-1.5 text-[9px] text-violet-100">{activeFilterCount}</Badge> : null}</Button></PopoverTrigger><PopoverContent align="end" sideOffset={8} className="w-[min(92vw,36rem)] border-white/10 bg-slate-950 p-4 text-slate-200 shadow-2xl"><div className="flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Filter className="size-4 text-violet-300" /><p className="text-xs font-black text-white">Filtros competitivos</p></div><p className="mt-1 text-[10px] leading-4 text-slate-500">Refina el archivo sin ocupar espacio cuando no los necesitas.</p></div>{competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">{activeFilterCount} activos</Badge> : null}</div><div className="mt-4 grid gap-2 sm:grid-cols-2"><Input type="search" value={filterDraft.player} onChange={(event) => setFilterDraft((value) => ({ ...value, player: event.target.value }))} placeholder="Jugador / owner" /><Input type="search" value={filterDraft.event} onChange={(event) => setFilterDraft((value) => ({ ...value, event: event.target.value }))} placeholder="Torneo / evento" /><Input type="search" value={filterDraft.rank} onChange={(event) => setFilterDraft((value) => ({ ...value, rank: event.target.value }))} placeholder="Rank / placement" /><Input type="search" value={filterDraft.date} onChange={(event) => setFilterDraft((value) => ({ ...value, date: event.target.value }))} placeholder="Fecha, ej. 10 Sep 2026" /></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><label className="inline-flex items-center gap-2 text-[10px] text-slate-400"><Checkbox checked={filterDraft.hasEvs} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasEvs: checked === true }))} />Con EVs</label><label className="inline-flex items-center gap-2 text-[10px] text-slate-400"><Checkbox checked={filterDraft.hasPaste} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasPaste: checked === true }))} />Con PokéPaste</label><label className="inline-flex items-center gap-2 text-[10px] text-slate-400"><Checkbox checked={filterDraft.hasReplica} onCheckedChange={(checked) => setFilterDraft((value) => ({ ...value, hasReplica: checked === true }))} />Con Replica Code</label></div><div className="mt-4 flex justify-end gap-2 border-t border-white/7 pt-4"><Button variant="ghost" size="sm" onClick={clearCompetitiveFilters}>Limpiar</Button><Button variant="outline" size="sm" onClick={applyCompetitiveFilters} className="gap-1.5 border-violet-300/20 bg-violet-300/7 text-violet-200"><Filter className="size-3.5" />Aplicar filtros</Button></div></PopoverContent></Popover><Button type="button" variant="outline" onClick={() => { refreshNextRequest.current = true; setReloadKey((value) => value + 1); }} disabled={loading} className="h-10 gap-2 border-cyan-300/20 bg-cyan-300/7 text-xs font-black text-cyan-200"><RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />Actualizar</Button></div>
           </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-slate-500">
-            <span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-cyan-300" /><strong className="text-slate-300">{data.pagination.totalItems}</strong> resultados</span>
-            <span>{data.pagination.totalAvailable} equipos en {data.format.label}</span>
-            {pokemon.length ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Core AND · {filterLabel}</Badge> : null}
-            {competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Filtros · {activeFilterCount}</Badge> : null}
-            <span className="font-mono text-slate-600">{pageLabel}</span>
-          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-slate-500"><span className="inline-flex items-center gap-1.5"><Users className="size-3.5 text-cyan-300" /><strong className="text-slate-300">{data.pagination.totalItems}</strong> resultados</span><span>{data.pagination.totalAvailable} equipos en {data.format.label}</span>{pokemon.length ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Core AND · {filterLabel}</Badge> : null}{competitiveActive ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Filtros · {activeFilterCount}</Badge> : null}<span className="font-mono text-slate-600">{pageLabel}</span></div>
         </div>
       </section>
 
       {error ? <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-4 py-3 text-xs text-amber-100"><span className="flex items-center gap-2"><AlertTriangle className="size-4" />{error}</span><Button type="button" variant="ghost" size="sm" onClick={() => setReloadKey((value) => value + 1)} className="text-amber-100"><RefreshCw className="size-3.5" />Reintentar</Button></div> : null}
       {importError ? <div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-300/15 bg-rose-300/7 px-4 py-3 text-xs text-rose-200"><AlertTriangle className="size-4" />{importError}</div> : null}
+      {libraryNotice ? <div role="status" className="flex items-center gap-2 rounded-xl border border-violet-300/15 bg-violet-300/7 px-4 py-3 text-xs text-violet-100"><BookmarkPlus className="size-4" />{libraryNotice}</div> : null}
 
       <section>
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-cyan-300">Equipos publicados</p>
-            <h2 className="mt-1 text-lg font-black text-white">{data.format.label}{filterLabel ? ` · ${filterLabel}` : ""}</h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={loading || data.pagination.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="gap-1 border-white/10 bg-white/3 text-[10px] text-slate-300"><ChevronLeft className="size-3.5" />Anterior</Button>
-            <span className="min-w-24 text-center font-mono text-[10px] text-slate-500">{pageLabel}</span>
-            <Button type="button" variant="outline" size="sm" disabled={loading || data.pagination.totalPages === 0 || data.pagination.page >= data.pagination.totalPages} onClick={() => setPage((value) => value + 1)} className="gap-1 border-white/10 bg-white/3 text-[10px] text-slate-300">Siguiente<ChevronRight className="size-3.5" /></Button>
-          </div>
-        </div>
-
-        {data.teams.length ? <div className="grid gap-3 xl:grid-cols-2">{data.teams.map((team) => <TeamCard key={team.id} team={team} formatLabel={data.format.label} importing={importingTeamId === team.id} importDisabled={Boolean(importingTeamId)} onInspect={() => void inspectTeam(team)} onImport={() => void importTeam(team)} />)}</div> : (
-          <div className="rounded-2xl border border-white/7 bg-slate-950/45 px-6 py-16 text-center">
-            <Search className="mx-auto size-8 text-slate-700" />
-            <h3 className="mt-3 text-sm font-black text-white">No hay equipos con esos filtros</h3>
-            <p className="mt-1 text-xs text-slate-600">Quita un Pokémon o limpia algún filtro competitivo.</p>
-          </div>
-        )}
-
-        {data.pagination.totalPages > 1 ? <div className="mt-4 flex items-center justify-end gap-2">
-          <Button type="button" variant="ghost" size="sm" disabled={loading || data.pagination.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="text-[10px] text-slate-400"><ChevronLeft className="size-3.5" />Anterior</Button>
-          <span className="font-mono text-[10px] text-slate-600">{pageLabel}</span>
-          <Button type="button" variant="ghost" size="sm" disabled={loading || data.pagination.page >= data.pagination.totalPages} onClick={() => setPage((value) => value + 1)} className="text-[10px] text-slate-400">Siguiente<ChevronRight className="size-3.5" /></Button>
-        </div> : null}
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-cyan-300">Equipos publicados</p><h2 className="mt-1 text-lg font-black text-white">{data.format.label}{filterLabel ? ` · ${filterLabel}` : ""}</h2></div><div className="flex items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={loading || data.pagination.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft className="size-3.5" />Anterior</Button><span className="min-w-24 text-center font-mono text-[10px] text-slate-500">{pageLabel}</span><Button type="button" variant="outline" size="sm" disabled={loading || data.pagination.totalPages === 0 || data.pagination.page >= data.pagination.totalPages} onClick={() => setPage((value) => value + 1)}>Siguiente<ChevronRight className="size-3.5" /></Button></div></div>
+        {data.teams.length ? <div className="grid gap-3 xl:grid-cols-2">{data.teams.map((team) => <TeamCard key={team.id} team={team} formatLabel={data.format.label} importing={importingTeamId === team.id} importDisabled={Boolean(importingTeamId)} saving={savingTeamId === team.id} saved={savedTeamIds.has(team.id)} onInspect={() => void inspectTeam(team)} onImport={() => void importTeam(team)} onSave={() => void saveTeam(team)} />)}</div> : <div className="rounded-2xl border border-white/7 bg-slate-950/45 px-6 py-16 text-center"><Search className="mx-auto size-8 text-slate-700" /><h3 className="mt-3 text-sm font-black text-white">No hay equipos con esos filtros</h3><p className="mt-1 text-xs text-slate-600">Quita un Pokémon o limpia algún filtro competitivo.</p></div>}
+        {data.pagination.totalPages > 1 ? <div className="mt-4 flex items-center justify-end gap-2"><Button type="button" variant="ghost" size="sm" disabled={loading || data.pagination.page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft className="size-3.5" />Anterior</Button><span className="font-mono text-[10px] text-slate-600">{pageLabel}</span><Button type="button" variant="ghost" size="sm" disabled={loading || data.pagination.page >= data.pagination.totalPages} onClick={() => setPage((value) => value + 1)}>Siguiente<ChevronRight className="size-3.5" /></Button></div> : null}
       </section>
 
-      <footer className="rounded-2xl border border-white/7 bg-slate-950/45 px-4 py-3 text-[10px] leading-5 text-slate-600">
-        Datos de <a href={data.source.url} target="_blank" rel="noreferrer" className="font-semibold text-cyan-300 hover:text-cyan-200">{data.source.label}</a>. La app pagina y filtra en el servidor; el PokéPaste sólo se descarga al abrir el Inspector o importar al Team Builder.
-      </footer>
+      <footer className="rounded-2xl border border-white/7 bg-slate-950/45 px-4 py-3 text-[10px] leading-5 text-slate-600">Datos de <a href={data.source.url} target="_blank" rel="noreferrer" className="font-semibold text-cyan-300 hover:text-cyan-200">{data.source.label}</a>. La app pagina y filtra en el servidor; el PokéPaste sólo se descarga al inspeccionar, guardar o importar.</footer>
 
       <Dialog open={Boolean(inspectorTeam)} onOpenChange={(open) => { if (!open) closeInspector(); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto border-white/10 bg-slate-950 text-slate-200 sm:max-w-6xl">
-          {inspectorTeam ? <>
-            <DialogHeader className="pr-8">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Team Inspector</Badge>
-                {inspectorTeam.rank && inspectorTeam.rank !== "-" ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/7 text-[9px] text-amber-200">{inspectorTeam.rank}</Badge> : null}
-                {inspectorTeam.hasEvs ? <Badge variant="outline" className="border-emerald-300/15 bg-emerald-300/7 text-[9px] text-emerald-200">EVs publicados</Badge> : null}
-              </div>
-              <DialogTitle className="text-xl font-black text-white">{inspectorTeam.playerName}</DialogTitle>
-              <DialogDescription className="text-xs text-slate-500">
-                {(inspectorTeam.tournament && inspectorTeam.tournament !== "-" ? inspectorTeam.tournament : data.format.label)}{inspectorTeam.dateShared ? ` · ${inspectorTeam.dateShared}` : ""}{inspectorTeam.replicaCode ? ` · Replica ${inspectorTeam.replicaCode}` : ""}
-              </DialogDescription>
-            </DialogHeader>
-
+          {inspectorTeam ? <><DialogHeader className="pr-8"><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Team Inspector</Badge>{inspectorTeam.rank && inspectorTeam.rank !== "-" ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/7 text-[9px] text-amber-200">{inspectorTeam.rank}</Badge> : null}{inspectorTeam.hasEvs ? <Badge variant="outline" className="border-emerald-300/15 bg-emerald-300/7 text-[9px] text-emerald-200">EVs publicados</Badge> : null}</div><DialogTitle className="text-xl font-black text-white">{inspectorTeam.playerName}</DialogTitle><DialogDescription className="text-xs text-slate-500">{(inspectorTeam.tournament && inspectorTeam.tournament !== "-" ? inspectorTeam.tournament : data.format.label)}{inspectorTeam.dateShared ? ` · ${inspectorTeam.dateShared}` : ""}{inspectorTeam.replicaCode ? ` · Replica ${inspectorTeam.replicaCode}` : ""}</DialogDescription></DialogHeader>
             {inspectorLoading ? <div className="flex min-h-56 flex-col items-center justify-center gap-3 rounded-2xl border border-white/7 bg-white/[0.02]"><Loader2 className="size-7 animate-spin text-cyan-300" /><p className="text-xs text-slate-500">Descargando y leyendo el PokéPaste…</p></div> : null}
-
             {!inspectorLoading && inspectorError ? <div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-300/15 bg-rose-300/7 px-4 py-3 text-xs text-rose-200"><AlertTriangle className="size-4" />{inspectorError}</div> : null}
-
             {!inspectorLoading && inspectorSets.length ? <div className="grid gap-3 lg:grid-cols-2">{inspectorSets.map((set) => <InspectorSetCard key={set.id} set={set} />)}</div> : null}
-
-            {!inspectorLoading && !inspectorSets.length && !inspectorError ? <div className="rounded-2xl border border-white/7 bg-white/[0.02] p-4">
-              <p className="text-xs font-black text-white">Roster público</p>
-              <p className="mt-1 text-[10px] text-slate-600">Este equipo no tiene un PokéPaste público utilizable; mostramos únicamente los seis Pokémon publicados por VGCPastes.</p>
-              <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6">{inspectorTeam.pokemon.map((species, index) => <div key={`${species}-${index}`} className="rounded-xl border border-white/6 bg-slate-950/50 p-2 text-center"><Image src={getSpriteUrl(species)} alt={species} width={52} height={52} unoptimized className="mx-auto size-12 object-contain" /><p className="mt-1 truncate text-[8px] font-semibold text-slate-500">{species}</p></div>)}</div>
-            </div> : null}
-
-            <DialogFooter className="border-t border-white/7 pt-4 sm:items-center sm:justify-between">
-              <div className="flex flex-wrap gap-2 sm:mr-auto">
-                {inspectorTeam.sourceUrl ? <a href={inspectorTeam.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-[10px] font-bold text-slate-400 hover:text-cyan-200">Fuente <ExternalLink className="size-3.5" /></a> : null}
-                {inspectorTeam.pokepasteUrl ? <a href={inspectorTeam.pokepasteUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-[10px] font-bold text-slate-400 hover:text-cyan-200">Abrir Paste <ExternalLink className="size-3.5" /></a> : null}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" size="sm" disabled={!inspectorPaste} onClick={() => void copyInspectorPaste()} className="gap-1.5 border-white/10 text-[10px] text-slate-300">{copyDone ? <Check className="size-3.5 text-emerald-300" /> : <Clipboard className="size-3.5" />}{copyDone ? "Copiado" : "Copiar Paste"}</Button>
-                <Button type="button" size="sm" disabled={!inspectorPaste} onClick={importInspectedTeam} className="gap-1.5 bg-cyan-300 text-[10px] font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-3.5" />Importar al Builder</Button>
-              </div>
-            </DialogFooter>
+            {!inspectorLoading && !inspectorSets.length && !inspectorError ? <div className="rounded-2xl border border-white/7 bg-white/[0.02] p-4"><p className="text-xs font-black text-white">Roster público</p><p className="mt-1 text-[10px] text-slate-600">Este equipo no tiene un PokéPaste público utilizable; mostramos únicamente los seis Pokémon publicados por VGCPastes.</p><div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6">{inspectorTeam.pokemon.map((species, index) => <div key={`${species}-${index}`} className="rounded-xl border border-white/6 bg-slate-950/50 p-2 text-center"><Image src={getSpriteUrl(species)} alt={species} width={52} height={52} unoptimized className="mx-auto size-12 object-contain" /><p className="mt-1 truncate text-[8px] font-semibold text-slate-500">{species}</p></div>)}</div></div> : null}
+            <DialogFooter className="border-t border-white/7 pt-4 sm:items-center sm:justify-between"><div className="flex flex-wrap gap-2 sm:mr-auto">{inspectorTeam.sourceUrl ? <a href={inspectorTeam.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-[10px] font-bold text-slate-400 hover:text-cyan-200">Fuente <ExternalLink className="size-3.5" /></a> : null}{inspectorTeam.pokepasteUrl ? <a href={inspectorTeam.pokepasteUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 px-3 text-[10px] font-bold text-slate-400 hover:text-cyan-200">Abrir Paste <ExternalLink className="size-3.5" /></a> : null}</div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" disabled={!inspectorPaste || savingTeamId === inspectorTeam.id || savedTeamIds.has(inspectorTeam.id)} onClick={() => void saveTeam(inspectorTeam)} className="gap-1.5 border-violet-300/15 text-[10px] text-violet-200">{savingTeamId === inspectorTeam.id ? <Loader2 className="size-3.5 animate-spin" /> : savedTeamIds.has(inspectorTeam.id) ? <Check className="size-3.5 text-emerald-300" /> : <BookmarkPlus className="size-3.5" />}{savedTeamIds.has(inspectorTeam.id) ? "Guardado" : "Guardar"}</Button><Button type="button" variant="outline" size="sm" disabled={!inspectorPaste} onClick={() => void copyInspectorPaste()} className="gap-1.5 border-white/10 text-[10px] text-slate-300">{copyDone ? <Check className="size-3.5 text-emerald-300" /> : <Clipboard className="size-3.5" />}{copyDone ? "Copiado" : "Copiar Paste"}</Button><Button type="button" size="sm" disabled={!inspectorPaste} onClick={importInspectedTeam} className="gap-1.5 bg-cyan-300 text-[10px] font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-3.5" />Importar al Builder</Button></div></DialogFooter>
           </> : null}
         </DialogContent>
       </Dialog>
