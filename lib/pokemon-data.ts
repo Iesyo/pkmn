@@ -176,6 +176,7 @@ const hyphenatedBaseSpriteIds = new Set([
 ]);
 
 const megaSpriteAliases: Record<string, string> = {
+  floetteeternalmega: "floette-mega",
   meowsticmmega: "meowstic-mmega",
   meowsticfmega: "meowstic-fmega",
   magearnaoriginalmega: "magearna-originalmega",
