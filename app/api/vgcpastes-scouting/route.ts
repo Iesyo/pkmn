@@ -1,11 +1,13 @@
 import {
-  buildVgcPastesScoutingResponse,
   DEFAULT_VGCPASTES_FORMAT_ID,
   DEFAULT_VGCPASTES_PAGE_SIZE,
   getVgcPastesFormat,
-  normalizeVgcPastesPokemonFilters,
   normalizeVgcPastesTextFilter,
 } from "@/lib/vgcpastes-scouting";
+import {
+  buildVgcPastesScoutingSearchResponse,
+  normalizeVgcPastesScoutingSpeciesFilters,
+} from "@/lib/vgcpastes-scouting-search";
 import { loadVgcPastesFormat } from "@/lib/vgcpastes-scouting-server";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +28,7 @@ export async function GET(request: Request) {
     return errorResponse("Ese formato no está disponible en VGCPastes.", 400);
   }
 
-  const pokemon = normalizeVgcPastesPokemonFilters(url.searchParams.getAll("pokemon"));
+  const pokemon = normalizeVgcPastesScoutingSpeciesFilters(url.searchParams.getAll("pokemon"));
   const player = normalizeVgcPastesTextFilter(url.searchParams.get("player"));
   const event = normalizeVgcPastesTextFilter(url.searchParams.get("event"));
   const rank = normalizeVgcPastesTextFilter(url.searchParams.get("rank"));
@@ -40,7 +42,7 @@ export async function GET(request: Request) {
 
   try {
     const source = await loadVgcPastesFormat(formatId, { force: refresh });
-    return Response.json(buildVgcPastesScoutingResponse(source.format, source.teams, {
+    return Response.json(buildVgcPastesScoutingSearchResponse(source.format, source.teams, {
       fetchedAt: source.fetchedAt,
       pokemon,
       player,
