@@ -34,6 +34,22 @@ test("keeps the Team Builder mounted between sections and removes the global Add
   assert.match(dashboard, /<ShowdownNamesDialog names=\{showdownNames\} onSaved=\{setShowdownNames\} \/><\/div>/);
 });
 
+test("keeps an opened War Room session mounted while navigating between sections", async () => {
+  const dashboard = await source("app/vgc-dashboard.tsx");
+
+  assert.match(dashboard, /const \[warRoomMounted, setWarRoomMounted\] = useState\(false\)/);
+  assert.match(dashboard, /function changeActiveView\(view: string\) \{\s*if \(view === "war-room"\) setWarRoomMounted\(true\);\s*setActiveView\(view\);\s*\}/);
+  assert.match(dashboard, /<Tabs value=\{activeView\} onValueChange=\{changeActiveView\}/);
+  assert.match(dashboard, /\{warRoomMounted \? \(\s*<TabsContent value="war-room" forceMount className="mt-0 outline-none">/);
+});
+
+test("starts a fresh War Room session only when a Team is explicitly sent", async () => {
+  const dashboard = await source("app/vgc-dashboard.tsx");
+
+  assert.match(dashboard, /function openInWarRoom\(team: TeamVersion\) \{\s*warRoomSequence\.current \+= 1;\s*setWarRoomMounted\(true\);\s*setWarRoomTeam\(\{ team, token: warRoomSequence\.current \}\);/);
+  assert.match(dashboard, /<WarRoom key=\{warRoomTeam \? `team-\$\{warRoomTeam\.token\}` : "war-room"\}/);
+});
+
 test("removes demo teams from every runtime team surface and separates team from version selection", async () => {
   const [dashboard, selector] = await Promise.all([
     source("app/vgc-dashboard.tsx"),
