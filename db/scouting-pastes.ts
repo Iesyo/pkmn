@@ -108,8 +108,18 @@ function rowToDetail(row: ScoutingPasteRow): ScoutingPasteDetail {
 }
 
 function summary(detail: ScoutingPasteDetail): ScoutingPasteSummary {
-  const { versionId: _versionId, paste: _paste, ...value } = detail;
-  return value;
+  return {
+    id: detail.id,
+    name: detail.name,
+    creator: detail.creator,
+    format: detail.format,
+    sourceUrl: detail.sourceUrl,
+    sourceLabel: detail.sourceLabel,
+    notes: detail.notes,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    pokemon: detail.pokemon,
+  };
 }
 
 export async function listOwnedTeamIds(): Promise<Set<string>> {
