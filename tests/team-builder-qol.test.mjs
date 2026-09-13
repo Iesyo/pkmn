@@ -53,7 +53,9 @@ test("keeps import and export dialogs fixed while the paste scrolls internally",
 
   assert.match(source, /DialogContent className="grid h-\[88vh\] max-h-\[40rem\] grid-rows-\[auto_minmax\(0,1fr\)_auto\] overflow-hidden/);
   assert.match(source, /field-sizing-fixed h-full min-h-0 resize-none overflow-y-auto/);
-  assert.match(source, /grid grid-cols-2 gap-2 border-t border-white\/8 pt-4/);
+  assert.match(source, /grid grid-cols-1 gap-2 border-t border-white\/8 pt-4/);
+  assert.match(source, /mode === "export" \? "sm:grid-cols-3" : "sm:grid-cols-2"/);
+  assert.match(source, /Descargar \.txt/);
   assert.ok(source.includes("<DialogClose asChild>"));
 });
 

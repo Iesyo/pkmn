@@ -108,21 +108,43 @@ function SlotCard({ pokemon, selected, onClick, onClear }: { pokemon: PokemonSet
   );
 }
 
-function PasteDialog({ mode, paste, onImport }: { mode: "import" | "export"; paste: string; onImport?: (paste: string) => void }) {
+function downloadShowdownPaste(paste: string, requestedName: string) {
+  const baseName = requestedName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "battle-lab-team";
+  const blob = new Blob([`${paste.trimEnd()}\n`], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${baseName}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function PasteDialog({ mode, paste, downloadName = "", onImport }: { mode: "import" | "export"; paste: string; downloadName?: string; onImport?: (paste: string) => void }) {
   const [value, setValue] = useState(paste);
   const [copied, setCopied] = useState(false);
   const action = mode === "import" ? (
     <Button onClick={() => onImport?.(value)} className="w-full gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200"><Download className="size-4" />Cargar equipo</Button>
   ) : (
-    <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="w-full gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}{copied ? "Copiado" : "Copiar paste"}</Button>
+    <>
+      <Button onClick={async () => { await navigator.clipboard.writeText(value); setCopied(true); }} className="w-full gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{copied ? <Check className="size-4" /> : <Clipboard className="size-4" />}{copied ? "Copiado" : "Copiar paste"}</Button>
+      <Button variant="outline" onClick={() => downloadShowdownPaste(value, downloadName)} className="w-full gap-2 border-cyan-300/20 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10"><Download className="size-4" />Descargar .txt</Button>
+    </>
   );
   return (
     <Dialog onOpenChange={(open) => { if (open) { setValue(paste); setCopied(false); } }}>
       <DialogTrigger asChild><Button variant="outline" className="gap-2 rounded-full border-white/10 bg-white/4">{mode === "import" ? <Download className="size-4" /> : <Upload className="size-4" />}{mode === "import" ? "Importar" : "Exportar"}</Button></DialogTrigger>
       <DialogContent className="grid h-[88vh] max-h-[40rem] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden border-white/10 bg-slate-950 text-slate-100 sm:h-[38rem] sm:max-w-2xl">
-        <DialogHeader className="pr-8 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos o una URL de PokéPaste para cargarlos en el Builder." : "Copia el equipo con el formato estándar de Pokémon Showdown."}</DialogDescription></DialogHeader>
+        <DialogHeader className="pr-8 text-left"><DialogTitle>{mode === "import" ? "Importar Showdown paste" : "Exportar a Showdown"}</DialogTitle><DialogDescription className="text-slate-500">{mode === "import" ? "Pega seis sets completos o una URL de PokéPaste para cargarlos en el Builder." : "Copia el paste o descarga el .txt que Battle Lab puede leer desde Drive."}</DialogDescription></DialogHeader>
         <div className="min-h-0"><Textarea value={value} onChange={(event) => setValue(event.target.value)} readOnly={mode === "export"} className="field-sizing-fixed h-full min-h-0 resize-none overflow-y-auto rounded-2xl border-white/10 bg-black/35 font-mono text-[11px] leading-5 scrollbar-thin" /></div>
-        <div className="grid grid-cols-2 gap-2 border-t border-white/8 pt-4">{action}<DialogClose asChild><Button variant="outline" className="w-full border-white/10 bg-white/4 text-slate-300 hover:bg-white/8 hover:text-white">Cerrar</Button></DialogClose></div>
+        <div className={cn("grid grid-cols-1 gap-2 border-t border-white/8 pt-4", mode === "export" ? "sm:grid-cols-3" : "sm:grid-cols-2")}>{action}<DialogClose asChild><Button variant="outline" className="w-full border-white/10 bg-white/4 text-slate-300 hover:bg-white/8 hover:text-white">Cerrar</Button></DialogClose></div>
       </DialogContent>
     </Dialog>
   );
@@ -409,7 +431,7 @@ export function TeamBuilder({ groups, initialVersion, initialImport, onTeamCreat
             <div className="grid gap-1.5"><Label htmlFor="builder-name" className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Nombre del Team</Label><Input id="builder-name" value={teamName} onChange={(event) => setTeamName(event.target.value)} disabled={Boolean(sourceTeamId)} placeholder="Ej. Aurora Protocol" className="border-white/10 bg-black/20" /></div>
             <div className="grid gap-1.5"><Label className="text-[10px] uppercase tracking-[0.14em] text-slate-500">Formato</Label><Select value={format} onValueChange={changeFormat}><SelectTrigger className="w-full border-white/10 bg-black/20"><SelectValue /></SelectTrigger><SelectContent>{BATTLE_FORMATS.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.label}</SelectItem>)}</SelectContent></Select></div>
           </div>
-          <div className="flex flex-wrap gap-2"><MyTeamsDialog groups={groups} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} /><Button variant="outline" onClick={openWarRoom} className="gap-2 rounded-full border-violet-300/15 bg-violet-300/5 text-violet-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
+          <div className="flex flex-wrap gap-2"><MyTeamsDialog groups={groups} onLoad={loadVersion} /><PokemonLibraryDialog format={format} onLoad={loadPokemonFromLibrary} /><PasteDialog mode="import" paste="" onImport={importPaste} /><PasteDialog mode="export" paste={paste} downloadName={teamName} /><Button variant="outline" onClick={openWarRoom} className="gap-2 rounded-full border-violet-300/15 bg-violet-300/5 text-violet-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={resetBuilder} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-200"><Eraser className="size-4" />Nuevo</Button><Button onClick={saveTeam} disabled={saving} className="gap-2 rounded-full bg-cyan-300 px-5 font-black text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{sourceTeamId ? "Guardar versión" : "Guardar en Teams"}</Button></div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2"><span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Mecánicas</span>{(["tera", "dynamax", "mega", "zmove"] as BattleMechanic[]).map((mechanic) => <label key={mechanic} className={cn("flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px]", mechanics.includes(mechanic) ? "border-cyan-300/20 bg-cyan-300/8 text-cyan-100" : "border-white/7 bg-white/3 text-slate-600", format !== "custom" && "pointer-events-none opacity-75")}><Checkbox checked={mechanics.includes(mechanic)} disabled={format !== "custom"} onCheckedChange={(checked) => setMechanics((current) => checked ? [...new Set([...current, mechanic])] : current.filter((entry) => entry !== mechanic))} />{MECHANIC_LABELS[mechanic]}</label>)}<div className="ml-auto flex items-center gap-2"><span className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px]", dex ? "bg-emerald-300/7 text-emerald-300" : "bg-white/4 text-slate-500")}>{dex ? <Database className="size-3" /> : <Loader2 className="size-3 animate-spin" />}{dex ? `Showdown · ${dex.metadata.captured}` : "Cargando Pokédex"}</span><Button type="button" variant="ghost" size="sm" onClick={refreshDatabases} disabled={refreshingDex} className="h-7 gap-1.5 rounded-full border border-white/8 bg-white/3 px-2.5 text-[9px] text-slate-400 hover:bg-cyan-300/8 hover:text-cyan-100">{refreshingDex ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}Actualizar bases</Button></div></div>
         {message ? <p className="mt-3 rounded-xl border border-emerald-300/15 bg-emerald-300/5 px-3 py-2 text-xs text-emerald-200">{message}</p> : null}{error ? <p role="alert" className="mt-3 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}{dexError ? <p role="alert" className="mt-3 flex items-center gap-2 rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200"><AlertTriangle className="size-4" />{dexError}</p> : null}

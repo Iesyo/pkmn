@@ -2,9 +2,10 @@
 """Run merciless VGC-Bench self-play on the private Battle Lab server.
 
 This Phase 2 runner provisions a pinned VGC-Bench source checkout and its
-latest public behavior-cloning checkpoint, validates two Champions M-C teams,
-and runs deterministic neural-policy battles through the Phase 1 Showdown
-server. Results and replay artifacts are written as an atomic JSON + ZIP pair.
+latest public behavior-cloning checkpoint, validates an auditable Champions
+M-C team corpus, and rotates balanced deterministic pairings through the Phase
+1 Showdown server. Results and replay artifacts are written as an atomic JSON
+and ZIP pair.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from battle_lab.showdown_smoke import (  # noqa: E402
     DEFAULT_FORMAT,
     DEFAULT_RUNTIME_ROOT,
     DEFAULT_SHOWDOWN_REPOSITORY,
-    FIXTURES_DIR,
     MINIMUM_NODE_MAJOR,
     Progress,
     atomic_json,
@@ -48,11 +48,21 @@ from battle_lab.showdown_smoke import (  # noqa: E402
     run_checked,
     run_checked_with_retries,
     running_showdown,
-    sha256_text,
     tail,
     utc_now,
     validate_team,
     verify_illegal_team_is_rejected,
+)
+from battle_lab.team_corpus import (  # noqa: E402
+    DEFAULT_CORPUS_MANIFEST,
+    TeamCorpus,
+    TeamPairing,
+    TeamRecord,
+    add_extra_teams,
+    build_pairing_schedule,
+    explicit_pair,
+    load_bundled_corpus,
+    pairing_statistics,
 )
 
 
@@ -428,14 +438,15 @@ async def run_vgc_bench_battles(
     runtime: ModelRuntime,
     port: int,
     battle_format: str,
-    team_a: str,
-    team_b: str,
-    count: int,
+    schedule: Sequence[TeamPairing],
     timeout: float,
     replay_dir: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
     from poke_env import AccountConfiguration, ServerConfiguration
 
+    if not schedule:
+        raise ValueError("La agenda de combates no puede estar vacía.")
+    count = len(schedule)
     suffix = hashlib.sha256(f"{time.time_ns()}".encode()).hexdigest()[:6]
     server_configuration = ServerConfiguration(
         f"ws://127.0.0.1:{port}/showdown/websocket",
@@ -452,20 +463,22 @@ async def run_vgc_bench_battles(
     }
     player_a = runtime.player_class(
         account_configuration=AccountConfiguration(f"VGCAlpha{suffix}", None),
-        team=team_a,
+        team=schedule[0].alpha.team_text,
         save_replays=str(replay_dir),
         **common,
     )
     player_b = runtime.player_class(
         account_configuration=AccountConfiguration(f"VGCBeta{suffix}", None),
-        team=team_b,
+        team=schedule[0].beta.team_text,
         **common,
     )
 
     summaries: list[dict[str, Any]] = []
     progress = Progress(count, "VGC-Bench sin piedad")
     try:
-        for index in range(count):
+        for index, pairing in enumerate(schedule):
+            player_a.update_team(pairing.alpha.team_text)
+            player_b.update_team(pairing.beta.team_text)
             previous_tags = set(player_a.battles)
             started = time.monotonic()
             await asyncio.wait_for(
@@ -480,15 +493,28 @@ async def run_vgc_bench_battles(
             battle = player_a.battles[new_tags.pop()]
             if not battle.finished:
                 raise RuntimeError(f"La batalla {battle.battle_tag} no terminó.")
-            summaries.append(
-                battle_summary(
-                    battle,
-                    time.monotonic() - started,
-                    player_a.username,
-                    player_b.username,
-                )
+            summary = battle_summary(
+                battle,
+                time.monotonic() - started,
+                player_a.username,
+                player_b.username,
             )
-            progress.advance(f"Batalla {index + 1} terminada")
+            summary["winnerSide"] = (
+                "alpha"
+                if summary["winner"] == player_a.username
+                else "beta"
+                if summary["winner"] == player_b.username
+                else "tie"
+            )
+            summary["pairing"] = {
+                "id": pairing.canonical_id,
+                "alphaTeamId": pairing.alpha.id,
+                "betaTeamId": pairing.beta.id,
+            }
+            summaries.append(summary)
+            progress.advance(
+                f"Batalla {index + 1}: {pairing.alpha.id} vs {pairing.beta.id}"
+            )
     finally:
         with suppress(Exception):
             await player_a.ps_client.stop_listening()
@@ -505,6 +531,67 @@ async def run_vgc_bench_battles(
         "beta": int(player_b.aliases_removed),
     }
     return summaries, wins, aliases
+
+
+def validate_team_corpus(
+    *, showdown_checkout: Path, battle_format: str, corpus: TeamCorpus
+) -> tuple[list[TeamRecord], dict[str, str], list[dict[str, str]]]:
+    """Validate every team and skip only invalid user-provided additions."""
+
+    valid: list[TeamRecord] = []
+    messages: dict[str, str] = {}
+    ignored = list(corpus.ignored)
+    for team in corpus.teams:
+        try:
+            messages[team.id] = validate_team(
+                showdown_checkout, battle_format, team.team_text
+            )
+            valid.append(team)
+        except RuntimeError as error:
+            if team.origin != "team-builder-drive":
+                raise RuntimeError(
+                    f"El equipo versionado {team.id} dejó de ser válido en "
+                    f"{battle_format}.\n{error}"
+                ) from error
+            ignored.append(
+                {
+                    "path": str(team.path.resolve()),
+                    "reason": f"Showdown lo rechazó: {error}"[:2_000],
+                }
+            )
+    if len(valid) < 2:
+        raise RuntimeError(
+            "Battle Lab necesita al menos dos equipos distintos y válidos."
+        )
+    return valid, messages, ignored
+
+
+def results_by_team(battles: Sequence[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    results: dict[str, dict[str, int]] = {}
+    for battle in battles:
+        pairing = battle["pairing"]
+        alpha_id = pairing["alphaTeamId"]
+        beta_id = pairing["betaTeamId"]
+        alpha = results.setdefault(
+            alpha_id,
+            {"battles": 0, "wins": 0, "losses": 0, "ties": 0},
+        )
+        beta = results.setdefault(
+            beta_id,
+            {"battles": 0, "wins": 0, "losses": 0, "ties": 0},
+        )
+        alpha["battles"] += 1
+        beta["battles"] += 1
+        if battle["winnerSide"] == "alpha":
+            alpha["wins"] += 1
+            beta["losses"] += 1
+        elif battle["winnerSide"] == "beta":
+            beta["wins"] += 1
+            alpha["losses"] += 1
+        else:
+            alpha["ties"] += 1
+            beta["ties"] += 1
+    return results
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -525,10 +612,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-setup", action="store_true")
     parser.add_argument("--format", default=DEFAULT_FORMAT)
     parser.add_argument(
-        "--team-a", type=Path, default=FIXTURES_DIR / "mc_team_alpha.txt"
+        "--corpus-manifest", type=Path, default=DEFAULT_CORPUS_MANIFEST
     )
     parser.add_argument(
-        "--team-b", type=Path, default=FIXTURES_DIR / "mc_team_beta.txt"
+        "--extra-teams-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help="Directorio adicional con un equipo Showdown por archivo .txt/.team.",
+    )
+    parser.add_argument(
+        "--team-a",
+        type=Path,
+        default=None,
+        help="Equipo Alpha explícito; requiere --team-b y desactiva la rotación.",
+    )
+    parser.add_argument(
+        "--team-b",
+        type=Path,
+        default=None,
+        help="Equipo Beta explícito; requiere --team-a y desactiva la rotación.",
     )
     parser.add_argument("--battles", type=int, default=20)
     parser.add_argument("--port", type=int, default=8000)
@@ -546,6 +649,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--port debe estar entre 1 y 65535.")
     if len(args.checkpoint_sha256) != 64:
         raise SystemExit("--checkpoint-sha256 debe contener 64 caracteres.")
+    if bool(args.team_a) != bool(args.team_b):
+        raise SystemExit("--team-a y --team-b deben usarse juntos.")
     missing_commands = [
         command for command in ("git", "node", "npm") if shutil.which(command) is None
     ]
@@ -568,8 +673,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     local_replays = run_root / "replays"
     local_replays.mkdir(parents=True, exist_ok=True)
     showdown_commit = args.showdown_commit or read_showdown_commit()
-    team_a = args.team_a.resolve().read_text(encoding="utf-8").strip() + "\n"
-    team_b = args.team_b.resolve().read_text(encoding="utf-8").strip() + "\n"
+    if args.team_a and args.team_b:
+        corpus = explicit_pair(args.team_a, args.team_b)
+        rotating_corpus = False
+    else:
+        corpus = load_bundled_corpus(args.corpus_manifest)
+        corpus_format = corpus.metadata.get("format")
+        if corpus_format != args.format:
+            raise RuntimeError(
+                f"El corpus declara {corpus_format!r}, pero --format es "
+                f"{args.format!r}."
+            )
+        corpus = add_extra_teams(corpus, args.extra_teams_dir)
+        rotating_corpus = True
     showdown_checkout = (
         args.showdown_checkout or runtime_root / "pokemon-showdown"
     ).resolve()
@@ -605,11 +721,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_runtime_config(showdown_checkout)
     overall.advance("Showdown fijado y compilado")
 
-    validation_a = validate_team(showdown_checkout, args.format, team_a)
-    validation_b = validate_team(showdown_checkout, args.format, team_b)
-    overall.advance("Dos equipos M-C válidos")
+    valid_teams, validation_messages, ignored_teams = validate_team_corpus(
+        showdown_checkout=showdown_checkout,
+        battle_format=args.format,
+        corpus=corpus,
+    )
+    for ignored in ignored_teams:
+        reason = ignored.get("reason", "motivo desconocido").replace("\n", " ")
+        print(
+            f"⚠️ Equipo omitido: {ignored.get('path', '<sin ruta>')} · "
+            f"{reason[:300]}",
+            flush=True,
+        )
+    if rotating_corpus:
+        schedule = build_pairing_schedule(
+            valid_teams, count=args.battles, seed=args.seed
+        )
+    else:
+        schedule = [
+            TeamPairing(alpha=valid_teams[0], beta=valid_teams[1])
+            for _ in range(args.battles)
+        ]
+    rotation = pairing_statistics(schedule)
+    if not rotating_corpus:
+        rotation["mode"] = "fixed-explicit-pair"
+    overall.advance(
+        f"Corpus M-C: {len(valid_teams)} válidos · "
+        f"{rotation['uniquePairings']} cruces"
+    )
     negative_validation = verify_illegal_team_is_rejected(
-        showdown_checkout, args.format, team_a
+        showdown_checkout, args.format, valid_teams[0].team_text
     )
     overall.advance("Control ilegal rechazado")
 
@@ -650,9 +791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime=model_runtime,
                 port=args.port,
                 battle_format=args.format,
-                team_a=team_a,
-                team_b=team_b,
-                count=args.battles,
+                schedule=schedule,
                 timeout=args.battle_timeout,
                 replay_dir=local_replays,
             )
@@ -679,8 +818,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     result_path = results_dir / f"{run_id}.json"
     total_seconds = time.monotonic() - started
+    origin_counts: dict[str, int] = {}
+    for team in valid_teams:
+        origin_counts[team.origin] = origin_counts.get(team.origin, 0) + 1
     payload = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "runId": run_id,
         "createdAt": utc_now(),
         "status": "passed",
@@ -713,16 +855,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "evaluationRegulation": "M-C",
         },
         "teams": {
-            "alpha": {
-                "path": str(args.team_a.resolve()),
-                "sha256": sha256_text(team_a),
-                "validation": {"status": "valid", "message": validation_a or None},
-            },
-            "beta": {
-                "path": str(args.team_b.resolve()),
-                "sha256": sha256_text(team_b),
-                "validation": {"status": "valid", "message": validation_b or None},
-            },
+            "corpus": corpus.metadata,
+            "available": len(valid_teams),
+            "byOrigin": origin_counts,
+            "items": [
+                team.result_metadata(validation_messages.get(team.id, ""))
+                for team in valid_teams
+            ],
+            "ignored": ignored_teams,
+            "rotation": rotation,
             "negativeControl": negative_validation,
         },
         "battles": {
@@ -731,6 +872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "durationSeconds": round(battle_seconds, 3),
             "battlesPerMinute": round(len(battles) / battle_seconds * 60, 3),
             "wins": wins,
+            "byTeam": results_by_team(battles),
             "items": battles,
         },
         "environment": resources,
@@ -746,6 +888,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"   Modelo: BC seed 1 · epoch 100 · determinista · "
         f"{model_runtime.metadata['device']}"
     )
+    print(
+        f"   Corpus: {len(valid_teams)} equipos válidos · "
+        f"{rotation['uniquePairings']} cruces únicos"
+    )
+    if ignored_teams:
+        print(f"   Omitidos: {len(ignored_teams)} equipos externos/duplicados")
     print(f"   Combates: {len(battles)}/{args.battles} · victorias {wins}")
     print(f"   Rendimiento: {payload['battles']['battlesPerMinute']} combates/min")
     print(f"   Resultado: {result_path}")

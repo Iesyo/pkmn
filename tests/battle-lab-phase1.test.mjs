@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 const projectRoot = new URL("../", import.meta.url);
@@ -57,6 +58,25 @@ test("ships two complete M-C smoke teams with legal Stat Point envelopes", async
   }
 });
 
+test("ships an auditable 12-team real M-C corpus", async () => {
+  const manifest = JSON.parse(await text("battle_lab/corpus/champions-m-c/manifest.json"));
+
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.format, "gen9championsvgc2026regmc");
+  assert.equal(manifest.source.name, "VGCPastes Repository");
+  assert.equal(manifest.source.gid, "2001945654");
+  assert.equal(manifest.teams.length, 12);
+  assert.equal(new Set(manifest.teams.map((team) => team.id)).size, 12);
+  assert.ok(manifest.teams.every((team) => team.roster.length === 6));
+  assert.ok(manifest.teams.every((team) => team.pokepasteUrl.startsWith("https://pokepast.es/")));
+
+  for (const team of manifest.teams) {
+    const source = await text(`battle_lab/corpus/champions-m-c/${team.file}`);
+    assert.equal(parseFixture(source).length, 6, team.id);
+    assert.equal(createHash("sha256").update(source).digest("hex"), team.sha256, team.id);
+  }
+});
+
 test("keeps the canonical Colab launcher reproducible and free of saved output", async () => {
   const notebookPath = new URL("../colab/Battle_Lab.ipynb", import.meta.url);
   const notebook = JSON.parse(await readFile(notebookPath, "utf8"));
@@ -71,6 +91,9 @@ test("keeps the canonical Colab launcher reproducible and free of saved output",
   assert.match(notebookSource, /--battles/);
   assert.match(notebookSource, /--device/);
   assert.match(notebookSource, /--seed/);
+  assert.match(notebookSource, /--extra-teams-dir/);
+  assert.match(notebookSource, /DRIVE_TEAMS = "Pokemon VGC\/BattleLab\/teams"/);
+  assert.match(notebookSource, /teams\['rotation'\]\['uniquePairings'\]/);
   assert.match(notebookSource, /packages_root = runtime_root \/ "python-packages"/);
   assert.match(notebookSource, /battle_lab_python = Path\(sys\.executable\)/);
   assert.match(notebookSource, /battle_lab_env\["PYTHONPATH"\]/);
@@ -91,10 +114,12 @@ test("keeps the canonical Colab launcher reproducible and free of saved output",
 });
 
 test("pins and verifies the merciless VGC-Bench inference path", async () => {
-  const [runner, requirements, readme] = await Promise.all([
+  const [runner, corpus, requirements, readme, builder] = await Promise.all([
     text("battle_lab/vgc_bench_battle.py"),
+    text("battle_lab/team_corpus.py"),
     text("battle_lab/requirements-phase2.txt"),
     text("battle_lab/README.md"),
+    text("components/vgc/team-builder.tsx"),
   ]);
 
   assert.match(runner, /VGC_BENCH_COMMIT = "[0-9a-f]{40}"/);
@@ -106,8 +131,16 @@ test("pins and verifies the merciless VGC-Bench inference path", async () => {
   assert.match(runner, /EXPECTED_OBSERVATION_LENGTH = 6_936/);
   assert.match(runner, /EXPECTED_ACTION_BRANCHES = \(107, 107\)/);
   assert.match(runner, /collapse_species_aliases/);
+  assert.match(runner, /build_pairing_schedule/);
+  assert.match(runner, /player_a\.update_team\(pairing\.alpha\.team_text\)/);
+  assert.match(runner, /"schemaVersion": 3/);
   assert.match(runner, /os\.replace\(partial, destination\)/);
   assert.doesNotMatch(runner, /RandomPlayer|MaxBasePowerPlayer/);
+  assert.match(corpus, /DEFAULT_CORPUS_MANIFEST/);
+  assert.match(corpus, /balanced-round-robin/);
+  assert.match(corpus, /team-builder-drive/);
+  assert.match(builder, /Descargar \.txt/);
+  assert.match(builder, /downloadShowdownPaste/);
   assert.equal(requirements.trim().split("\n").at(-1), "stable-baselines3==2.8.0");
   assert.match(readme, /VGC-Bench vs\. VGC-Bench/);
   assert.match(readme, /M-A\/M-B/);
