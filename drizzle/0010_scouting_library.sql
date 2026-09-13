@@ -13,6 +13,18 @@ UPDATE `teams`
 SET
   `scope` = 'scouting',
   `creator` = COALESCE(
+    NULLIF(
+      CASE
+        WHEN TRIM(`teams`.`name`) LIKE '@% %'
+          THEN SUBSTR(
+            TRIM(`teams`.`name`),
+            2,
+            INSTR(SUBSTR(TRIM(`teams`.`name`), 2), ' ') - 1
+          )
+        ELSE ''
+      END,
+      ''
+    ),
     NULLIF(TRIM((SELECT `name` FROM `team_folders` WHERE `id` = `teams`.`folder_id`)), ''),
     `creator`
   ),
