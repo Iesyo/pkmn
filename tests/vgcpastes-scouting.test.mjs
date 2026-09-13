@@ -62,6 +62,7 @@ function vgcpastesCsv(count = 30) {
     species.forEach((name, pokemonIndex) => {
       row[37 + pokemonIndex] = index === count - 1 && pokemonIndex === 0 ? "Garchomp-Mega-Z" : name;
     });
+    if (index % 2 === 1) row[38] = "Farigiraf";
     row[44] = id;
     return row;
   });
@@ -101,7 +102,16 @@ test("uses the verified sheet ids and a deterministic A:AS public CSV query", as
   assert.match(buildVgcPastesSheetUrl(VGCPASTES_FORMATS[0]), /gid=2001945654#gid=2001945654$/);
 });
 
-test("filters by one Pokemon and paginates before sending cards to the client", async () => {
+test("normalizes at most three unique Pokemon filters", async () => {
+  const { MAX_VGCPASTES_POKEMON_FILTERS, normalizeVgcPastesPokemonFilters } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  assert.equal(MAX_VGCPASTES_POKEMON_FILTERS, 3);
+  assert.deepEqual(
+    normalizeVgcPastesPokemonFilters([" Sneasler ", "sneasler", "Indeedee-F", "Rillaboom", "Gholdengo"]),
+    ["Sneasler", "Indeedee-F", "Rillaboom"],
+  );
+});
+
+test("filters by a Pokemon core with AND semantics and paginates before sending cards to the client", async () => {
   const { buildVgcPastesScoutingResponse, getVgcPastesFormat, isVgcPastesScoutingResponse, parseVgcPastesTeams } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
   const teams = parseVgcPastesTeams(vgcpastesCsv(30));
   const format = getVgcPastesFormat("champions-m-c");
@@ -114,15 +124,25 @@ test("filters by one Pokemon and paginates before sending cards to the client", 
   assert.equal(pageTwo.teams.length, 12);
   assert.equal(pageTwo.teams[0].id, "MC018");
   assert.equal(pageTwo.source.url, "https://docs.google.com/spreadsheets/d/1axlwmzPA49rYkqXh7zHvAtSP-TKbM0ijGYBPRflLSWw/htmlview?gid=2001945654#gid=2001945654");
+  assert.deepEqual(pageTwo.query.pokemon, []);
   assert.equal(isVgcPastesScoutingResponse(pageTwo), true);
 
-  const filtered = buildVgcPastesScoutingResponse(format, teams, { pokemon: "Sneasler", page: 1, pageSize: 12 });
-  assert.equal(filtered.pagination.totalItems, 29);
-  assert.equal(filtered.pagination.totalPages, 3);
-  assert.ok(filtered.teams.every((team) => team.pokemon.includes("Sneasler")));
+  const filtered = buildVgcPastesScoutingResponse(format, teams, { pokemon: ["Sneasler", "Indeedee-F"], page: 1, pageSize: 12 });
+  assert.deepEqual(filtered.query.pokemon, ["Sneasler", "Indeedee-F"]);
+  assert.equal(filtered.pagination.totalItems, 15);
+  assert.equal(filtered.pagination.totalPages, 2);
+  assert.ok(filtered.teams.every((team) => team.pokemon.includes("Sneasler") && team.pokemon.includes("Indeedee-F")));
+
+  const threePokemonCore = buildVgcPastesScoutingResponse(format, teams, { pokemon: ["Sneasler", "Indeedee-F", "Rillaboom"], page: 1, pageSize: 24 });
+  assert.equal(threePokemonCore.pagination.totalItems, 15);
+  assert.ok(threePokemonCore.teams.every((team) => ["Sneasler", "Indeedee-F", "Rillaboom"].every((species) => team.pokemon.includes(species))));
+
+  const invalid = structuredClone(pageTwo);
+  invalid.query.pokemon = ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo"];
+  assert.equal(isVgcPastesScoutingResponse(invalid), false);
 });
 
-test("serves VGCPastes by format with bounded upstream fetch", async () => {
+test("serves repeated Pokemon query params as a bounded AND core filter", async () => {
   const serverModule = await vite.ssrLoadModule("/lib/vgcpastes-scouting-server.ts");
   serverModule.clearVgcPastesScoutingCache();
   const { GET } = await vite.ssrLoadModule("/app/api/vgcpastes-scouting/route.ts");
@@ -134,13 +154,15 @@ test("serves VGCPastes by format with bounded upstream fetch", async () => {
   };
 
   try {
-    const response = await GET(new Request("http://localhost/api/vgcpastes-scouting?format=champions-m-c&pokemon=Sneasler&page=2&pageSize=12"));
+    const response = await GET(new Request("http://localhost/api/vgcpastes-scouting?format=champions-m-c&pokemon=Sneasler&pokemon=sneasler&pokemon=Indeedee-F&pokemon=Rillaboom&pokemon=Gholdengo&page=1&pageSize=12"));
     const payload = await response.json();
     assert.equal(response.status, 200);
     assert.equal(payload.format.label, "Champions M-C");
-    assert.equal(payload.query.pokemon, "Sneasler");
-    assert.equal(payload.pagination.page, 2);
+    assert.deepEqual(payload.query.pokemon, ["Sneasler", "Indeedee-F", "Rillaboom"]);
+    assert.equal(payload.pagination.totalItems, 15);
     assert.equal(payload.teams.length, 12);
+    assert.ok(payload.teams.every((team) => payload.query.pokemon.every((species) => team.pokemon.includes(species))));
+
     const upstream = new URL(requested[0]);
     assert.equal(upstream.hostname, "docs.google.com");
     assert.equal(upstream.searchParams.get("gid"), "2001945654");
@@ -170,11 +192,15 @@ test("rejects redirects from the fixed VGCPastes source instead of following the
   );
 });
 
-test("connects the repository browser to format, one-Pokemon search, pagination and Pokepaste import", async () => {
+test("connects the repository browser to a three-Pokemon AND core, pagination and Pokepaste import", async () => {
   const browser = await readFile(new URL("../components/vgc/vgcpastes-scouting-browser.tsx", import.meta.url), "utf8");
   const scouting = await readFile(new URL("../components/vgc/scouting-view.tsx", import.meta.url), "utf8");
 
-  assert.match(browser, /Buscar por 1 Pokémon/);
+  assert.match(browser, /Buscar core · hasta/);
+  assert.match(browser, /AND · deben aparecer todos/);
+  assert.match(browser, /multiple/);
+  assert.match(browser, /ComboboxChip/);
+  assert.match(browser, /params\.append\("pokemon", species\)/);
   assert.match(browser, /Página \$\{data\.pagination\.page\} de/);
   assert.match(browser, /\/api\/vgcpastes-scouting/);
   assert.match(browser, /\/api\/pokepaste-import/);

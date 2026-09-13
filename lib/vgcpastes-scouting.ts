@@ -12,6 +12,7 @@ export const VGCPASTES_FORMATS = [
 export const DEFAULT_VGCPASTES_FORMAT_ID = VGCPASTES_FORMATS[0].id;
 export const DEFAULT_VGCPASTES_PAGE_SIZE = 24;
 export const VGCPASTES_PAGE_SIZES = [12, 24, 48] as const;
+export const MAX_VGCPASTES_POKEMON_FILTERS = 3;
 
 const MAX_TEXT_LENGTH = 240;
 const MAX_POKEMON_NAME_LENGTH = 64;
@@ -54,7 +55,7 @@ export interface VgcPastesScoutingResponse {
   formats: VgcPastesFormat[];
   pokemonOptions: string[];
   query: {
-    pokemon: string;
+    pokemon: string[];
     page: number;
     pageSize: number;
   };
@@ -88,6 +89,23 @@ export function normalizePokemonSearch(value: unknown) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "")
     .slice(0, MAX_POKEMON_NAME_LENGTH);
+}
+
+export function normalizeVgcPastesPokemonFilters(values: unknown): string[] {
+  const candidates = Array.isArray(values) ? values : [values];
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of candidates) {
+    const pokemon = cleanText(value, "").slice(0, MAX_POKEMON_NAME_LENGTH);
+    const key = normalizePokemonSearch(pokemon);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(pokemon);
+    if (normalized.length >= MAX_VGCPASTES_POKEMON_FILTERS) break;
+  }
+
+  return normalized;
 }
 
 function normalizePokepasteUrl(value: unknown) {
@@ -238,19 +256,22 @@ export function buildVgcPastesScoutingResponse(
   teams: VgcPastesTeam[],
   options: {
     fetchedAt?: string;
-    pokemon?: string;
+    pokemon?: string | string[];
     page?: number;
     pageSize?: number;
   } = {},
 ): VgcPastesScoutingResponse {
-  const pokemon = cleanText(options.pokemon, "").slice(0, MAX_POKEMON_NAME_LENGTH);
-  const pokemonKey = normalizePokemonSearch(pokemon);
+  const pokemon = normalizeVgcPastesPokemonFilters(options.pokemon ?? []);
+  const pokemonKeys = pokemon.map(normalizePokemonSearch);
   const requestedPageSize = safePositiveInteger(options.pageSize, DEFAULT_VGCPASTES_PAGE_SIZE);
   const pageSize = VGCPASTES_PAGE_SIZES.includes(requestedPageSize as (typeof VGCPASTES_PAGE_SIZES)[number])
     ? requestedPageSize
     : DEFAULT_VGCPASTES_PAGE_SIZE;
-  const filtered = pokemonKey
-    ? teams.filter((team) => team.pokemon.some((species) => normalizePokemonSearch(species) === pokemonKey))
+  const filtered = pokemonKeys.length
+    ? teams.filter((team) => {
+      const teamPokemon = new Set(team.pokemon.map(normalizePokemonSearch));
+      return pokemonKeys.every((key) => teamPokemon.has(key));
+    })
     : teams;
   const totalPages = Math.ceil(filtered.length / pageSize);
   const requestedPage = safePositiveInteger(options.page, 1);
@@ -294,6 +315,13 @@ function isKnownFormat(value: unknown) {
   );
 }
 
+function isValidPokemonFilterList(value: unknown) {
+  if (!Array.isArray(value) || value.length > MAX_VGCPASTES_POKEMON_FILTERS) return false;
+  if (!value.every((entry) => typeof entry === "string" && entry.length > 0 && entry.length <= MAX_POKEMON_NAME_LENGTH)) return false;
+  const keys = value.map(normalizePokemonSearch);
+  return keys.every(Boolean) && new Set(keys).size === keys.length;
+}
+
 export function isVgcPastesScoutingResponse(value: unknown): value is VgcPastesScoutingResponse {
   const root = recordValue(value);
   const source = recordValue(root?.source);
@@ -317,7 +345,7 @@ export function isVgcPastesScoutingResponse(value: unknown): value is VgcPastesS
     && Array.isArray(root.pokemonOptions)
     && root.pokemonOptions.every((entry) => typeof entry === "string" && entry.length > 0 && entry.length <= MAX_POKEMON_NAME_LENGTH)
     && query
-    && typeof query.pokemon === "string"
+    && isValidPokemonFilterList(query.pokemon)
     && typeof query.page === "number"
     && typeof query.pageSize === "number"
     && VGCPASTES_PAGE_SIZES.includes(query.pageSize as (typeof VGCPASTES_PAGE_SIZES)[number])
