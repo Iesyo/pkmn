@@ -3,6 +3,7 @@ import {
   DEFAULT_VGCPASTES_FORMAT_ID,
   DEFAULT_VGCPASTES_PAGE_SIZE,
   getVgcPastesFormat,
+  normalizeVgcPastesPokemonFilters,
 } from "@/lib/vgcpastes-scouting";
 import { loadVgcPastesFormat } from "@/lib/vgcpastes-scouting-server";
 
@@ -24,7 +25,7 @@ export async function GET(request: Request) {
     return errorResponse("Ese formato no está disponible en VGCPastes.", 400);
   }
 
-  const pokemon = (url.searchParams.get("pokemon") ?? "").trim().slice(0, 64);
+  const pokemon = normalizeVgcPastesPokemonFilters(url.searchParams.getAll("pokemon"));
   const page = positiveInteger(url.searchParams.get("page"), 1, 10_000);
   const pageSize = positiveInteger(url.searchParams.get("pageSize"), DEFAULT_VGCPASTES_PAGE_SIZE, 48);
   const refresh = url.searchParams.get("refresh") === "1";
