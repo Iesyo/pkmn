@@ -3,8 +3,9 @@
 ## Objetivo
 
 Aplicación personal para guardar equipos VGC, conservar sus versiones, comparar
-rendimiento histórico y simular daño entre dos sets. No hace predicciones ni
-recomendaciones automáticas.
+rendimiento histórico, simular daño entre dos sets y convertir evidencia
+competitiva en planes auditables. No calcula probabilidades de victoria ni
+modifica un Team automáticamente.
 
 ## Componentes
 
@@ -13,6 +14,9 @@ flowchart TD
     UI[Interfaz VGC] --> API[Contrato REST]
     DEX[Snapshot Showdown] --> UI
     CALC[Motor de daño Showdown] --> UI
+    CORPUS[VGCPastes M-C] --> WAR[War Room]
+    DEX --> WAR
+    WAR --> UI
     API --> PY[Núcleo Python]
     PY --> SQL[(SQLite local)]
     API --> D1[(D1 / SQLite alojado)]
@@ -29,6 +33,11 @@ flowchart TD
   Pokémon Showdown, fijada a un commit con soporte de Pokémon Champions.
 - `public/data/showdown-dex.json.gz`: snapshot reproducible y comprimido de especies, stats,
   habilidades, movimientos, learnsets y objetos disponibles de Champions/VGC.
+- `lib/war-room.ts`: motor determinista de legalidad, amenazas, selección de
+  cuatro, leads y propuestas de optimización. Distingue set exacto, team preview
+  y corpus, y expone índices de ordenación que no son win rates. Los pastes
+  privados enriquecen el selector de rivales, pero no alteran las frecuencias
+  calculadas desde el archivo público.
 - `scripts/update-showdown-data.mjs`: generador del snapshot desde las tablas
   públicas oficiales de Pokémon Showdown.
 
@@ -48,6 +57,12 @@ flowchart TD
    Gen 6–9 conserva el modelo tradicional de EVs.
 8. La calculadora trabaja con copias de los sets: sus ajustes no modifican el
    equipo ni crean una versión nueva.
+9. Scouting conserva fuentes y observaciones; War Room es un módulo principal
+   separado que produce recomendaciones trazables.
+10. War Room nunca interpreta presencia en un Team público como uso en batalla,
+    ni presenta frecuencias marginales de Battle Data como sets observados.
+11. Toda propuesta se revisa en Team Builder y se guarda como versión nueva;
+    el motor no reescribe una versión existente.
 
 ## Modelo inicial
 

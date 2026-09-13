@@ -230,7 +230,7 @@ function LoadingState() {
 
 export function VgcPastesScoutingBrowser({ onImportTeam }: { onImportTeam: (request: TournamentTeamBuilderImport) => void }) {
   const [data, setData] = useState<VgcPastesScoutingResponse | null>(null);
-  const [formatId, setFormatId] = useState(DEFAULT_VGCPASTES_FORMAT_ID);
+  const [formatId, setFormatId] = useState<string>(DEFAULT_VGCPASTES_FORMAT_ID);
   const [pokemon, setPokemon] = useState<string[]>([]);
   const [filterDraft, setFilterDraft] = useState<CompetitiveFilters>(EMPTY_FILTERS);
   const [filters, setFilters] = useState<CompetitiveFilters>(EMPTY_FILTERS);
