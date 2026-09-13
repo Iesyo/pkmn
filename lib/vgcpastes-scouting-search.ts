@@ -8,7 +8,7 @@ import {
 
 const MEGA_FORM_SUFFIX = /-Mega(?:-[A-Za-z0-9]+)?$/i;
 
-type VgcPastesScoutingBuildOptions = Parameters<typeof buildVgcPastesScoutingResponse>[2];
+type VgcPastesScoutingBuildOptions = NonNullable<Parameters<typeof buildVgcPastesScoutingResponse>[2]>;
 
 /**
  * VGCPastes names the in-battle Mega form in its roster columns, but for
