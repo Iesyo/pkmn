@@ -5,6 +5,7 @@ import {
   WAR_ROOM_FORMAT_ID,
   buildWarRoomCorpusResponse,
 } from "@/lib/war-room";
+import { WAR_ROOM_HISTORICAL_REGULATIONS } from "@/lib/war-room-regulations";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +24,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [source, savedPastes, tournamentSnapshot] = await Promise.all([
+    const force = url.searchParams.get("refresh") === "1";
+    const [source, savedPastes, tournamentSnapshot, historicalSources] = await Promise.all([
       loadVgcPastesFormat(formatId, {
-        force: url.searchParams.get("refresh") === "1",
+        force,
       }),
       listScoutingPasteDetails().catch((error) => {
         console.warn("War Room is continuing without the private Scouting library", error);
@@ -35,9 +37,17 @@ export async function GET(request: Request) {
         console.warn("War Room is continuing without tournament pastes", error);
         return null;
       }),
+      Promise.all(WAR_ROOM_HISTORICAL_REGULATIONS.map(async (regulation) => {
+        try {
+          return await loadVgcPastesFormat(regulation.formatId, { force });
+        } catch (error) {
+          console.warn(`War Room is continuing without historical ${regulation.formatLabel}`, error);
+          return null;
+        }
+      })).then((entries) => entries.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))),
     ]);
     return Response.json(
-      buildWarRoomCorpusResponse(source.format, source.teams, source.fetchedAt, savedPastes, tournamentSnapshot),
+      buildWarRoomCorpusResponse(source.format, source.teams, source.fetchedAt, savedPastes, tournamentSnapshot, historicalSources),
       {
         headers: {
           "cache-control": "no-store",
