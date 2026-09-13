@@ -56,6 +56,9 @@ export async function loadVgcPastesFormat(
     redirect: "manual",
     signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
   });
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("VGCPastes intentó redirigir la fuente pública");
+  }
   if (!response.ok) throw new Error(`VGCPastes respondió ${response.status}`);
 
   const teams = parseVgcPastesTeams(await readBoundedCsv(response));
