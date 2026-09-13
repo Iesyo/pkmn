@@ -316,9 +316,40 @@ test("offers up to twelve partners and can consume the previous recommendation b
   assert.ok(next.members.every((member) => !previousBatch.includes(member.species)));
 });
 
+test("expands beyond an exhausted exact-core sample without repeating earlier batches", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const team = ownTeam();
+  const current = new Set(team.map((pokemon) => pokemon.species.toLowerCase()));
+  const candidates = [...new Set(snapshot.formats.champions
+    .map((id) => snapshot.species[id]?.name)
+    .filter((name) => name && !name.includes("-Mega") && !current.has(name.toLowerCase())))]
+    .slice(0, 36);
+  assert.equal(candidates.length, 36);
+  const partnerCorpus = [
+    corpusTeam("exact-small", ["Rillaboom", ...candidates.slice(0, 5)]),
+    ...Array.from({ length: 5 }, (_, index) => corpusTeam(
+      `expanded-${index}`,
+      candidates.slice(5 + index * 6, 11 + index * 6),
+    )),
+  ];
+
+  const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
+  assert.equal(first.members.length, 12);
+  assert.ok(first.members.some((member) => member.evidenceMode === "core"));
+  assert.ok(first.members.some((member) => member.evidenceMode === "expanded"));
+
+  const previousBatch = first.members.map((member) => member.species);
+  const second = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
+  assert.equal(second.members.length, 12);
+  assert.ok(second.members.every((member) => member.evidenceMode === "expanded"));
+  assert.ok(second.members.every((member) => !previousBatch.includes(member.species)));
+});
+
 test("applies a partner to its recommended slot while preserving slot identity and Mega intent", async () => {
   const snapshot = await readSnapshot();
-  const { applyWarRoomMemberSuggestion, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { applyWarRoomMemberSuggestion, buildWarRoomMemberReplacement, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves, getMoveData, isItemLegal, isMoveLegal } = await vite.ssrLoadModule("/lib/showdown-data.ts");
   const team = ownTeam();
   const partnerCorpus = [
     corpusTeam("partners-a", ["Rillaboom", "Sneasler", "Basculegion", "Pelipper", "Farigiraf", "Salamence-Mega"]),
@@ -337,12 +368,36 @@ test("applies a partner to its recommended slot while preserving slot identity a
   assert.equal(replacement.slot, previous.slot);
   assert.equal(replacement.species, suggestion.species);
   assert.equal(replacement.moves.length, 4);
-  assert.ok(replacement.moves.every((move) => move.name === ""));
+  assert.ok(replacement.item);
+  assert.ok(replacement.ability);
+  assert.ok(replacement.nature);
+  assert.ok(replacement.evs);
+  assert.ok(replacement.moves.every((move) => move.name));
+  assert.equal(isItemLegal(snapshot, replacement.item, "champions"), true);
+  assert.ok(replacement.moves.every((move) => isMoveLegal(snapshot, replacement.species, move.name, "champions")));
+  assert.ok(replacement.moves.filter((move) => getMoveData(snapshot, move.name, "champions")?.category !== "Status").length >= 2);
   assert.notEqual(changed, team);
   assert.equal(team.find((pokemon) => pokemon.id === suggestion.replacesSetId)?.species, previous.species);
 
   const recalculated = optimizeTeam(changed, [team[1].id], partnerCorpus, snapshot);
   assert.equal(recalculated.members.some((member) => member.species === suggestion.species), false);
+
+  const metaMoves = getLegalMoves(snapshot, suggestion.species, "champions").slice(0, 4);
+  const metaAbility = getLegalAbilities(snapshot, suggestion.species, "champions")[0];
+  const metaApplication = buildWarRoomMemberReplacement(team, suggestion, snapshot, [{
+    id: "meta-1",
+    rank: 1,
+    label: "Meta popular",
+    item: "Leftovers",
+    ability: metaAbility,
+    nature: "Jolly",
+    evs: "2 HP / 32 Atk / 32 Spe",
+    moves: metaMoves,
+    evidence: { item: 50, ability: 50, nature: 50, statPoints: 50, moves: [50, 50, 50, 50] },
+  }]);
+  assert.equal(metaApplication.setSource, "battle-data");
+  assert.equal(metaApplication.presetId, "meta-1");
+  assert.deepEqual(metaApplication.pokemon.find((pokemon) => pokemon.id === suggestion.replacesSetId).moves.map((move) => move.name), metaMoves);
 
   const megaSuggestion = {
     species: "Salamence",
@@ -355,6 +410,7 @@ test("applies a partner to its recommended slot while preserving slot identity a
     replaces: team[5].species,
     replacesSetId: team[5].id,
     patchedTypes: [],
+    evidenceMode: "core",
     reasons: [],
   };
   const megaTeam = applyWarRoomMemberSuggestion(team, megaSuggestion, snapshot);
@@ -524,7 +580,10 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /MAX_WAR_ROOM_LOCKED_IDENTITIES/);
   assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS/);
   assert.match(warRoom, /Elegir y recalcular/);
-  assert.match(warRoom, /applyWarRoomMemberSuggestion/);
+  assert.match(warRoom, /buildWarRoomMemberReplacement/);
+  assert.match(warRoom, /api\/opponent-meta/);
+  assert.match(warRoom, /Armando set viable/);
+  assert.match(warRoom, /Corpus ampliado/);
   assert.match(warRoom, /function undoMember\(setId: string\)/);
   assert.match(warRoom, /Deshacer cambio de/);
   assert.match(warRoom, /excludedMemberSpecies: optimization\.members\.map/);
