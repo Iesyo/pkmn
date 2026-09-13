@@ -27,6 +27,7 @@ export const WAR_ROOM_SCHEMA_VERSION = 1;
 export const WAR_ROOM_FORMAT_ID = "champions-m-c";
 export const WAR_ROOM_BATTLE_FORMAT = "champions";
 export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
+export const MAX_WAR_ROOM_TEAM_MEGAS = 2;
 
 export type WarRoomEvidenceScope = "exact-set" | "team-preview" | "corpus";
 export type WarRoomSeverity = "blocker" | "high" | "medium" | "low";
@@ -166,6 +167,7 @@ export interface WarRoomMatchupResult {
 export interface WarRoomMemberSuggestion {
   species: string;
   observedAs: string;
+  isMega: boolean;
   score: number;
   appearancesWithCore: number;
   sampleSize: number;
@@ -243,6 +245,11 @@ export interface WarRoomSetSuggestion {
 export interface WarRoomOptimizationResult {
   regulation: typeof CHAMPIONS_REGULATION;
   lockedSpecies: string[];
+  megaPolicy: {
+    configured: number;
+    maximum: typeof MAX_WAR_ROOM_TEAM_MEGAS;
+    recommendationSlots: number;
+  };
   coreSample: {
     size: number;
     mode: "exact" | "partial" | "none";
@@ -432,6 +439,10 @@ function baseSpeciesKey(species: string) {
   return toId(baseSpeciesLabel(species));
 }
 
+function isMegaSpeciesLabel(species: string) {
+  return /-Mega(?:-[A-Za-z0-9]+)?$/i.test(species.trim());
+}
+
 function normalizedTeamSpecies(team: WarRoomCorpusTeam) {
   const seen = new Set<string>();
   return team.pokemon.filter((species) => {
@@ -491,7 +502,7 @@ function profileFromSet(snapshot: ShowdownSnapshot, set: PokemonSet): CombatProf
     speed: species?.baseStats.spe ?? null,
     roles: rolesForSet(snapshot, set),
     set,
-    megaActive: toId(battleSpecies) !== toId(set.species),
+    megaActive: isMegaSpeciesLabel(battleSpecies),
   };
 }
 
@@ -507,7 +518,7 @@ function profileFromPreview(snapshot: ShowdownSnapshot, speciesName: string): Co
     speed: species?.baseStats.spe ?? null,
     roles: [],
     set: null,
-    megaActive: false,
+    megaActive: isMegaSpeciesLabel(speciesName),
   };
 }
 
@@ -1366,8 +1377,17 @@ function memberSuggestions(
   corpus: WarRoomCorpusTeam[],
   snapshot: ShowdownSnapshot,
 ) {
+  const teamProfiles = team.map((set) => profileFromSet(snapshot, set));
+  const configuredMegas = teamProfiles.filter((profile) => profile.megaActive).length;
+  const recommendationSlots = Math.max(0, MAX_WAR_ROOM_TEAM_MEGAS - configuredMegas);
   const locked = team.filter((set) => lockedIds.has(set.id));
-  if (!locked.length) return { members: [] as WarRoomMemberSuggestion[], sampleSize: 0, mode: "none" as const };
+  if (!locked.length) return {
+    members: [] as WarRoomMemberSuggestion[],
+    sampleSize: 0,
+    mode: "none" as const,
+    configuredMegas,
+    recommendationSlots,
+  };
   const lockedKeys = new Set(locked.map((set) => baseSpeciesKey(set.species)));
   const exact = corpus.filter((entry) => {
     const keys = new Set(normalizedTeamSpecies(entry).map(baseSpeciesKey));
@@ -1379,7 +1399,13 @@ function memberSuggestions(
     return [...lockedKeys].filter((key) => keys.has(key)).length >= threshold;
   });
   const mode = exact.length ? "exact" as const : pool.length ? "partial" as const : "none" as const;
-  if (!pool.length) return { members: [] as WarRoomMemberSuggestion[], sampleSize: 0, mode };
+  if (!pool.length) return {
+    members: [] as WarRoomMemberSuggestion[],
+    sampleSize: 0,
+    mode,
+    configuredMegas,
+    recommendationSlots,
+  };
 
   const currentKeys = new Set(team.map((set) => baseSpeciesKey(set.species)));
   const candidates = new Map<string, { species: string; observedAs: string; appearances: number }>();
@@ -1396,7 +1422,6 @@ function memberSuggestions(
     }
   }
 
-  const teamProfiles = team.map((set) => profileFromSet(snapshot, set));
   const currentPenalty = teamDefensePenalty(teamProfiles);
   const unlocked = teamProfiles.filter((profile) => !lockedIds.has(profile.id));
   const maxAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.appearances));
@@ -1423,6 +1448,7 @@ function memberSuggestions(
     return [{
       species: candidate.species,
       observedAs: candidate.observedAs,
+      isMega: profile.megaActive,
       score,
       appearancesWithCore: candidate.appearances,
       sampleSize: pool.length,
@@ -1435,8 +1461,21 @@ function memberSuggestions(
         patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
       ],
     }];
-  }).sort((left, right) => right.score - left.score || right.appearancesWithCore - left.appearancesWithCore || left.species.localeCompare(right.species)).slice(0, 8);
-  return { members, sampleSize: pool.length, mode };
+  }).sort((left, right) => right.score - left.score || right.appearancesWithCore - left.appearancesWithCore || left.species.localeCompare(right.species));
+  let recommendedMegas = 0;
+  const limitedMembers = members.filter((member) => {
+    if (!member.isMega) return true;
+    if (recommendedMegas >= recommendationSlots) return false;
+    recommendedMegas += 1;
+    return true;
+  }).slice(0, 8);
+  return {
+    members: limitedMembers,
+    sampleSize: pool.length,
+    mode,
+    configuredMegas,
+    recommendationSlots,
+  };
 }
 
 export function optimizeTeam(
@@ -1463,6 +1502,11 @@ export function optimizeTeam(
   return {
     regulation: CHAMPIONS_REGULATION,
     lockedSpecies,
+    megaPolicy: {
+      configured: memberResult.configuredMegas,
+      maximum: MAX_WAR_ROOM_TEAM_MEGAS,
+      recommendationSlots: memberResult.recommendationSlots,
+    },
     coreSample: { size: memberResult.sampleSize, mode: memberResult.mode },
     members: memberResult.members,
     sets: setSuggestions(team, statistics, snapshot, metaBySpecies, optimizationLocks),
@@ -1472,6 +1516,7 @@ export function optimizeTeam(
       memberResult.mode === "partial"
         ? "No hay equipos con el core completo en el corpus: las altas propuestas usan coincidencia parcial y están marcadas como exploratorias."
         : "Las altas se ordenan por coaparición real con el core y por balance defensivo de tipos.",
+      "Partner Search limita las alternativas Mega a dos y descuenta las Megas que ya están configuradas en el Team.",
       "Los paquetes de set combinan frecuencias marginales de Battle Data; no representan sets observados ni una combinación garantizada.",
       "War Room no modifica versiones: abre el Team Builder para que revises y guardes cualquier cambio como versión nueva.",
     ],
