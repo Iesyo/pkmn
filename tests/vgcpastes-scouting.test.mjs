@@ -159,6 +159,17 @@ test("serves VGCPastes by format with bounded upstream fetch", async () => {
   }
 });
 
+test("rejects redirects from the fixed VGCPastes source instead of following them", async () => {
+  const serverModule = await vite.ssrLoadModule("/lib/vgcpastes-scouting-server.ts");
+  serverModule.clearVgcPastesScoutingCache();
+  await assert.rejects(
+    () => serverModule.loadVgcPastesFormat("champions-m-c", {
+      fetcher: async () => new Response(null, { status: 302, headers: { location: "https://example.com/elsewhere" } }),
+    }),
+    /intentó redirigir/,
+  );
+});
+
 test("connects the repository browser to format, one-Pokemon search, pagination and Pokepaste import", async () => {
   const browser = await readFile(new URL("../components/vgc/vgcpastes-scouting-browser.tsx", import.meta.url), "utf8");
   const scouting = await readFile(new URL("../components/vgc/scouting-view.tsx", import.meta.url), "utf8");
