@@ -1,8 +1,12 @@
 import { toId } from "./pokemon-data";
 import type { PokemonSet } from "./types";
 import { getVgcPastesScoutingSpeciesIdentity } from "./vgcpastes-scouting-search";
+import {
+  WAR_ROOM_CURRENT_FORMAT_ID,
+  getWarRoomRegulationEvidence,
+} from "./war-room-regulations";
 
-export const WAR_ROOM_PASTE_EVIDENCE_SCHEMA_VERSION = 1;
+export const WAR_ROOM_PASTE_EVIDENCE_SCHEMA_VERSION = 2;
 export const MAX_WAR_ROOM_PASTE_EVIDENCE_CANDIDATES = 36;
 
 export type WarRoomPasteSource = "tournament" | "vgcpastes" | "scouting-library";
@@ -17,6 +21,11 @@ export interface WarRoomPasteEvidenceCandidate {
   rank: string;
   pokepasteUrl: string;
   pokemon: string[];
+  formatId: string;
+  formatLabel: string;
+  regulationWeight: number;
+  historical: boolean;
+  setEvidenceEligible: boolean;
 }
 
 export interface WarRoomPasteEvidenceTeam extends WarRoomPasteEvidenceCandidate {
@@ -86,6 +95,9 @@ function normalizeCandidate(value: unknown): WarRoomPasteEvidenceCandidate | nul
   if (candidate.source === "scouting-library" && !savedPasteId) return null;
   if (candidate.source !== "scouting-library" && !pokepasteUrl) return null;
   if (new Set(pokemon.map(pasteEvidenceSpeciesKey)).size !== 6) return null;
+  const suppliedFormatId = cleanText(candidate.formatId, 80);
+  const regulation = getWarRoomRegulationEvidence(suppliedFormatId || WAR_ROOM_CURRENT_FORMAT_ID);
+  if (!regulation) return null;
   return {
     id,
     source: candidate.source,
@@ -95,6 +107,11 @@ function normalizeCandidate(value: unknown): WarRoomPasteEvidenceCandidate | nul
     rank: cleanText(candidate.rank, 80),
     pokepasteUrl,
     pokemon,
+    formatId: regulation.formatId,
+    formatLabel: regulation.formatLabel,
+    regulationWeight: regulation.regulationWeight,
+    historical: regulation.historical,
+    setEvidenceEligible: regulation.setEvidenceEligible,
   };
 }
 
@@ -154,6 +171,8 @@ export function selectWarRoomPasteEvidenceCandidates(
   const locked = new Set(lockedSpecies.map(pasteEvidenceSpeciesKey).filter(Boolean));
   const targets = new Set(targetSpecies.map(pasteEvidenceSpeciesKey).filter(Boolean));
   const scored = corpus
+    .map((candidate) => normalizeCandidate(candidate))
+    .filter((candidate): candidate is WarRoomPasteEvidenceCandidate => Boolean(candidate?.setEvidenceEligible))
     .filter((candidate) => candidate.savedPasteId || safePokepasteUrl(candidate.pokepasteUrl))
     .map((candidate) => {
       const keys = new Set(candidate.pokemon.map(pasteEvidenceSpeciesKey).filter(Boolean));
@@ -165,10 +184,18 @@ export function selectWarRoomPasteEvidenceCandidates(
       return {
         candidate,
         keys,
-        score: lockedMatches * 220 + currentMatches * 75 + targetMatches * 45 + sourceScore(candidate) + placementBonus,
+        currentMatches,
+        lockedMatches,
+        targetMatches,
+        score: lockedMatches * 220
+          + currentMatches * 75
+          + targetMatches * 45
+          + sourceScore(candidate) * candidate.regulationWeight
+          + placementBonus * candidate.regulationWeight
+          + candidate.regulationWeight * 60,
       };
     })
-    .filter((entry) => entry.score > sourceScore(entry.candidate))
+    .filter((entry) => entry.lockedMatches > 0 || entry.currentMatches > 0 || entry.targetMatches > 0)
     .sort((left, right) => right.score - left.score || left.candidate.id.localeCompare(right.candidate.id));
 
   const selected: WarRoomPasteEvidenceCandidate[] = [];
@@ -183,8 +210,13 @@ export function selectWarRoomPasteEvidenceCandidates(
 
   // Preserve representation for replacement candidates and every member of
   // the current team instead of letting one popular archetype consume the batch.
+  // When M-C has a matching paste, reserve its place before historical options.
   for (const species of [...targets, ...current]) {
     let added = 0;
+    const currentEntry = scored.find((entry) => entry.keys.has(species) && !entry.candidate.historical);
+    const beforeCurrent = selected.length;
+    add(currentEntry);
+    if (selected.length > beforeCurrent) added += 1;
     for (const entry of scored) {
       if (!entry.keys.has(species)) continue;
       const before = selected.length;
@@ -241,8 +273,14 @@ export function isWarRoomPasteEvidenceResponse(value: unknown): value is WarRoom
   ) return false;
   return root.teams.every((value) => {
     const team = recordValue(value);
+    const normalized = normalizeCandidate(team);
     return Boolean(
-      normalizeCandidate(team)
+      normalized
+      && team?.formatId === normalized.formatId
+      && team?.formatLabel === normalized.formatLabel
+      && team?.regulationWeight === normalized.regulationWeight
+      && team?.historical === normalized.historical
+      && team?.setEvidenceEligible === normalized.setEvidenceEligible
       && (team?.sourceTier === "tournament" || team?.sourceTier === "curated" || team?.sourceTier === "collection")
       && typeof team?.sourceLabel === "string"
       && typeof team?.sourceUrl === "string"
