@@ -66,6 +66,9 @@ flowchart TD
 12. Los bloqueos del optimizador son restricciones de dominio: cada propuesta
     conserva los campos protegidos antes de validar Item Clause, habilidad,
     naturaleza, Stat Points y cuatro movimientos legales sin duplicados.
+13. Partner Search opera sobre un borrador desechable: cada integrante elegido
+    conserva el slot, consume el lote visible, recalcula hasta 12 alternativas
+    con el Team resultante y puede deshacerse sin tocar la versión persistida.
 
 ## Modelo inicial
 
