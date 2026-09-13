@@ -38,6 +38,12 @@ import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 import type { PokemonSet, TeamGroup, TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
+  isWarRoomPasteEvidenceResponse,
+  pasteEvidenceSpeciesKey,
+  selectWarRoomPasteEvidenceCandidates,
+  type WarRoomPasteEvidenceTeam,
+} from "@/lib/war-room-paste-evidence";
+import {
   WAR_ROOM_FORMAT_ID,
   MAX_WAR_ROOM_LOCKED_IDENTITIES,
   MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
@@ -74,6 +80,15 @@ type MetaState = {
   status: "idle" | "loading" | "ready";
   values: Record<string, OpponentMetaResponse | undefined>;
   loaded: number;
+  error: string;
+};
+
+type PasteEvidenceState = {
+  teamKey: string;
+  status: "idle" | "loading" | "ready";
+  teams: WarRoomPasteEvidenceTeam[];
+  loaded: number;
+  failed: number;
   error: string;
 };
 
@@ -141,6 +156,26 @@ const EMPTY_META_STATE: MetaState = {
   loaded: 0,
   error: "",
 };
+
+const EMPTY_PASTE_EVIDENCE_STATE: PasteEvidenceState = {
+  teamKey: "",
+  status: "idle",
+  teams: [],
+  loaded: 0,
+  failed: 0,
+  error: "",
+};
+
+function pasteEvidenceTeamKey(team: TeamVersion) {
+  return team.pokemon.map((set) => [
+    toId(set.species),
+    toId(set.item),
+    toId(set.ability),
+    toId(set.nature),
+    set.evs.trim().toLowerCase(),
+    ...set.moves.map((move) => toId(move.name)),
+  ].join("|")).join("::");
+}
 
 function apiError(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") return payload.error;
@@ -486,6 +521,12 @@ function PokemonLockCard({
 }
 
 function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSuggestion; onBuild: () => void }) {
+  const observed = suggestion.methodology !== "battle-data-fallback";
+  const badge = suggestion.methodology === "observed-paste"
+    ? "Paste observado"
+    : suggestion.methodology === "observed-paste-patched"
+      ? "Paste + parche"
+      : "Battle Data · fallback";
   return (
     <article className="rounded-2xl border border-white/7 bg-slate-950/55 p-4">
       <div className="flex items-center gap-3">
@@ -494,8 +535,15 @@ function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSugg
           <h3 className="truncate text-sm font-black text-white">{suggestion.species}</h3>
           <p className={cn("mt-0.5 text-[9px] font-bold", suggestion.structuralDelta > 0 ? "text-emerald-300" : suggestion.structuralDelta < 0 ? "text-amber-300" : "text-slate-500")}>{suggestion.structuralDelta > 0 ? "+" : ""}{suggestion.structuralDelta} encaje estructural</p>
         </div>
-        <Badge variant="outline" className="border-amber-300/15 bg-amber-300/7 text-[8px] text-amber-200">Hipótesis</Badge>
+        <Badge variant="outline" className={cn("text-[8px]", observed ? "border-emerald-300/15 bg-emerald-300/7 text-emerald-200" : "border-amber-300/15 bg-amber-300/7 text-amber-200")}>{badge}</Badge>
       </div>
+
+      {suggestion.source ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300/10 bg-emerald-300/[0.025] px-3 py-2 text-[8px] text-emerald-100">
+          <span>{suggestion.source.label}{suggestion.source.rank ? ` · ${suggestion.source.rank}` : ""} · contexto {suggestion.source.contextFit}/100</span>
+          {suggestion.source.url ? <a href={suggestion.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-emerald-300 hover:text-emerald-200">Ver paste <ExternalLink className="size-3" /></a> : null}
+        </div>
+      ) : null}
 
       {suggestion.preservedFields.length ? (
         <div className="mt-3 rounded-xl border border-cyan-300/12 bg-cyan-300/[0.035] p-2.5">
@@ -511,7 +559,9 @@ function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSugg
           <div key={change.key} className="rounded-xl border border-white/6 bg-white/[0.02] px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[8px] font-black uppercase tracking-wide text-slate-600">{change.field}</span>
-              {change.evidence !== null ? <span className="font-mono text-[8px] text-amber-200">{change.evidence}% marginal</span> : null}
+              {change.source === "paste"
+                ? <span className="text-[8px] font-bold text-emerald-300">Paste observado</span>
+                : <span className="font-mono text-[8px] text-amber-200">{change.evidence !== null ? `${change.evidence}% marginal` : "Battle Data · estimado"}</span>}
             </div>
             <p className="mt-1 line-clamp-2 text-[9px] leading-4 text-slate-500"><span className="text-slate-700">Actual:</span> {change.current}</p>
             <p className="line-clamp-2 text-[9px] leading-4 text-slate-300"><span className="text-amber-300">Probar:</span> {change.suggested}</p>
@@ -551,6 +601,7 @@ function OptimizationView({
   result,
   optimizationLocks,
   metaState,
+  pasteEvidenceState,
   memberApplyState,
   replacementHistory,
   onToggleLock,
@@ -565,6 +616,7 @@ function OptimizationView({
   result: WarRoomOptimizationResult;
   optimizationLocks: WarRoomOptimizationLocks;
   metaState: MetaState;
+  pasteEvidenceState: PasteEvidenceState;
   memberApplyState: MemberApplyState;
   replacementHistory: MemberReplacementHistory;
   onToggleLock: (id: string, field: WarRoomLockField) => void;
@@ -618,14 +670,14 @@ function OptimizationView({
       )}
 
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-300">Set search</p><h2 className="mt-1 text-lg font-black text-white">Objeto, moves, naturaleza y Stat Points</h2><p className="mt-1 max-w-2xl text-[10px] leading-4 text-slate-500">Contrasta cada set con Battle Data y vuelve a puntuar su cobertura sobre las amenazas frecuentes. Los porcentajes son marginales, no un set observado.</p></div><Button type="button" variant="outline" onClick={onLoadMeta} disabled={metaState.status === "loading"} className="gap-2 border-amber-300/18 bg-amber-300/7 text-xs font-black text-amber-100 hover:bg-amber-300/12">{metaState.status === "loading" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{metaState.status === "loading" ? "Buscando…" : metaState.status === "ready" ? "Recalcular sets" : "Buscar cambios de set"}</Button></div>
-        {metaState.error ? <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-3 py-2 text-[10px] text-amber-100">{metaState.error}</p> : null}
-        {metaState.status === "ready" ? <p className="mt-3 text-[9px] text-slate-600">Battle Data disponible para {metaState.loaded}/{team.pokemon.length} integrantes.</p> : null}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-300">Set search</p><h2 className="mt-1 text-lg font-black text-white">Objeto, moves, naturaleza y Stat Points</h2><p className="mt-1 max-w-2xl text-[10px] leading-4 text-slate-500">Busca primero sets completos en pastes comparables y conserva su contexto. Battle Data solo rellena campos ausentes o funciona como último recurso.</p></div><Button type="button" variant="outline" onClick={onLoadMeta} disabled={metaState.status === "loading" || pasteEvidenceState.status === "loading"} className="gap-2 border-amber-300/18 bg-amber-300/7 text-xs font-black text-amber-100 hover:bg-amber-300/12">{metaState.status === "loading" || pasteEvidenceState.status === "loading" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{metaState.status === "loading" || pasteEvidenceState.status === "loading" ? "Revisando pastes…" : pasteEvidenceState.status === "ready" ? "Recalcular contexto" : "Buscar cambios de set"}</Button></div>
+        {pasteEvidenceState.error || metaState.error ? <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-3 py-2 text-[10px] text-amber-100">{[pasteEvidenceState.error, metaState.error].filter(Boolean).join(" ")}</p> : null}
+        {pasteEvidenceState.status === "ready" ? <p className="mt-3 text-[9px] text-slate-600">{pasteEvidenceState.loaded} pastes completos cargados · {result.pasteEvidence.matchedSets} sets del Team observados · Battle Data usado para {metaState.loaded} integrantes sin propuesta contextual completa.{pasteEvidenceState.failed ? ` ${pasteEvidenceState.failed} referencias no estuvieron disponibles o eran duplicadas.` : ""}</p> : null}
         {result.sets.length ? (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             {result.sets.map((suggestion) => <SetSuggestionCard key={`${suggestion.species}-${suggestion.presetId}`} suggestion={suggestion} onBuild={() => onBuildSuggestion(suggestion)} />)}
           </div>
-        ) : metaState.status === "ready" ? (
+        ) : pasteEvidenceState.status === "ready" || metaState.status === "ready" ? (
           <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs leading-5 text-slate-600">
             {result.locks.some((entry) => entry.fullyLocked)
               ? `${result.locks.filter((entry) => entry.fullyLocked).length} ${result.locks.filter((entry) => entry.fullyLocked).length === 1 ? "set está completamente protegido" : "sets están completamente protegidos"}. No encontramos otro paquete legal distinto que respete los bloqueos restantes.`
@@ -664,6 +716,8 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
   const memberApplyRequest = useRef(0);
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
   const metaRequest = useRef(0);
+  const [pasteEvidenceState, setPasteEvidenceState] = useState<PasteEvidenceState>(EMPTY_PASTE_EVIDENCE_STATE);
+  const pasteEvidenceRequest = useRef(0);
 
   const selectedTeam = versions.find((version) => version.id === teamId) ?? versions[0] ?? null;
   const workingTeam = useMemo(() => {
@@ -675,6 +729,11 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       paste: serializeShowdownPaste(pokemon, selectedTeam.mechanics ?? ["mega"]),
     };
   }, [optimizationPokemon, selectedTeam]);
+  const workingTeamKey = useMemo(() => workingTeam ? pasteEvidenceTeamKey(workingTeam) : "", [workingTeam]);
+  const activePasteEvidence = useMemo(
+    () => pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState.teams : [],
+    [pasteEvidenceState, workingTeamKey],
+  );
   const excludedMemberSpecies = useMemo(() => [...new Set(
     Object.values(replacementHistory).flatMap((steps) => steps.flatMap((step) => step.excludedMemberSpecies)),
   )], [replacementHistory]);
@@ -716,19 +775,21 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       resources.corpus.teams,
       resources.snapshot,
       metaState.teamId === workingTeam.id ? metaState.values : {},
-      { excludedMemberSpecies },
+      { excludedMemberSpecies, pasteEvidence: activePasteEvidence },
     )
-    : null, [excludedMemberSpecies, metaState.teamId, metaState.values, optimizationLocks, resources, workingTeam]);
+    : null, [activePasteEvidence, excludedMemberSpecies, metaState.teamId, metaState.values, optimizationLocks, resources, workingTeam]);
 
   function changeTeam(value: string) {
     memberApplyRequest.current += 1;
     metaRequest.current += 1;
+    pasteEvidenceRequest.current += 1;
     setTeamId(value);
     setOptimizationLocks({});
     setOptimizationPokemon(null);
     setReplacementHistory({});
     setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
     setMetaState(EMPTY_META_STATE);
+    setPasteEvidenceState(EMPTY_PASTE_EVIDENCE_STATE);
   }
 
   async function selectRival(team: WarRoomCorpusTeam) {
@@ -807,28 +868,91 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
   }
 
   async function loadMeta() {
-    if (!workingTeam) return;
+    if (!workingTeam || !resources || !optimization) return;
     metaRequest.current += 1;
+    pasteEvidenceRequest.current += 1;
     const requestId = metaRequest.current;
+    const pasteRequestId = pasteEvidenceRequest.current;
+    const teamKey = pasteEvidenceTeamKey(workingTeam);
     setMetaState({ teamId: workingTeam.id, status: "loading", values: {}, loaded: 0, error: "" });
-    const results = await Promise.all(workingTeam.pokemon.filter((set) => set.species).map(async (set) => {
+    setPasteEvidenceState({ teamKey, status: "loading", teams: [], loaded: 0, failed: 0, error: "" });
+
+    const lockedSpecies = workingTeam.pokemon
+      .filter((set) => optimizationLocks[set.id]?.identity)
+      .map((set) => set.species);
+    const candidates = selectWarRoomPasteEvidenceCandidates(
+      workingTeam.pokemon.map((set) => set.species),
+      lockedSpecies,
+      optimization.members.map((member) => member.species),
+      resources.corpus.teams,
+      24,
+    );
+    let evidenceTeams: WarRoomPasteEvidenceTeam[] = [];
+    let evidenceError = "";
+    let failed = 0;
+    if (candidates.length) {
       try {
-        const response = await fetch(`/api/opponent-meta/${encodeURIComponent(set.species)}`, { cache: "no-store" });
+        const response = await fetch("/api/war-room/paste-evidence", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ candidates }),
+        });
+        const payload = await readJson(response);
+        if (!response.ok) throw new Error(apiError(payload, "No pudimos cargar los pastes comparables."));
+        if (!isWarRoomPasteEvidenceResponse(payload)) throw new Error("La evidencia de pastes llegó en un formato inesperado.");
+        evidenceTeams = payload.teams;
+        failed = payload.failed;
+      } catch (caught) {
+        evidenceError = caught instanceof Error ? caught.message : "No pudimos cargar los pastes comparables.";
+      }
+    } else {
+      evidenceError = "No encontramos referencias de paste que compartan Pokémon con este Team.";
+    }
+    if (requestId !== metaRequest.current || pasteRequestId !== pasteEvidenceRequest.current) return;
+    setPasteEvidenceState({
+      teamKey,
+      status: "ready",
+      teams: evidenceTeams,
+      loaded: evidenceTeams.length,
+      failed,
+      error: evidenceError,
+    });
+
+    const pasteOnly = optimizeTeam(
+      workingTeam.pokemon,
+      optimizationLocks,
+      resources.corpus.teams,
+      resources.snapshot,
+      {},
+      { excludedMemberSpecies, pasteEvidence: evidenceTeams },
+    );
+    const observedSetIds = new Set(pasteOnly.sets
+      .filter((suggestion) => suggestion.methodology !== "battle-data-fallback")
+      .map((suggestion) => suggestion.setId));
+    const fullyLockedIds = new Set(pasteOnly.locks.filter((entry) => entry.fullyLocked).map((entry) => entry.setId));
+    const fallbackSpecies = [...new Set(workingTeam.pokemon
+      .filter((set) => set.species && !observedSetIds.has(set.id) && !fullyLockedIds.has(set.id))
+      .map((set) => set.species))];
+    const results = await Promise.all(fallbackSpecies.map(async (species) => {
+      try {
+        const response = await fetch(`/api/opponent-meta/${encodeURIComponent(species)}`, { cache: "no-store" });
         const payload = await readJson(response);
         if (!response.ok || !isOpponentMetaResponse(payload)) return null;
-        return [warRoomMetaKey(set.species), payload] as const;
+        return [warRoomMetaKey(species), payload] as const;
       } catch {
         return null;
       }
     }));
-    if (requestId !== metaRequest.current) return;
+    if (requestId !== metaRequest.current || pasteRequestId !== pasteEvidenceRequest.current) return;
     const available = results.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
     setMetaState({
       teamId: workingTeam.id,
       status: "ready",
       values: Object.fromEntries(available),
       loaded: available.length,
-      error: available.length ? "" : "Battle Data no respondió para este equipo; las propuestas de integrantes siguen disponibles.",
+      error: fallbackSpecies.length && !available.length
+        ? "Battle Data no respondió para los integrantes sin un set contextual completo; no se inventaron paquetes marginales."
+        : "",
     });
   }
 
@@ -855,23 +979,69 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     if (!previousSet) return;
     memberApplyRequest.current += 1;
     metaRequest.current += 1;
+    pasteEvidenceRequest.current += 1;
     const requestId = memberApplyRequest.current;
+    const pasteRequestId = pasteEvidenceRequest.current;
     setMemberApplyState({ species: member.species, status: "loading", message: "" });
-    let meta: OpponentMetaResponse | null = null;
-    try {
-      const response = await fetch(`/api/opponent-meta/${encodeURIComponent(member.species)}`, { cache: "no-store" });
-      const payload = await readJson(response);
-      if (response.ok && isOpponentMetaResponse(payload)) meta = payload;
-    } catch {
-      // A legal deterministic baseline remains available when Battle Data is down.
+
+    let evidenceTeams = [...activePasteEvidence];
+    const targetKey = pasteEvidenceSpeciesKey(member.species);
+    const hasTargetEvidence = () => evidenceTeams.some((team) => team.sets.some((set) => pasteEvidenceSpeciesKey(set.species) === targetKey));
+    let evidenceError = "";
+    let evidenceFailed = pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState.failed : 0;
+    if (!hasTargetEvidence()) {
+      const lockedSpecies = workingTeam.pokemon.filter((set) => optimizationLocks[set.id]?.identity).map((set) => set.species);
+      const candidates = selectWarRoomPasteEvidenceCandidates(
+        workingTeam.pokemon.map((set) => set.species),
+        lockedSpecies,
+        [member.species],
+        resources.corpus.teams,
+        18,
+      );
+      if (candidates.length) {
+        try {
+          const response = await fetch("/api/war-room/paste-evidence", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ candidates }),
+          });
+          const payload = await readJson(response);
+          if (!response.ok) throw new Error(apiError(payload, "No pudimos cargar los pastes del partner."));
+          if (!isWarRoomPasteEvidenceResponse(payload)) throw new Error("La evidencia del partner llegó incompleta.");
+          evidenceTeams = [...new Map([...evidenceTeams, ...payload.teams].map((team) => [team.id, team])).values()];
+          evidenceFailed = payload.failed;
+        } catch (caught) {
+          evidenceError = caught instanceof Error ? caught.message : "No pudimos cargar los pastes del partner.";
+        }
+      }
     }
-    if (requestId !== memberApplyRequest.current) return;
-    const application = buildWarRoomMemberReplacement(
+    if (requestId !== memberApplyRequest.current || pasteRequestId !== pasteEvidenceRequest.current) return;
+
+    let meta: OpponentMetaResponse | null = null;
+    const loadMemberMeta = async (): Promise<OpponentMetaResponse | null> => {
+      try {
+        const response = await fetch(`/api/opponent-meta/${encodeURIComponent(member.species)}`, { cache: "no-store" });
+        const payload = await readJson(response);
+        return response.ok && isOpponentMetaResponse(payload) ? payload : null;
+      } catch {
+        // A legal deterministic baseline remains available when Battle Data is down.
+        return null;
+      }
+    };
+    let application = buildWarRoomMemberReplacement(
       workingTeam.pokemon,
       member,
       resources.snapshot,
-      meta?.presets ?? [],
+      [],
+      evidenceTeams,
     );
+    const needsBattleData = application.setSource === "legal-fallback"
+      || (application.setSource === "observed-paste-patched" && !application.presetId);
+    if (needsBattleData) {
+      meta = await loadMemberMeta();
+      if (requestId !== memberApplyRequest.current || pasteRequestId !== pasteEvidenceRequest.current) return;
+      application = buildWarRoomMemberReplacement(workingTeam.pokemon, member, resources.snapshot, meta?.presets ?? [], evidenceTeams);
+    }
     const nextPokemon = application.pokemon;
     if (nextPokemon === workingTeam.pokemon) {
       setMemberApplyState({ species: member.species, status: "error", message: `No encontramos cuatro movimientos legales para ${member.species}; el Team no se modificó.` });
@@ -890,6 +1060,14 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       ],
     }));
     setOptimizationPokemon(nextPokemon);
+    setPasteEvidenceState({
+      teamKey: pasteEvidenceTeamKey({ ...workingTeam, pokemon: nextPokemon }),
+      status: "ready",
+      teams: evidenceTeams,
+      loaded: evidenceTeams.length,
+      failed: evidenceFailed,
+      error: evidenceError,
+    });
     setOptimizationLocks((current) => {
       const next = { ...current };
       delete next[member.replacesSetId];
@@ -903,12 +1081,18 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       return loaded ? { teamId: workingTeam.id, status: "ready", values, loaded, error: "" } : EMPTY_META_STATE;
     });
     const appliedPreset = meta?.presets.find((preset) => preset.id === application.presetId);
+    const evidenceTeam = evidenceTeams.find((team) => team.id === application.evidenceTeamId);
+    const message = application.setSource === "observed-paste"
+      ? `${member.species} entró con un set completo observado en ${evidenceTeam?.sourceLabel ?? "un paste comparable"}. Ya recalculamos alternativas nuevas.`
+      : application.setSource === "observed-paste-patched"
+        ? `${member.species} entró con un set observado en ${evidenceTeam?.sourceLabel ?? "un paste comparable"}; ${appliedPreset ? "Battle Data completó únicamente sus huecos" : "una base legal completó los campos ausentes"}. Ya recalculamos alternativas nuevas.`
+        : application.setSource === "battle-data-fallback"
+          ? `${member.species} no tuvo un paste contextual viable; usamos ${appliedPreset?.label ?? "Battle Data"} como fallback y recalculamos alternativas.`
+          : `No hubo un paste ni paquete marginal viable para ${member.species}; aplicamos un set legal base y recalculamos alternativas.`;
     setMemberApplyState({
       species: member.species,
-      status: application.setSource === "battle-data" ? "ready" : "fallback",
-      message: application.setSource === "battle-data"
-        ? `${member.species} entró con ${appliedPreset?.label ?? "el set meta"} de Battle Data. Ya recalculamos alternativas nuevas.`
-        : `Battle Data no entregó un paquete completo para ${member.species}; aplicamos un set legal base y recalculamos alternativas nuevas.`,
+      status: application.setSource === "observed-paste" || application.setSource === "observed-paste-patched" ? "ready" : "fallback",
+      message,
     });
   }
 
@@ -918,6 +1102,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     if (!previous || !workingTeam) return;
     memberApplyRequest.current += 1;
     metaRequest.current += 1;
+    pasteEvidenceRequest.current += 1;
     setOptimizationPokemon(workingTeam.pokemon.map((set) => set.id === setId ? previous.previousSet : set));
     setOptimizationLocks((current) => {
       const next = { ...current };
@@ -933,6 +1118,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       return next;
     });
     setMetaState(EMPTY_META_STATE);
+    setPasteEvidenceState(EMPTY_PASTE_EVIDENCE_STATE);
     setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
   }
 
@@ -958,7 +1144,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2 text-[9px] text-slate-600">
             {(["exact-set", "team-preview", "corpus"] as const).map((scope) => <Badge key={scope} variant="outline" className="border-white/8 bg-white/[0.025] text-[8px] text-slate-500">{sourceLabel(scope)}</Badge>)}
-            {resources ? <><span className="inline-flex items-center gap-1.5"><Database className="size-3 text-cyan-300" />Showdown {resources.snapshot.metadata.captured}</span><span className="inline-flex items-center gap-1.5"><Users className="size-3 text-violet-300" />{resources.corpus.publicTeamCount.toLocaleString("es-MX")} públicos · {resources.corpus.savedTeamCount.toLocaleString("es-MX")} en Mis pastes</span><a href={resources.corpus.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 hover:text-cyan-200">Abrir fuente VGCPastes <ExternalLink className="size-3" /></a></> : null}
+            {resources ? <><span className="inline-flex items-center gap-1.5"><Database className="size-3 text-cyan-300" />Showdown {resources.snapshot.metadata.captured}</span><span className="inline-flex items-center gap-1.5"><Users className="size-3 text-violet-300" />{resources.corpus.tournamentTeamCount ? `${resources.corpus.tournamentTeamCount.toLocaleString("es-MX")} torneo · ` : ""}{resources.corpus.vgcPastesTeamCount.toLocaleString("es-MX")} VGCPastes · {resources.corpus.savedTeamCount.toLocaleString("es-MX")} en Mis pastes</span><a href={resources.corpus.source.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 hover:text-cyan-200">Abrir fuente VGCPastes <ExternalLink className="size-3" /></a></> : null}
           </div>
         </div>
       </section>
@@ -973,7 +1159,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} memberApplyState={memberApplyState} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoMember={undoMember} /> : null}
+      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE} memberApplyState={memberApplyState} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoMember={undoMember} /> : null}
     </div>
   );
 }
