@@ -11,7 +11,9 @@ import { buildShowdownSnapshot } from "@/lib/showdown-snapshot-builder.mjs";
 export const dynamic = "force-dynamic";
 
 function snapshotResponse(bytes: Uint8Array) {
-  return new Response(new Blob([bytes]), {
+  const body = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(body).set(bytes);
+  return new Response(body, {
     headers: {
       "cache-control": "no-store",
       "content-type": "application/gzip",

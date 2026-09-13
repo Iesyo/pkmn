@@ -17,6 +17,14 @@ histórico de equipos de Pokémon VGC.
 - Registro de partidas con replay, cuatro picks, dos leads y el equipo rival visto.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
+- War Room separado de Scouting para auditar un Team contra M-C, preparar los
+  mejores cuatro/lead/backline ante un rival y explorar cambios manteniendo un
+  core bloqueado.
+- Recomendaciones explicables con tres niveles de evidencia: set exacto, team
+  preview y frecuencia del corpus. Sus índices ordenan alternativas; nunca se
+  presentan como probabilidad de victoria.
+- El archivo público alimenta frecuencias y cores; los rivales guardados en
+  Mis pastes se suman al selector con su set exacto sin inflar esas frecuencias.
 - Núcleo Python + SQLite para uso personal.
 - Adaptador D1 (SQLite-compatible) para la versión alojada.
 
@@ -100,7 +108,8 @@ ruta.
 
 ## Principio del producto
 
-La aplicación describe lo que ya ocurrió. No predice resultados ni sustituye
-el criterio de juego. Cambiar una especie o el formato crea `v2`, `v3`, etc.;
-ajustar únicamente un set crea `v1.01`, `v1.02`, etc. Jamás se reescribe la
-versión utilizada por una partida anterior.
+La aplicación separa observación y decisión: Scouting documenta lo que existe
+o ya ocurrió; War Room transforma esa evidencia en recomendaciones auditables.
+No predice resultados ni sustituye el criterio de juego. Cambiar una especie o
+el formato crea `v2`, `v3`, etc.; ajustar únicamente un set crea `v1.01`,
+`v1.02`, etc. Jamás se reescribe la versión utilizada por una partida anterior.

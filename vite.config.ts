@@ -1,5 +1,5 @@
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import { sites } from "./build/sites-vite-plugin";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -24,7 +24,7 @@ const localBindingConfig = {
   r2_buckets: [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async (): Promise<UserConfig> => {
   // Keep Wrangler and Miniflare state project-local by default. The VPS sets
   // PKMN_PERSIST_PATH so D1 lives outside the Git checkout and runtime swap.
   const persistStatePath = process.env.PKMN_PERSIST_PATH?.trim();
@@ -59,7 +59,7 @@ export default defineConfig(async () => {
         config: localBindingConfig,
         persistState: persistStatePath ? { path: persistStatePath } : true,
         inspectorPort: false,
-      }),
+      }) as unknown as PluginOption,
     ],
   };
 });

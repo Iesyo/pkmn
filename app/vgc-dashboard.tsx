@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, BookOpen, Database, Flame, Hammer, Library, RefreshCw, ScanSearch, Swords } from "lucide-react";
 
 import { LibraryCard } from "@/components/vgc/library-card";
 import { CreateFolderDialog, TeamFolderSection, type FolderDropPosition } from "@/components/vgc/team-folders";
@@ -10,6 +10,7 @@ import { TeamPanel } from "@/components/vgc/team-panel";
 import { TeamSelector } from "@/components/vgc/team-selector";
 import { TeamBuilder } from "@/components/vgc/team-builder";
 import { ScoutingView } from "@/components/vgc/scouting-view";
+import { WarRoom } from "@/components/vgc/war-room";
 import { AddTeamDialog, NewVersionDialog, ShowdownNamesDialog } from "@/components/vgc/team-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -412,9 +413,10 @@ export function VgcDashboard() {
             <TabsTrigger value="library" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Library className="size-3.5" /><span className="hidden sm:inline">Teams</span></TabsTrigger>
             <TabsTrigger value="builder" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Hammer className="size-3.5" /><span className="hidden sm:inline">Team Builder</span></TabsTrigger>
             <TabsTrigger value="scouting" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><ScanSearch className="size-3.5" /><span className="hidden sm:inline">Scouting</span></TabsTrigger>
+            <TabsTrigger value="war-room" className="gap-2 rounded-full px-3 text-xs data-[state=active]:bg-white data-[state=active]:text-slate-950 sm:px-4"><Swords className="size-3.5" /><span className="hidden sm:inline">War Room</span></TabsTrigger>
           </TabsList>
 
-          <div className="hidden items-center gap-2 lg:flex">
+          <div className="hidden items-center gap-2 2xl:flex">
             <ShowdownNamesDialog names={showdownNames} onSaved={setShowdownNames} />
             <Badge variant="outline" className={connection === "ready" ? "gap-1.5 border-emerald-300/15 bg-emerald-300/7 text-emerald-300" : connection === "error" ? "gap-1.5 border-rose-300/15 bg-rose-300/7 text-rose-200" : "gap-1.5 border-cyan-300/15 bg-cyan-300/7 text-cyan-200"}>{connection === "checking" ? <RefreshCw className="size-3 animate-spin" /> : connection === "ready" ? <Database className="size-3" /> : <AlertTriangle className="size-3" />}{connection === "checking" ? "Conectando" : connection === "ready" ? "SQLite listo" : "Persistencia no disponible"}</Badge>
           </div>
@@ -509,8 +511,12 @@ export function VgcDashboard() {
         <TabsContent value="scouting" className="mt-0 outline-none">
           <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} onTournamentTeamImport={importTournamentTeam} />
         </TabsContent>
+
+        <TabsContent value="war-room" className="mt-0 outline-none">
+          <WarRoom groups={storedGroups} onOpenBuilder={openInBuilder} onBuildDraft={importTournamentTeam} />
+        </TabsContent>
       </main>
-      <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · datos de tipos basados en un snapshot local de Pokémon Showdown · análisis descriptivo</footer>
+      <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · evidencia de Pokémon Showdown, VGCPastes y Battle Data · los índices orientan decisiones, no predicen victorias</footer>
     </Tabs>
   );
 }
