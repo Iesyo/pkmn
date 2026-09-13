@@ -62,4 +62,9 @@ test("keeps the Colab launcher reproducible and free of saved output", async () 
   assert.match(notebookSource, /battle_lab\/showdown_smoke\.py/);
   assert.match(notebookSource, /Pokemon VGC\/BattleLab\/results\/phase-1/);
   assert.match(notebookSource, /--battles/);
+  assert.match(notebookSource, /battle_lab_python = venv_root \/ "bin" \/ "python"/);
+  assert.match(notebookSource, /Instalar dependencias del Battle Lab/);
+  assert.match(notebookSource, /attempts=3/);
+  assert.match(notebookSource, /stdout=subprocess\.PIPE, stderr=subprocess\.STDOUT/);
+  assert.match(notebookSource, /str\(battle_lab_python\)/);
 });
