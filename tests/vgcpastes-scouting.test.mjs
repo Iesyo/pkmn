@@ -51,12 +51,12 @@ function vgcpastesCsv(count = 30) {
     row[0] = id;
     row[1] = `Player ${index + 1}'s team`;
     row[3] = `Player ${index + 1}`;
-    row[24] = `https://pokepast.es/${String(index + 1).padStart(16, "0")}`;
+    row[24] = index % 5 === 4 ? "" : `https://pokepast.es/${String(index + 1).padStart(16, "0")}`;
     row[25] = index % 2 === 0 ? "Yes" : "No";
     row[28] = index % 3 === 0 ? `CODE${index + 1}` : "None";
-    row[29] = "12 Sep 2026";
+    row[29] = index < 10 ? "12 Sep 2026" : "10 Sep 2026";
     row[30] = index % 2 === 0 ? "Tera Square Offline Meetup #2" : "-";
-    row[31] = index === 0 ? "Top 4" : "";
+    row[31] = index === 0 ? "Top 4" : index === 1 ? "Top 8" : "";
     row[32] = "https://x.com/example/status/2098723565273280848";
     row[35] = `owner${index + 1}`;
     species.forEach((name, pokemonIndex) => {
@@ -125,6 +125,9 @@ test("filters by a Pokemon core with AND semantics and paginates before sending 
   assert.equal(pageTwo.teams[0].id, "MC018");
   assert.equal(pageTwo.source.url, "https://docs.google.com/spreadsheets/d/1axlwmzPA49rYkqXh7zHvAtSP-TKbM0ijGYBPRflLSWw/htmlview?gid=2001945654#gid=2001945654");
   assert.deepEqual(pageTwo.query.pokemon, []);
+  assert.equal(pageTwo.query.hasEvs, false);
+  assert.equal(pageTwo.query.hasPaste, false);
+  assert.equal(pageTwo.query.hasReplica, false);
   assert.equal(isVgcPastesScoutingResponse(pageTwo), true);
 
   const filtered = buildVgcPastesScoutingResponse(format, teams, { pokemon: ["Sneasler", "Indeedee-F"], page: 1, pageSize: 12 });
@@ -142,7 +145,38 @@ test("filters by a Pokemon core with AND semantics and paginates before sending 
   assert.equal(isVgcPastesScoutingResponse(invalid), false);
 });
 
-test("serves repeated Pokemon query params as a bounded AND core filter", async () => {
+test("combines competitive filters with the Pokemon core before pagination", async () => {
+  const { buildVgcPastesScoutingResponse, getVgcPastesFormat, parseVgcPastesTeams } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  const teams = parseVgcPastesTeams(vgcpastesCsv(30));
+  const format = getVgcPastesFormat("champions-m-c");
+  assert.ok(format);
+
+  const filtered = buildVgcPastesScoutingResponse(format, teams, {
+    pokemon: ["Sneasler", "Indeedee-F"],
+    player: "owner1",
+    event: "Tera Square",
+    rank: "Top 4",
+    date: "12 Sep",
+    hasEvs: true,
+    hasPaste: true,
+    hasReplica: true,
+    page: 1,
+    pageSize: 24,
+  });
+
+  assert.equal(filtered.pagination.totalItems, 1);
+  assert.equal(filtered.teams.length, 1);
+  assert.equal(filtered.teams[0].playerName, "Player 1");
+  assert.equal(filtered.query.player, "owner1");
+  assert.equal(filtered.query.event, "Tera Square");
+  assert.equal(filtered.query.rank, "Top 4");
+  assert.equal(filtered.query.date, "12 Sep");
+  assert.equal(filtered.query.hasEvs, true);
+  assert.equal(filtered.query.hasPaste, true);
+  assert.equal(filtered.query.hasReplica, true);
+});
+
+test("serves repeated Pokemon params and bounded competitive filters from one cached source", async () => {
   const serverModule = await vite.ssrLoadModule("/lib/vgcpastes-scouting-server.ts");
   serverModule.clearVgcPastesScoutingCache();
   const { GET } = await vite.ssrLoadModule("/app/api/vgcpastes-scouting/route.ts");
@@ -154,14 +188,18 @@ test("serves repeated Pokemon query params as a bounded AND core filter", async 
   };
 
   try {
-    const response = await GET(new Request("http://localhost/api/vgcpastes-scouting?format=champions-m-c&pokemon=Sneasler&pokemon=sneasler&pokemon=Indeedee-F&pokemon=Rillaboom&pokemon=Gholdengo&page=1&pageSize=12"));
+    const response = await GET(new Request("http://localhost/api/vgcpastes-scouting?format=champions-m-c&pokemon=Sneasler&pokemon=Indeedee-F&player=owner1&event=Tera%20Square&rank=Top%204&date=12%20Sep&hasEvs=1&hasPaste=1&hasReplica=1&page=1&pageSize=12"));
     const payload = await response.json();
     assert.equal(response.status, 200);
     assert.equal(payload.format.label, "Champions M-C");
-    assert.deepEqual(payload.query.pokemon, ["Sneasler", "Indeedee-F", "Rillaboom"]);
-    assert.equal(payload.pagination.totalItems, 15);
-    assert.equal(payload.teams.length, 12);
-    assert.ok(payload.teams.every((team) => payload.query.pokemon.every((species) => team.pokemon.includes(species))));
+    assert.deepEqual(payload.query.pokemon, ["Sneasler", "Indeedee-F"]);
+    assert.equal(payload.query.player, "owner1");
+    assert.equal(payload.query.hasEvs, true);
+    assert.equal(payload.query.hasPaste, true);
+    assert.equal(payload.query.hasReplica, true);
+    assert.equal(payload.pagination.totalItems, 1);
+    assert.equal(payload.teams.length, 1);
+    assert.equal(payload.teams[0].playerName, "Player 1");
 
     const upstream = new URL(requested[0]);
     assert.equal(upstream.hostname, "docs.google.com");
@@ -174,7 +212,7 @@ test("serves repeated Pokemon query params as a bounded AND core filter", async 
     assert.equal(boundedResponse.status, 200);
     assert.equal(boundedPayload.query.pageSize, 24);
     assert.equal(boundedPayload.teams.length, 24);
-    assert.equal(requested.length, 1, "same-format pagination should reuse the in-process source cache");
+    assert.equal(requested.length, 1, "same-format filtering and pagination should reuse the in-process source cache");
   } finally {
     globalThis.fetch = originalFetch;
     serverModule.clearVgcPastesScoutingCache();
@@ -192,19 +230,27 @@ test("rejects redirects from the fixed VGCPastes source instead of following the
   );
 });
 
-test("connects the repository browser to a three-Pokemon AND core, pagination and Pokepaste import", async () => {
+test("connects Scouting v3 to competitive filters and an on-demand Pokepaste inspector", async () => {
   const browser = await readFile(new URL("../components/vgc/vgcpastes-scouting-browser.tsx", import.meta.url), "utf8");
   const scouting = await readFile(new URL("../components/vgc/scouting-view.tsx", import.meta.url), "utf8");
 
   assert.match(browser, /Buscar core · hasta/);
   assert.match(browser, /AND · deben aparecer todos/);
-  assert.match(browser, /multiple/);
-  assert.match(browser, /ComboboxChip/);
-  assert.match(browser, /params\.append\("pokemon", species\)/);
-  assert.match(browser, /Página \$\{data\.pagination\.page\} de/);
-  assert.match(browser, /\/api\/vgcpastes-scouting/);
+  assert.match(browser, /Filtros competitivos/);
+  assert.match(browser, /Jugador \/ owner/);
+  assert.match(browser, /Torneo \/ evento/);
+  assert.match(browser, /Rank \/ placement/);
+  assert.match(browser, /Con EVs/);
+  assert.match(browser, /Con PokéPaste/);
+  assert.match(browser, /Con Replica Code/);
+  assert.match(browser, /params\.set\("hasEvs", "1"\)/);
+  assert.match(browser, /Team Inspector/);
+  assert.match(browser, /parseShowdownPaste\(paste\)/);
+  assert.match(browser, /Copiar Paste/);
+  assert.match(browser, /Importar al Builder/);
   assert.match(browser, /\/api\/pokepaste-import/);
-  assert.match(browser, /Builder/);
+  assert.match(browser, /pasteCache/);
+  assert.match(browser, /Página \$\{data\.pagination\.page\} de/);
   assert.match(scouting, /VgcPastesScoutingBrowser/);
   assert.match(scouting, />Equipos/);
 });
