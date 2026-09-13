@@ -219,6 +219,35 @@ test("serves repeated Pokemon params and bounded competitive filters from one ca
   }
 });
 
+test("keeps each VGCPastes format cached for one hour unless refresh is forced", async () => {
+  const serverModule = await vite.ssrLoadModule("/lib/vgcpastes-scouting-server.ts");
+  serverModule.clearVgcPastesScoutingCache();
+  let requests = 0;
+  const fetcher = async () => {
+    requests += 1;
+    return new Response(vgcpastesCsv(2), { headers: { "content-type": "text/csv" } });
+  };
+  const startedAt = Date.parse("2026-09-13T01:00:00.000Z");
+
+  try {
+    assert.equal(serverModule.VGCPASTES_SOURCE_CACHE_TTL_MS, 60 * 60 * 1_000);
+    const initial = await serverModule.loadVgcPastesFormat("champions-m-c", { fetcher, now: startedAt });
+    const beforeExpiry = await serverModule.loadVgcPastesFormat("champions-m-c", { fetcher, now: startedAt + 59 * 60 * 1_000 });
+    assert.equal(requests, 1);
+    assert.equal(beforeExpiry.fetchedAt, initial.fetchedAt);
+
+    const forced = await serverModule.loadVgcPastesFormat("champions-m-c", { fetcher, now: startedAt + 30 * 60 * 1_000, force: true });
+    assert.equal(requests, 2);
+    assert.notEqual(forced.fetchedAt, initial.fetchedAt);
+
+    const afterForcedExpiry = await serverModule.loadVgcPastesFormat("champions-m-c", { fetcher, now: startedAt + 90 * 60 * 1_000 + 1 });
+    assert.equal(requests, 3);
+    assert.notEqual(afterForcedExpiry.fetchedAt, forced.fetchedAt);
+  } finally {
+    serverModule.clearVgcPastesScoutingCache();
+  }
+});
+
 test("rejects redirects from the fixed VGCPastes source instead of following them", async () => {
   const serverModule = await vite.ssrLoadModule("/lib/vgcpastes-scouting-server.ts");
   serverModule.clearVgcPastesScoutingCache();
