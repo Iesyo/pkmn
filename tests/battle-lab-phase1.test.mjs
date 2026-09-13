@@ -35,6 +35,8 @@ test("keeps the Showdown commit in the regulation source of truth", async () => 
   assert.doesNotMatch(runner, /"--no-checkout", repository/);
   assert.match(runner, /run_checked_with_retries/);
   assert.match(runner, /run_long_command_with_retries/);
+  assert.match(runner, /MINIMUM_NODE_MAJOR = 24/);
+  assert.match(runner, /marker\.get\("nodeMajor"\) == node_major/);
 });
 
 test("ships two complete M-C smoke teams with legal Stat Point envelopes", async () => {
@@ -79,4 +81,7 @@ test("keeps the Colab launcher reproducible and free of saved output", async () 
   assert.match(notebookSource, /env=battle_lab_env/);
   assert.match(notebookSource, /Node\.js y npm listos/);
   assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Ejecutar smoke test M-C"/);
+  assert.match(notebookSource, /NODE_VERSION = "24\.21\.0"/);
+  assert.match(notebookSource, /"npm", "install", "--global", "n@latest"/);
+  assert.match(notebookSource, /if node_major < 24/);
 });

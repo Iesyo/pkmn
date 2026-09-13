@@ -29,11 +29,11 @@ El notebook instala `poke-env` en un directorio aislado dentro del runtime con
 `venv`/`ensurepip`. La instalación muestra su salida completa y reintenta fallos
 transitorios de GitHub o PyPI hasta tres veces.
 
-Antes del setup, la libreta verifica Git, Node.js y npm; instala Node.js mediante
-`apt-get` si el runtime no lo incluye. El checkout temporal de Showdown también
-se recupera automáticamente si una ejecución anterior dejó la descarga
-incompleta, y las operaciones de red, `npm ci` y compilación tienen reintentos
-acotados.
+Antes del setup, la libreta verifica Git, Node.js y npm. Como la versión fijada
+de Showdown ya no compila con el Node.js 20 incluido por Colab, instala
+automáticamente Node.js 24 LTS mediante `n`. El checkout temporal de Showdown
+también se recupera si una ejecución anterior dejó la descarga incompleta, y
+las operaciones de red, `npm ci` y compilación tienen reintentos acotados.
 
 ## Ejecutar en Colab
 
@@ -54,7 +54,7 @@ miles de lecturas y escrituras pequeñas sobre Drive.
 
 ## Ejecutar fuera de Colab
 
-Requiere Python 3.10 o posterior, Node.js 18 o posterior, Git y npm.
+Requiere Python 3.10 o posterior, Node.js 24 o posterior, Git y npm.
 
 ```bash
 python -m venv .venv-battle-lab
