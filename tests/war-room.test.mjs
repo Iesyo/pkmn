@@ -81,6 +81,25 @@ function corpus() {
   ];
 }
 
+function pasteEvidenceTeam(id, sets, overrides = {}) {
+  return {
+    id,
+    source: "vgcpastes",
+    savedPasteId: "",
+    playerName: `Paste ${id}`,
+    tournament: "Context Cup",
+    rank: "Top 8",
+    pokepasteUrl: `https://pokepast.es/${id.toLowerCase().replace(/[^a-z0-9]/g, "").padEnd(8, "0")}`,
+    pokemon: sets.map((pokemon) => pokemon.species),
+    sourceTier: "curated",
+    sourceLabel: "VGCPastes",
+    sourceUrl: `https://pokepast.es/${id.toLowerCase().replace(/[^a-z0-9]/g, "").padEnd(8, "0")}`,
+    quality: 82,
+    sets,
+    ...overrides,
+  };
+}
+
 test("builds a bounded, validated M-C corpus contract", async () => {
   const { buildWarRoomCorpusResponse, isWarRoomCorpusResponse } = await vite.ssrLoadModule("/lib/war-room.ts");
   const { VGCPASTES_FORMATS } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
@@ -115,6 +134,8 @@ test("builds a bounded, validated M-C corpus contract", async () => {
   assert.equal(response.regulation, "M-C");
   assert.equal(response.totalTeams, 2);
   assert.equal(response.publicTeamCount, 1);
+  assert.equal(response.vgcPastesTeamCount, 1);
+  assert.equal(response.tournamentTeamCount, 0);
   assert.equal(response.savedTeamCount, 1);
   assert.equal(response.teams[0].description, undefined);
   assert.equal(response.teams[0].owner, undefined);
@@ -125,6 +146,94 @@ test("builds a bounded, validated M-C corpus contract", async () => {
   const malformed = structuredClone(response);
   malformed.teams[0].pokemon.pop();
   assert.equal(isWarRoomCorpusResponse(malformed), false);
+});
+
+test("gives a current-regulation tournament paste precedence over a duplicated VGCPastes row", async () => {
+  const { buildWarRoomCorpusResponse } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { VGCPASTES_FORMATS } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  const url = "https://pokepast.es/abcdef1234567890";
+  const publicTeam = {
+    ...corpusTeam("PUBLIC", ["Charizard", "Rillaboom", "Incineroar", "Amoonguss", "Garchomp", "Gholdengo"]),
+    pokepasteUrl: url,
+  };
+  const tournamentSnapshot = {
+    regulation: "M-C",
+    generatedAt: "2026-09-13T10:00:00.000Z",
+    tournaments: [{
+      id: "event-1",
+      name: "Finals",
+      teams: [{
+        id: "team-1",
+        playerName: "Champion",
+        placement: 1,
+        record: "10-1",
+        pokemon: [...publicTeam.pokemon],
+        pokepasteUrl: url,
+      }],
+    }],
+  };
+
+  const result = buildWarRoomCorpusResponse(VGCPASTES_FORMATS[0], [publicTeam], "2026-09-13T10:00:00.000Z", [], tournamentSnapshot);
+  assert.equal(result.totalTeams, 1);
+  assert.equal(result.tournamentTeamCount, 1);
+  assert.equal(result.vgcPastesTeamCount, 0);
+  assert.equal(result.teams[0].source, "tournament");
+  assert.match(result.teams[0].rank, /#1/);
+});
+
+test("selects a bounded diverse paste batch with exact-core and source priority", async () => {
+  const { selectWarRoomPasteEvidenceCandidates } = await vite.ssrLoadModule("/lib/war-room-paste-evidence.ts");
+  const candidates = [
+    corpusTeam("generic", ["Charizard", "Kyogre", "Tornadus", "Amoonguss", "Incineroar", "Rillaboom"], { pokepasteUrl: "https://pokepast.es/1111111111111111" }),
+    corpusTeam("tournament", ["Charizard", "Rillaboom", "Garchomp", "Amoonguss", "Incineroar", "Pelipper"], { source: "tournament", rank: "#1", pokepasteUrl: "https://pokepast.es/2222222222222222" }),
+    corpusTeam("curated", ["Charizard", "Rillaboom", "Garchomp", "Amoonguss", "Incineroar", "Pelipper"], { pokepasteUrl: "https://pokepast.es/3333333333333333" }),
+  ];
+  const selected = selectWarRoomPasteEvidenceCandidates(
+    ["Charizard", "Rillaboom", "Garchomp"],
+    ["Charizard", "Rillaboom"],
+    ["Pelipper"],
+    candidates,
+    2,
+  );
+
+  assert.equal(selected.length, 2);
+  assert.equal(selected[0].id, "tournament");
+  assert.ok(selected.every((team) => team.pokemon.includes("Pelipper")));
+});
+
+test("loads and validates only the requested full Pokepastes", async () => {
+  const { POST } = await vite.ssrLoadModule("/app/api/war-room/paste-evidence/route.ts");
+  const paste = ["Charizard", "Rillaboom", "Incineroar", "Amoonguss", "Garchomp", "Gholdengo"]
+    .map((species) => `${species} @ Sitrus Berry\nAbility: Blaze\nEVs: 32 HP / 32 Atk / 2 Spe\nAdamant Nature\n- Protect`)
+    .join("\n\n");
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(paste, { headers: { "content-type": "text/plain" } });
+  };
+  try {
+    const candidate = corpusTeam("evidence-route", ["Charizard", "Rillaboom", "Incineroar", "Amoonguss", "Garchomp", "Gholdengo"], {
+      source: "tournament",
+      rank: "#1",
+      pokepasteUrl: "https://pokepast.es/4444444444444444",
+    });
+    const response = await POST(new Request("http://localhost/api/war-room/paste-evidence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ candidates: [candidate] }),
+    }));
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(requestedUrl, "https://pokepast.es/4444444444444444/raw");
+    assert.equal(payload.loaded, 1);
+    assert.equal(payload.failed, 0);
+    assert.equal(payload.teams[0].sets.length, 6);
+    assert.equal(payload.teams[0].sourceTier, "tournament");
+    assert.equal(payload.teams[0].quality, 100);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("rejects non-current formats before contacting the War Room source", async () => {
@@ -201,7 +310,7 @@ test("prepares four picks, a two-Pokemon lead, backline and distinct alternate l
   assert.match(exact.notes.join(" "), /campo neutral de dobles/i);
 });
 
-test("keeps locked identities, searches real partners and labels set packages as marginal composites", async () => {
+test("keeps locked identities, searches real partners and labels Battle Data as fallback", async () => {
   const snapshot = await readSnapshot();
   const { optimizeTeam, warRoomMetaKey } = await vite.ssrLoadModule("/lib/war-room.ts");
   const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
@@ -242,9 +351,160 @@ test("keeps locked identities, searches real partners and labels set packages as
   assert.ok(result.members.some((member) => member.species === "Pelipper"));
   assert.ok(result.members.every((member) => !result.lockedSpecies.includes(member.replaces)));
   assert.ok(result.sets.some((suggestion) => suggestion.species === "Charizard"));
-  assert.ok(result.sets.every((suggestion) => suggestion.methodology === "marginal-frequency-composite"));
+  assert.ok(result.sets.every((suggestion) => suggestion.methodology === "battle-data-fallback"));
   assert.ok(result.sets.every((suggestion) => suggestion.proposal.moves.length === 4));
-  assert.match(result.notes.join(" "), /no representan sets observados/i);
+  assert.match(result.notes.join(" "), /fallback marginal/i);
+});
+
+test("prefers a complete observed paste set over a Battle Data composite", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam, warRoomMetaKey } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalMoves = getLegalMoves(snapshot, "Charizard", "champions");
+  const ability = getLegalAbilities(snapshot, "Charizard", "champions")[0];
+  assert.ok(legalMoves.length >= 8);
+  team[0] = set("Charizard", legalMoves.slice(0, 4), 1, {
+    item: "Leftovers",
+    ability,
+    nature: "Jolly",
+    evs: "2 HP / 32 SpA / 32 Spe",
+  });
+  const observed = set("Charizard", legalMoves.slice(4, 8), 1, {
+    item: "Sitrus Berry",
+    ability,
+    nature: "Modest",
+    evs: "32 HP / 32 SpA / 2 SpD",
+  });
+  const evidence = pasteEvidenceTeam("complete-observed", [observed, ...team.slice(1)]);
+  const meta = {
+    pokemon: "Charizard",
+    format: "Doubles",
+    regulation: "M-C",
+    season: "Current",
+    retrievedAt: "2026-09-13T10:00:00.000Z",
+    stale: false,
+    methodology: "marginal-frequency-composite",
+    source: { label: "Pokémon Champions Battle Data", url: "https://championsbattledata.com/" },
+    presets: [{
+      id: "charizard-marginal",
+      rank: 1,
+      label: "Marginal",
+      item: "Focus Sash",
+      ability,
+      nature: "Timid",
+      evs: "2 HP / 32 SpA / 32 Spe",
+      moves: legalMoves.slice(0, 4),
+      evidence: { item: 70, ability: 80, nature: 60, statPoints: 50, moves: [80, 70, 60, 50] },
+    }],
+  };
+
+  const result = optimizeTeam(team, [], corpus(), snapshot, { [warRoomMetaKey("Charizard")]: meta }, { pasteEvidence: [evidence] });
+  const suggestion = result.sets.find((entry) => entry.setId === team[0].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.methodology, "observed-paste");
+  assert.equal(suggestion.proposal.item, "Sitrus Berry");
+  assert.deepEqual(suggestion.proposal.moves, legalMoves.slice(4, 8));
+  assert.equal(suggestion.source.teamId, evidence.id);
+  assert.ok(suggestion.changes.every((change) => change.source === "paste"));
+});
+
+test("uses Battle Data only to patch fields absent from an observed paste", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam, warRoomMetaKey } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const moves = getLegalMoves(snapshot, "Charizard", "champions").slice(0, 4);
+  const ability = getLegalAbilities(snapshot, "Charizard", "champions")[0];
+  team[0] = set("Charizard", moves, 1, { item: "Leftovers", ability, nature: "Jolly", evs: "2 HP / 32 SpA / 32 Spe" });
+  const observed = set("Charizard", [...moves].reverse(), 1, { item: "Sitrus Berry", ability, nature: "Modest", evs: "" });
+  const evidence = pasteEvidenceTeam("missing-spread", [observed, ...team.slice(1)]);
+  const meta = {
+    pokemon: "Charizard",
+    format: "Doubles",
+    regulation: "M-C",
+    season: "Current",
+    retrievedAt: "2026-09-13T10:00:00.000Z",
+    stale: false,
+    methodology: "marginal-frequency-composite",
+    source: { label: "Pokémon Champions Battle Data", url: "https://championsbattledata.com/" },
+    presets: [{
+      id: "spread-patch",
+      rank: 1,
+      label: "Spread patch",
+      item: "Focus Sash",
+      ability,
+      nature: "Timid",
+      evs: "32 HP / 32 SpA / 2 SpD",
+      moves,
+      evidence: { item: 70, ability: 80, nature: 60, statPoints: 44, moves: [80, 70, 60, 50] },
+    }],
+  };
+
+  const result = optimizeTeam(team, [], corpus(), snapshot, { [warRoomMetaKey("Charizard")]: meta }, { pasteEvidence: [evidence] });
+  const suggestion = result.sets.find((entry) => entry.setId === team[0].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.methodology, "observed-paste-patched");
+  assert.equal(suggestion.proposal.item, "Sitrus Berry", "an observed field must not be replaced by the marginal item");
+  assert.equal(suggestion.proposal.evs, "32 HP / 32 SpA / 2 SpD");
+  assert.deepEqual(suggestion.patchedFields, ["statPoints"]);
+  assert.equal(suggestion.changes.find((change) => change.key === "statPoints").source, "battle-data");
+  assert.equal(suggestion.changes.find((change) => change.key === "item").source, "paste");
+});
+
+test("rejects a fast Trick Room setter even when its paste has higher source quality", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalMoves = getLegalMoves(snapshot, "Gardevoir", "champions");
+  const wanted = ["Dazzling Gleam", "Psychic", "Trick Room", "Protect"];
+  assert.ok(wanted.every((move) => legalMoves.includes(move)));
+  const ability = getLegalAbilities(snapshot, "Gardevoir", "champions")[0];
+  team[0] = set("Gardevoir", wanted, 1, { item: "Leftovers", ability, nature: "Modest", evs: "32 HP / 32 SpA / 2 SpD" });
+  const fast = set("Gardevoir", wanted, 1, { item: "Focus Sash", ability, nature: "Timid", evs: "2 HP / 32 SpA / 32 Spe" });
+  const slow = set("Gardevoir", wanted, 1, { item: "Sitrus Berry", ability, nature: "Quiet", evs: "32 HP / 32 SpA / 2 SpD" });
+  const fastEvidence = pasteEvidenceTeam("fast-tr", [fast, ...team.slice(1)], { source: "tournament", sourceTier: "tournament", sourceLabel: "Champion", quality: 100 });
+  const slowEvidence = pasteEvidenceTeam("slow-tr", [slow, ...team.slice(1)], { sourceTier: "collection", sourceLabel: "Colección", quality: 65 });
+
+  const result = optimizeTeam(team, [], corpus(), snapshot, {}, { pasteEvidence: [fastEvidence, slowEvidence] });
+  const suggestion = result.sets.find((entry) => entry.setId === team[0].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.source.teamId, "slow-tr");
+  assert.equal(suggestion.proposal.nature, "Quiet");
+  assert.doesNotMatch(suggestion.proposal.evs, /Spe/);
+});
+
+test("rejects Grassy Seed without a terrain activator when applying a partner", async () => {
+  const snapshot = await readSnapshot();
+  const { buildWarRoomMemberReplacement } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const team = ownTeam();
+  const sneaslerMoves = ["Close Combat", "Dire Claw", "Protect", "Fake Out"];
+  const bad = set("Sneasler", sneaslerMoves, 1, { item: "Grassy Seed", ability: "Unburden", nature: "Jolly", evs: "2 HP / 32 Atk / 32 Spe" });
+  const good = set("Sneasler", sneaslerMoves, 1, { item: "Focus Sash", ability: "Unburden", nature: "Jolly", evs: "2 HP / 32 Atk / 32 Spe" });
+  const badEvidence = pasteEvidenceTeam("seed-no-terrain", [bad, ...team.slice(1)], { source: "tournament", sourceTier: "tournament", quality: 100 });
+  const goodEvidence = pasteEvidenceTeam("sash-viable", [good, ...team.slice(1)], { sourceTier: "collection", quality: 65 });
+  const suggestion = {
+    species: "Sneasler",
+    observedAs: "Sneasler",
+    isMega: false,
+    score: 80,
+    appearancesWithCore: 2,
+    sampleSize: 2,
+    usageRate: 100,
+    replaces: team[0].species,
+    replacesSetId: team[0].id,
+    patchedTypes: [],
+    evidenceMode: "core",
+    reasons: [],
+  };
+
+  const result = buildWarRoomMemberReplacement(team, suggestion, snapshot, [], [badEvidence, goodEvidence]);
+  const replacement = result.pokemon.find((pokemon) => pokemon.id === suggestion.replacesSetId);
+  assert.equal(result.setSource, "observed-paste");
+  assert.equal(result.evidenceTeamId, "sash-viable");
+  assert.equal(replacement.item, "Focus Sash");
+  assert.notEqual(replacement.item, "Grassy Seed");
 });
 
 test("limits Mega partner cards according to the Megas already configured on the team", async () => {
@@ -395,7 +655,7 @@ test("applies a partner to its recommended slot while preserving slot identity a
     moves: metaMoves,
     evidence: { item: 50, ability: 50, nature: 50, statPoints: 50, moves: [50, 50, 50, 50] },
   }]);
-  assert.equal(metaApplication.setSource, "battle-data");
+  assert.equal(metaApplication.setSource, "battle-data-fallback");
   assert.equal(metaApplication.presetId, "meta-1");
   assert.deepEqual(metaApplication.pokemon.find((pokemon) => pokemon.id === suggestion.replacesSetId).moves.map((move) => move.name), metaMoves);
 
@@ -582,6 +842,10 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Elegir y recalcular/);
   assert.match(warRoom, /buildWarRoomMemberReplacement/);
   assert.match(warRoom, /api\/opponent-meta/);
+  assert.match(warRoom, /api\/war-room\/paste-evidence/);
+  assert.match(warRoom, /Busca primero sets completos en pastes comparables/);
+  assert.match(warRoom, /Battle Data solo rellena campos ausentes/);
+  assert.match(warRoom, /Paste observado/);
   assert.match(warRoom, /Armando set viable/);
   assert.match(warRoom, /Corpus ampliado/);
   assert.match(warRoom, /function undoMember\(setId: string\)/);

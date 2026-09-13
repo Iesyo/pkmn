@@ -19,14 +19,19 @@ import { EV_STATS, NATURES, getStatRules, parseEvs } from "./team-builder";
 import { effectiveness, POKEMON_TYPES } from "./type-chart";
 import type { PokemonSet, PokemonType } from "./types";
 import type { ScoutingPasteSummary } from "./scouting-paste-library";
+import type { TournamentScoutingResponse } from "./tournament-scouting";
 import {
   buildVgcPastesSheetUrl,
   type VgcPastesFormat,
   type VgcPastesTeam,
 } from "./vgcpastes-scouting";
 import { getVgcPastesScoutingSpeciesIdentity } from "./vgcpastes-scouting-search";
+import type {
+  WarRoomPasteEvidenceTeam,
+  WarRoomPasteSource,
+} from "./war-room-paste-evidence";
 
-export const WAR_ROOM_SCHEMA_VERSION = 1;
+export const WAR_ROOM_SCHEMA_VERSION = 2;
 export const WAR_ROOM_FORMAT_ID = "champions-m-c";
 export const WAR_ROOM_BATTLE_FORMAT = "champions";
 export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
@@ -39,7 +44,7 @@ export type WarRoomSeverity = "blocker" | "high" | "medium" | "low";
 
 export interface WarRoomCorpusTeam {
   id: string;
-  source: "vgcpastes" | "scouting-library";
+  source: WarRoomPasteSource;
   savedPasteId: string;
   playerName: string;
   tournament: string;
@@ -56,6 +61,8 @@ export interface WarRoomCorpusResponse {
   fetchedAt: string;
   totalTeams: number;
   publicTeamCount: number;
+  vgcPastesTeamCount: number;
+  tournamentTeamCount: number;
   savedTeamCount: number;
   source: {
     label: "VGCPastes Repository";
@@ -186,12 +193,14 @@ export interface WarRoomMemberSuggestion {
 
 export interface WarRoomMemberApplicationResult {
   pokemon: PokemonSet[];
-  setSource: "battle-data" | "legal-fallback";
+  setSource: "observed-paste" | "observed-paste-patched" | "battle-data-fallback" | "legal-fallback";
   presetId: string | null;
+  evidenceTeamId: string | null;
 }
 
 export interface WarRoomOptimizationOptions {
   excludedMemberSpecies?: readonly string[];
+  pasteEvidence?: readonly WarRoomPasteEvidenceTeam[];
 }
 
 export type WarRoomMoveSlot = 0 | 1 | 2 | 3;
@@ -239,6 +248,7 @@ export interface WarRoomSetChange {
   current: string;
   suggested: string;
   evidence: number | null;
+  source: "paste" | "battle-data";
 }
 
 export interface WarRoomSetSuggestion {
@@ -256,7 +266,17 @@ export interface WarRoomSetSuggestion {
   changes: WarRoomSetChange[];
   preservedFields: WarRoomLockedField[];
   reasons: string[];
-  methodology: "marginal-frequency-composite";
+  methodology: "observed-paste" | "observed-paste-patched" | "battle-data-fallback";
+  source: {
+    teamId: string;
+    label: string;
+    url: string;
+    tournament: string;
+    rank: string;
+    observations: number;
+    contextFit: number;
+  } | null;
+  patchedFields: Array<Exclude<WarRoomLockField, "identity">>;
 }
 
 export interface WarRoomOptimizationResult {
@@ -270,6 +290,11 @@ export interface WarRoomOptimizationResult {
   coreSample: {
     size: number;
     mode: "exact" | "partial" | "none";
+  };
+  pasteEvidence: {
+    loadedTeams: number;
+    matchedSets: number;
+    mode: "observed" | "patched" | "fallback" | "unavailable";
   };
   members: WarRoomMemberSuggestion[];
   sets: WarRoomSetSuggestion[];
@@ -477,7 +502,7 @@ function normalizedTeamSpecies(team: WarRoomCorpusTeam) {
 }
 
 function statisticalCorpus(teams: WarRoomCorpusTeam[]) {
-  const publicTeams = teams.filter((team) => team.source === "vgcpastes");
+  const publicTeams = teams.filter((team) => team.source === "vgcpastes" || team.source === "tournament");
   return publicTeams.length ? publicTeams : teams;
 }
 
@@ -650,22 +675,24 @@ function fallbackMemberProposal(
 }
 
 /**
- * Builds a complete replacement for a disposable War Room draft. Battle Data
- * is preferred; a deterministic legal baseline prevents a selected partner
- * from ever becoming an empty card when that upstream source is unavailable.
+ * Builds a complete replacement for a disposable War Room draft. Observed
+ * paste bundles are preferred, Battle Data only fills missing fields, and a
+ * deterministic legal baseline prevents a selected partner from becoming an
+ * empty card when upstream evidence is unavailable.
  */
 export function buildWarRoomMemberReplacement(
   team: PokemonSet[],
   suggestion: WarRoomMemberSuggestion,
   snapshot: ShowdownSnapshot,
   presets: readonly OpponentMetaPreset[] = [],
+  pasteEvidence: readonly WarRoomPasteEvidenceTeam[] = [],
 ): WarRoomMemberApplicationResult {
   const targetIndex = team.findIndex((set) => set.id === suggestion.replacesSetId);
-  if (targetIndex < 0) return { pokemon: team, setSource: "legal-fallback", presetId: null };
+  if (targetIndex < 0) return { pokemon: team, setSource: "legal-fallback", presetId: null, evidenceTeamId: null };
   const species = baseSpeciesLabel(suggestion.species);
   const speciesKey = baseSpeciesKey(species);
   if (team.some((set, index) => index !== targetIndex && baseSpeciesKey(set.species) === speciesKey)) {
-    return { pokemon: team, setSource: "legal-fallback", presetId: null };
+    return { pokemon: team, setSource: "legal-fallback", presetId: null, evidenceTeamId: null };
   }
 
   const source = team[targetIndex];
@@ -687,6 +714,50 @@ export function buildWarRoomMemberReplacement(
     performance: { games: 0, wins: 0, leadGames: 0, leadWins: 0, selectionRate: 0 },
   }, WAR_ROOM_BATTLE_FORMAT);
 
+  const fallback = fallbackMemberProposal(team, source.id, snapshot, species, suggestion.observedAs);
+  const meta = presets[0];
+  const otherSpecies = new Set(team.filter((_, index) => index !== targetIndex).map((set) => baseSpeciesKey(set.species)));
+  const observedCandidates = pasteEvidence.flatMap((evidenceTeam) => evidenceTeam.sets.flatMap((rawObserved) => {
+    if (baseSpeciesKey(rawObserved.species) !== speciesKey) return [];
+    const observed = hydrateSetFromSnapshot(snapshot, rawObserved, WAR_ROOM_BATTLE_FORMAT);
+    const moves = unique([
+      ...observed.moves.map((move) => move.name),
+      ...(meta?.moves ?? []),
+      ...fallback.moves,
+    ].map((move) => move.trim()).filter(Boolean)).slice(0, 4);
+    const observedItem = observed.item.trim();
+    const proposal = {
+      item: megaItem || observedItem || availableMemberItem(team, source.id, snapshot, meta?.item || fallback.item),
+      ability: observed.ability || meta?.ability || fallback.ability,
+      nature: observed.nature || meta?.nature || fallback.nature,
+      evs: observed.evs || meta?.evs || fallback.evs,
+      moves,
+    } satisfies WarRoomSetProposal;
+    if (!proposalIsLegal(team, shell, proposal, snapshot)) return [];
+    const context = proposalContextEvaluation(team, shell, proposal, snapshot);
+    if (!context.compatible) return [];
+    const overlap = evidenceTeam.pokemon.filter((pokemon) => otherSpecies.has(baseSpeciesKey(pokemon))).length;
+    const contextFit = strategyContextSimilarity(teamStrategyContext(team), teamStrategyContext(evidenceTeam.sets));
+    const patched = !observedItem || !observed.ability || !observed.nature || !observed.evs || observed.moves.length < 4;
+    return [{
+      evidenceTeam,
+      proposal,
+      patched,
+      score: evidenceTeam.quality + overlap * 12 + contextFit * 0.55 + context.score * 0.35,
+    }];
+  })).sort((left, right) => right.score - left.score || right.evidenceTeam.quality - left.evidenceTeam.quality || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id));
+
+  const observedBest = observedCandidates[0];
+  if (observedBest) {
+    const replacement = proposalToSet(snapshot, shell, observedBest.proposal);
+    return {
+      pokemon: team.map((set, index) => index === targetIndex ? replacement : set),
+      setSource: observedBest.patched ? "observed-paste-patched" : "observed-paste",
+      presetId: observedBest.patched && meta ? meta.id : null,
+      evidenceTeamId: observedBest.evidenceTeam.id,
+    };
+  }
+
   for (const preset of presets) {
     const proposal = {
       item: megaItem || availableMemberItem(team, source.id, snapshot, preset.item),
@@ -696,23 +767,25 @@ export function buildWarRoomMemberReplacement(
       moves: [...preset.moves],
     } satisfies WarRoomSetProposal;
     if (!proposalIsLegal(team, shell, proposal, snapshot)) continue;
+    if (!proposalContextEvaluation(team, shell, proposal, snapshot).compatible) continue;
     const replacement = proposalToSet(snapshot, shell, proposal);
     return {
       pokemon: team.map((set, index) => index === targetIndex ? replacement : set),
-      setSource: "battle-data",
+      setSource: "battle-data-fallback",
       presetId: preset.id,
+      evidenceTeamId: null,
     };
   }
 
-  const fallback = fallbackMemberProposal(team, source.id, snapshot, species, suggestion.observedAs);
-  if (!proposalIsLegal(team, shell, fallback, snapshot)) {
-    return { pokemon: team, setSource: "legal-fallback", presetId: null };
+  if (!proposalIsLegal(team, shell, fallback, snapshot) || !proposalContextEvaluation(team, shell, fallback, snapshot).compatible) {
+    return { pokemon: team, setSource: "legal-fallback", presetId: null, evidenceTeamId: null };
   }
   const replacement = proposalToSet(snapshot, shell, fallback);
   return {
     pokemon: team.map((set, index) => index === targetIndex ? replacement : set),
     setSource: "legal-fallback",
     presetId: null,
+    evidenceTeamId: null,
   };
 }
 
@@ -721,8 +794,9 @@ export function applyWarRoomMemberSuggestion(
   suggestion: WarRoomMemberSuggestion,
   snapshot: ShowdownSnapshot,
   presets: readonly OpponentMetaPreset[] = [],
+  pasteEvidence: readonly WarRoomPasteEvidenceTeam[] = [],
 ) {
-  return buildWarRoomMemberReplacement(team, suggestion, snapshot, presets).pokemon;
+  return buildWarRoomMemberReplacement(team, suggestion, snapshot, presets, pasteEvidence).pokemon;
 }
 
 function rolesForSet(snapshot: ShowdownSnapshot, set: PokemonSet) {
@@ -822,7 +896,7 @@ function isValidCorpusTeam(value: unknown): value is WarRoomCorpusTeam {
     team
     && typeof team.id === "string"
     && team.id.length > 0
-    && (team.source === "vgcpastes" || team.source === "scouting-library")
+    && (team.source === "tournament" || team.source === "vgcpastes" || team.source === "scouting-library")
     && typeof team.savedPasteId === "string"
     && typeof team.playerName === "string"
     && typeof team.tournament === "string"
@@ -850,10 +924,29 @@ export function buildWarRoomCorpusResponse(
   teams: VgcPastesTeam[],
   fetchedAt = new Date().toISOString(),
   savedPastes: ScoutingPasteSummary[] = [],
+  tournamentSnapshot?: TournamentScoutingResponse | null,
 ): WarRoomCorpusResponse {
-  if (format.id !== WAR_ROOM_FORMAT_ID) throw new Error("War Room v1 solo admite la regulación vigente M-C");
+  if (format.id !== WAR_ROOM_FORMAT_ID) throw new Error("War Room solo admite la regulación vigente M-C");
   if (teams.length > MAX_WAR_ROOM_CORPUS_TEAMS) throw new Error("El corpus público de War Room supera el límite seguro");
-  const publicTeams: WarRoomCorpusTeam[] = teams.map((team) => ({
+  const tournamentTeams: WarRoomCorpusTeam[] = tournamentSnapshot
+    && toId(tournamentSnapshot.regulation) === toId(CHAMPIONS_REGULATION)
+    ? tournamentSnapshot.tournaments.flatMap((event) => event.teams.map((team): WarRoomCorpusTeam => ({
+      id: `tournament-${team.id}`,
+      source: "tournament",
+      savedPasteId: "",
+      playerName: team.playerName,
+      tournament: event.name,
+      rank: [team.placement ? `#${team.placement}` : "", team.record].filter(Boolean).join(" · "),
+      dateShared: tournamentSnapshot.generatedAt.slice(0, 10),
+      pokepasteUrl: team.pokepasteUrl,
+      pokemon: [...team.pokemon],
+    })))
+    : [];
+  const tournamentPasteUrls = new Set(tournamentTeams.map((team) => safePokepasteUrl(team.pokepasteUrl)).filter(Boolean));
+  const vgcPastesTeams: WarRoomCorpusTeam[] = teams.filter((team) => {
+    const url = safePokepasteUrl(team.pokepasteUrl);
+    return !url || !tournamentPasteUrls.has(url);
+  }).map((team): WarRoomCorpusTeam => ({
     id: team.id,
     source: "vgcpastes",
     savedPasteId: "",
@@ -863,7 +956,9 @@ export function buildWarRoomCorpusResponse(
     dateShared: team.dateShared,
     pokepasteUrl: team.pokepasteUrl,
     pokemon: [...team.pokemon],
-  }));
+  })).slice(0, Math.max(0, MAX_WAR_ROOM_CORPUS_TEAMS - tournamentTeams.length));
+  const boundedTournamentTeams = tournamentTeams.slice(0, MAX_WAR_ROOM_CORPUS_TEAMS);
+  const publicTeams = [...boundedTournamentTeams, ...vgcPastesTeams];
   const publicPasteUrls = new Set(publicTeams.map((team) => safePokepasteUrl(team.pokepasteUrl)).filter(Boolean));
   const privateTeams: WarRoomCorpusTeam[] = savedPastes.flatMap((paste): WarRoomCorpusTeam[] => {
     const formatKey = toId(paste.format);
@@ -890,6 +985,8 @@ export function buildWarRoomCorpusResponse(
     fetchedAt,
     totalTeams: merged.length,
     publicTeamCount: publicTeams.length,
+    vgcPastesTeamCount: vgcPastesTeams.length,
+    tournamentTeamCount: boundedTournamentTeams.length,
     savedTeamCount: privateTeams.length,
     source: {
       label: "VGCPastes Repository",
@@ -919,6 +1016,13 @@ export function isWarRoomCorpusResponse(value: unknown): value is WarRoomCorpusR
     && typeof root.publicTeamCount === "number"
     && Number.isInteger(root.publicTeamCount)
     && root.publicTeamCount >= 0
+    && typeof root.vgcPastesTeamCount === "number"
+    && Number.isInteger(root.vgcPastesTeamCount)
+    && root.vgcPastesTeamCount >= 0
+    && typeof root.tournamentTeamCount === "number"
+    && Number.isInteger(root.tournamentTeamCount)
+    && root.tournamentTeamCount >= 0
+    && root.vgcPastesTeamCount + root.tournamentTeamCount === root.publicTeamCount
     && typeof root.savedTeamCount === "number"
     && Number.isInteger(root.savedTeamCount)
     && root.savedTeamCount >= 0
@@ -1429,6 +1533,74 @@ type WarRoomProposalEvidence = {
   moves: Array<number | null>;
 };
 
+type WarRoomProposalSources = {
+  item: WarRoomSetChange["source"];
+  ability: WarRoomSetChange["source"];
+  nature: WarRoomSetChange["source"];
+  statPoints: WarRoomSetChange["source"];
+  moves: WarRoomSetChange["source"][];
+};
+
+type WarRoomTerrain = "electric" | "grassy" | "misty" | "psychic";
+type WarRoomWeather = "rain" | "sun" | "sand" | "snow";
+
+type WarRoomStrategyContext = {
+  speedMode: "trick-room" | "tailwind" | "hybrid" | "neutral";
+  terrains: Set<WarRoomTerrain>;
+  weather: Set<WarRoomWeather>;
+};
+
+const FAST_NATURES = new Set(["jolly", "timid", "hasty", "naive"]);
+const SLOW_NATURES = new Set(["brave", "quiet", "relaxed", "sassy"]);
+const TERRAIN_SEEDS = new Map<string, WarRoomTerrain>([
+  ["electricseed", "electric"],
+  ["grassyseed", "grassy"],
+  ["mistyseed", "misty"],
+  ["psychicseed", "psychic"],
+]);
+const TERRAIN_ABILITIES = new Map<string, WarRoomTerrain>([
+  ["electricsurge", "electric"],
+  ["grassysurge", "grassy"],
+  ["hadronengine", "electric"],
+  ["mistysurge", "misty"],
+  ["psychicsurge", "psychic"],
+  ["seedsower", "grassy"],
+]);
+const TERRAIN_MOVES = new Map<string, WarRoomTerrain>([
+  ["electricterrain", "electric"],
+  ["grassyterrain", "grassy"],
+  ["mistyterrain", "misty"],
+  ["psychicterrain", "psychic"],
+]);
+const WEATHER_ABILITIES = new Map<string, WarRoomWeather>([
+  ["drizzle", "rain"],
+  ["drought", "sun"],
+  ["orichalcumpulse", "sun"],
+  ["sandstream", "sand"],
+  ["snowwarning", "snow"],
+]);
+const WEATHER_MOVES = new Map<string, WarRoomWeather>([
+  ["raindance", "rain"],
+  ["sunnyday", "sun"],
+  ["sandstorm", "sand"],
+  ["snowscape", "snow"],
+]);
+const WEATHER_DEPENDENCIES = new Map<string, WarRoomWeather>([
+  ["swiftswim", "rain"],
+  ["raindish", "rain"],
+  ["chlorophyll", "sun"],
+  ["solarpower", "sun"],
+  ["protosynthesis", "sun"],
+  ["sandrush", "sand"],
+  ["slushrush", "snow"],
+  ["icebody", "snow"],
+]);
+const TERRAIN_DEPENDENCIES = new Map<string, WarRoomTerrain>([
+  ["surgesurfer", "electric"],
+  ["grassypelt", "grassy"],
+  ["quarkdrive", "electric"],
+]);
+
 function proposalToSet(snapshot: ShowdownSnapshot, source: PokemonSet, proposal: WarRoomSetProposal): PokemonSet {
   return {
     ...source,
@@ -1448,18 +1620,136 @@ function proposalToSet(snapshot: ShowdownSnapshot, source: PokemonSet, proposal:
   };
 }
 
-function mergePresetMoves(
+function teamStrategyContext(team: readonly PokemonSet[]): WarRoomStrategyContext {
+  const moveKeys = new Set(team.flatMap((set) => set.moves.map((move) => toId(move.name))).filter(Boolean));
+  const abilityKeys = new Set(team.map((set) => toId(set.ability)).filter(Boolean));
+  const hasTrickRoom = moveKeys.has("trickroom");
+  const hasTailwind = moveKeys.has("tailwind");
+  const terrains = new Set<WarRoomTerrain>();
+  const weather = new Set<WarRoomWeather>();
+  for (const ability of abilityKeys) {
+    const terrain = TERRAIN_ABILITIES.get(ability);
+    const activeWeather = WEATHER_ABILITIES.get(ability);
+    if (terrain) terrains.add(terrain);
+    if (activeWeather) weather.add(activeWeather);
+  }
+  for (const move of moveKeys) {
+    const terrain = TERRAIN_MOVES.get(move);
+    const activeWeather = WEATHER_MOVES.get(move);
+    if (terrain) terrains.add(terrain);
+    if (activeWeather) weather.add(activeWeather);
+  }
+  return {
+    speedMode: hasTrickRoom && hasTailwind ? "hybrid" : hasTrickRoom ? "trick-room" : hasTailwind ? "tailwind" : "neutral",
+    terrains,
+    weather,
+  };
+}
+
+function strategyContextLabel(context: WarRoomStrategyContext) {
+  const labels = [
+    context.speedMode === "trick-room" ? "Trick Room" : context.speedMode === "tailwind" ? "Tailwind" : context.speedMode === "hybrid" ? "velocidad híbrida" : "velocidad neutral",
+    ...[...context.weather].map((weather) => ({ rain: "lluvia", sun: "sol", sand: "arena", snow: "nieve" })[weather]),
+    ...[...context.terrains].map((terrain) => `terreno ${terrain}`),
+  ];
+  return labels.join(" + ");
+}
+
+function strategyContextSimilarity(target: WarRoomStrategyContext, observed: WarRoomStrategyContext) {
+  let score = 48;
+  if (target.speedMode === observed.speedMode) score += 28;
+  else if (target.speedMode === "hybrid" || observed.speedMode === "hybrid") score += 12;
+  else if (target.speedMode !== "neutral" && observed.speedMode !== "neutral") score -= 24;
+  else if (target.speedMode !== "neutral" || observed.speedMode !== "neutral") score -= 8;
+  for (const terrain of target.terrains) score += observed.terrains.has(terrain) ? 8 : -4;
+  for (const activeWeather of target.weather) score += observed.weather.has(activeWeather) ? 8 : -4;
+  return clamp(round(score));
+}
+
+function proposalContextEvaluation(
+  team: PokemonSet[],
   current: PokemonSet,
-  preset: OpponentMetaPreset,
+  proposal: WarRoomSetProposal,
+  snapshot: ShowdownSnapshot,
+) {
+  const proposed = proposalToSet(snapshot, current, proposal);
+  const nextTeam = team.map((set) => set.id === current.id ? proposed : set);
+  const context = teamStrategyContext(nextTeam);
+  const reasons: string[] = [];
+  let score = 70;
+
+  const requiredTerrain = TERRAIN_SEEDS.get(toId(proposal.item));
+  if (requiredTerrain && !context.terrains.has(requiredTerrain)) {
+    return {
+      compatible: false,
+      score: 0,
+      context,
+      reasons: [`${proposal.item} no tiene un activador de terreno ${requiredTerrain} en el Team propuesto.`],
+    };
+  }
+
+  const speedPoints = parseEvs(proposal.evs).Spe;
+  const fastNature = FAST_NATURES.has(toId(proposal.nature));
+  const slowNature = SLOW_NATURES.has(toId(proposal.nature));
+  const ownsTrickRoom = proposal.moves.some((move) => toId(move) === "trickroom");
+  if (ownsTrickRoom && context.speedMode !== "hybrid" && (speedPoints >= 24 || fastNature)) {
+    return {
+      compatible: false,
+      score: 0,
+      context,
+      reasons: ["El propio setter de Trick Room invierte demasiado en Velocidad sin que el Team muestre un modo rápido alterno."],
+    };
+  }
+  if (context.speedMode === "trick-room") {
+    if (speedPoints >= 24 || fastNature) {
+      score -= 24;
+      reasons.push("La inversión alta en Velocidad pierde encaje con el modo principal de Trick Room.");
+    } else if (speedPoints === 0 && slowNature) {
+      score += 14;
+      reasons.push("Naturaleza e inversión de Velocidad acompañan el modo Trick Room.");
+    }
+  } else if (context.speedMode === "tailwind" && slowNature && !ownsTrickRoom) {
+    score -= 10;
+    reasons.push("La naturaleza reductora de Velocidad aporta poco al modo Tailwind.");
+  }
+
+  const abilityKey = toId(proposal.ability);
+  const weatherDependency = WEATHER_DEPENDENCIES.get(abilityKey);
+  if (weatherDependency && !context.weather.has(weatherDependency) && toId(proposal.item) !== "boosterenergy") {
+    score -= 22;
+    reasons.push(`${proposal.ability} no tiene activador de ${weatherDependency} en el Team.`);
+  }
+  const terrainDependency = TERRAIN_DEPENDENCIES.get(abilityKey);
+  if (terrainDependency && !context.terrains.has(terrainDependency) && toId(proposal.item) !== "boosterenergy") {
+    score -= 22;
+    reasons.push(`${proposal.ability} no tiene activador de terreno ${terrainDependency} en el Team.`);
+  }
+  if (abilityKey === "unburden" && !requiredTerrain && !/(berry|herb|seed|sash|policy|gem)$/.test(toId(proposal.item))) {
+    score -= 16;
+    reasons.push("Unburden no muestra una activación reproducible con el objeto propuesto.");
+  }
+  return { compatible: true, score: clamp(round(score)), context, reasons };
+}
+
+type CandidateMove = {
+  name: string;
+  evidence: number | null;
+  source: WarRoomSetChange["source"];
+};
+
+function mergeCandidateMoves(
+  current: PokemonSet,
+  candidates: CandidateMove[],
   locks: WarRoomPokemonLocks,
 ) {
   const moves: Array<string | undefined> = Array.from({ length: 4 });
   const evidence: Array<number | null> = Array.from({ length: 4 }, () => null);
+  const sources: WarRoomSetChange["source"][] = Array.from({ length: 4 }, () => "paste");
   const used = new Set<string>();
-  const presetMoves = preset.moves.map((name, index) => ({
-    name: name.trim(),
-    key: toId(name),
-    evidence: preset.evidence.moves[index] ?? null,
+  const available = candidates.map((candidate) => ({
+    ...candidate,
+    name: candidate.name.trim(),
+    key: toId(candidate.name),
   })).filter((entry) => entry.key);
 
   for (const slot of MOVE_SLOTS) {
@@ -1471,29 +1761,31 @@ function mergePresetMoves(
     used.add(key);
   }
 
-  // Keep an already-present meta move in its current slot so move order alone
+  // Keep an already-present candidate move in its current slot so move order alone
   // never appears as a recommendation.
   for (const slot of MOVE_SLOTS) {
     if (moves[slot]) continue;
     const currentName = current.moves[slot]?.name.trim() ?? "";
     const currentKey = toId(currentName);
-    const match = presetMoves.find((entry) => entry.key === currentKey && !used.has(entry.key));
+    const match = available.find((entry) => entry.key === currentKey && !used.has(entry.key));
     if (!match) continue;
     moves[slot] = currentName;
     evidence[slot] = match.evidence;
+    sources[slot] = match.source;
     used.add(match.key);
   }
 
   for (const slot of MOVE_SLOTS) {
     if (moves[slot]) continue;
-    const match = presetMoves.find((entry) => !used.has(entry.key));
+    const match = available.find((entry) => !used.has(entry.key));
     if (!match) return null;
     moves[slot] = match.name;
     evidence[slot] = match.evidence;
+    sources[slot] = match.source;
     used.add(match.key);
   }
 
-  return { moves: moves as string[], evidence };
+  return { moves: moves as string[], evidence, sources };
 }
 
 function proposalFromPreset(
@@ -1501,7 +1793,11 @@ function proposalFromPreset(
   preset: OpponentMetaPreset,
   locks: WarRoomPokemonLocks,
 ) {
-  const mergedMoves = mergePresetMoves(current, preset, locks);
+  const mergedMoves = mergeCandidateMoves(current, preset.moves.map((name, index) => ({
+    name,
+    evidence: preset.evidence.moves[index] ?? null,
+    source: "battle-data" as const,
+  })), locks);
   if (!mergedMoves) return null;
   return {
     proposal: {
@@ -1518,6 +1814,67 @@ function proposalFromPreset(
       statPoints: locks.statPoints ? null : preset.evidence.statPoints,
       moves: mergedMoves.evidence,
     } satisfies WarRoomProposalEvidence,
+    sources: {
+      item: "battle-data",
+      ability: "battle-data",
+      nature: "battle-data",
+      statPoints: "battle-data",
+      moves: mergedMoves.sources,
+    } satisfies WarRoomProposalSources,
+  };
+}
+
+function proposalFromObservedSet(
+  current: PokemonSet,
+  observed: PokemonSet,
+  locks: WarRoomPokemonLocks,
+  preset?: OpponentMetaPreset,
+) {
+  const field = (
+    locked: boolean,
+    currentValue: string,
+    observedValue: string,
+    metaValue: string,
+    metaEvidence: number | null,
+  ) => {
+    if (locked) return { value: currentValue, evidence: null, source: "paste" as const };
+    if (observedValue.trim()) return { value: observedValue.trim(), evidence: null, source: "paste" as const };
+    return { value: metaValue.trim(), evidence: metaValue.trim() ? metaEvidence : null, source: "battle-data" as const };
+  };
+  const item = field(locks.item, current.item, observed.item, preset?.item ?? "", preset?.evidence.item ?? null);
+  const ability = field(locks.ability, current.ability, observed.ability, preset?.ability ?? "", preset?.evidence.ability ?? null);
+  const nature = field(locks.nature, current.nature, observed.nature, preset?.nature ?? "", preset?.evidence.nature ?? null);
+  const statPoints = field(locks.statPoints, current.evs, observed.evs, preset?.evs ?? "", preset?.evidence.statPoints ?? null);
+  const observedMoves: CandidateMove[] = observed.moves.map((move) => ({ name: move.name, evidence: null, source: "paste" }));
+  const observedMoveKeys = new Set(observedMoves.map((move) => toId(move.name)));
+  const knownKeys = new Set(observedMoveKeys);
+  const metaMoves: CandidateMove[] = observedMoveKeys.size >= 4 ? [] : (preset?.moves ?? []).flatMap((name, index) => (
+    knownKeys.has(toId(name)) ? [] : [{ name, evidence: preset?.evidence.moves[index] ?? null, source: "battle-data" as const }]
+  ));
+  const mergedMoves = mergeCandidateMoves(current, [...observedMoves, ...metaMoves], locks);
+  if (!mergedMoves) return null;
+  return {
+    proposal: {
+      item: item.value,
+      ability: ability.value,
+      nature: nature.value,
+      evs: statPoints.value,
+      moves: mergedMoves.moves,
+    },
+    evidence: {
+      item: item.evidence,
+      ability: ability.evidence,
+      nature: nature.evidence,
+      statPoints: statPoints.evidence,
+      moves: mergedMoves.evidence,
+    } satisfies WarRoomProposalEvidence,
+    sources: {
+      item: item.source,
+      ability: ability.source,
+      nature: nature.source,
+      statPoints: statPoints.source,
+      moves: mergedMoves.sources,
+    } satisfies WarRoomProposalSources,
   };
 }
 
@@ -1541,12 +1898,13 @@ function setChanges(
   current: PokemonSet,
   proposal: WarRoomSetProposal,
   evidence: WarRoomProposalEvidence,
+  sources: WarRoomProposalSources,
 ): WarRoomSetChange[] {
   const changes: WarRoomSetChange[] = [];
-  if (toId(current.item) !== toId(proposal.item)) changes.push({ key: "item", field: "Objeto", current: current.item || "Sin objeto", suggested: proposal.item || "Sin objeto", evidence: evidence.item });
-  if (toId(current.ability) !== toId(proposal.ability)) changes.push({ key: "ability", field: "Habilidad", current: current.ability || "Sin declarar", suggested: proposal.ability || "Sin declarar", evidence: evidence.ability });
-  if (toId(current.nature) !== toId(proposal.nature)) changes.push({ key: "nature", field: "Naturaleza", current: current.nature || "Sin declarar", suggested: proposal.nature || "Sin declarar", evidence: evidence.nature });
-  if (current.evs.trim() !== proposal.evs.trim()) changes.push({ key: "statPoints", field: "Stat Points", current: current.evs || "0", suggested: proposal.evs || "0", evidence: evidence.statPoints });
+  if (toId(current.item) !== toId(proposal.item)) changes.push({ key: "item", field: "Objeto", current: current.item || "Sin objeto", suggested: proposal.item || "Sin objeto", evidence: evidence.item, source: sources.item });
+  if (toId(current.ability) !== toId(proposal.ability)) changes.push({ key: "ability", field: "Habilidad", current: current.ability || "Sin declarar", suggested: proposal.ability || "Sin declarar", evidence: evidence.ability, source: sources.ability });
+  if (toId(current.nature) !== toId(proposal.nature)) changes.push({ key: "nature", field: "Naturaleza", current: current.nature || "Sin declarar", suggested: proposal.nature || "Sin declarar", evidence: evidence.nature, source: sources.nature });
+  if (current.evs.trim() !== proposal.evs.trim()) changes.push({ key: "statPoints", field: "Stat Points", current: current.evs || "0", suggested: proposal.evs || "0", evidence: evidence.statPoints, source: sources.statPoints });
   for (const slot of MOVE_SLOTS) {
     const currentMove = current.moves[slot]?.name ?? "";
     const suggestedMove = proposal.moves[slot] ?? "";
@@ -1557,6 +1915,7 @@ function setChanges(
       current: currentMove || "Vacío",
       suggested: suggestedMove || "Vacío",
       evidence: evidence.moves[slot] ?? null,
+      source: sources.moves[slot] ?? "paste",
     });
   }
   return changes;
@@ -1573,18 +1932,111 @@ function setSuggestions(
   snapshot: ShowdownSnapshot,
   metaBySpecies: Record<string, OpponentMetaResponse | undefined>,
   optimizationLocks: WarRoomOptimizationLocks,
+  pasteEvidence: readonly WarRoomPasteEvidenceTeam[],
 ) {
   const opponents = usageBySpecies(corpus).slice(0, 24).map((entry) => profileFromPreview(snapshot, entry.species)).filter((profile) => profile.types.length);
+  const targetContext = teamStrategyContext(team);
   return team.flatMap((set): WarRoomSetSuggestion[] => {
     const meta = metaBySpecies[toId(set.species)];
-    if (!meta?.presets.length) return [];
     const locks = locksForSet(optimizationLocks, set.id);
     const currentProfile = profileFromSet(snapshot, set);
     const currentScore = structuralSetScore(currentProfile, opponents);
-    const candidates = meta.presets.flatMap((preset) => {
+    const observedSets = pasteEvidence.flatMap((evidenceTeam) => evidenceTeam.sets.flatMap((observed) => (
+      baseSpeciesKey(observed.species) === baseSpeciesKey(set.species) ? [{ evidenceTeam, observed }] : []
+    )));
+    const signatureCounts = new Map<string, number>();
+    for (const { observed } of observedSets) {
+      const signature = [toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
+      signatureCounts.set(signature, (signatureCounts.get(signature) ?? 0) + 1);
+    }
+    let hasObservedCurrentMatch = false;
+    const observedCandidates = observedSets.flatMap(({ evidenceTeam, observed }) => {
+      const candidate = proposalFromObservedSet(set, observed, locks, meta?.presets[0]);
+      if (
+        !candidate?.proposal.item
+        || !candidate.proposal.ability
+        || !candidate.proposal.nature
+        || !candidate.proposal.evs
+        || candidate.proposal.moves.length !== 4
+      ) return [];
+      if (!candidate || !proposalIsLegal(team, set, candidate.proposal, snapshot)) return [];
+      const context = proposalContextEvaluation(team, set, candidate.proposal, snapshot);
+      if (!context.compatible) return [];
+      const changes = setChanges(set, candidate.proposal, candidate.evidence, candidate.sources);
+      if (!changes.length) {
+        hasObservedCurrentMatch = true;
+        return [];
+      }
+      const proposed = proposalToSet(snapshot, set, candidate.proposal);
+      const profile = profileFromSet(snapshot, proposed);
+      const structural = structuralSetScore(profile, opponents);
+      const evidenceContext = teamStrategyContext(evidenceTeam.sets);
+      const contextFit = clamp(round((strategyContextSimilarity(targetContext, evidenceContext) + context.score) / 2));
+      const currentKeys = new Set(team.filter((entry) => entry.id !== set.id).map((entry) => baseSpeciesKey(entry.species)));
+      const overlap = evidenceTeam.pokemon.filter((species) => currentKeys.has(baseSpeciesKey(species))).length;
+      const signature = [toId(observed.item), toId(observed.ability), toId(observed.nature), observed.evs.trim().toLowerCase(), ...observed.moves.map((move) => toId(move.name)).sort()].join("|");
+      const observations = signatureCounts.get(signature) ?? 1;
+      const patchedFields = changes.filter((change) => change.source === "battle-data").map((change) => change.key);
+      return [{
+        proposal: candidate.proposal,
+        changes,
+        profile,
+        structural,
+        context,
+        contextFit,
+        observations,
+        patchedFields,
+        evidenceTeam,
+        rankScore: structural + contextFit * 0.55 + evidenceTeam.quality * 0.25 + overlap * 7 + Math.min(10, observations * 2),
+      }];
+    }).sort((left, right) => right.rankScore - left.rankScore || right.evidenceTeam.quality - left.evidenceTeam.quality || left.evidenceTeam.id.localeCompare(right.evidenceTeam.id));
+
+    const observedBest = observedCandidates[0];
+    if (observedBest) {
+      const currentCoverage = opponents.filter((opponent) => profileThreatens(currentProfile, opponent)).length;
+      const nextCoverage = opponents.filter((opponent) => profileThreatens(observedBest.profile, opponent)).length;
+      const preservedFields = lockFieldsForSet(set, locks);
+      const patched = observedBest.patchedFields.length > 0;
+      return [{
+        setId: set.id,
+        species: set.species,
+        presetId: `paste-${observedBest.evidenceTeam.id}-${observedBest.observations}`,
+        structuralDelta: round(observedBest.structural - currentScore, 1),
+        proposal: observedBest.proposal,
+        changes: observedBest.changes,
+        preservedFields,
+        reasons: [
+          `Set completo observado en ${observedBest.evidenceTeam.sourceLabel}${observedBest.evidenceTeam.tournament ? ` · ${observedBest.evidenceTeam.tournament}` : ""}; ${observedBest.observations} ${observedBest.observations === 1 ? "aparición compatible" : "apariciones compatibles"}.`,
+          `Encaje contextual ${observedBest.contextFit}/100 con ${strategyContextLabel(observedBest.context.context)}.`,
+          nextCoverage > currentCoverage
+            ? `Añade cobertura supereficaz contra ${nextCoverage - currentCoverage} amenazas frecuentes.`
+            : `Mantiene cobertura estructural sobre ${nextCoverage}/${opponents.length} amenazas frecuentes.`,
+          patched
+            ? `Battle Data completa únicamente ${observedBest.patchedFields.length} ${observedBest.patchedFields.length === 1 ? "campo ausente" : "campos ausentes"}.`
+            : "Objeto, habilidad, naturaleza, Stat Points y movimientos proceden juntos del paste.",
+          preservedFields.length ? `Respeta ${preservedFields.length} ${preservedFields.length === 1 ? "bloqueo activo" : "bloqueos activos"}.` : "No hay campos bloqueados en este integrante.",
+        ],
+        methodology: patched ? "observed-paste-patched" : "observed-paste",
+        source: {
+          teamId: observedBest.evidenceTeam.id,
+          label: observedBest.evidenceTeam.sourceLabel,
+          url: observedBest.evidenceTeam.sourceUrl,
+          tournament: observedBest.evidenceTeam.tournament,
+          rank: observedBest.evidenceTeam.rank,
+          observations: observedBest.observations,
+          contextFit: observedBest.contextFit,
+        },
+        patchedFields: observedBest.patchedFields,
+      }];
+    }
+    if (hasObservedCurrentMatch) return [];
+
+    const candidates = (meta?.presets ?? []).flatMap((preset) => {
       const candidate = proposalFromPreset(set, preset, locks);
       if (!candidate || !proposalIsLegal(team, set, candidate.proposal, snapshot)) return [];
-      const changes = setChanges(set, candidate.proposal, candidate.evidence);
+      const context = proposalContextEvaluation(team, set, candidate.proposal, snapshot);
+      if (!context.compatible) return [];
+      const changes = setChanges(set, candidate.proposal, candidate.evidence, candidate.sources);
       if (!changes.length) return [];
       const proposed = proposalToSet(snapshot, set, candidate.proposal);
       const profile = profileFromSet(snapshot, proposed);
@@ -1595,7 +2047,8 @@ function setSuggestions(
         changes,
         profile,
         structural,
-        rankScore: structural + averageChangeEvidence(changes) * 0.12,
+        context,
+        rankScore: structural + averageChangeEvidence(changes) * 0.12 + context.score * 0.35,
       }];
     }).sort((left, right) => right.rankScore - left.rankScore || left.preset.rank - right.preset.rank);
     const best = candidates[0];
@@ -1609,6 +2062,7 @@ function setSuggestions(
         ? `La cobertura supereficaz alcanza ${nextCoverage - currentCoverage} amenazas frecuentes adicionales.`
         : `Mantiene cobertura estructural sobre ${nextCoverage}/${opponents.length} amenazas frecuentes.`,
       addedRoles.length ? `Añade ${addedRoles.join(", ").toLowerCase()}.` : "No añade una función táctica nueva; se apoya principalmente en frecuencia de uso.",
+      `Pasó la validación contextual del Team (${best.context.score}/100; ${strategyContextLabel(best.context.context)}).`,
       preservedFields.length
         ? `Respeta ${preservedFields.length} ${preservedFields.length === 1 ? "bloqueo activo" : "bloqueos activos"}.`
         : "No hay campos bloqueados en este integrante.",
@@ -1622,7 +2076,9 @@ function setSuggestions(
       changes: best.changes,
       preservedFields,
       reasons,
-      methodology: "marginal-frequency-composite",
+      methodology: "battle-data-fallback",
+      source: null,
+      patchedFields: best.changes.map((change) => change.key),
     }];
   }).sort((left, right) => right.structuralDelta - left.structuralDelta || left.species.localeCompare(right.species));
 }
@@ -1664,9 +2120,12 @@ function memberSuggestions(
     observedAs: string;
     coreAppearances: number;
     corpusAppearances: number;
+    weightedCoreAppearances: number;
+    weightedCorpusAppearances: number;
   }>();
   const collectCandidates = (teams: WarRoomCorpusTeam[], scope: "core" | "corpus") => {
     for (const entry of teams) {
+      const sourceWeight = entry.source === "tournament" ? 1.2 : entry.source === "vgcpastes" ? 1 : 0.65;
       const seen = new Set<string>();
       for (const observedAs of entry.pokemon) {
         const species = baseSpeciesLabel(observedAs);
@@ -1678,9 +2137,16 @@ function memberSuggestions(
           observedAs,
           coreAppearances: 0,
           corpusAppearances: 0,
+          weightedCoreAppearances: 0,
+          weightedCorpusAppearances: 0,
         };
-        if (scope === "core") current.coreAppearances += 1;
-        else current.corpusAppearances += 1;
+        if (scope === "core") {
+          current.coreAppearances += 1;
+          current.weightedCoreAppearances += sourceWeight;
+        } else {
+          current.corpusAppearances += 1;
+          current.weightedCorpusAppearances += sourceWeight;
+        }
         candidates.set(key, current);
       }
     }
@@ -1694,8 +2160,9 @@ function memberSuggestions(
   const unlocked = teamProfiles.filter((profile) => !lockedIds.has(profile.id));
   const openSlots = unlocked.filter((profile) => !profile.species.trim());
   const replacementPool = openSlots.length ? openSlots : unlocked;
-  const maxCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.coreAppearances));
-  const maxCorpusAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.corpusAppearances));
+  const maxCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCoreAppearances));
+  const maxCorpusAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCorpusAppearances));
+  const poolWeight = Math.max(1, pool.reduce((sum, entry) => sum + (entry.source === "tournament" ? 1.2 : entry.source === "vgcpastes" ? 1 : 0.65), 0));
   const members = [...candidates.values()].flatMap((candidate): WarRoomMemberSuggestion[] => {
     const profile = profileFromPreview(snapshot, candidate.observedAs);
     if (!profile.types.length || !isSpeciesAvailable(snapshot, candidate.species, WAR_ROOM_BATTLE_FORMAT)) return [];
@@ -1714,9 +2181,10 @@ function memberSuggestions(
     });
     const evidenceMode = candidate.coreAppearances > 0 ? "core" as const : "expanded" as const;
     const appearances = evidenceMode === "core" ? candidate.coreAppearances : candidate.corpusAppearances;
+    const weightedAppearances = evidenceMode === "core" ? candidate.weightedCoreAppearances : candidate.weightedCorpusAppearances;
     const sampleSize = evidenceMode === "core" ? pool.length : corpus.length;
-    const synergy = evidenceMode === "core" ? appearances / Math.max(1, sampleSize) : 0;
-    const frequency = appearances / (evidenceMode === "core" ? maxCoreAppearances : maxCorpusAppearances);
+    const synergy = evidenceMode === "core" ? weightedAppearances / poolWeight : 0;
+    const frequency = weightedAppearances / (evidenceMode === "core" ? maxCoreAppearances : maxCorpusAppearances);
     const balance = clamp(50 + best.delta * 8) / 100;
     const score = clamp(round(100 * (evidenceMode === "core"
       ? 0.45 * synergy + 0.25 * frequency + 0.30 * balance
@@ -1775,7 +2243,21 @@ export function optimizeTeam(
   const optimizationLocks = normalizeOptimizationLocks(team, lockInput);
   const lockedIds = new Set(team.filter((set) => locksForSet(optimizationLocks, set.id).identity).map((set) => set.id));
   const statistics = statisticalCorpus(corpus);
-  const memberResult = memberSuggestions(team, lockedIds, statistics, snapshot, options);
+  const memberResult = memberSuggestions(team, lockedIds, corpus, snapshot, options);
+  const pasteEvidence = options.pasteEvidence ?? [];
+  const setResults = setSuggestions(team, statistics, snapshot, metaBySpecies, optimizationLocks, pasteEvidence);
+  const teamSpecies = new Set(team.map((set) => baseSpeciesKey(set.species)));
+  const matchedSets = pasteEvidence.reduce((total, evidenceTeam) => (
+    total + evidenceTeam.sets.filter((set) => teamSpecies.has(baseSpeciesKey(set.species))).length
+  ), 0);
+  const observedResults = setResults.filter((suggestion) => suggestion.methodology !== "battle-data-fallback");
+  const evidenceMode = observedResults.some((suggestion) => suggestion.methodology === "observed-paste-patched")
+    ? "patched" as const
+    : observedResults.length
+      ? "observed" as const
+      : setResults.length
+        ? "fallback" as const
+        : "unavailable" as const;
   const lockedSpecies = team.filter((set) => lockedIds.has(set.id)).map((set) => set.species);
   const locks = team.map((set): WarRoomPokemonLockSummary => {
     const setLocks = locksForSet(optimizationLocks, set.id);
@@ -1795,16 +2277,24 @@ export function optimizeTeam(
       recommendationSlots: memberResult.recommendationSlots,
     },
     coreSample: { size: memberResult.sampleSize, mode: memberResult.mode },
+    pasteEvidence: {
+      loadedTeams: pasteEvidence.length,
+      matchedSets,
+      mode: evidenceMode,
+    },
     members: memberResult.members,
-    sets: setSuggestions(team, statistics, snapshot, metaBySpecies, optimizationLocks),
+    sets: setResults,
     locks,
     notes: [
       "Identidad controla reemplazos de integrantes; los bloqueos de set conservan objeto, habilidad, naturaleza, Stat Points y cada movimiento de forma independiente.",
       memberResult.mode === "partial"
         ? "No hay equipos con el core completo en el corpus: las altas propuestas usan coincidencia parcial y están marcadas como exploratorias."
-        : "Las altas se ordenan por coaparición real con el core y por balance defensivo de tipos.",
+        : "Las altas se ordenan por coaparición real con el core y por balance defensivo; torneo pesa más que VGCPastes y una colección privada actúa como evidencia auxiliar.",
       "Partner Search limita las alternativas Mega a dos y descuenta las Megas que ya están configuradas en el Team.",
-      "Los paquetes de set combinan frecuencias marginales de Battle Data; no representan sets observados ni una combinación garantizada.",
+      pasteEvidence.length
+        ? `Los sets priorizan ${pasteEvidence.length} pastes completos comparables; Battle Data solo rellena campos ausentes o actúa cuando no sobrevive ningún set observado.`
+        : "Aún no se cargaron pastes completos comparables; Battle Data se marca explícitamente como fallback marginal.",
+      "Las dependencias imposibles se descartan: una Seed exige su terreno y un setter de Trick Room rápido necesita un modo veloz alterno visible.",
       "War Room no modifica versiones: abre el Team Builder para que revises y guardes cualquier cambio como versión nueva.",
     ],
   };
