@@ -134,6 +134,7 @@ export function VgcDashboard() {
   const [builderDraft, setBuilderDraft] = useState<PendingBuilderVersion | null>(null);
   const builderImportSequence = useRef(0);
   const builderDraftSequence = useRef(0);
+  const [warRoomMounted, setWarRoomMounted] = useState(false);
   const [warRoomTeam, setWarRoomTeam] = useState<PendingWarRoomTeam | null>(null);
   const warRoomSequence = useRef(0);
   const [scoutingMatchId, setScoutingMatchId] = useState("");
@@ -400,9 +401,15 @@ export function VgcDashboard() {
 
   function openInWarRoom(team: TeamVersion) {
     warRoomSequence.current += 1;
+    setWarRoomMounted(true);
     setWarRoomTeam({ team, token: warRoomSequence.current });
     setActiveView("war-room");
     window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+  }
+
+  function changeActiveView(view: string) {
+    if (view === "war-room") setWarRoomMounted(true);
+    setActiveView(view);
   }
 
   function importTournamentTeam(request: TournamentTeamBuilderImport) {
@@ -424,7 +431,7 @@ export function VgcDashboard() {
   }
 
   return (
-    <Tabs value={activeView} onValueChange={setActiveView} className="vgc-app min-h-screen">
+    <Tabs value={activeView} onValueChange={changeActiveView} className="vgc-app min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/7 bg-[#070b14]/88 backdrop-blur-2xl">
         <div className="mx-auto flex w-full max-w-none items-center justify-between gap-4 px-3 py-3 sm:px-4 lg:px-5">
           <div className="flex min-w-0 items-center gap-3">
@@ -536,9 +543,11 @@ export function VgcDashboard() {
           <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} onTournamentTeamImport={importTournamentTeam} />
         </TabsContent>
 
-        <TabsContent value="war-room" className="mt-0 outline-none">
-          <WarRoom key={warRoomTeam ? `team-${warRoomTeam.token}` : "war-room"} groups={storedGroups} initialTeam={warRoomTeam?.team} onOpenBuilder={openWarRoomDraftInBuilder} onBuildDraft={importTournamentTeam} />
-        </TabsContent>
+        {warRoomMounted ? (
+          <TabsContent value="war-room" forceMount className="mt-0 outline-none">
+            <WarRoom key={warRoomTeam ? `team-${warRoomTeam.token}` : "war-room"} groups={storedGroups} initialTeam={warRoomTeam?.team} onOpenBuilder={openWarRoomDraftInBuilder} onBuildDraft={importTournamentTeam} />
+          </TabsContent>
+        ) : null}
       </main>
       <footer className="border-t border-white/7 px-4 py-5 text-center text-[10px] text-slate-700">Like No One Ever Was · evidencia de Pokémon Showdown, VGCPastes y Battle Data · los índices orientan decisiones, no predicen victorias</footer>
     </Tabs>
