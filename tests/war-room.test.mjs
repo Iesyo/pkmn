@@ -66,8 +66,27 @@ function corpusTeam(id, pokemon, overrides = {}) {
     dateShared: "13 Sep 2026",
     pokepasteUrl: "",
     pokemon,
+    formatId: "champions-m-c",
+    formatLabel: "Champions M-C",
+    regulationWeight: 1,
+    historical: false,
+    setEvidenceEligible: true,
     ...overrides,
   };
+}
+
+function historicalCorpusTeam(id, pokemon, formatId = "champions-m-b", overrides = {}) {
+  const formats = {
+    "champions-m-b": { formatLabel: "Champions M-B", regulationWeight: 0.65, setEvidenceEligible: true },
+    "champions-m-a": { formatLabel: "Champions M-A", regulationWeight: 0.45, setEvidenceEligible: true },
+    "sv-regulation-i": { formatLabel: "SV Regulation I", regulationWeight: 0.2, setEvidenceEligible: false },
+  };
+  return corpusTeam(id, pokemon, {
+    formatId,
+    historical: true,
+    ...formats[formatId],
+    ...overrides,
+  });
 }
 
 function corpus() {
@@ -91,6 +110,11 @@ function pasteEvidenceTeam(id, sets, overrides = {}) {
     rank: "Top 8",
     pokepasteUrl: `https://pokepast.es/${id.toLowerCase().replace(/[^a-z0-9]/g, "").padEnd(8, "0")}`,
     pokemon: sets.map((pokemon) => pokemon.species),
+    formatId: "champions-m-c",
+    formatLabel: "Champions M-C",
+    regulationWeight: 1,
+    historical: false,
+    setEvidenceEligible: true,
     sourceTier: "curated",
     sourceLabel: "VGCPastes",
     sourceUrl: `https://pokepast.es/${id.toLowerCase().replace(/[^a-z0-9]/g, "").padEnd(8, "0")}`,
@@ -148,6 +172,39 @@ test("builds a bounded, validated M-C corpus contract", async () => {
   assert.equal(isWarRoomCorpusResponse(malformed), false);
 });
 
+test("keeps weighted historical regulations separate from the current M-C corpus", async () => {
+  const { buildWarRoomCorpusResponse, isWarRoomCorpusResponse } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { VGCPASTES_FORMATS } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
+  const currentUrl = "https://pokepast.es/aaaaaaaaaaaaaaaa";
+  const current = { ...corpusTeam("current", ["Charizard", "Rillaboom", "Incineroar", "Amoonguss", "Garchomp", "Gholdengo"]), pokepasteUrl: currentUrl };
+  const duplicatedOld = { ...corpusTeam("duplicate-old", current.pokemon), pokepasteUrl: currentUrl };
+  const mb = { ...corpusTeam("mb", ["Rillaboom", "Blastoise", "Pikachu", "Sylveon", "Torterra", "Annihilape"]), pokepasteUrl: "https://pokepast.es/bbbbbbbbbbbbbbbb" };
+  const ma = { ...corpusTeam("ma", ["Rillaboom", "Pelipper", "Dragonite", "Indeedee-F", "Sneasler", "Farigiraf"]), pokepasteUrl: "https://pokepast.es/cccccccccccccccc" };
+  const svi = { ...corpusTeam("svi", ["Rillaboom", "Urshifu-Rapid-Strike", "Flutter Mane", "Incineroar", "Amoonguss", "Ogerpon-Wellspring"]), pokepasteUrl: "https://pokepast.es/dddddddddddddddd" };
+  const historicalSources = [
+    { format: VGCPASTES_FORMATS[1], teams: [duplicatedOld, mb], fetchedAt: "2026-09-13T09:00:00.000Z" },
+    { format: VGCPASTES_FORMATS[2], teams: [ma], fetchedAt: "2026-09-13T09:00:00.000Z" },
+    { format: VGCPASTES_FORMATS[3], teams: [svi], fetchedAt: "2026-09-13T09:00:00.000Z" },
+  ];
+  const response = buildWarRoomCorpusResponse(VGCPASTES_FORMATS[0], [current], "2026-09-13T10:00:00.000Z", [], null, historicalSources);
+
+  assert.equal(response.totalTeams, 1, "historical teams must not change current-meta counts");
+  assert.equal(response.historicalTeamCount, 3);
+  assert.deepEqual(response.historicalFormats.map((entry) => [entry.formatId, entry.regulationWeight]), [
+    ["champions-m-b", 0.65],
+    ["champions-m-a", 0.45],
+    ["sv-regulation-i", 0.2],
+  ]);
+  assert.ok(response.teams.every((team) => !team.historical && team.regulationWeight === 1));
+  assert.ok(response.historicalTeams.every((team) => team.historical));
+  assert.equal(response.historicalTeams.find((team) => team.formatId === "sv-regulation-i")?.setEvidenceEligible, false);
+  assert.equal(response.historicalTeams.some((team) => team.pokepasteUrl === currentUrl), false, "current duplicate must win");
+  assert.equal(isWarRoomCorpusResponse(response), true);
+  const tampered = structuredClone(response);
+  tampered.historicalTeams[0].regulationWeight = 1;
+  assert.equal(isWarRoomCorpusResponse(tampered), false, "the client must reject forged historical weights");
+});
+
 test("gives a current-regulation tournament paste precedence over a duplicated VGCPastes row", async () => {
   const { buildWarRoomCorpusResponse } = await vite.ssrLoadModule("/lib/war-room.ts");
   const { VGCPASTES_FORMATS } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
@@ -199,6 +256,48 @@ test("selects a bounded diverse paste batch with exact-core and source priority"
   assert.equal(selected.length, 2);
   assert.equal(selected[0].id, "tournament");
   assert.ok(selected.every((team) => team.pokemon.includes("Pelipper")));
+});
+
+test("prefers current paste evidence and never fetches SV-I spreads", async () => {
+  const { selectWarRoomPasteEvidenceCandidates } = await vite.ssrLoadModule("/lib/war-room-paste-evidence.ts");
+  const roster = ["Charizard", "Rillaboom", "Pelipper", "Amoonguss", "Incineroar", "Garchomp"];
+  const selected = selectWarRoomPasteEvidenceCandidates(
+    ["Charizard", "Rillaboom"],
+    ["Rillaboom"],
+    ["Pelipper"],
+    [
+      historicalCorpusTeam("svi-evidence", roster, "sv-regulation-i", { pokepasteUrl: "https://pokepast.es/5555555555555555" }),
+      historicalCorpusTeam("mb-evidence", roster, "champions-m-b", { pokepasteUrl: "https://pokepast.es/6666666666666666" }),
+      corpusTeam("mc-evidence", roster, { pokepasteUrl: "https://pokepast.es/7777777777777777" }),
+    ],
+    3,
+  );
+
+  assert.equal(selected[0].id, "mc-evidence");
+  assert.ok(selected.some((team) => team.id === "mb-evidence"));
+  assert.equal(selected.some((team) => team.formatId === "sv-regulation-i"), false);
+});
+
+test("rejects a direct request to transfer SV-I set data", async () => {
+  const { POST } = await vite.ssrLoadModule("/app/api/war-room/paste-evidence/route.ts");
+  let fetched = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetched = true;
+    return new Response("");
+  };
+  try {
+    const candidate = historicalCorpusTeam("svi-direct", ["Rillaboom", "Pelipper", "Dragonite", "Indeedee-F", "Sneasler", "Farigiraf"], "sv-regulation-i", { pokepasteUrl: "https://pokepast.es/8888888888888888" });
+    const response = await POST(new Request("http://localhost/api/war-room/paste-evidence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ candidates: [candidate] }),
+    }));
+    assert.equal(response.status, 400);
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("loads and validates only the requested full Pokepastes", async () => {
@@ -409,6 +508,36 @@ test("prefers a complete observed paste set over a Battle Data composite", async
   assert.ok(suggestion.changes.every((change) => change.source === "paste"));
 });
 
+test("uses a current M-C set before a higher-scored historical set", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalMoves = getLegalMoves(snapshot, "Charizard", "champions");
+  const ability = getLegalAbilities(snapshot, "Charizard", "champions")[0];
+  assert.ok(legalMoves.length >= 12);
+  team[0] = set("Charizard", legalMoves.slice(0, 4), 1, { item: "Leftovers", ability, nature: "Jolly", evs: "2 HP / 32 SpA / 32 Spe" });
+  const currentObserved = set("Charizard", legalMoves.slice(4, 8), 1, { item: "Sitrus Berry", ability, nature: "Modest", evs: "32 HP / 32 SpA / 2 SpD" });
+  const historicalObserved = set("Charizard", legalMoves.slice(8, 12), 1, { item: "Focus Sash", ability, nature: "Timid", evs: "2 HP / 32 SpA / 32 Spe" });
+  const currentEvidence = pasteEvidenceTeam("mc-set", [currentObserved, ...team.slice(1)], { quality: 10 });
+  const historicalEvidence = pasteEvidenceTeam("mb-set", [historicalObserved, ...team.slice(1)], {
+    formatId: "champions-m-b",
+    formatLabel: "Champions M-B",
+    regulationWeight: 0.65,
+    historical: true,
+    setEvidenceEligible: true,
+    quality: 100,
+  });
+
+  const result = optimizeTeam(team, [], corpus(), snapshot, {}, { pasteEvidence: [historicalEvidence, currentEvidence] });
+  const suggestion = result.sets.find((entry) => entry.setId === team[0].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.source.teamId, "mc-set");
+  assert.equal(suggestion.source.historical, false);
+  assert.equal(suggestion.source.formatLabel, "Champions M-C");
+  assert.equal(suggestion.proposal.item, "Sitrus Berry");
+});
+
 test("uses Battle Data only to patch fields absent from an observed paste", async () => {
   const snapshot = await readSnapshot();
   const { optimizeTeam, warRoomMetaKey } = await vite.ssrLoadModule("/lib/war-room.ts");
@@ -537,6 +666,26 @@ test("limits Mega partner cards according to the Megas already configured on the
   assert.ok(twoMegaResult.members.length > 0);
   assert.ok(twoMegaResult.members.every((member) => !member.isMega));
   assert.match(twoMegaResult.notes.join(" "), /limita las alternativas Mega a dos/i);
+});
+
+test("uses historical partner relationships only after the current-regulation legality gate", async () => {
+  const snapshot = await readSnapshot();
+  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { isSpeciesAvailable } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalPartners = ["Blaziken", "Typhlosion-Hisui", "Sinistcha", "Whimsicott"];
+  const illegalId = snapshot.formats.gen9.find((id) => !snapshot.formats.champions.includes(id) && snapshot.species[id]);
+  const illegalSpecies = snapshot.species[illegalId]?.name;
+  assert.equal(legalPartners.length, 4);
+  assert.ok(illegalSpecies);
+  const historical = historicalCorpusTeam("old-core", [team[1].species, illegalSpecies, ...legalPartners]);
+
+  const result = optimizeTeam(team, [team[1].id], [], snapshot, {}, { historicalCorpus: [historical] });
+  assert.equal(result.members.length, 4, "an illegal candidate must not consume one of the available cards");
+  assert.equal(result.members.some((member) => member.species === illegalSpecies), false);
+  assert.ok(result.members.every((member) => member.evidenceMode === "historical"));
+  assert.ok(result.members.every((member) => member.evidenceRegulations.includes("M-B")));
+  assert.ok(result.members.every((member) => isSpeciesAvailable(snapshot, member.species, "champions")));
 });
 
 test("caps identity locks at five even when a caller submits all six", async () => {
@@ -848,6 +997,11 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Paste observado/);
   assert.match(warRoom, /Armando set viable/);
   assert.match(warRoom, /Corpus ampliado/);
+  assert.match(warRoom, /Encaje \{member\.score\}\/100/);
+  assert.match(warRoom, /coaparición en M-C → relación histórica ponderada → frecuencia general en M-C/);
+  assert.match(warRoom, /La legalidad de M-C se valida antes de mostrar cada tarjeta/);
+  assert.match(warRoom, /Histórico ·/);
+  assert.match(warRoom, /historicalCorpus: resources\.corpus\.historicalTeams/);
   assert.match(warRoom, /function undoMember\(setId: string\)/);
   assert.match(warRoom, /Deshacer cambio de/);
   assert.match(warRoom, /excludedMemberSpecies: optimization\.members\.map/);
