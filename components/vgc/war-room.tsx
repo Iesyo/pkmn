@@ -41,8 +41,8 @@ import {
   WAR_ROOM_FORMAT_ID,
   MAX_WAR_ROOM_LOCKED_IDENTITIES,
   MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
-  applyWarRoomMemberSuggestion,
   auditTeam,
+  buildWarRoomMemberReplacement,
   createWarRoomPokemonLocks,
   isWarRoomCorpusResponse,
   optimizeTeam,
@@ -85,6 +85,12 @@ type MemberReplacementStep = {
 
 type MemberReplacementHistory = Record<string, MemberReplacementStep[]>;
 
+type MemberApplyState = {
+  species: string;
+  status: "idle" | "loading" | "ready" | "fallback" | "error";
+  message: string;
+};
+
 const MODES: Array<{
   id: WarRoomMode;
   label: string;
@@ -120,6 +126,12 @@ const EMPTY_RIVAL_STATE: RivalSetState = {
   status: "idle",
   sets: null,
   error: "",
+};
+
+const EMPTY_MEMBER_APPLY_STATE: MemberApplyState = {
+  species: "",
+  status: "idle",
+  message: "",
 };
 
 const EMPTY_META_STATE: MetaState = {
@@ -512,7 +524,7 @@ function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSugg
   );
 }
 
-function MemberSuggestionCard({ member, onApply }: { member: WarRoomMemberSuggestion; onApply: () => void }) {
+function MemberSuggestionCard({ member, loading, disabled, onApply }: { member: WarRoomMemberSuggestion; loading: boolean; disabled: boolean; onApply: () => void }) {
   return (
     <article className="flex flex-col rounded-2xl border border-white/7 bg-slate-950/55 p-4 transition hover:border-violet-300/20">
       <div className="flex items-center gap-3">
@@ -521,6 +533,7 @@ function MemberSuggestionCard({ member, onApply }: { member: WarRoomMemberSugges
           <div className="flex min-w-0 items-center gap-2">
             <h3 className="truncate text-sm font-black text-white">{member.species}</h3>
             {member.isMega ? <Badge variant="outline" className="shrink-0 border-fuchsia-300/18 bg-fuchsia-300/7 px-1.5 text-[8px] text-fuchsia-200">Mega</Badge> : null}
+            {member.evidenceMode === "expanded" ? <Badge variant="outline" className="shrink-0 border-amber-300/18 bg-amber-300/7 px-1.5 text-[8px] text-amber-200">Corpus ampliado</Badge> : null}
           </div>
           <p className="mt-0.5 text-[9px] text-violet-200">por {member.replaces}</p>
           <div className="mt-2 flex items-center gap-2"><Progress value={member.score} className="h-1.5 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300" /><span className="font-mono text-[9px] text-violet-200">{member.score}</span></div>
@@ -528,7 +541,7 @@ function MemberSuggestionCard({ member, onApply }: { member: WarRoomMemberSugges
       </div>
       <p className="mt-3 flex-1 text-[10px] leading-4 text-slate-500">{member.reasons.join(" ")}</p>
       {member.patchedTypes.length ? <div className="mt-3 flex flex-wrap gap-1">{member.patchedTypes.map((type) => <Badge key={type} variant="outline" className="border-emerald-300/12 bg-emerald-300/5 text-[8px] text-emerald-200">+ {type}</Badge>)}</div> : null}
-      <Button type="button" variant="outline" size="sm" onClick={onApply} className="mt-3 w-full gap-2 border-violet-300/18 bg-violet-300/7 text-[9px] font-black text-violet-100 hover:bg-violet-300/14"><Plus className="size-3.5" />Elegir y recalcular</Button>
+      <Button type="button" variant="outline" size="sm" onClick={onApply} disabled={disabled} className="mt-3 w-full gap-2 border-violet-300/18 bg-violet-300/7 text-[9px] font-black text-violet-100 hover:bg-violet-300/14">{loading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}{loading ? "Armando set viable…" : "Elegir y recalcular"}</Button>
     </article>
   );
 }
@@ -538,6 +551,7 @@ function OptimizationView({
   result,
   optimizationLocks,
   metaState,
+  memberApplyState,
   replacementHistory,
   onToggleLock,
   onToggleWholeSet,
@@ -551,6 +565,7 @@ function OptimizationView({
   result: WarRoomOptimizationResult;
   optimizationLocks: WarRoomOptimizationLocks;
   metaState: MetaState;
+  memberApplyState: MemberApplyState;
   replacementHistory: MemberReplacementHistory;
   onToggleLock: (id: string, field: WarRoomLockField) => void;
   onToggleWholeSet: (id: string, locked: boolean) => void;
@@ -561,6 +576,12 @@ function OptimizationView({
   onUndoMember: (setId: string) => void;
 }) {
   const identityCount = result.lockedSpecies.length;
+  const coreSampleLabel = result.coreSample.mode === "exact"
+    ? "core exacto"
+    : result.coreSample.mode === "partial"
+      ? "coincidencia parcial"
+      : "sin coincidencia directa";
+  const usesExpandedCorpus = result.members.some((member) => member.evidenceMode === "expanded");
   return (
     <div className="space-y-4">
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
@@ -590,8 +611,9 @@ function OptimizationView({
 
       {!identityCount ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Bloquea al menos una identidad para buscar partners</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Los bloqueos de set ya se respetan. Al proteger una identidad, el motor además buscará compañeros observados con ese núcleo sin proponer reemplazarla.</p></section> : (
         <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} alternativas por ronda y dos Megas por Team; al elegir una, el lote se consume y se recalcula con el Team actual.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {result.coreSample.mode === "exact" ? "core exacto" : "coincidencia parcial"}</Badge></div></div>
-          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={member.species} member={member} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">No hay nuevas alternativas con ese core, el cupo Mega actual y los lotes que ya probaste.</p>}
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} alternativas por ronda y dos Megas por Team; al elegir una, el lote se consume, se recalcula y se amplía el corpus si el core ya no ofrece opciones nuevas.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {coreSampleLabel}</Badge>{usesExpandedCorpus ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/5 text-[9px] text-amber-200">Búsqueda ampliada</Badge> : null}</div></div>
+          {memberApplyState.message ? <p className={cn("mt-3 rounded-xl border px-3 py-2 text-[10px]", memberApplyState.status === "error" ? "border-rose-300/18 bg-rose-300/7 text-rose-100" : memberApplyState.status === "fallback" ? "border-amber-300/18 bg-amber-300/7 text-amber-100" : "border-emerald-300/15 bg-emerald-300/5 text-emerald-100")}>{memberApplyState.message}</p> : null}
+          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={member.species} member={member} loading={memberApplyState.status === "loading" && memberApplyState.species === member.species} disabled={memberApplyState.status === "loading"} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">Ya agotaste las alternativas compatibles disponibles en el corpus para este estado del Team.</p>}
         </section>
       )}
 
@@ -638,6 +660,8 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
   const [optimizationLocks, setOptimizationLocks] = useState<WarRoomOptimizationLocks>({});
   const [optimizationPokemon, setOptimizationPokemon] = useState<PokemonSet[] | null>(null);
   const [replacementHistory, setReplacementHistory] = useState<MemberReplacementHistory>({});
+  const [memberApplyState, setMemberApplyState] = useState<MemberApplyState>(EMPTY_MEMBER_APPLY_STATE);
+  const memberApplyRequest = useRef(0);
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
   const metaRequest = useRef(0);
 
@@ -697,10 +721,13 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     : null, [excludedMemberSpecies, metaState.teamId, metaState.values, optimizationLocks, resources, workingTeam]);
 
   function changeTeam(value: string) {
+    memberApplyRequest.current += 1;
+    metaRequest.current += 1;
     setTeamId(value);
     setOptimizationLocks({});
     setOptimizationPokemon(null);
     setReplacementHistory({});
+    setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
     setMetaState(EMPTY_META_STATE);
   }
 
@@ -822,12 +849,34 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     });
   }
 
-  function applyMember(member: WarRoomMemberSuggestion) {
+  async function applyMember(member: WarRoomMemberSuggestion) {
     if (!workingTeam || !resources || !optimization) return;
     const previousSet = workingTeam.pokemon.find((set) => set.id === member.replacesSetId);
     if (!previousSet) return;
-    const nextPokemon = applyWarRoomMemberSuggestion(workingTeam.pokemon, member, resources.snapshot);
-    if (nextPokemon === workingTeam.pokemon) return;
+    memberApplyRequest.current += 1;
+    metaRequest.current += 1;
+    const requestId = memberApplyRequest.current;
+    setMemberApplyState({ species: member.species, status: "loading", message: "" });
+    let meta: OpponentMetaResponse | null = null;
+    try {
+      const response = await fetch(`/api/opponent-meta/${encodeURIComponent(member.species)}`, { cache: "no-store" });
+      const payload = await readJson(response);
+      if (response.ok && isOpponentMetaResponse(payload)) meta = payload;
+    } catch {
+      // A legal deterministic baseline remains available when Battle Data is down.
+    }
+    if (requestId !== memberApplyRequest.current) return;
+    const application = buildWarRoomMemberReplacement(
+      workingTeam.pokemon,
+      member,
+      resources.snapshot,
+      meta?.presets ?? [],
+    );
+    const nextPokemon = application.pokemon;
+    if (nextPokemon === workingTeam.pokemon) {
+      setMemberApplyState({ species: member.species, status: "error", message: `No encontramos cuatro movimientos legales para ${member.species}; el Team no se modificó.` });
+      return;
+    }
     const previousLocks = optimizationLocks[member.replacesSetId];
     setReplacementHistory((current) => ({
       ...current,
@@ -846,13 +895,29 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       delete next[member.replacesSetId];
       return next;
     });
-    setMetaState(EMPTY_META_STATE);
+    setMetaState((current) => {
+      const values = current.teamId === workingTeam.id ? { ...current.values } : {};
+      delete values[warRoomMetaKey(previousSet.species)];
+      if (meta) values[warRoomMetaKey(member.species)] = meta;
+      const loaded = Object.values(values).filter(Boolean).length;
+      return loaded ? { teamId: workingTeam.id, status: "ready", values, loaded, error: "" } : EMPTY_META_STATE;
+    });
+    const appliedPreset = meta?.presets.find((preset) => preset.id === application.presetId);
+    setMemberApplyState({
+      species: member.species,
+      status: application.setSource === "battle-data" ? "ready" : "fallback",
+      message: application.setSource === "battle-data"
+        ? `${member.species} entró con ${appliedPreset?.label ?? "el set meta"} de Battle Data. Ya recalculamos alternativas nuevas.`
+        : `Battle Data no entregó un paquete completo para ${member.species}; aplicamos un set legal base y recalculamos alternativas nuevas.`,
+    });
   }
 
   function undoMember(setId: string) {
     const steps = replacementHistory[setId] ?? [];
     const previous = steps.at(-1);
     if (!previous || !workingTeam) return;
+    memberApplyRequest.current += 1;
+    metaRequest.current += 1;
     setOptimizationPokemon(workingTeam.pokemon.map((set) => set.id === setId ? previous.previousSet : set));
     setOptimizationLocks((current) => {
       const next = { ...current };
@@ -868,6 +933,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       return next;
     });
     setMetaState(EMPTY_META_STATE);
+    setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
   }
 
   if (!versions.length) {
@@ -907,7 +973,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={applyMember} onUndoMember={undoMember} /> : null}
+      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} memberApplyState={memberApplyState} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoMember={undoMember} /> : null}
     </div>
   );
 }

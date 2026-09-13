@@ -69,6 +69,10 @@ flowchart TD
 13. Partner Search opera sobre un borrador desechable: cada integrante elegido
     conserva el slot, consume el lote visible, recalcula hasta 12 alternativas
     con el Team resultante y puede deshacerse sin tocar la versión persistida.
+14. Las altas de Partner Search prefieren un preset completo de Battle Data y
+    caen a un set legal determinista si la fuente no responde. Cuando la muestra
+    exacta/parcial se agota, la ronda se completa con candidatos nuevos del
+    corpus global, etiquetados como búsqueda ampliada.
 
 ## Modelo inicial
 
