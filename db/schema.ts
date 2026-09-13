@@ -18,14 +18,24 @@ export const teamFolders = sqliteTable(
   (table) => [uniqueIndex("team_folders_name_idx").on(table.name)],
 );
 
-export const teams = sqliteTable("teams", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull(),
-  folderId: text("folder_id").references(() => teamFolders.id, { onDelete: "set null" }),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+export const teams = sqliteTable(
+  "teams",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    scope: text("scope", { enum: ["owned", "scouting"] }).notNull().default("owned"),
+    creator: text("creator").notNull().default(""),
+    sourceUrl: text("source_url").notNull().default(""),
+    sourceLabel: text("source_label").notNull().default(""),
+    scoutingFormat: text("scouting_format").notNull().default(""),
+    scoutingNotes: text("scouting_notes").notNull().default(""),
+    folderId: text("folder_id").references(() => teamFolders.id, { onDelete: "set null" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("teams_scope_updated_idx").on(table.scope, table.updatedAt)],
+);
 
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),
