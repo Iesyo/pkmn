@@ -1,5 +1,6 @@
 import { enrichTeamsWithOpponentPicks } from "@/db/opponent-picks";
 import { createTeam, listTeamGroups } from "@/db/queries";
+import { listOwnedTeamIds } from "@/db/scouting-pastes";
 import { listTeamFolders, listTeamOrganization, moveTeamToFolder } from "@/db/team-folders";
 import { apiError } from "@/lib/http";
 import type { PokemonSet } from "@/lib/types";
@@ -8,12 +9,13 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [rawTeams, folders, organization] = await Promise.all([
+    const [rawTeams, ownedIds, folders, organization] = await Promise.all([
       listTeamGroups(),
+      listOwnedTeamIds(),
       listTeamFolders(),
       listTeamOrganization(),
     ]);
-    const teams = await enrichTeamsWithOpponentPicks(rawTeams);
+    const teams = await enrichTeamsWithOpponentPicks(rawTeams.filter((team) => ownedIds.has(team.id)));
     return Response.json({
       teams: teams.map((team) => ({
         ...team,
