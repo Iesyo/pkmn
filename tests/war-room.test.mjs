@@ -247,6 +247,135 @@ test("keeps locked identities, searches real partners and labels set packages as
   assert.match(result.notes.join(" "), /no representan sets observados/i);
 });
 
+test("preserves individual fields and move slots while building a legal set proposal", async () => {
+  const snapshot = await readSnapshot();
+  const {
+    createWarRoomPokemonLocks,
+    optimizeTeam,
+    warRoomMetaKey,
+  } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves, isMoveLegal } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalMoves = getLegalMoves(snapshot, "Charizard", "champions");
+  const legalAbilities = getLegalAbilities(snapshot, "Charizard", "champions");
+  assert.ok(legalMoves.length >= 7);
+  assert.ok(legalAbilities.length >= 1);
+
+  team[0] = set("Charizard", legalMoves.slice(0, 4), 1, {
+    item: "Leftovers",
+    ability: legalAbilities[0],
+    nature: "Jolly",
+    evs: "32 HP / 2 Def / 32 Spe",
+  });
+  const presetMoves = [legalMoves[0], ...legalMoves.slice(4, 7)];
+  const meta = {
+    pokemon: "Charizard",
+    format: "Doubles",
+    regulation: "M-C",
+    season: "Current",
+    retrievedAt: "2026-09-13T10:00:00.000Z",
+    stale: false,
+    methodology: "marginal-frequency-composite",
+    source: { label: "Pokémon Champions Battle Data", url: "https://championsbattledata.com/" },
+    presets: [{
+      id: "charizard-field-locks",
+      rank: 1,
+      label: "Meta con restricciones",
+      item: "Sitrus Berry",
+      ability: legalAbilities.at(-1),
+      nature: "Modest",
+      evs: "2 HP / 32 SpA / 32 Spe",
+      moves: presetMoves,
+      evidence: { item: 41, ability: 92, nature: 54, statPoints: 28, moves: [70, 62, 51, 49] },
+    }],
+  };
+  const locks = createWarRoomPokemonLocks(true);
+  locks.item = true;
+  locks.ability = true;
+  locks.nature = true;
+  locks.statPoints = true;
+  locks.moves = [true, false, false, true];
+
+  const result = optimizeTeam(
+    team,
+    { [team[0].id]: locks },
+    corpus(),
+    snapshot,
+    { [warRoomMetaKey("Charizard")]: meta },
+  );
+  const suggestion = result.sets.find((entry) => entry.setId === team[0].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.proposal.item, team[0].item);
+  assert.equal(suggestion.proposal.ability, team[0].ability);
+  assert.equal(suggestion.proposal.nature, team[0].nature);
+  assert.equal(suggestion.proposal.evs, team[0].evs);
+  assert.equal(suggestion.proposal.moves[0], team[0].moves[0].name);
+  assert.equal(suggestion.proposal.moves[3], team[0].moves[3].name);
+  assert.equal(new Set(suggestion.proposal.moves.map((move) => move.toLowerCase())).size, 4);
+  assert.ok(suggestion.proposal.moves.every((move) => isMoveLegal(snapshot, "Charizard", move, "champions")));
+  assert.ok(suggestion.changes.some((change) => change.key === "move-1"));
+  assert.ok(suggestion.changes.some((change) => change.key === "move-2"));
+  assert.ok(suggestion.changes.every((change) => !["item", "ability", "nature", "statPoints", "move-0", "move-3"].includes(change.key)));
+  assert.deepEqual(
+    suggestion.preservedFields.map((field) => field.key),
+    ["identity", "item", "ability", "nature", "statPoints", "move-0", "move-3"],
+  );
+});
+
+test("does not emit an empty proposal when every set field is locked", async () => {
+  const snapshot = await readSnapshot();
+  const {
+    createWarRoomPokemonLocks,
+    optimizeTeam,
+    warRoomMetaKey,
+  } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  const legalMoves = getLegalMoves(snapshot, "Charizard", "champions").slice(0, 4);
+  const ability = getLegalAbilities(snapshot, "Charizard", "champions")[0];
+  team[0] = set("Charizard", legalMoves, 1, { item: "Leftovers", ability });
+  const meta = {
+    pokemon: "Charizard",
+    format: "Doubles",
+    regulation: "M-C",
+    season: "Current",
+    retrievedAt: "2026-09-13T10:00:00.000Z",
+    stale: false,
+    methodology: "marginal-frequency-composite",
+    source: { label: "Pokémon Champions Battle Data", url: "https://championsbattledata.com/" },
+    presets: [{
+      id: "charizard-fully-locked",
+      rank: 1,
+      label: "Meta 1",
+      item: "Sitrus Berry",
+      ability,
+      nature: "Modest",
+      evs: "2 HP / 32 SpA / 32 Spe",
+      moves: [...legalMoves].reverse(),
+      evidence: { item: 41, ability: 92, nature: 54, statPoints: 28, moves: [70, 62, 51, 49] },
+    }],
+  };
+  const locks = createWarRoomPokemonLocks(true);
+  locks.item = true;
+  locks.ability = true;
+  locks.nature = true;
+  locks.statPoints = true;
+  locks.moves = [true, true, true, true];
+
+  const result = optimizeTeam(
+    team,
+    { [team[0].id]: locks },
+    corpus(),
+    snapshot,
+    { [warRoomMetaKey("Charizard")]: meta },
+  );
+
+  assert.equal(result.sets.some((entry) => entry.setId === team[0].id), false);
+  const summary = result.locks.find((entry) => entry.setId === team[0].id);
+  assert.equal(summary?.fullyLocked, true);
+  assert.equal(summary?.fields.length, 9);
+});
+
 test("exposes War Room as a top-level dashboard section, separate from Scouting", async () => {
   const [dashboard, warRoom] = await Promise.all([
     readFile(new URL("../app/vgc-dashboard.tsx", import.meta.url), "utf8"),
@@ -262,6 +391,9 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Preparar un matchup/);
   assert.match(warRoom, /Optimizar o construir/);
   assert.match(warRoom, /Mis pastes/);
+  assert.match(warRoom, /Bloqueos por Pokémon/);
+  assert.match(warRoom, /Movimiento 4/);
+  assert.match(warRoom, /Preservado por tus bloqueos/);
   assert.match(warRoom, /Probar este set en Builder/);
   assert.match(warRoom, /serializeShowdownPaste/);
 });

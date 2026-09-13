@@ -175,8 +175,48 @@ export interface WarRoomMemberSuggestion {
   reasons: string[];
 }
 
+export type WarRoomMoveSlot = 0 | 1 | 2 | 3;
+
+export type WarRoomLockField =
+  | "identity"
+  | "item"
+  | "ability"
+  | "nature"
+  | "statPoints"
+  | `move-${WarRoomMoveSlot}`;
+
+export interface WarRoomPokemonLocks {
+  identity: boolean;
+  item: boolean;
+  ability: boolean;
+  nature: boolean;
+  statPoints: boolean;
+  moves: [boolean, boolean, boolean, boolean];
+}
+
+export type WarRoomPokemonLockInput = Partial<Omit<WarRoomPokemonLocks, "moves">> & {
+  moves?: readonly boolean[];
+};
+
+export type WarRoomOptimizationLocks = Record<string, WarRoomPokemonLocks>;
+export type WarRoomOptimizationLockInput = Iterable<string> | Record<string, WarRoomPokemonLockInput>;
+
+export interface WarRoomLockedField {
+  key: WarRoomLockField;
+  label: string;
+  value: string;
+}
+
+export interface WarRoomPokemonLockSummary {
+  setId: string;
+  species: string;
+  fields: WarRoomLockedField[];
+  fullyLocked: boolean;
+}
+
 export interface WarRoomSetChange {
-  field: "Objeto" | "Habilidad" | "Naturaleza" | "Stat Points" | "Movimientos";
+  key: Exclude<WarRoomLockField, "identity">;
+  field: string;
   current: string;
   suggested: string;
   evidence: number | null;
@@ -195,6 +235,7 @@ export interface WarRoomSetSuggestion {
     moves: string[];
   };
   changes: WarRoomSetChange[];
+  preservedFields: WarRoomLockedField[];
   reasons: string[];
   methodology: "marginal-frequency-composite";
 }
@@ -208,6 +249,7 @@ export interface WarRoomOptimizationResult {
   };
   members: WarRoomMemberSuggestion[];
   sets: WarRoomSetSuggestion[];
+  locks: WarRoomPokemonLockSummary[];
   notes: string[];
 }
 
@@ -266,6 +308,85 @@ const SEVERITY_ORDER: Record<WarRoomGap["severity"], number> = {
   medium: 1,
   low: 2,
 };
+
+const MOVE_SLOTS = [0, 1, 2, 3] as const;
+
+export function createWarRoomPokemonLocks(identity = false): WarRoomPokemonLocks {
+  return {
+    identity,
+    item: false,
+    ability: false,
+    nature: false,
+    statPoints: false,
+    moves: [false, false, false, false],
+  };
+}
+
+function isLegacyLockInput(value: WarRoomOptimizationLockInput): value is Iterable<string> {
+  return typeof (value as Iterable<string>)[Symbol.iterator] === "function";
+}
+
+function normalizeOptimizationLocks(
+  team: PokemonSet[],
+  input: WarRoomOptimizationLockInput,
+): WarRoomOptimizationLocks {
+  const normalized: WarRoomOptimizationLocks = {};
+  if (isLegacyLockInput(input)) {
+    const identities = new Set(input);
+    for (const set of team) {
+      if (identities.has(set.id)) normalized[set.id] = createWarRoomPokemonLocks(true);
+    }
+    return normalized;
+  }
+
+  for (const set of team) {
+    const source = input[set.id];
+    if (!source) continue;
+    const locks: WarRoomPokemonLocks = {
+      identity: source.identity === true,
+      item: source.item === true,
+      ability: source.ability === true,
+      nature: source.nature === true,
+      statPoints: source.statPoints === true,
+      moves: [
+        source.moves?.[0] === true,
+        source.moves?.[1] === true,
+        source.moves?.[2] === true,
+        source.moves?.[3] === true,
+      ],
+    };
+    if (locks.identity || locks.item || locks.ability || locks.nature || locks.statPoints || locks.moves.some(Boolean)) {
+      normalized[set.id] = locks;
+    }
+  }
+  return normalized;
+}
+
+function locksForSet(locks: WarRoomOptimizationLocks, setId: string) {
+  return locks[setId] ?? createWarRoomPokemonLocks();
+}
+
+function lockFieldsForSet(set: PokemonSet, locks: WarRoomPokemonLocks): WarRoomLockedField[] {
+  const fields: WarRoomLockedField[] = [];
+  if (locks.identity) fields.push({ key: "identity", label: "Identidad", value: set.species });
+  if (locks.item) fields.push({ key: "item", label: "Objeto", value: set.item || "Sin objeto" });
+  if (locks.ability) fields.push({ key: "ability", label: "Habilidad", value: set.ability || "Sin declarar" });
+  if (locks.nature) fields.push({ key: "nature", label: "Naturaleza", value: set.nature || "Sin declarar" });
+  if (locks.statPoints) fields.push({ key: "statPoints", label: "Stat Points", value: set.evs || "0" });
+  for (const slot of MOVE_SLOTS) {
+    if (!locks.moves[slot]) continue;
+    fields.push({
+      key: `move-${slot}`,
+      label: `Movimiento ${slot + 1}`,
+      value: set.moves[slot]?.name || "Vacío",
+    });
+  }
+  return fields;
+}
+
+function isSetFullyLocked(locks: WarRoomPokemonLocks) {
+  return locks.item && locks.ability && locks.nature && locks.statPoints && locks.moves.every(Boolean);
+}
 
 function clamp(value: number, minimum = 0, maximum = 100) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -1031,14 +1152,24 @@ function structuralSetScore(profile: CombatProfile, opponents: CombatProfile[]) 
   return coverage + utility;
 }
 
-function presetToSet(snapshot: ShowdownSnapshot, source: PokemonSet, preset: OpponentMetaPreset): PokemonSet {
+type WarRoomSetProposal = WarRoomSetSuggestion["proposal"];
+
+type WarRoomProposalEvidence = {
+  item: number | null;
+  ability: number | null;
+  nature: number | null;
+  statPoints: number | null;
+  moves: Array<number | null>;
+};
+
+function proposalToSet(snapshot: ShowdownSnapshot, source: PokemonSet, proposal: WarRoomSetProposal): PokemonSet {
   return {
     ...source,
-    item: preset.item,
-    ability: preset.ability,
-    nature: preset.nature,
-    evs: preset.evs,
-    moves: preset.moves.map((name) => {
+    item: proposal.item,
+    ability: proposal.ability,
+    nature: proposal.nature,
+    evs: proposal.evs,
+    moves: proposal.moves.map((name) => {
       const move = getMoveData(snapshot, name, WAR_ROOM_BATTLE_FORMAT);
       return {
         name,
@@ -1050,34 +1181,123 @@ function presetToSet(snapshot: ShowdownSnapshot, source: PokemonSet, preset: Opp
   };
 }
 
-function averageEvidence(preset: OpponentMetaPreset) {
-  const values = [
-    preset.evidence.item,
-    preset.evidence.ability,
-    preset.evidence.nature,
-    preset.evidence.statPoints,
-    ...preset.evidence.moves,
-  ];
-  return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+function mergePresetMoves(
+  current: PokemonSet,
+  preset: OpponentMetaPreset,
+  locks: WarRoomPokemonLocks,
+) {
+  const moves: Array<string | undefined> = Array.from({ length: 4 });
+  const evidence: Array<number | null> = Array.from({ length: 4 }, () => null);
+  const used = new Set<string>();
+  const presetMoves = preset.moves.map((name, index) => ({
+    name: name.trim(),
+    key: toId(name),
+    evidence: preset.evidence.moves[index] ?? null,
+  })).filter((entry) => entry.key);
+
+  for (const slot of MOVE_SLOTS) {
+    if (!locks.moves[slot]) continue;
+    const name = current.moves[slot]?.name.trim() ?? "";
+    const key = toId(name);
+    if (!key || used.has(key)) return null;
+    moves[slot] = name;
+    used.add(key);
+  }
+
+  // Keep an already-present meta move in its current slot so move order alone
+  // never appears as a recommendation.
+  for (const slot of MOVE_SLOTS) {
+    if (moves[slot]) continue;
+    const currentName = current.moves[slot]?.name.trim() ?? "";
+    const currentKey = toId(currentName);
+    const match = presetMoves.find((entry) => entry.key === currentKey && !used.has(entry.key));
+    if (!match) continue;
+    moves[slot] = currentName;
+    evidence[slot] = match.evidence;
+    used.add(match.key);
+  }
+
+  for (const slot of MOVE_SLOTS) {
+    if (moves[slot]) continue;
+    const match = presetMoves.find((entry) => !used.has(entry.key));
+    if (!match) return null;
+    moves[slot] = match.name;
+    evidence[slot] = match.evidence;
+    used.add(match.key);
+  }
+
+  return { moves: moves as string[], evidence };
 }
 
-function setChanges(current: PokemonSet, preset: OpponentMetaPreset): WarRoomSetChange[] {
+function proposalFromPreset(
+  current: PokemonSet,
+  preset: OpponentMetaPreset,
+  locks: WarRoomPokemonLocks,
+) {
+  const mergedMoves = mergePresetMoves(current, preset, locks);
+  if (!mergedMoves) return null;
+  return {
+    proposal: {
+      item: locks.item ? current.item : preset.item,
+      ability: locks.ability ? current.ability : preset.ability,
+      nature: locks.nature ? current.nature : preset.nature,
+      evs: locks.statPoints ? current.evs : preset.evs,
+      moves: mergedMoves.moves,
+    },
+    evidence: {
+      item: locks.item ? null : preset.evidence.item,
+      ability: locks.ability ? null : preset.evidence.ability,
+      nature: locks.nature ? null : preset.evidence.nature,
+      statPoints: locks.statPoints ? null : preset.evidence.statPoints,
+      moves: mergedMoves.evidence,
+    } satisfies WarRoomProposalEvidence,
+  };
+}
+
+function proposalIsLegal(
+  team: PokemonSet[],
+  current: PokemonSet,
+  proposal: WarRoomSetProposal,
+  snapshot: ShowdownSnapshot,
+) {
+  const itemKey = toId(proposal.item);
+  if (itemKey && !isItemLegal(snapshot, proposal.item, WAR_ROOM_BATTLE_FORMAT)) return false;
+  if (itemKey && team.some((set) => set.id !== current.id && toId(set.item) === itemKey)) return false;
+  if (!getLegalAbilities(snapshot, current.species, WAR_ROOM_BATTLE_FORMAT).includes(proposal.ability)) return false;
+  if (!NATURES.includes(proposal.nature) || !validStatPointLabel(proposal.evs)) return false;
+  const moveKeys = proposal.moves.map(toId);
+  if (moveKeys.length !== 4 || moveKeys.some((key) => !key) || new Set(moveKeys).size !== 4) return false;
+  return proposal.moves.every((move) => isMoveLegal(snapshot, current.species, move, WAR_ROOM_BATTLE_FORMAT));
+}
+
+function setChanges(
+  current: PokemonSet,
+  proposal: WarRoomSetProposal,
+  evidence: WarRoomProposalEvidence,
+): WarRoomSetChange[] {
   const changes: WarRoomSetChange[] = [];
-  if (toId(current.item) !== toId(preset.item)) changes.push({ field: "Objeto", current: current.item || "Sin objeto", suggested: preset.item, evidence: preset.evidence.item });
-  if (toId(current.ability) !== toId(preset.ability)) changes.push({ field: "Habilidad", current: current.ability || "Sin declarar", suggested: preset.ability, evidence: preset.evidence.ability });
-  if (toId(current.nature) !== toId(preset.nature)) changes.push({ field: "Naturaleza", current: current.nature || "Sin declarar", suggested: preset.nature, evidence: preset.evidence.nature });
-  if (current.evs.trim() !== preset.evs.trim()) changes.push({ field: "Stat Points", current: current.evs || "0", suggested: preset.evs, evidence: preset.evidence.statPoints });
-  const currentMoves = current.moves.map((move) => toId(move.name)).filter(Boolean).sort();
-  const presetMoves = preset.moves.map(toId).filter(Boolean).sort();
-  if (currentMoves.join("|") !== presetMoves.join("|")) {
+  if (toId(current.item) !== toId(proposal.item)) changes.push({ key: "item", field: "Objeto", current: current.item || "Sin objeto", suggested: proposal.item || "Sin objeto", evidence: evidence.item });
+  if (toId(current.ability) !== toId(proposal.ability)) changes.push({ key: "ability", field: "Habilidad", current: current.ability || "Sin declarar", suggested: proposal.ability || "Sin declarar", evidence: evidence.ability });
+  if (toId(current.nature) !== toId(proposal.nature)) changes.push({ key: "nature", field: "Naturaleza", current: current.nature || "Sin declarar", suggested: proposal.nature || "Sin declarar", evidence: evidence.nature });
+  if (current.evs.trim() !== proposal.evs.trim()) changes.push({ key: "statPoints", field: "Stat Points", current: current.evs || "0", suggested: proposal.evs || "0", evidence: evidence.statPoints });
+  for (const slot of MOVE_SLOTS) {
+    const currentMove = current.moves[slot]?.name ?? "";
+    const suggestedMove = proposal.moves[slot] ?? "";
+    if (toId(currentMove) === toId(suggestedMove)) continue;
     changes.push({
-      field: "Movimientos",
-      current: current.moves.map((move) => move.name).filter(Boolean).join(" · "),
-      suggested: preset.moves.join(" · "),
-      evidence: round(preset.evidence.moves.reduce((sum, value) => sum + value, 0) / Math.max(1, preset.evidence.moves.length), 1),
+      key: `move-${slot}`,
+      field: `Movimiento ${slot + 1}`,
+      current: currentMove || "Vacío",
+      suggested: suggestedMove || "Vacío",
+      evidence: evidence.moves[slot] ?? null,
     });
   }
   return changes;
+}
+
+function averageChangeEvidence(changes: WarRoomSetChange[]) {
+  const values = changes.flatMap((change) => change.evidence === null ? [] : [change.evidence]);
+  return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 }
 
 function setSuggestions(
@@ -1085,51 +1305,55 @@ function setSuggestions(
   corpus: WarRoomCorpusTeam[],
   snapshot: ShowdownSnapshot,
   metaBySpecies: Record<string, OpponentMetaResponse | undefined>,
+  optimizationLocks: WarRoomOptimizationLocks,
 ) {
   const opponents = usageBySpecies(corpus).slice(0, 24).map((entry) => profileFromPreview(snapshot, entry.species)).filter((profile) => profile.types.length);
-  const heldItems = new Map(team.filter((set) => set.item).map((set) => [toId(set.item), set.id]));
   return team.flatMap((set): WarRoomSetSuggestion[] => {
     const meta = metaBySpecies[toId(set.species)];
     if (!meta?.presets.length) return [];
+    const locks = locksForSet(optimizationLocks, set.id);
     const currentProfile = profileFromSet(snapshot, set);
     const currentScore = structuralSetScore(currentProfile, opponents);
     const candidates = meta.presets.flatMap((preset) => {
-      const duplicateOwner = heldItems.get(toId(preset.item));
-      if (duplicateOwner && duplicateOwner !== set.id) return [];
-      if (!isItemLegal(snapshot, preset.item, WAR_ROOM_BATTLE_FORMAT)) return [];
-      if (!getLegalAbilities(snapshot, set.species, WAR_ROOM_BATTLE_FORMAT).includes(preset.ability)) return [];
-      if (preset.moves.some((move) => !isMoveLegal(snapshot, set.species, move, WAR_ROOM_BATTLE_FORMAT))) return [];
-      const proposed = presetToSet(snapshot, set, preset);
+      const candidate = proposalFromPreset(set, preset, locks);
+      if (!candidate || !proposalIsLegal(team, set, candidate.proposal, snapshot)) return [];
+      const changes = setChanges(set, candidate.proposal, candidate.evidence);
+      if (!changes.length) return [];
+      const proposed = proposalToSet(snapshot, set, candidate.proposal);
       const profile = profileFromSet(snapshot, proposed);
       const structural = structuralSetScore(profile, opponents);
-      return [{ preset, profile, structural, rankScore: structural + averageEvidence(preset) * 0.12 }];
+      return [{
+        preset,
+        proposal: candidate.proposal,
+        changes,
+        profile,
+        structural,
+        rankScore: structural + averageChangeEvidence(changes) * 0.12,
+      }];
     }).sort((left, right) => right.rankScore - left.rankScore || left.preset.rank - right.preset.rank);
     const best = candidates[0];
     if (!best) return [];
-    const changes = setChanges(set, best.preset);
-    if (!changes.length) return [];
     const currentCoverage = opponents.filter((opponent) => profileThreatens(currentProfile, opponent)).length;
     const nextCoverage = opponents.filter((opponent) => profileThreatens(best.profile, opponent)).length;
     const addedRoles = best.profile.roles.filter((role) => !currentProfile.roles.includes(role));
+    const preservedFields = lockFieldsForSet(set, locks);
     const reasons = [
       nextCoverage > currentCoverage
         ? `La cobertura supereficaz alcanza ${nextCoverage - currentCoverage} amenazas frecuentes adicionales.`
         : `Mantiene cobertura estructural sobre ${nextCoverage}/${opponents.length} amenazas frecuentes.`,
       addedRoles.length ? `Añade ${addedRoles.join(", ").toLowerCase()}.` : "No añade una función táctica nueva; se apoya principalmente en frecuencia de uso.",
+      preservedFields.length
+        ? `Respeta ${preservedFields.length} ${preservedFields.length === 1 ? "bloqueo activo" : "bloqueos activos"}.`
+        : "No hay campos bloqueados en este integrante.",
     ];
     return [{
       setId: set.id,
       species: set.species,
       presetId: best.preset.id,
       structuralDelta: round(best.structural - currentScore, 1),
-      proposal: {
-        item: best.preset.item,
-        ability: best.preset.ability,
-        nature: best.preset.nature,
-        evs: best.preset.evs,
-        moves: [...best.preset.moves],
-      },
-      changes,
+      proposal: best.proposal,
+      changes: best.changes,
+      preservedFields,
       reasons,
       methodology: "marginal-frequency-composite",
     }];
@@ -1217,23 +1441,34 @@ function memberSuggestions(
 
 export function optimizeTeam(
   team: PokemonSet[],
-  lockedIds: Iterable<string>,
+  lockInput: WarRoomOptimizationLockInput,
   corpus: WarRoomCorpusTeam[],
   snapshot: ShowdownSnapshot,
   metaBySpecies: Record<string, OpponentMetaResponse | undefined> = {},
 ): WarRoomOptimizationResult {
-  const locks = new Set(lockedIds);
+  const optimizationLocks = normalizeOptimizationLocks(team, lockInput);
+  const lockedIds = new Set(team.filter((set) => locksForSet(optimizationLocks, set.id).identity).map((set) => set.id));
   const statistics = statisticalCorpus(corpus);
-  const memberResult = memberSuggestions(team, locks, statistics, snapshot);
-  const lockedSpecies = team.filter((set) => locks.has(set.id)).map((set) => set.species);
+  const memberResult = memberSuggestions(team, lockedIds, statistics, snapshot);
+  const lockedSpecies = team.filter((set) => lockedIds.has(set.id)).map((set) => set.species);
+  const locks = team.map((set): WarRoomPokemonLockSummary => {
+    const setLocks = locksForSet(optimizationLocks, set.id);
+    return {
+      setId: set.id,
+      species: set.species,
+      fields: lockFieldsForSet(set, setLocks),
+      fullyLocked: isSetFullyLocked(setLocks),
+    };
+  });
   return {
     regulation: CHAMPIONS_REGULATION,
     lockedSpecies,
     coreSample: { size: memberResult.sampleSize, mode: memberResult.mode },
     members: memberResult.members,
-    sets: setSuggestions(team, statistics, snapshot, metaBySpecies),
+    sets: setSuggestions(team, statistics, snapshot, metaBySpecies, optimizationLocks),
+    locks,
     notes: [
-      "Bloquear un Pokémon conserva su identidad; sus objetos, movimientos, naturaleza y Stat Points siguen abiertos a revisión.",
+      "Identidad controla reemplazos de integrantes; los bloqueos de set conservan objeto, habilidad, naturaleza, Stat Points y cada movimiento de forma independiente.",
       memberResult.mode === "partial"
         ? "No hay equipos con el core completo en el corpus: las altas propuestas usan coincidencia parcial y están marcadas como exploratorias."
         : "Las altas se ordenan por coaparición real con el core y por balance defensivo de tipos.",

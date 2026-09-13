@@ -19,7 +19,8 @@ histórico de equipos de Pokémon VGC.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los
   mejores cuatro/lead/backline ante un rival y explorar cambios manteniendo un
-  core bloqueado.
+  core bloqueado. El optimizador permite proteger por integrante la identidad,
+  objeto, habilidad, naturaleza, Stat Points y cada slot de movimiento.
 - Recomendaciones explicables con tres niveles de evidencia: set exacto, team
   preview y frecuencia del corpus. Sus índices ordenan alternativas; nunca se
   presentan como probabilidad de victoria.
