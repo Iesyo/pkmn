@@ -146,6 +146,13 @@ test("serves VGCPastes by format with bounded upstream fetch", async () => {
     assert.equal(upstream.searchParams.get("gid"), "2001945654");
     assert.equal(upstream.searchParams.get("headers"), "3");
     assert.equal(upstream.searchParams.get("range"), "A:AS");
+
+    const boundedResponse = await GET(new Request("http://localhost/api/vgcpastes-scouting?format=champions-m-c&pageSize=999999"));
+    const boundedPayload = await boundedResponse.json();
+    assert.equal(boundedResponse.status, 200);
+    assert.equal(boundedPayload.query.pageSize, 24);
+    assert.equal(boundedPayload.teams.length, 24);
+    assert.equal(requested.length, 1, "same-format pagination should reuse the in-process source cache");
   } finally {
     globalThis.fetch = originalFetch;
     serverModule.clearVgcPastesScoutingCache();
