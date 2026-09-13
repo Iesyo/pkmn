@@ -4,6 +4,7 @@ import {
   DEFAULT_VGCPASTES_PAGE_SIZE,
   getVgcPastesFormat,
   normalizeVgcPastesPokemonFilters,
+  normalizeVgcPastesTextFilter,
 } from "@/lib/vgcpastes-scouting";
 import { loadVgcPastesFormat } from "@/lib/vgcpastes-scouting-server";
 
@@ -26,6 +27,13 @@ export async function GET(request: Request) {
   }
 
   const pokemon = normalizeVgcPastesPokemonFilters(url.searchParams.getAll("pokemon"));
+  const player = normalizeVgcPastesTextFilter(url.searchParams.get("player"));
+  const event = normalizeVgcPastesTextFilter(url.searchParams.get("event"));
+  const rank = normalizeVgcPastesTextFilter(url.searchParams.get("rank"));
+  const date = normalizeVgcPastesTextFilter(url.searchParams.get("date"));
+  const hasEvs = url.searchParams.get("hasEvs") === "1";
+  const hasPaste = url.searchParams.get("hasPaste") === "1";
+  const hasReplica = url.searchParams.get("hasReplica") === "1";
   const page = positiveInteger(url.searchParams.get("page"), 1, 10_000);
   const pageSize = positiveInteger(url.searchParams.get("pageSize"), DEFAULT_VGCPASTES_PAGE_SIZE, 48);
   const refresh = url.searchParams.get("refresh") === "1";
@@ -35,6 +43,13 @@ export async function GET(request: Request) {
     return Response.json(buildVgcPastesScoutingResponse(source.format, source.teams, {
       fetchedAt: source.fetchedAt,
       pokemon,
+      player,
+      event,
+      rank,
+      date,
+      hasEvs,
+      hasPaste,
+      hasReplica,
       page,
       pageSize,
     }), {
