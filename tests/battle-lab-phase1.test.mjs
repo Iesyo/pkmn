@@ -30,6 +30,11 @@ test("keeps the Showdown commit in the regulation source of truth", async () => 
   assert.match(runner, /gen9championsvgc2026regmc/);
   assert.match(runner, /127\.0\.0\.1/);
   assert.match(runner, /exports\.repl = false/);
+  assert.match(runner, /incomplete_checkout/);
+  assert.match(runner, /"--depth", "1", repository/);
+  assert.doesNotMatch(runner, /"--no-checkout", repository/);
+  assert.match(runner, /run_checked_with_retries/);
+  assert.match(runner, /run_long_command_with_retries/);
 });
 
 test("ships two complete M-C smoke teams with legal Stat Point envelopes", async () => {
@@ -72,4 +77,6 @@ test("keeps the Colab launcher reproducible and free of saved output", async () 
   assert.match(notebookSource, /stdout=subprocess\.PIPE, stderr=subprocess\.STDOUT/);
   assert.match(notebookSource, /str\(battle_lab_python\)/);
   assert.match(notebookSource, /env=battle_lab_env/);
+  assert.match(notebookSource, /Node\.js y npm listos/);
+  assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Ejecutar smoke test M-C"/);
 });

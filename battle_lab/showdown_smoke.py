@@ -132,6 +132,32 @@ def run_checked(
     return result
 
 
+def run_checked_with_retries(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: float | None = None,
+    attempts: int = 3,
+) -> subprocess.CompletedProcess[str]:
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return run_checked(command, cwd=cwd, timeout=timeout)
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            last_error = error
+            if attempt == attempts:
+                raise
+            wait_seconds = 5 * attempt
+            print(
+                f"⚠️ `{command_text(command)}` falló; reintento "
+                f"{attempt + 1}/{attempts} en {wait_seconds}s.",
+                flush=True,
+            )
+            time.sleep(wait_seconds)
+    assert last_error is not None
+    raise last_error
+
+
 def run_long_command(
     command: Sequence[str],
     *,
@@ -180,6 +206,33 @@ def run_long_command(
         )
 
 
+def run_long_command_with_retries(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    label: str,
+    expected_seconds: int,
+    attempts: int = 3,
+) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            run_long_command(
+                command,
+                cwd=cwd,
+                log_path=log_path,
+                label=f"{label} · intento {attempt}/{attempts}",
+                expected_seconds=expected_seconds,
+            )
+            return
+        except RuntimeError:
+            if attempt == attempts:
+                raise
+            wait_seconds = 5 * attempt
+            print(f"⚠️ {label} falló; reintento en {wait_seconds}s.", flush=True)
+            time.sleep(wait_seconds)
+
+
 def read_showdown_commit(source: Path = COMMIT_SOURCE) -> str:
     match = COMMIT_PATTERN.search(source.read_text(encoding="utf-8"))
     if not match:
@@ -212,6 +265,7 @@ def ensure_showdown_checkout(
     checkout.parent.mkdir(parents=True, exist_ok=True)
     timings: dict[str, float] = {}
     fresh_clone = False
+    incomplete_checkout = False
 
     if not (checkout / ".git").is_dir():
         if checkout.exists() and any(checkout.iterdir()):
@@ -219,7 +273,7 @@ def ensure_showdown_checkout(
         fresh_clone = True
         started = time.monotonic()
         run_long_command(
-            ["git", "clone", "--filter=blob:none", "--no-checkout", repository, str(checkout)],
+            ["git", "clone", "--filter=blob:none", "--depth", "1", repository, str(checkout)],
             cwd=checkout.parent,
             log_path=logs_dir / "showdown-clone.log",
             label="Clonando Pokémon Showdown",
@@ -227,10 +281,13 @@ def ensure_showdown_checkout(
         )
         timings["cloneSeconds"] = round(time.monotonic() - started, 3)
 
-    # A clone created with --no-checkout intentionally looks like every tracked
-    # file was deleted until its first checkout. Only protect an already-used
-    # runtime here; the fresh clone has no user work that could be overwritten.
-    if not fresh_clone:
+    # A cancelled first setup can leave the dedicated checkout with a .git
+    # directory but without package.json/package-lock.json. That runtime is
+    # owned by Battle Lab and can be repaired by checking out the pinned commit.
+    incomplete_checkout = not (checkout / "package.json").is_file() or not (
+        checkout / "package-lock.json"
+    ).is_file()
+    if not fresh_clone and not incomplete_checkout:
         tracked_changes = run_checked(
             ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=checkout,
@@ -242,9 +299,17 @@ def ensure_showdown_checkout(
             )
 
     started = time.monotonic()
-    run_checked(["git", "fetch", "--depth", "1", "origin", commit], cwd=checkout, timeout=180)
-    if git_revision(checkout) != commit:
-        run_checked(["git", "checkout", "--detach", commit], cwd=checkout, timeout=60)
+    run_checked_with_retries(
+        ["git", "fetch", "--depth", "1", "origin", commit],
+        cwd=checkout,
+        timeout=180,
+    )
+    if git_revision(checkout) != commit or incomplete_checkout:
+        checkout_command = ["git", "checkout", "--detach"]
+        if incomplete_checkout:
+            checkout_command.append("--force")
+        checkout_command.append(commit)
+        run_checked(checkout_command, cwd=checkout, timeout=60)
     timings["checkoutSeconds"] = round(time.monotonic() - started, 3)
 
     lock_hash = hashlib.sha256((checkout / "package-lock.json").read_bytes()).hexdigest()
@@ -257,7 +322,7 @@ def ensure_showdown_checkout(
 
     if not installed:
         started = time.monotonic()
-        run_long_command(
+        run_long_command_with_retries(
             ["npm", "ci"],
             cwd=checkout,
             log_path=logs_dir / "showdown-npm-ci.log",
@@ -277,12 +342,13 @@ def ensure_showdown_checkout(
             built = marker.get("commit") == commit
     if not built:
         started = time.monotonic()
-        run_long_command(
+        run_long_command_with_retries(
             ["npm", "run", "build"],
             cwd=checkout,
             log_path=logs_dir / "showdown-build.log",
             label="Compilando Pokémon Showdown",
             expected_seconds=35,
+            attempts=2,
         )
         timings["buildSeconds"] = round(time.monotonic() - started, 3)
         build_marker.write_text(json.dumps({"commit": commit, "builtAt": utc_now()}), encoding="utf-8")
@@ -567,6 +633,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--battles debe ser mayor que cero.")
     if not 1 <= args.port <= 65535:
         raise SystemExit("--port debe estar entre 1 y 65535.")
+    missing_commands = [command for command in ("git", "node", "npm") if shutil.which(command) is None]
+    if missing_commands:
+        raise RuntimeError(
+            "Faltan comandos requeridos por Battle Lab: " + ", ".join(missing_commands) + "."
+        )
 
     runtime_root = args.runtime_root.resolve()
     results_dir = (args.results_dir or runtime_root / "results").resolve()

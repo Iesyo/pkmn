@@ -29,6 +29,12 @@ El notebook instala `poke-env` en un directorio aislado dentro del runtime con
 `venv`/`ensurepip`. La instalación muestra su salida completa y reintenta fallos
 transitorios de GitHub o PyPI hasta tres veces.
 
+Antes del setup, la libreta verifica Git, Node.js y npm; instala Node.js mediante
+`apt-get` si el runtime no lo incluye. El checkout temporal de Showdown también
+se recupera automáticamente si una ejecución anterior dejó la descarga
+incompleta, y las operaciones de red, `npm ci` y compilación tienen reintentos
+acotados.
+
 ## Ejecutar en Colab
 
 [Abrir Battle Lab Fase 1 en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab_Phase_1.ipynb)
