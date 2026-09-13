@@ -63,6 +63,9 @@ flowchart TD
     ni presenta frecuencias marginales de Battle Data como sets observados.
 11. Toda propuesta se revisa en Team Builder y se guarda como versión nueva;
     el motor no reescribe una versión existente.
+12. Los bloqueos del optimizador son restricciones de dominio: cada propuesta
+    conserva los campos protegidos antes de validar Item Clause, habilidad,
+    naturaleza, Stat Points y cuatro movimientos legales sin duplicados.
 
 ## Modelo inicial
 

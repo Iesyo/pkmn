@@ -24,7 +24,6 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -39,6 +38,7 @@ import { cn } from "@/lib/utils";
 import {
   WAR_ROOM_FORMAT_ID,
   auditTeam,
+  createWarRoomPokemonLocks,
   isWarRoomCorpusResponse,
   optimizeTeam,
   prepareMatchup,
@@ -46,8 +46,11 @@ import {
   type WarRoomAuditResult,
   type WarRoomCorpusResponse,
   type WarRoomCorpusTeam,
+  type WarRoomLockField,
   type WarRoomMatchupResult,
+  type WarRoomOptimizationLocks,
   type WarRoomOptimizationResult,
+  type WarRoomPokemonLocks,
   type WarRoomSetSuggestion,
 } from "@/lib/war-room";
 
@@ -351,45 +354,189 @@ function MatchupView({ result, rivalState }: { result: WarRoomMatchupResult | nu
   );
 }
 
+function FieldLockButton({
+  label,
+  value,
+  locked,
+  disabled = false,
+  onToggle,
+}: {
+  label: string;
+  value: string;
+  locked: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={locked}
+      disabled={disabled}
+      onClick={onToggle}
+      title={`${locked ? "Liberar" : "Bloquear"} ${label}: ${value}`}
+      className={cn(
+        "w-full min-w-0 rounded-xl border px-2.5 py-2 text-left transition",
+        locked
+          ? "border-cyan-300/30 bg-cyan-300/[0.08] text-cyan-100"
+          : "border-white/7 bg-slate-950/55 text-slate-500 hover:border-white/15 hover:text-slate-300",
+        disabled && "cursor-not-allowed opacity-40",
+      )}
+    >
+      <span className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-wide">
+        {locked ? <Lock className="size-3 shrink-0 text-cyan-300" /> : <Unlock className="size-3 shrink-0 text-slate-700" />}
+        {label}
+      </span>
+      <span className="mt-1 block truncate text-[9px]" title={value}>{value}</span>
+    </button>
+  );
+}
+
+function PokemonLockCard({
+  set,
+  locks,
+  identityCount,
+  onToggle,
+  onToggleWholeSet,
+}: {
+  set: PokemonSet;
+  locks: WarRoomPokemonLocks;
+  identityCount: number;
+  onToggle: (field: WarRoomLockField) => void;
+  onToggleWholeSet: (locked: boolean) => void;
+}) {
+  const fullyLocked = locks.item && locks.ability && locks.nature && locks.statPoints && locks.moves.every(Boolean);
+  const lockedCount = Number(locks.identity)
+    + Number(locks.item)
+    + Number(locks.ability)
+    + Number(locks.nature)
+    + Number(locks.statPoints)
+    + locks.moves.filter(Boolean).length;
+  const moveFields = [
+    { key: "move-0" as const, label: "Movimiento 1", value: set.moves[0]?.name || "Vacío", locked: locks.moves[0] },
+    { key: "move-1" as const, label: "Movimiento 2", value: set.moves[1]?.name || "Vacío", locked: locks.moves[1] },
+    { key: "move-2" as const, label: "Movimiento 3", value: set.moves[2]?.name || "Vacío", locked: locks.moves[2] },
+    { key: "move-3" as const, label: "Movimiento 4", value: set.moves[3]?.name || "Vacío", locked: locks.moves[3] },
+  ];
+
+  return (
+    <article className={cn("rounded-2xl border p-3", lockedCount ? "border-cyan-300/20 bg-cyan-300/[0.035]" : "border-white/7 bg-slate-950/45")}>
+      <div className="flex items-center gap-3">
+        <Image src={getSpriteUrl(set.species)} alt={set.species} width={48} height={48} unoptimized className="size-12 shrink-0 object-contain" />
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-xs font-black text-white">{set.species}</h3>
+          <p className="mt-0.5 text-[8px] text-slate-600">{lockedCount ? `${lockedCount} ${lockedCount === 1 ? "campo protegido" : "campos protegidos"}` : "Sin restricciones"}</p>
+        </div>
+        <button type="button" onClick={() => onToggleWholeSet(!fullyLocked)} className="rounded-lg border border-white/8 px-2 py-1 text-[8px] font-bold text-slate-500 transition hover:border-cyan-300/20 hover:text-cyan-200">
+          {fullyLocked ? "Liberar set" : "Bloquear set"}
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-1.5">
+        <FieldLockButton label="Identidad" value={set.species} locked={locks.identity} disabled={!locks.identity && identityCount >= 4} onToggle={() => onToggle("identity")} />
+        <FieldLockButton label="Objeto" value={set.item || "Sin objeto"} locked={locks.item} onToggle={() => onToggle("item")} />
+        <FieldLockButton label="Habilidad" value={set.ability || "Sin declarar"} locked={locks.ability} onToggle={() => onToggle("ability")} />
+        <FieldLockButton label="Naturaleza" value={set.nature || "Sin declarar"} locked={locks.nature} onToggle={() => onToggle("nature")} />
+        <div className="col-span-2">
+          <FieldLockButton label="Stat Points" value={set.evs || "0"} locked={locks.statPoints} onToggle={() => onToggle("statPoints")} />
+        </div>
+      </div>
+
+      <p className="mt-3 text-[8px] font-black uppercase tracking-[0.12em] text-slate-700">Slots de movimiento</p>
+      <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+        {moveFields.map((move) => <FieldLockButton key={move.key} label={move.label} value={move.value} locked={move.locked} onToggle={() => onToggle(move.key)} />)}
+      </div>
+      {fullyLocked ? <p className="mt-2 rounded-lg border border-cyan-300/12 bg-cyan-300/[0.04] px-2 py-1.5 text-[8px] leading-3 text-cyan-200">Set completo protegido: el motor no propondrá cambios para este Pokémon.</p> : null}
+    </article>
+  );
+}
+
+function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSuggestion; onBuild: () => void }) {
+  return (
+    <article className="rounded-2xl border border-white/7 bg-slate-950/55 p-4">
+      <div className="flex items-center gap-3">
+        <Image src={getSpriteUrl(suggestion.species)} alt={suggestion.species} width={50} height={50} unoptimized className="size-12 object-contain" />
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-black text-white">{suggestion.species}</h3>
+          <p className={cn("mt-0.5 text-[9px] font-bold", suggestion.structuralDelta > 0 ? "text-emerald-300" : suggestion.structuralDelta < 0 ? "text-amber-300" : "text-slate-500")}>{suggestion.structuralDelta > 0 ? "+" : ""}{suggestion.structuralDelta} encaje estructural</p>
+        </div>
+        <Badge variant="outline" className="border-amber-300/15 bg-amber-300/7 text-[8px] text-amber-200">Hipótesis</Badge>
+      </div>
+
+      {suggestion.preservedFields.length ? (
+        <div className="mt-3 rounded-xl border border-cyan-300/12 bg-cyan-300/[0.035] p-2.5">
+          <p className="text-[8px] font-black uppercase tracking-wide text-cyan-300">Preservado por tus bloqueos</p>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {suggestion.preservedFields.map((field) => <Badge key={field.key} variant="outline" title={`${field.label}: ${field.value}`} className="max-w-full border-cyan-300/15 bg-cyan-300/[0.04] text-[8px] text-cyan-100"><span className="truncate">{field.label}: {field.value}</span></Badge>)}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-3 space-y-2">
+        {suggestion.changes.map((change) => (
+          <div key={change.key} className="rounded-xl border border-white/6 bg-white/[0.02] px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[8px] font-black uppercase tracking-wide text-slate-600">{change.field}</span>
+              {change.evidence !== null ? <span className="font-mono text-[8px] text-amber-200">{change.evidence}% marginal</span> : null}
+            </div>
+            <p className="mt-1 line-clamp-2 text-[9px] leading-4 text-slate-500"><span className="text-slate-700">Actual:</span> {change.current}</p>
+            <p className="line-clamp-2 text-[9px] leading-4 text-slate-300"><span className="text-amber-300">Probar:</span> {change.suggested}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[9px] leading-4 text-slate-600">{suggestion.reasons.join(" ")}</p>
+      <Button type="button" variant="outline" size="sm" onClick={onBuild} className="mt-3 w-full gap-2 border-amber-300/15 bg-amber-300/5 text-[9px] font-black text-amber-100 hover:bg-amber-300/10"><Hammer className="size-3.5" />Probar este set en Builder</Button>
+    </article>
+  );
+}
+
 function OptimizationView({
   team,
   result,
-  lockedIds,
+  optimizationLocks,
   metaState,
   onToggleLock,
+  onToggleWholeSet,
   onLoadMeta,
   onOpenBuilder,
   onBuildSuggestion,
 }: {
   team: TeamVersion;
   result: WarRoomOptimizationResult;
-  lockedIds: Set<string>;
+  optimizationLocks: WarRoomOptimizationLocks;
   metaState: MetaState;
-  onToggleLock: (id: string) => void;
+  onToggleLock: (id: string, field: WarRoomLockField) => void;
+  onToggleWholeSet: (id: string, locked: boolean) => void;
   onLoadMeta: () => void;
   onOpenBuilder: () => void;
   onBuildSuggestion: (suggestion: WarRoomSetSuggestion) => void;
 }) {
+  const identityCount = result.lockedSpecies.length;
   return (
     <div className="space-y-4">
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Core lock</p><h2 className="mt-1 text-lg font-black text-white">Bloquea de 1 a 4 identidades</h2><p className="mt-1 text-[10px] leading-4 text-slate-500">War Room nunca propondrá reemplazar las identidades bloqueadas. Sus sets sí pueden entrar en revisión.</p></div><Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{lockedIds.size}/4 bloqueados</Badge></div>
-        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-          {team.pokemon.map((set) => {
-            const locked = lockedIds.has(set.id);
-            const disabled = !locked && lockedIds.size >= 4;
-            return (
-              <label key={set.id} className={cn("relative cursor-pointer rounded-2xl border p-3 text-center transition", locked ? "border-cyan-300/35 bg-cyan-300/8" : "border-white/7 bg-slate-950/50 hover:border-white/15", disabled && "cursor-not-allowed opacity-45")}>
-                <Checkbox checked={locked} disabled={disabled} onCheckedChange={() => onToggleLock(set.id)} className="absolute top-2 left-2" />
-                {locked ? <Lock className="absolute top-2 right-2 size-3 text-cyan-300" /> : <Unlock className="absolute top-2 right-2 size-3 text-slate-700" />}
-                <Image src={getSpriteUrl(set.species)} alt={set.species} width={58} height={58} unoptimized className="mx-auto size-14 object-contain" /><span className="mt-1 block truncate text-[9px] font-black text-slate-300">{set.species}</span>
-              </label>
-            );
-          })}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Bloqueos por Pokémon</p>
+            <h2 className="mt-1 text-lg font-black text-white">Protege solo lo que quieres conservar</h2>
+            <p className="mt-1 max-w-3xl text-[10px] leading-4 text-slate-500">Identidad evita reemplazar al integrante y admite hasta cuatro miembros del core. Objeto, habilidad, naturaleza, Stat Points y cada movimiento restringen únicamente las propuestas de set.</p>
+          </div>
+          <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{identityCount}/4 identidades</Badge>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          {team.pokemon.map((set) => (
+            <PokemonLockCard
+              key={set.id}
+              set={set}
+              locks={optimizationLocks[set.id] ?? createWarRoomPokemonLocks()}
+              identityCount={identityCount}
+              onToggle={(field) => onToggleLock(set.id, field)}
+              onToggleWholeSet={(locked) => onToggleWholeSet(set.id, locked)}
+            />
+          ))}
         </div>
       </section>
 
-      {!lockedIds.size ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Elige primero el core que no quieres tocar</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Al bloquearlo, el motor buscará compañeros observados con ese núcleo y probará qué slot libre corrige mejor el balance defensivo.</p></section> : (
+      {!identityCount ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Bloquea al menos una identidad para buscar partners</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Los bloqueos de set ya se respetan. Al proteger una identidad, el motor además buscará compañeros observados con ese núcleo sin proponer reemplazarla.</p></section> : (
         <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2></div><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {result.coreSample.mode === "exact" ? "core exacto" : "coincidencia parcial"}</Badge></div>
           {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <article key={member.species} className="rounded-2xl border border-white/7 bg-slate-950/55 p-4"><div className="flex items-center gap-3"><Image src={getSpriteUrl(member.observedAs)} alt={member.species} width={54} height={54} unoptimized className="size-13 object-contain" /><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-black text-white">{member.species}</h3><p className="mt-0.5 text-[9px] text-violet-200">por {member.replaces}</p><div className="mt-2 flex items-center gap-2"><Progress value={member.score} className="h-1.5 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300" /><span className="font-mono text-[9px] text-violet-200">{member.score}</span></div></div></div><p className="mt-3 text-[10px] leading-4 text-slate-500">{member.reasons.join(" ")}</p>{member.patchedTypes.length ? <div className="mt-3 flex flex-wrap gap-1">{member.patchedTypes.map((type) => <Badge key={type} variant="outline" className="border-emerald-300/12 bg-emerald-300/5 text-[8px] text-emerald-200">+ {type}</Badge>)}</div> : null}</article>)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">No hay una muestra suficiente para proponer integrantes con ese core.</p>}
@@ -400,7 +547,17 @@ function OptimizationView({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-300">Set search</p><h2 className="mt-1 text-lg font-black text-white">Objeto, moves, naturaleza y Stat Points</h2><p className="mt-1 max-w-2xl text-[10px] leading-4 text-slate-500">Contrasta cada set con Battle Data y vuelve a puntuar su cobertura sobre las amenazas frecuentes. Los porcentajes son marginales, no un set observado.</p></div><Button type="button" variant="outline" onClick={onLoadMeta} disabled={metaState.status === "loading"} className="gap-2 border-amber-300/18 bg-amber-300/7 text-xs font-black text-amber-100 hover:bg-amber-300/12">{metaState.status === "loading" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}{metaState.status === "loading" ? "Buscando…" : metaState.status === "ready" ? "Recalcular sets" : "Buscar cambios de set"}</Button></div>
         {metaState.error ? <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/7 px-3 py-2 text-[10px] text-amber-100">{metaState.error}</p> : null}
         {metaState.status === "ready" ? <p className="mt-3 text-[9px] text-slate-600">Battle Data disponible para {metaState.loaded}/{team.pokemon.length} integrantes.</p> : null}
-        {result.sets.length ? <div className="mt-4 grid gap-3 lg:grid-cols-2">{result.sets.map((suggestion) => <article key={`${suggestion.species}-${suggestion.presetId}`} className="rounded-2xl border border-white/7 bg-slate-950/55 p-4"><div className="flex items-center gap-3"><Image src={getSpriteUrl(suggestion.species)} alt={suggestion.species} width={50} height={50} unoptimized className="size-12 object-contain" /><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-black text-white">{suggestion.species}</h3><p className={cn("mt-0.5 text-[9px] font-bold", suggestion.structuralDelta > 0 ? "text-emerald-300" : suggestion.structuralDelta < 0 ? "text-amber-300" : "text-slate-500")}>{suggestion.structuralDelta > 0 ? "+" : ""}{suggestion.structuralDelta} encaje estructural</p></div><Badge variant="outline" className="border-amber-300/15 bg-amber-300/7 text-[8px] text-amber-200">Hipótesis</Badge></div><div className="mt-3 space-y-2">{suggestion.changes.map((change) => <div key={change.field} className="rounded-xl border border-white/6 bg-white/[0.02] px-3 py-2"><div className="flex items-center justify-between gap-2"><span className="text-[8px] font-black uppercase tracking-wide text-slate-600">{change.field}</span>{change.evidence !== null ? <span className="font-mono text-[8px] text-amber-200">{change.evidence}% marginal</span> : null}</div><p className="mt-1 line-clamp-2 text-[9px] leading-4 text-slate-500"><span className="text-slate-700">Actual:</span> {change.current}</p><p className="line-clamp-2 text-[9px] leading-4 text-slate-300"><span className="text-amber-300">Probar:</span> {change.suggested}</p></div>)}</div><p className="mt-3 text-[9px] leading-4 text-slate-600">{suggestion.reasons.join(" ")}</p><Button type="button" variant="outline" size="sm" onClick={() => onBuildSuggestion(suggestion)} className="mt-3 w-full gap-2 border-amber-300/15 bg-amber-300/5 text-[9px] font-black text-amber-100 hover:bg-amber-300/10"><Hammer className="size-3.5" />Probar este set en Builder</Button></article>)}</div> : metaState.status === "ready" ? <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">No encontramos un paquete legal distinto con evidencia suficiente.</p> : <div className="mt-4 rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-xs text-slate-600">Ejecuta la búsqueda para comparar los seis sets.</div>}
+        {result.sets.length ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {result.sets.map((suggestion) => <SetSuggestionCard key={`${suggestion.species}-${suggestion.presetId}`} suggestion={suggestion} onBuild={() => onBuildSuggestion(suggestion)} />)}
+          </div>
+        ) : metaState.status === "ready" ? (
+          <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs leading-5 text-slate-600">
+            {result.locks.some((entry) => entry.fullyLocked)
+              ? `${result.locks.filter((entry) => entry.fullyLocked).length} ${result.locks.filter((entry) => entry.fullyLocked).length === 1 ? "set está completamente protegido" : "sets están completamente protegidos"}. No encontramos otro paquete legal distinto que respete los bloqueos restantes.`
+              : "No encontramos un paquete legal distinto con evidencia suficiente que respete tus bloqueos."}
+          </p>
+        ) : <div className="mt-4 rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-xs text-slate-600">Ejecuta la búsqueda para comparar los seis sets sin tocar los campos protegidos.</div>}
       </section>
 
       <section className="flex flex-col gap-3 rounded-[24px] border border-cyan-300/12 bg-cyan-300/[0.035] p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-sm font-black text-white">¿Quieres convertir una hipótesis en versión?</h3><p className="mt-1 text-[10px] text-slate-500">Abre una copia editable del Team; el original permanece inmutable.</p></div><Button type="button" onClick={onOpenBuilder} className="gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-4" />Abrir en Team Builder</Button></section>
@@ -421,7 +578,7 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
   const [rivalId, setRivalId] = useState("");
   const [rivalState, setRivalState] = useState<RivalSetState>(EMPTY_RIVAL_STATE);
   const rivalRequest = useRef(0);
-  const [lockedIds, setLockedIds] = useState<Set<string>>(() => new Set());
+  const [optimizationLocks, setOptimizationLocks] = useState<WarRoomOptimizationLocks>({});
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
   const metaRequest = useRef(0);
 
@@ -460,16 +617,16 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
   const optimization = useMemo(() => selectedTeam && resources
     ? optimizeTeam(
       selectedTeam.pokemon,
-      lockedIds,
+      optimizationLocks,
       resources.corpus.teams,
       resources.snapshot,
       metaState.teamId === selectedTeam.id ? metaState.values : {},
     )
-    : null, [lockedIds, metaState.teamId, metaState.values, resources, selectedTeam]);
+    : null, [metaState.teamId, metaState.values, optimizationLocks, resources, selectedTeam]);
 
   function changeTeam(value: string) {
     setTeamId(value);
-    setLockedIds(new Set());
+    setOptimizationLocks({});
     setMetaState(EMPTY_META_STATE);
   }
 
@@ -503,13 +660,49 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
     }
   }
 
-  function toggleLock(id: string) {
-    setLockedIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else if (next.size < 4) next.add(id);
-      return next;
+  function updatePokemonLocks(
+    id: string,
+    update: (locks: WarRoomPokemonLocks, allLocks: WarRoomOptimizationLocks) => WarRoomPokemonLocks,
+  ) {
+    setOptimizationLocks((current) => {
+      const source = current[id] ?? createWarRoomPokemonLocks();
+      const next = update({ ...source, moves: [...source.moves] as WarRoomPokemonLocks["moves"] }, current);
+      const active = next.identity || next.item || next.ability || next.nature || next.statPoints || next.moves.some(Boolean);
+      if (active) return { ...current, [id]: next };
+      const nextState = { ...current };
+      delete nextState[id];
+      return nextState;
     });
+  }
+
+  function toggleLock(id: string, field: WarRoomLockField) {
+    updatePokemonLocks(id, (locks, allLocks) => {
+      if (field === "identity") {
+        const identityCount = Object.values(allLocks).filter((entry) => entry.identity).length;
+        if (!locks.identity && identityCount >= 4) return locks;
+        return { ...locks, identity: !locks.identity };
+      }
+      if (field === "item") return { ...locks, item: !locks.item };
+      if (field === "ability") return { ...locks, ability: !locks.ability };
+      if (field === "nature") return { ...locks, nature: !locks.nature };
+      if (field === "statPoints") return { ...locks, statPoints: !locks.statPoints };
+      const slot = Number(field.slice("move-".length));
+      if (!Number.isInteger(slot) || slot < 0 || slot > 3) return locks;
+      const moves = [...locks.moves] as WarRoomPokemonLocks["moves"];
+      moves[slot] = !moves[slot];
+      return { ...locks, moves };
+    });
+  }
+
+  function toggleWholeSet(id: string, locked: boolean) {
+    updatePokemonLocks(id, (current) => ({
+      ...current,
+      item: locked,
+      ability: locked,
+      nature: locked,
+      statPoints: locked,
+      moves: [locked, locked, locked, locked],
+    }));
   }
 
   async function loadMeta() {
@@ -592,7 +785,7 @@ export function WarRoom({ groups, onOpenBuilder, onBuildDraft }: { groups: TeamG
 
       {resources && selectedTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && selectedTeam && mode === "optimize" && optimization ? <OptimizationView team={selectedTeam} result={optimization} lockedIds={lockedIds} metaState={metaState.teamId === selectedTeam.id ? metaState : EMPTY_META_STATE} onToggleLock={toggleLock} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(selectedTeam)} onBuildSuggestion={buildSuggestion} /> : null}
+      {resources && selectedTeam && mode === "optimize" && optimization ? <OptimizationView team={selectedTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === selectedTeam.id ? metaState : EMPTY_META_STATE} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(selectedTeam)} onBuildSuggestion={buildSuggestion} /> : null}
     </div>
   );
 }
