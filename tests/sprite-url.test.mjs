@@ -42,6 +42,10 @@ test("supports Legends ZA Mega naming quirks without broken sprite URLs", async 
   const { getSpriteUrl } = await vite.ssrLoadModule("/lib/pokemon-data.ts");
 
   assert.equal(
+    getSpriteUrl("Floette-Eternal-Mega"),
+    "https://play.pokemonshowdown.com/sprites/gen5/floette-mega.png",
+  );
+  assert.equal(
     getSpriteUrl("Meowstic-M-Mega"),
     "https://play.pokemonshowdown.com/sprites/gen5/meowstic-mmega.png",
   );
