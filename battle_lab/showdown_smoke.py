@@ -106,6 +106,32 @@ def command_text(command: Sequence[str]) -> str:
     return " ".join(command)
 
 
+def resolve_subprocess_command(command: Sequence[str]) -> list[str]:
+    """Resolve PATH/PATHEXT executables before invoking subprocess without a shell.
+
+    On Windows, tools installed as ``.cmd``/``.bat`` (notably npm) are shell
+    scripts rather than PE executables. Resolve them with ``shutil.which`` and
+    route only those scripts through ``cmd.exe``. Native executables keep
+    ``shell=False`` on every platform.
+    """
+
+    values = [str(value) for value in command]
+    if not values:
+        raise ValueError("El comando no puede estar vacío.")
+    executable = shutil.which(values[0])
+    if executable is None:
+        raise RuntimeError(f"No se encontró el comando requerido: {values[0]}.")
+    resolved = [executable, *values[1:]]
+    if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
+        command_processor = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or shutil.which("cmd")
+        if not command_processor:
+            raise RuntimeError(
+                f"{values[0]} se resolvió como script de Windows, pero no se encontró cmd.exe."
+            )
+        return [command_processor, "/d", "/s", "/c", subprocess.list2cmdline(resolved)]
+    return resolved
+
+
 def tail(path: Path, lines: int = 80) -> str:
     if not path.exists():
         return "<sin log>"
@@ -120,7 +146,7 @@ def run_checked(
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        list(command),
+        resolve_subprocess_command(command),
         cwd=cwd,
         input=input_text,
         text=True,
@@ -180,7 +206,7 @@ def run_long_command(
     started = time.monotonic()
     with log_path.open("w", encoding="utf-8") as log_handle:
         process = subprocess.Popen(
-            list(command),
+            resolve_subprocess_command(command),
             cwd=cwd,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
