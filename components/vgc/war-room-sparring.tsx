@@ -421,6 +421,7 @@ function ActionPicker({
     current.push(action);
     moveGroups.set(action.value, current);
   }
+  const uniqueSwitches = [...new Map(switchActions.map((action) => [action.value, action] as const)).values()];
   const signature = unique.map(actionKey).join("||");
   const [pendingMove, setPendingMove] = useState("");
 
@@ -502,11 +503,11 @@ function ActionPicker({
         </div>
       ) : null}
 
-      {switchActions.length ? (
+      {uniqueSwitches.length ? (
         <div className="mt-4">
           <p className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.12em] text-slate-600"><ArrowRightLeft className="size-3" />Cambiar</p>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {[...new Map(switchActions.map((action) => [action.value, action])).values()].map((action) => (
+            {uniqueSwitches.map((action) => (
               <button
                 key={actionKey(action)}
                 type="button"
