@@ -8,6 +8,7 @@ import url from "node:url";
 const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "battle_lab", "mc_census_extended.py");
 const notebook = path.join(root, "colab", "Battle_Lab_MC_Census_Extended.ipynb");
+const trainNotebook = path.join(root, "colab", "Battle_Lab_MC_Train.ipynb");
 
 test("extended census targets BO3 only and preserves manifest aggregation", () => {
   const source = fs.readFileSync(script, "utf8");
@@ -22,13 +23,26 @@ test("extended census targets BO3 only and preserves manifest aggregation", () =
   execFileSync("python", ["-m", "py_compile", script], { cwd: root, encoding: "utf8" });
 });
 
-test("extended census Colab reuses corpus, rebuilds trajectories, and writes native result", () => {
+test("extended census Colab writes a directly readable canonical TXT without Google auth", () => {
   const parsed = JSON.parse(fs.readFileSync(notebook, "utf8"));
   const text = parsed.cells.flatMap((cell) => cell.source ?? []).join("");
   assert.match(text, /TARGET_BO3_LOGS = 10_000/);
   assert.match(text, /battle_lab\.mc_census_extended/);
   assert.match(text, /build-trajectories/);
   assert.match(text, /battle_lab\.mc_team_split/);
-  assert.match(text, /application\/vnd\.google-apps\.document/);
-  assert.match(text, /Battle Lab M-C — latest run/);
+  assert.match(text, /latest_run\.txt/);
+  assert.match(text, /report_path\.write_text/);
+  assert.doesNotMatch(text, /authenticate_user/);
+  assert.doesNotMatch(text, /application\/vnd\.google-apps\.document/);
+});
+
+test("canonical training Colab now defaults to LIGHT reuse and writes latest_run.txt", () => {
+  const parsed = JSON.parse(fs.readFileSync(trainNotebook, "utf8"));
+  const text = parsed.cells.flatMap((cell) => cell.source ?? []).join("");
+  assert.match(text, /RUN_MODE = "LIGHT"/);
+  assert.match(text, /SYNC_TEAMS = False/);
+  assert.match(text, /SCRAPE_HUMAN_LOGS = False/);
+  assert.match(text, /BUILD_TRAJECTORIES = False/);
+  assert.match(text, /latest_run\.txt/);
+  assert.match(text, /baseline BC M-A\/M-B/);
 });
