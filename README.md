@@ -119,7 +119,10 @@ Champions M-C y mide el checkpoint final de VGC-Bench contra `RandomPlayer`,
 `MaxBasePowerPlayer` y `SimpleHeuristicsPlayer` mediante cruces espejados. Usa
 GPU automáticamente cuando está disponible e incluye barra de progreso, ETA,
 Elo interno verificable y replays en Google Drive. El self-play permanece como
-modo alternativo.
+modo alternativo. También puede reutilizar una tanda ya terminada para auditar
+un equipo: cruza derrotas con sus combates espejo, extrae señales observables
+del protocolo de Showdown y genera un informe HTML/JSON/CSV sin volver a jugar
+las 1,500 partidas.
 
 [Abrir Battle Lab en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab.ipynb)
 

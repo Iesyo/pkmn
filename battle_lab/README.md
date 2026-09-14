@@ -50,7 +50,8 @@ equivale a su fuerza en las regulaciones de entrenamiento.
 
 ## Benchmark calibrado
 
-El modo predeterminado del Colab ejecuta **500 combates contra cada baseline**:
+Con `RUN_EVALUATION = True`, el Colab ejecuta **500 combates contra cada baseline**
+en el modo configurado:
 
 - `RandomPlayer`: escoge acciones legales al azar;
 - `MaxBasePowerPlayer`: prioriza potencia base, con objetivos y cambios simples;
@@ -63,11 +64,41 @@ rivales reciben exactamente la misma agenda, cuyo SHA-256 queda en el JSON.
 Los baselines usan Team Preview aleatorio, como define `poke-env`; VGC-Bench usa
 su Team Preview aprendido.
 
+Después de completar la tanda, el valor predeterminado vuelve a
+`RUN_EVALUATION = False` para que `Ejecutar todo` reutilice el resultado más
+reciente y genere la auditoría sin gastar otros 25 minutos.
+
 El resultado incluye puntuación de match, diferencia Elo contra cada baseline,
 intervalo Wilson del 95% y un Elo de rendimiento contra el pool equiponderado.
 La escala usa la curva logística Elo-400 y ancla internamente cada rival en
 1500. Es útil para comparar checkpoints y ejecuciones de Battle Lab, pero **no
 es el rating oficial de Pokémon Showdown**.
+
+## Auditoría de replays y pares espejo
+
+Después de una ejecución completa, el Colab puede reutilizar el JSON y ZIP más
+recientes sin repetir los 1,500 combates. Por defecto audita `MC182` contra
+`SimpleHeuristicsPlayer` y selecciona 20 derrotas representativas, cubriendo
+primero rivales distintos.
+
+`battle_lab/audit_benchmark.py` relaciona cada derrota con el combate espejo,
+recupera ambos leads, Pokémon observados, movimientos, primera baja, cambios,
+protecciones, inmunidades, fallos y mecánicas especiales. Los casos reciben una
+prioridad reproducible; una señal automática sirve para localizar partidas,
+pero no se presenta como prueba de que una jugada fue tácticamente incorrecta.
+
+La auditoría genera:
+
+- `audit.json`: evidencia estructurada, cobertura y limitaciones;
+- `report.html`: tablero navegable con enlaces a los casos seleccionados;
+- `report.md`: versión legible y portable;
+- `cases.csv`: todas las derrotas ordenadas por prioridad;
+- `replays/`: copia de cada replay seleccionado y de su espejo.
+
+El protocolo de Showdown no conserva logits, valoración de estado ni acciones
+descartadas. Tampoco revela un Pokémon seleccionado que nunca entró al campo.
+Si el análisis de replays no explica un patrón, el siguiente nivel será una
+repetición instrumentada de los cruces prioritarios.
 
 ## Corpus competitivo M-C
 
@@ -102,6 +133,7 @@ resultados:
 ├── teams/                                          exports .txt del Team Builder
 └── results/
     └── phase-2/                                    JSON y ZIP persistentes
+        └── audits/                                 reportes y replays prioritarios
 ```
 
 En la web, abre **Exportar → Descargar .txt** y sube ese archivo a la carpeta
@@ -151,6 +183,18 @@ python battle_lab/vgc_bench_battle.py \
   --device auto
 ```
 
+Para auditar un benchmark ya terminado:
+
+```bash
+python battle_lab/audit_benchmark.py \
+  --result-json ruta/vgc-bench-<timestamp>.json \
+  --replays-zip ruta/vgc-bench-<timestamp>-replays.zip \
+  --output-dir ruta/audits/mc182 \
+  --team-id MC182 \
+  --baseline simple-heuristics \
+  --sample-size 20
+```
+
 El checkout de Showdown, el de VGC-Bench y el modelo se crean dentro de
 `.battle-lab-runtime/`; nunca reemplazan instalaciones ajenas. El puerto
 interno predeterminado es `8000`. Si ya está ocupado, el runner se detiene sin
@@ -165,6 +209,8 @@ Cada ejecución produce:
   equipo, agenda, resultados por baseline, Elo interno, victorias por equipo,
   rendimiento y correcciones de alias;
 - `vgc-bench-<timestamp>-replays.zip`: replays HTML y logs.
+- `audits/<run>-<team>-<baseline>/`: informe HTML/Markdown, JSON, CSV y replays
+  seleccionados junto con sus espejos.
 
 La Fase 1 se conserva en `battle_lab/showdown_smoke.py` como diagnóstico ligero
 del motor. El servidor usa `--no-security` porque solo escucha en loopback.
