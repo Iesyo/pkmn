@@ -1,6 +1,6 @@
 # Battle Lab — Sparring local
 
-`War Room > Sparring` conecta la interfaz de LikeNoOneEverWas con un servicio Python local en loopback. Pokémon Showdown resuelve el combate y el checkpoint LIGHT M-C controla al rival.
+`War Room > Sparring` conecta la interfaz de LikeNoOneEverWas con un runtime local. Pokémon Showdown resuelve el combate, el checkpoint LIGHT M-C controla al rival y el **cliente clásico oficial de Pokémon Showdown** renderiza el room real como espectador: campo, sprites, animaciones y battle log.
 
 ## Restricción del pool
 
@@ -16,6 +16,26 @@ Sparring no completa ni infiere sets. Para poder entrar al pool rival, el PokéP
 El filtro de interfaz descarta los pastes incompletos antes de intentar una partida y el servicio local vuelve a aplicar el mismo gate. Después, Pokémon Showdown valida legalidad para `gen9championsvgc2026regmc`; un paste completo pero ilegal también se rechaza.
 
 Las fuentes habilitadas para el rival son **VGCPastes** y **Mis pastes**. Fuentes sin PokéPaste exacto recuperable quedan fuera del pool.
+
+## Arquitectura local
+
+El runtime usa tres puertos exclusivamente locales:
+
+```text
+127.0.0.1:8765  API de Battle Lab / poke-env
+127.0.0.1:8766  servidor privado de Pokémon Showdown
+127.0.0.1:8767  cliente clásico oficial de Pokémon Showdown
+```
+
+La aplicación web habla con `8765` a través del proxy same-origin `/api/battle-lab/...`. El renderer clásico se carga en un `iframe` de War Room y se conecta directamente al room de batalla en el servidor local `8766`.
+
+El cliente visual **no se copia ni se modifica dentro de este repositorio**. `battle_lab.local_runtime` prepara un checkout independiente en `.battle-lab-runtime/pokemon-showdown-client`, fijado al commit:
+
+```text
+e47b8be4103b5e027cd191a024e383be88f37bfe
+```
+
+Ese checkout conserva su licencia **AGPLv3** y se sirve sin modificar desde loopback. LikeNoOneEverWas únicamente lo orquesta y lo muestra como renderer local. La legalidad de las decisiones humanas sigue viniendo de `battle.valid_orders` en `poke-env`.
 
 ## Checkpoint canónico
 
@@ -48,31 +68,36 @@ python -m pip install --upgrade pip
 pip install -r battle_lab/requirements-local.txt
 ```
 
+Si PowerShell bloquea `Activate.ps1`, se puede usar directamente:
+
+```powershell
+.\.venv-battle-lab\Scripts\python.exe
+```
+
 Crea la carpeta local de modelos y copia ahí el checkpoint descargado desde Drive:
 
 ```powershell
 New-Item -ItemType Directory -Force .battle-lab-runtime\models
 ```
 
-El runtime completo vive en `.battle-lab-runtime/`, que ya está ignorado por Git. La primera ejecución prepara checkouts fijados de Pokémon Showdown y VGC-Bench dentro de esa carpeta; las ejecuciones posteriores los reutilizan.
+El runtime completo vive en `.battle-lab-runtime/`, que está ignorado por Git. La primera ejecución prepara los checkouts fijados de Pokémon Showdown, VGC-Bench y Pokémon Showdown Client; las ejecuciones posteriores los reutilizan.
 
-## Arranque
+## Arranque canónico
 
-Con el entorno virtual activo:
+Usa **`battle_lab.local_runtime`**, no `local_sparring_service` directamente:
 
 ```powershell
-python -m battle_lab.local_sparring_service `
-  --runtime-root .battle-lab-runtime `
-  --checkpoint .battle-lab-runtime\models\step-000196608.zip
+.\.venv-battle-lab\Scripts\python.exe -m battle_lab.local_runtime `
+  --runtime-root .\.battle-lab-runtime `
+  --checkpoint .\.battle-lab-runtime\models\step-000196608.zip
 ```
 
-El servicio escucha únicamente en:
+La primera ejecución del launcher puede tardar porque clona, instala y compila el cliente oficial de Showdown. El progreso se muestra en consola. Después debe imprimir, entre otros mensajes:
 
 ```text
-http://127.0.0.1:8765
+Renderer clásico listo en http://127.0.0.1:8767/play.pokemonshowdown.com/testclient-old.html
+Uvicorn running on http://127.0.0.1:8765
 ```
-
-Pokémon Showdown interno usa `127.0.0.1:8766`. El servicio no mata procesos ajenos: si ese puerto ya está ocupado, aborta y lo reporta.
 
 Comprobaciones rápidas:
 
@@ -81,23 +106,30 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 Invoke-RestMethod http://127.0.0.1:8765/model-info
 ```
 
-`/model-info` fuerza la preparación del runtime y carga el checkpoint. La primera llamada puede tardar porque instala/compila el checkout fijado de Showdown y prepara VGC-Bench.
+`/model-info` fuerza la preparación del motor y carga el checkpoint. El renderer se prepara al arrancar `local_runtime`.
 
-## Primer smoke interactivo
+## Flujo interactivo
 
-1. Arranca la aplicación web local.
-2. Abre `War Room`.
-3. Selecciona el Team o conserva la variante actual de Optimizar; Sparring usa el `workingTeam`, por lo que respeta cambios todavía no guardados.
-4. Entra a `Sparring`.
-5. Confirma que aparece `Loopback conectado` / `Battle Lab listo`.
-6. Pulsa `Buscar rival y pelear`.
-7. El selector recorre el corpus en orden aleatorio y salta automáticamente cualquier paste incompleto o no recuperable.
-8. Elige cuatro Pokémon en Team Preview. Los dos primeros son lead y los dos últimos backline.
-9. Durante cada turno la UI solo muestra combinaciones presentes en `battle.valid_orders`; no fabrica movimientos, targets ni switches.
-10. Completa la batalla y conserva el resultado/replay para la validación del spike local.
+1. Arranca la aplicación web local con `npm run dev`.
+2. Arranca `battle_lab.local_runtime`.
+3. Abre `War Room > Sparring`.
+4. Selecciona el Team o conserva la variante actual de Optimizar; Sparring usa el `workingTeam`, por lo que respeta cambios todavía no guardados.
+5. Pulsa `Buscar rival y pelear`.
+6. El selector recorre el corpus en orden aleatorio y salta automáticamente cualquier paste incompleto o no recuperable.
+7. En Team Preview se muestran **los dos equipos completos**. Elige cuatro Pokémon; 1-2 son lead y 3-4 backline.
+8. Al comenzar el combate, War Room embebe el room real del cliente clásico de Showdown. Ahí deben verse las animaciones, HP, cambios, efectos de campo y el log legible de movimientos/daño/estados.
+9. Debajo del renderer, War Room presenta únicamente decisiones que existen en `battle.valid_orders`: movimiento, mecánica, objetivo y switch.
+10. Confirma el turno; el renderer de Showdown debe animar inmediatamente el resultado y agregar el evento al battle log.
 
-## Criterio de aceptación del MVP
+## Criterio de aceptación
 
-El MVP queda validado cuando una partida BO1 completa puede jugarse desde War Room entre el usuario y LIGHT M-C sin inferir ningún campo del rival, con ambos Teams aceptados por Showdown y con las decisiones humanas enviadas únicamente mediante órdenes legales generadas por el motor.
+El BO1 local queda validado cuando:
 
-Después de ese smoke se puede continuar con BO3, rematch, gauntlet y las mediciones 1/10/100 previstas en `BATTLE-LAB-LOCAL-INTEGRATION-001`.
+- ambos equipos se ven completos en Team Preview;
+- el room clásico de Showdown se carga dentro de War Room;
+- los movimientos de ambos lados aparecen en el battle log real;
+- daño, estados, switches y Mega/Tera se reflejan visualmente y con animación;
+- las decisiones humanas siguen limitadas a órdenes legales del motor;
+- la batalla termina correctamente y conserva el resultado/replay.
+
+Después de ese smoke se continúa con BO3/rematch/gauntlet y las mediciones 1/10/100 de `BATTLE-LAB-LOCAL-INTEGRATION-001`.
