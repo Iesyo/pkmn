@@ -309,8 +309,9 @@ function ActionPicker({
   for (const action of filteredMoves) moveGroups.set(action.value, [...(moveGroups.get(action.value) ?? []), action]);
   const switches = [...new Map(switchActions.map((action) => [action.value, action] as const)).values()];
   const [pendingMove, setPendingMove] = useState("");
+  const actionSignature = unique.map(actionKey).sort().join("||");
 
-  useEffect(() => setPendingMove(""), [actions, effectiveMechanic]);
+  useEffect(() => setPendingMove(""), [actionSignature, effectiveMechanic]);
   const pending = pendingMove ? uniqueSingleActions(moveGroups.get(pendingMove) ?? []) : [];
 
   return (
