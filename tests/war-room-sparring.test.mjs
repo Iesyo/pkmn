@@ -127,3 +127,29 @@ test("local sparring service is syntactically valid and loopback-only", async ()
   const python = spawnSync(process.env.PYTHON ?? "python3", ["-m", "py_compile", sourcePath], { encoding: "utf8" });
   assert.equal(python.status, 0, python.stderr || python.stdout);
 });
+
+test("sparring UI presents both teams and staged human battle controls", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring.tsx", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /parseShowdownPaste/);
+  assert.match(source, /Equipo rival/);
+  assert.match(source, /Elige objetivo/);
+  assert.match(source, /Confirmar turno/);
+  assert.match(source, /Pokémon izquierdo/);
+  assert.match(source, /Pokémon derecho/);
+  assert.match(source, /const LOCAL_SERVICE = "\/api\/battle-lab"/);
+  assert.doesNotMatch(source, />\{action\.label\}<\/button>/);
+});
+
+test("web app proxies only the Battle Lab loopback endpoints used by Sparring", async () => {
+  const sourcePath = fileURLToPath(new URL("../app/api/battle-lab/[...path]/route.ts", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /127\.0\.0\.1:8765/);
+  assert.match(source, /ALLOWED_PATH/);
+  assert.match(source, /health\|model-info\|sparring/);
+  assert.match(source, /team-preview\|choice/);
+  assert.match(source, /export async function GET/);
+  assert.match(source, /export async function POST/);
+});
