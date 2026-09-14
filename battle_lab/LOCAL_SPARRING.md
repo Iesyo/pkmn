@@ -37,6 +37,8 @@ e47b8be4103b5e027cd191a024e383be88f37bfe
 
 Ese checkout conserva su licencia **AGPLv3** y se sirve sin modificar desde loopback. LikeNoOneEverWas únicamente lo orquesta y lo muestra como renderer local. La legalidad de las decisiones humanas sigue viniendo de `battle.valid_orders` en `poke-env`.
 
+El cliente clásico entra al room como **espectador**. Por eso el campo animado y el battle log son los reales de Showdown, mientras los botones que envían la jugada siguen siendo controles propios de War Room construidos únicamente a partir de órdenes legales. Esto evita tener dos clientes intentando controlar el mismo jugador y mantiene una sola autoridad de decisión.
+
 ## Checkpoint canónico
 
 Modelo: `step-000196608.zip`
