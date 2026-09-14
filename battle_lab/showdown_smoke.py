@@ -128,7 +128,7 @@ def resolve_subprocess_command(command: Sequence[str]) -> list[str]:
             raise RuntimeError(
                 f"{values[0]} se resolvió como script de Windows, pero no se encontró cmd.exe."
             )
-        return [command_processor, "/d", "/s", "/c", subprocess.list2cmdline(resolved)]
+        return [command_processor, "/d", "/c", "call", executable, *values[1:]]
     return resolved
 
 
