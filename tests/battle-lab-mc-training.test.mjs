@@ -51,6 +51,13 @@ test("training artifacts pin M-C and keep the census separate from training", ()
   assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_census"/);
   assert.doesNotMatch(notebookText, /PKMN_ROOT \/ "battle_lab" \/ "mc_census\.py"/);
 
+  const replayCell = parsed.cells.find((cell) =>
+    (cell.source ?? []).join("").includes('logs_manifest_path = DATA_ROOT / "logs_manifest.json"'),
+  );
+  assert.ok(replayCell, "replay census cell must exist");
+  const replayCellText = (replayCell.source ?? []).join("");
+  assert.match(replayCellText, /^import json, os\n/);
+
   const injectBlock = source.match(/def inject_mc_support[\s\S]*?\n\ndef scrape_mc_logs/);
   assert.ok(injectBlock, "inject_mc_support block must exist");
   assert.match(injectBlock[0], /with working_directory\(vgc_bench_checkout\):[\s\S]*?vgc_bench\.src\.utils/);
