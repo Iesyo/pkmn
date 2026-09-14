@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run merciless VGC-Bench self-play on the private Battle Lab server.
+"""Run merciless VGC-Bench evaluation on the private Battle Lab server.
 
 This Phase 2 runner provisions a pinned VGC-Bench source checkout and its
 latest public behavior-cloning checkpoint, validates an auditable Champions
-M-C team corpus, and rotates balanced deterministic pairings through the Phase
-1 Showdown server. Results and replay artifacts are written as an atomic JSON
-and ZIP pair.
+M-C team corpus, and either runs deterministic self-play or a mirrored benchmark
+against the three official poke-env baselines. Results and replay artifacts are
+written as an atomic JSON and ZIP pair.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import shutil
 import sys
 import time
@@ -53,6 +54,15 @@ from battle_lab.showdown_smoke import (  # noqa: E402
     validate_team,
     verify_illegal_team_is_rejected,
 )
+from battle_lab.benchmarking import (  # noqa: E402
+    BASELINE_BY_ID,
+    BASELINE_SPECS,
+    DEFAULT_BENCHMARK_BATTLES_PER_BASELINE,
+    BenchmarkBattlePlan,
+    benchmark_schedule_statistics,
+    build_mirrored_benchmark_schedule,
+    summarize_vgc_bench_record,
+)
 from battle_lab.team_corpus import (  # noqa: E402
     DEFAULT_CORPUS_MANIFEST,
     TeamCorpus,
@@ -80,6 +90,7 @@ VGC_BENCH_CHECKPOINT_BYTES = 11_919_042
 EXPECTED_OBSERVATION_LENGTH = 6_936
 EXPECTED_ACTION_BRANCHES = (107, 107)
 DEFAULT_SEED = 260_913
+POKE_ENV_REQUIREMENTS = PROJECT_ROOT / "battle_lab" / "requirements-phase1.txt"
 
 
 @contextmanager
@@ -98,6 +109,47 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def installed_poke_env_metadata() -> dict[str, str]:
+    """Verify that the installed doubles baselines come from the pinned fork."""
+
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    requirement = next(
+        (
+            line.strip()
+            for line in POKE_ENV_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("poke_env @ git+")
+        ),
+        "",
+    )
+    if "@" not in requirement:
+        raise RuntimeError("requirements-phase1.txt no fija el fork de poke-env.")
+    direct_reference = requirement.split("git+", 1)[1]
+    repository, expected_commit = direct_reference.rsplit("@", 1)
+    if len(expected_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in expected_commit
+    ):
+        raise RuntimeError("El commit fijado de poke-env no es un SHA Git válido.")
+    try:
+        package = distribution("poke-env")
+    except PackageNotFoundError as error:
+        raise RuntimeError(
+            "Falta el fork fijado de poke-env; instala requirements-phase1.txt."
+        ) from error
+    direct_url = json.loads(package.read_text("direct_url.json") or "{}")
+    actual_commit = direct_url.get("vcs_info", {}).get("commit_id")
+    if actual_commit != expected_commit:
+        raise RuntimeError(
+            f"poke-env está en {actual_commit or 'una revisión desconocida'}; "
+            f"Battle Lab requiere {expected_commit}."
+        )
+    return {
+        "repository": repository,
+        "commit": expected_commit,
+        "version": package.version,
+    }
 
 
 def ensure_vgc_bench_checkout(
@@ -515,6 +567,8 @@ async def run_vgc_bench_battles(
             progress.advance(
                 f"Batalla {index + 1}: {pairing.alpha.id} vs {pairing.beta.id}"
             )
+            player_a.reset_battles()
+            player_b.reset_battles()
     finally:
         with suppress(Exception):
             await player_a.ps_client.stop_listening()
@@ -531,6 +585,197 @@ async def run_vgc_bench_battles(
         "beta": int(player_b.aliases_removed),
     }
     return summaries, wins, aliases
+
+
+async def run_baseline_benchmark(
+    *,
+    runtime: ModelRuntime,
+    port: int,
+    battle_format: str,
+    schedule: Sequence[BenchmarkBattlePlan],
+    timeout: float,
+    replay_dir: Path,
+    seed: int,
+) -> dict[str, Any]:
+    """Evaluate VGC-Bench against every baseline on one mirrored schedule."""
+
+    from poke_env import AccountConfiguration, ServerConfiguration
+    from poke_env.player import (
+        MaxBasePowerPlayer,
+        RandomPlayer,
+        SimpleHeuristicsPlayer,
+    )
+
+    if not schedule:
+        raise ValueError("La agenda de benchmark no puede estar vacía.")
+    baseline_classes = {
+        "random": RandomPlayer,
+        "max-base-power": MaxBasePowerPlayer,
+        "simple-heuristics": SimpleHeuristicsPlayer,
+    }
+    if set(baseline_classes) != set(BASELINE_BY_ID):
+        raise RuntimeError("El catálogo de baselines y sus clases no coincide.")
+
+    server_configuration = ServerConfiguration(
+        f"ws://127.0.0.1:{port}/showdown/websocket",
+        "https://play.pokemonshowdown.com/action.php?",
+    )
+    common = {
+        "battle_format": battle_format,
+        "server_configuration": server_configuration,
+        "max_concurrent_battles": 1,
+        "accept_open_team_sheet": True,
+        "log_level": logging.WARNING,
+    }
+    progress = Progress(
+        len(schedule) * len(BASELINE_SPECS), "Benchmark VGC-Bench"
+    )
+    all_summaries: list[dict[str, Any]] = []
+    opponents: dict[str, dict[str, Any]] = {}
+
+    for baseline_index, spec in enumerate(BASELINE_SPECS):
+        # Baselines use Python's global RNG for preview, targets and some switches.
+        # Resetting it reproduces their choices for an equivalent battle state;
+        # Showdown's own damage RNG remains intentionally independent.
+        random.seed(seed)
+        suffix = hashlib.sha256(
+            f"{time.time_ns()}:{baseline_index}:{spec.id}".encode()
+        ).hexdigest()[:6]
+        first_plan = schedule[0]
+        vgc_first_team = (
+            first_plan.pairing.alpha
+            if first_plan.vgc_bench_side == "alpha"
+            else first_plan.pairing.beta
+        )
+        baseline_first_team = (
+            first_plan.pairing.beta
+            if first_plan.vgc_bench_side == "alpha"
+            else first_plan.pairing.alpha
+        )
+        opponent_replays = replay_dir / spec.id
+        opponent_replays.mkdir(parents=True, exist_ok=True)
+        vgc_player = runtime.player_class(
+            account_configuration=AccountConfiguration(
+                f"VGC{baseline_index}{suffix}", None
+            ),
+            team=vgc_first_team.team_text,
+            save_replays=str(opponent_replays),
+            policy=runtime.policy,
+            deterministic=True,
+            **common,
+        )
+        baseline_player = baseline_classes[spec.id](
+            account_configuration=AccountConfiguration(
+                f"BL{baseline_index}{suffix}", None
+            ),
+            team=baseline_first_team.team_text,
+            **common,
+        )
+        summaries: list[dict[str, Any]] = []
+        opponent_started = time.monotonic()
+        try:
+            for battle_index, plan in enumerate(schedule):
+                pairing = plan.pairing
+                if plan.vgc_bench_side == "alpha":
+                    alpha_player = vgc_player
+                    beta_player = baseline_player
+                else:
+                    alpha_player = baseline_player
+                    beta_player = vgc_player
+                alpha_player.update_team(pairing.alpha.team_text)
+                beta_player.update_team(pairing.beta.team_text)
+                previous_tags = set(alpha_player.battles)
+                started = time.monotonic()
+                await asyncio.wait_for(
+                    alpha_player.battle_against(beta_player, n_battles=1),
+                    timeout=timeout,
+                )
+                new_tags = set(alpha_player.battles) - previous_tags
+                if len(new_tags) != 1:
+                    raise RuntimeError(
+                        "Se esperaba una batalla nueva contra "
+                        f"{spec.label} y se recibieron {len(new_tags)}: "
+                        f"{sorted(new_tags)}"
+                    )
+                battle = alpha_player.battles[new_tags.pop()]
+                if not battle.finished:
+                    raise RuntimeError(f"La batalla {battle.battle_tag} no terminó.")
+                summary = battle_summary(
+                    battle,
+                    time.monotonic() - started,
+                    alpha_player.username,
+                    beta_player.username,
+                )
+                summary["winnerSide"] = (
+                    "alpha"
+                    if summary["winner"] == alpha_player.username
+                    else "beta"
+                    if summary["winner"] == beta_player.username
+                    else "tie"
+                )
+                summary["winnerAgent"] = (
+                    "vgcBench"
+                    if summary["winner"] == vgc_player.username
+                    else "baseline"
+                    if summary["winner"] == baseline_player.username
+                    else "tie"
+                )
+                summary["pairing"] = {
+                    "id": pairing.canonical_id,
+                    "alphaTeamId": pairing.alpha.id,
+                    "betaTeamId": pairing.beta.id,
+                }
+                summary["benchmark"] = {
+                    "baselineId": spec.id,
+                    "scheduleIndex": battle_index,
+                    "vgcBenchSide": plan.vgc_bench_side,
+                }
+                summaries.append(summary)
+                all_summaries.append(summary)
+                progress.advance(
+                    f"{spec.label} {battle_index + 1}/{len(schedule)} · "
+                    f"{pairing.alpha.id} vs {pairing.beta.id}"
+                )
+                # Battle objects are large. Replays and compact summaries are already
+                # saved, so bound memory during 1,500-battle Colab runs.
+                alpha_player.reset_battles()
+                beta_player.reset_battles()
+        finally:
+            with suppress(Exception):
+                await vgc_player.ps_client.stop_listening()
+            with suppress(Exception):
+                await baseline_player.ps_client.stop_listening()
+
+        duration = time.monotonic() - opponent_started
+        wins = sum(item["winnerAgent"] == "vgcBench" for item in summaries)
+        losses = sum(item["winnerAgent"] == "baseline" for item in summaries)
+        ties = sum(item["winnerAgent"] == "tie" for item in summaries)
+        report = summarize_vgc_bench_record(wins=wins, losses=losses, ties=ties)
+        report.update(spec.result_metadata())
+        report.update(
+            {
+                "teamPreview": "random-poke-env-default",
+                "durationSeconds": round(duration, 3),
+                "battlesPerMinute": round(len(summaries) / duration * 60, 3),
+                "aliasesRemoved": int(vgc_player.aliases_removed),
+            }
+        )
+        opponents[spec.id] = report
+
+    overall = summarize_vgc_bench_record(
+        wins=sum(report["wins"] for report in opponents.values()),
+        losses=sum(report["losses"] for report in opponents.values()),
+        ties=sum(report["ties"] for report in opponents.values()),
+    )
+    return {
+        "items": all_summaries,
+        "opponents": opponents,
+        "overall": overall,
+        "aliasesRemoved": {
+            baseline_id: report["aliasesRemoved"]
+            for baseline_id, report in opponents.items()
+        },
+    }
 
 
 def validate_team_corpus(
@@ -633,7 +878,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Equipo Beta explícito; requiere --team-a y desactiva la rotación.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("self-play", "benchmark"),
+        default="self-play",
+        help="Self-play neuronal o benchmark espejado contra los tres baselines.",
+    )
     parser.add_argument("--battles", type=int, default=20)
+    parser.add_argument(
+        "--benchmark-battles-per-baseline",
+        type=int,
+        default=DEFAULT_BENCHMARK_BATTLES_PER_BASELINE,
+        help="Combates contra cada baseline; el valor recomendado es 500.",
+    )
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--battle-timeout", type=float, default=300)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -645,12 +902,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.battles < 1:
         raise SystemExit("--battles debe ser mayor que cero.")
+    if args.benchmark_battles_per_baseline < 1:
+        raise SystemExit(
+            "--benchmark-battles-per-baseline debe ser mayor que cero."
+        )
     if not 1 <= args.port <= 65535:
         raise SystemExit("--port debe estar entre 1 y 65535.")
     if len(args.checkpoint_sha256) != 64:
         raise SystemExit("--checkpoint-sha256 debe contener 64 caracteres.")
     if bool(args.team_a) != bool(args.team_b):
         raise SystemExit("--team-a y --team-b deben usarse juntos.")
+    poke_env_metadata = installed_poke_env_metadata()
     missing_commands = [
         command for command in ("git", "node", "npm") if shutil.which(command) is None
     ]
@@ -733,18 +995,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{reason[:300]}",
             flush=True,
         )
-    if rotating_corpus:
-        schedule = build_pairing_schedule(
-            valid_teams, count=args.battles, seed=args.seed
+    self_play_schedule: list[TeamPairing] = []
+    benchmark_schedule: list[BenchmarkBattlePlan] = []
+    if args.mode == "benchmark":
+        base_pairing_count = (args.benchmark_battles_per_baseline + 1) // 2
+        if rotating_corpus:
+            base_pairings = build_pairing_schedule(
+                valid_teams, count=base_pairing_count, seed=args.seed
+            )
+        else:
+            base_pairings = [
+                TeamPairing(alpha=valid_teams[0], beta=valid_teams[1])
+                for _ in range(base_pairing_count)
+            ]
+        benchmark_schedule = build_mirrored_benchmark_schedule(
+            base_pairings, count=args.benchmark_battles_per_baseline
         )
+        rotation = benchmark_schedule_statistics(benchmark_schedule)
+        rotation["sameScheduleForEveryBaseline"] = True
+        rotation["baselineCount"] = len(BASELINE_SPECS)
+        rotation["totalBattles"] = len(benchmark_schedule) * len(BASELINE_SPECS)
+        if not rotating_corpus:
+            rotation["teamPoolMode"] = "fixed-explicit-pair"
     else:
-        schedule = [
-            TeamPairing(alpha=valid_teams[0], beta=valid_teams[1])
-            for _ in range(args.battles)
-        ]
-    rotation = pairing_statistics(schedule)
-    if not rotating_corpus:
-        rotation["mode"] = "fixed-explicit-pair"
+        if rotating_corpus:
+            self_play_schedule = build_pairing_schedule(
+                valid_teams, count=args.battles, seed=args.seed
+            )
+        else:
+            self_play_schedule = [
+                TeamPairing(alpha=valid_teams[0], beta=valid_teams[1])
+                for _ in range(args.battles)
+            ]
+        rotation = pairing_statistics(self_play_schedule)
+        if not rotating_corpus:
+            rotation["mode"] = "fixed-explicit-pair"
     overall.advance(
         f"Corpus M-C: {len(valid_teams)} válidos · "
         f"{rotation['uniquePairings']} cruces"
@@ -781,21 +1066,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Modelo cargado en {model_runtime.metadata['device']} · modo determinista"
     )
 
+    benchmark_result: dict[str, Any] | None = None
     with running_showdown(
         showdown_checkout, args.port, logs_dir / "showdown-server.log"
     ) as server:
         overall.advance(f"Servidor privado listo en 127.0.0.1:{args.port}")
         battle_started = time.monotonic()
-        battles, wins, aliases_removed = asyncio.run(
-            run_vgc_bench_battles(
-                runtime=model_runtime,
-                port=args.port,
-                battle_format=args.format,
-                schedule=schedule,
-                timeout=args.battle_timeout,
-                replay_dir=local_replays,
+        if args.mode == "benchmark":
+            benchmark_result = asyncio.run(
+                run_baseline_benchmark(
+                    runtime=model_runtime,
+                    port=args.port,
+                    battle_format=args.format,
+                    schedule=benchmark_schedule,
+                    timeout=args.battle_timeout,
+                    replay_dir=local_replays,
+                    seed=args.seed,
+                )
             )
-        )
+            battles = benchmark_result["items"]
+            benchmark_overall = benchmark_result["overall"]
+            wins = {
+                "vgcBench": benchmark_overall["wins"],
+                "baselines": benchmark_overall["losses"],
+                "ties": benchmark_overall["ties"],
+            }
+            aliases_removed = benchmark_result["aliasesRemoved"]
+        else:
+            battles, wins, aliases_removed = asyncio.run(
+                run_vgc_bench_battles(
+                    runtime=model_runtime,
+                    port=args.port,
+                    battle_format=args.format,
+                    schedule=self_play_schedule,
+                    timeout=args.battle_timeout,
+                    replay_dir=local_replays,
+                )
+            )
         resources = environment_snapshot(server.process.pid)
         startup_seconds = server.startup_seconds
         battle_seconds = time.monotonic() - battle_started
@@ -821,11 +1128,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     origin_counts: dict[str, int] = {}
     for team in valid_teams:
         origin_counts[team.origin] = origin_counts.get(team.origin, 0) + 1
+    if args.mode == "benchmark":
+        assert benchmark_result is not None
+        requested_battles = (
+            args.benchmark_battles_per_baseline * len(BASELINE_SPECS)
+        )
+        player_metadata: dict[str, Any] = {
+            "mode": "baseline-benchmark",
+            "vgcBench": "deterministic neural policy",
+            "baselines": [spec.result_metadata() for spec in BASELINE_SPECS],
+        }
+    else:
+        requested_battles = args.battles
+        player_metadata = {
+            "mode": "self-play",
+            "alpha": "VGC-Bench deterministic",
+            "beta": "VGC-Bench deterministic",
+        }
     payload = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "runId": run_id,
         "createdAt": utc_now(),
         "status": "passed",
+        "mode": args.mode,
         "projectCommit": git_revision(PROJECT_ROOT),
         "showdown": {
             "repository": args.showdown_repository,
@@ -846,10 +1171,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 **checkpoint_setup,
             },
             "policy": model_runtime.metadata,
-            "players": {
-                "alpha": "VGC-Bench deterministic",
-                "beta": "VGC-Bench deterministic",
-            },
+            "players": player_metadata,
+            "pokeEnv": poke_env_metadata,
             "aliasesRemoved": aliases_removed,
             "trainingRegulations": ["M-A", "M-B"],
             "evaluationRegulation": "M-C",
@@ -867,7 +1190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "negativeControl": negative_validation,
         },
         "battles": {
-            "requested": args.battles,
+            "requested": requested_battles,
             "completed": len(battles),
             "durationSeconds": round(battle_seconds, 3),
             "battlesPerMinute": round(len(battles) / battle_seconds * 60, 3),
@@ -879,6 +1202,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "artifacts": {"replaysZip": str(replay_archive)},
         "totalDurationSeconds": round(total_seconds, 3),
     }
+    if benchmark_result is not None:
+        payload["benchmark"] = {
+            "method": "paired-mirrored-baseline-suite",
+            "battlesPerBaseline": args.benchmark_battles_per_baseline,
+            "sameScheduleForEveryBaseline": True,
+            "randomSeed": args.seed,
+            "schedule": rotation,
+            "ratingModel": {
+                "scope": "internal-only",
+                "name": "logistic-400",
+                "anchorRating": 1500,
+                "anchorMeaning": (
+                    "Cada rival, o el pool equiponderado, se trata como un "
+                    "oponente interno de 1500. No equivale al Elo de Showdown."
+                ),
+                "pointEstimateSmoothing": "one-virtual-draw",
+                "confidenceInterval": "Wilson 95% sobre puntuación de match",
+            },
+            "overall": benchmark_result["overall"],
+            "opponents": benchmark_result["opponents"],
+        }
     atomic_json(result_path, payload)
     overall.advance(f"Resultado persistido en {result_path}")
 
@@ -894,7 +1238,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if ignored_teams:
         print(f"   Omitidos: {len(ignored_teams)} equipos externos/duplicados")
-    print(f"   Combates: {len(battles)}/{args.battles} · victorias {wins}")
+    print(f"   Combates: {len(battles)}/{requested_battles} · victorias {wins}")
+    if benchmark_result is not None:
+        print("   Benchmark interno (cada rival anclado en 1500):")
+        for spec in BASELINE_SPECS:
+            report = benchmark_result["opponents"][spec.id]
+            print(
+                f"     {spec.label}: {report['wins']}-{report['losses']}-"
+                f"{report['ties']} · {report['scorePercent']:.2f}% · "
+                f"ΔElo {report['elo']['difference']:+.1f}"
+            )
+        benchmark_overall = benchmark_result["overall"]
+        print(
+            "     Pool equiponderado: "
+            f"{benchmark_overall['scorePercent']:.2f}% · "
+            f"Elo interno {benchmark_overall['elo']['performanceRating']:.1f}"
+        )
+        print("     ⚠️ Este Elo no es el rating oficial de Pokémon Showdown.")
     print(f"   Rendimiento: {payload['battles']['battlesPerMinute']} combates/min")
     print(f"   Resultado: {result_path}")
     print(f"   Replays: {replay_archive}")

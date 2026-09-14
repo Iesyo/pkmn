@@ -89,6 +89,10 @@ test("keeps the canonical Colab launcher reproducible and free of saved output",
   assert.match(notebookSource, /battle_lab\/vgc_bench_battle\.py/);
   assert.match(notebookSource, /Pokemon VGC\/BattleLab\/results\/phase-2/);
   assert.match(notebookSource, /--battles/);
+  assert.match(notebookSource, /RUN_MODE = "benchmark"/);
+  assert.match(notebookSource, /BENCHMARK_BATTLES_PER_BASELINE = 500/);
+  assert.match(notebookSource, /--benchmark-battles-per-baseline/);
+  assert.match(notebookSource, /Elo interno/);
   assert.match(notebookSource, /--device/);
   assert.match(notebookSource, /--seed/);
   assert.match(notebookSource, /--extra-teams-dir/);
@@ -107,15 +111,16 @@ test("keeps the canonical Colab launcher reproducible and free of saved output",
   assert.match(notebookSource, /str\(battle_lab_python\)/);
   assert.match(notebookSource, /env=battle_lab_env/);
   assert.match(notebookSource, /Node\.js y npm listos/);
-  assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Soltar a VGC-Bench sin piedad"/);
+  assert.match(notebookSource, /run_live\(command, cwd=pkmn_root, label="Evaluar a VGC-Bench sin piedad"/);
   assert.match(notebookSource, /NODE_VERSION = "24\.21\.0"/);
   assert.match(notebookSource, /"npm", "install", "--global", "n@latest"/);
   assert.match(notebookSource, /if node_major < 24/);
 });
 
 test("pins and verifies the merciless VGC-Bench inference path", async () => {
-  const [runner, corpus, requirements, readme, builder] = await Promise.all([
+  const [runner, benchmark, corpus, requirements, readme, builder] = await Promise.all([
     text("battle_lab/vgc_bench_battle.py"),
+    text("battle_lab/benchmarking.py"),
     text("battle_lab/team_corpus.py"),
     text("battle_lab/requirements-phase2.txt"),
     text("battle_lab/README.md"),
@@ -133,15 +138,26 @@ test("pins and verifies the merciless VGC-Bench inference path", async () => {
   assert.match(runner, /collapse_species_aliases/);
   assert.match(runner, /build_pairing_schedule/);
   assert.match(runner, /player_a\.update_team\(pairing\.alpha\.team_text\)/);
-  assert.match(runner, /"schemaVersion": 3/);
+  assert.match(runner, /"schemaVersion": 4/);
   assert.match(runner, /os\.replace\(partial, destination\)/);
-  assert.doesNotMatch(runner, /RandomPlayer|MaxBasePowerPlayer/);
+  assert.match(runner, /RandomPlayer/);
+  assert.match(runner, /MaxBasePowerPlayer/);
+  assert.match(runner, /SimpleHeuristicsPlayer/);
+  assert.match(runner, /run_baseline_benchmark/);
+  assert.match(runner, /installed_poke_env_metadata/);
+  assert.match(runner, /direct_url\.json/);
+  assert.match(runner, /reset_battles\(\)/);
+  assert.match(benchmark, /DEFAULT_BENCHMARK_BATTLES_PER_BASELINE = 500/);
+  assert.match(benchmark, /build_mirrored_benchmark_schedule/);
+  assert.match(benchmark, /one-virtual-draw/);
+  assert.match(benchmark, /log10\(score \/ \(1 - score\)\)/);
   assert.match(corpus, /DEFAULT_CORPUS_MANIFEST/);
   assert.match(corpus, /balanced-round-robin/);
   assert.match(corpus, /team-builder-drive/);
   assert.match(builder, /Descargar \.txt/);
   assert.match(builder, /downloadShowdownPaste/);
   assert.equal(requirements.trim().split("\n").at(-1), "stable-baselines3==2.8.0");
-  assert.match(readme, /VGC-Bench vs\. VGC-Bench/);
+  assert.match(readme, /500 combates contra cada baseline/);
+  assert.match(readme, /self-play como modo alternativo/);
   assert.match(readme, /M-A\/M-B/);
 });

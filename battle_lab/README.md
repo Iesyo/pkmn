@@ -4,9 +4,10 @@ El Battle Lab se ejecuta por completo en Google Colab. La computadora del
 usuario solo abre la libreta y, en fases posteriores, la interfaz temporal de
 Gradio.
 
-## Fase 2: VGC-Bench sin piedad
+## Fase 2: benchmark VGC-Bench sin piedad
 
-La libreta canónica ahora ejecuta combates reales **VGC-Bench vs. VGC-Bench**:
+La libreta canónica mide a **VGC-Bench contra los tres baselines usados por el
+proyecto original** y conserva el self-play como modo alternativo:
 
 1. fija y compila la revisión oficial de Pokémon Showdown seleccionada por
    `lib/champions-regulation.mjs`;
@@ -18,11 +19,13 @@ La libreta canónica ahora ejecuta combates reales **VGC-Bench vs. VGC-Bench**:
 4. descarga el checkpoint público final `BC seed1 / epoch 100` desde
    [vgc-bench-models](https://huggingface.co/cameronangliss/vgc-bench-models)
    y verifica sus bytes con SHA-256;
-5. usa la política neuronal para Team Preview y para cada turno en ambos lados;
+5. usa la política neuronal para Team Preview y para cada turno de VGC-Bench;
 6. elige siempre la acción legal de mayor probabilidad (`deterministic=True`);
 7. usa CUDA automáticamente cuando Colab ofrece GPU y cae a CPU si no;
-8. rota cruces balanceados sin repetir pareja hasta agotar el round-robin;
-9. guarda métricas reproducibles por equipo y replays comprimidos.
+8. enfrenta al modelo con `RandomPlayer`, `MaxBasePowerPlayer` y
+   `SimpleHeuristicsPlayer` usando la misma agenda espejada;
+9. rota cruces balanceados sin repetir pareja hasta agotar el round-robin;
+10. guarda métricas reproducibles, Elo interno y replays comprimidos.
 
 El adaptador corrige además un caso del fork de `poke-env`: Open Team Sheets
 puede registrar dos alias de una misma forma (`Indeedee` e `Indeedee-F`) y crear
@@ -37,13 +40,34 @@ exacta de entrada del modelo: 6,936 valores y dos ramas de 107 acciones.
 - inferencia determinista, sin muestreo de acciones;
 - máscara de legalidad de VGC-Bench;
 - GPU si está disponible;
-- ambos jugadores usan la red, no `RandomPlayer` ni `MaxBasePowerPlayer`.
+- el modelo neuronal siempre usa toda la red; los rivales deliberadamente más
+  simples permiten medir cuánto aporta.
 
 El checkpoint publicado fue entrenado con equipos M-A/M-B. M-C usa el mismo
 espacio de reglas, pero sigue siendo una evaluación fuera de su distribución
-de entrenamiento. Es una base mucho más seria que los bots del smoke test; su
-Elo en M-C se medirá después contra baselines y rivales calibrados, no se
-presupone.
+de entrenamiento. El benchmark cuantifica su rendimiento en M-C sin asumir que
+equivale a su fuerza en las regulaciones de entrenamiento.
+
+## Benchmark calibrado
+
+El modo predeterminado del Colab ejecuta **500 combates contra cada baseline**:
+
+- `RandomPlayer`: escoge acciones legales al azar;
+- `MaxBasePowerPlayer`: prioriza potencia base, con objetivos y cambios simples;
+- `SimpleHeuristicsPlayer`: usa la heurística de dobles de `poke-env`, que puntúa
+  daño, precisión, STAB, tipos, HP, boosts y cambios.
+
+Son 1,500 combates en total. Cada pareja de Teams se juega dos veces: VGC-Bench
+usa un Team/lado en la primera y el Team/lado contrario en la segunda. Los tres
+rivales reciben exactamente la misma agenda, cuyo SHA-256 queda en el JSON.
+Los baselines usan Team Preview aleatorio, como define `poke-env`; VGC-Bench usa
+su Team Preview aprendido.
+
+El resultado incluye puntuación de match, diferencia Elo contra cada baseline,
+intervalo Wilson del 95% y un Elo de rendimiento contra el pool equiponderado.
+La escala usa la curva logística Elo-400 y ancla internamente cada rival en
+1500. Es útil para comparar checkpoints y ejecuciones de Battle Lab, pero **no
+es el rating oficial de Pokémon Showdown**.
 
 ## Corpus competitivo M-C
 
@@ -101,7 +125,10 @@ python -m venv .venv-battle-lab
 source .venv-battle-lab/bin/activate
 python -m pip install -r battle_lab/requirements-phase1.txt
 python -m pip install -r battle_lab/requirements-phase2.txt
-python battle_lab/vgc_bench_battle.py --battles 20 --device auto
+python battle_lab/vgc_bench_battle.py \
+  --mode benchmark \
+  --benchmark-battles-per-baseline 500 \
+  --device auto
 ```
 
 Para añadir una carpeta de equipos exportados en formato Showdown al corpus:
@@ -115,6 +142,15 @@ python battle_lab/vgc_bench_battle.py \
 Para una prueba diagnóstica de una sola pareja, `--team-a` y `--team-b` siguen
 disponibles juntos; ese modo desactiva la rotación.
 
+Para regresar al combate neuronal contra sí mismo:
+
+```bash
+python battle_lab/vgc_bench_battle.py \
+  --mode self-play \
+  --battles 20 \
+  --device auto
+```
+
 El checkout de Showdown, el de VGC-Bench y el modelo se crean dentro de
 `.battle-lab-runtime/`; nunca reemplazan instalaciones ajenas. El puerto
 interno predeterminado es `8000`. Si ya está ocupado, el runner se detiene sin
@@ -126,7 +162,8 @@ Cada ejecución produce:
 
 - `vgc-bench-<timestamp>.json`: commits, hash del checkpoint, dispositivo,
   versión de PyTorch/SB3, dimensiones del modelo, procedencia y hash de cada
-  equipo, agenda, victorias por equipo, rendimiento y correcciones de alias;
+  equipo, agenda, resultados por baseline, Elo interno, victorias por equipo,
+  rendimiento y correcciones de alias;
 - `vgc-bench-<timestamp>-replays.zip`: replays HTML y logs.
 
 La Fase 1 se conserva en `battle_lab/showdown_smoke.py` como diagnóstico ligero

@@ -115,10 +115,11 @@ PYTHONPATH=backend python -m unittest discover -s backend/tests -t .
 ## Battle Lab en Colab
 
 La libreta canónica levanta una instancia privada de Pokémon Showdown, valida
-Champions M-C y enfrenta el checkpoint final de VGC-Bench contra sí mismo con
-Team Preview y acciones deterministas. Usa GPU automáticamente cuando está
-disponible e incluye barra de progreso, ETA, métricas verificables y replays en
-Google Drive.
+Champions M-C y mide el checkpoint final de VGC-Bench contra `RandomPlayer`,
+`MaxBasePowerPlayer` y `SimpleHeuristicsPlayer` mediante cruces espejados. Usa
+GPU automáticamente cuando está disponible e incluye barra de progreso, ETA,
+Elo interno verificable y replays en Google Drive. El self-play permanece como
+modo alternativo.
 
 [Abrir Battle Lab en Colab](https://colab.research.google.com/github/Iesyo/pkmn/blob/main/colab/Battle_Lab.ipynb)
 
