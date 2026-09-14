@@ -8,7 +8,7 @@ async function forward(
   context: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await context.params;
-  const relativePath = path.map((part) => decodeURIComponent(part)).join("/");
+  const relativePath = path.join("/");
   if (!ALLOWED_PATH.test(relativePath)) {
     return Response.json({ detail: "Ruta de Battle Lab no permitida." }, { status: 404 });
   }
