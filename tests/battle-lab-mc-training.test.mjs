@@ -45,8 +45,11 @@ test("training artifacts pin M-C and keep the census separate from training", ()
   assert.match(notebookText, /VGCPastes/);
   assert.match(notebookText, /BATTLE-LAB-MC-TRAIN-001/);
   assert.match(notebookText, /RUN_MODE = "CENSUS"/);
-  assert.match(notebookText, /mc_census\.py/);
+  assert.match(notebookText, /battle_lab\.mc_census/);
   assert.match(notebookText, /Descartes por causa/);
+  assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_training"/);
+  assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_census"/);
+  assert.doesNotMatch(notebookText, /PKMN_ROOT \/ "battle_lab" \/ "mc_census\.py"/);
 });
 
 test("census helpers expose reproducible rating, winner, and team-preview metrics", () => {
