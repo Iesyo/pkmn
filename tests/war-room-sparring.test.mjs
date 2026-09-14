@@ -128,18 +128,36 @@ test("local sparring service is syntactically valid and loopback-only", async ()
   assert.equal(python.status, 0, python.stderr || python.stdout);
 });
 
-test("sparring UI presents both teams and staged human battle controls", async () => {
-  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring.tsx", import.meta.url));
+test("local runtime provisions an unmodified pinned classic Showdown viewer", async () => {
+  const sourcePath = fileURLToPath(new URL("../battle_lab/local_runtime.py", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /pokemon-showdown-client\.git/);
+  assert.match(source, /e47b8be4103b5e027cd191a024e383be88f37bfe/);
+  assert.match(source, /testclient-old\.html/);
+  assert.match(source, /127\.0\.0\.1/);
+  assert.match(source, /DEFAULT_VIEWER_PORT = 8767/);
+  assert.match(source, /AGPLv3/);
+
+  const python = spawnSync(process.env.PYTHON ?? "python3", ["-m", "py_compile", sourcePath], { encoding: "utf8" });
+  assert.equal(python.status, 0, python.stderr || python.stdout);
+});
+
+test("sparring UI embeds the real classic Showdown battle room and keeps staged legal controls", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
 
   assert.match(source, /parseShowdownPaste/);
   assert.match(source, /Equipo rival/);
-  assert.match(source, /Elige objetivo/);
   assert.match(source, /Confirmar turno/);
   assert.match(source, /Pokémon izquierdo/);
   assert.match(source, /Pokémon derecho/);
   assert.match(source, /const LOCAL_SERVICE = "\/api\/battle-lab"/);
-  assert.doesNotMatch(source, />\{action\.label\}<\/button>/);
+  assert.match(source, /testclient-old\.html\?~~127\.0\.0\.1:8766/);
+  assert.match(source, /#\$\{session\.battle\.tag\}/);
+  assert.match(source, /<iframe/);
+  assert.match(source, /Pokémon Showdown · batalla real/);
+  assert.doesNotMatch(source, /Battle log/);
 });
 
 test("web app proxies only the Battle Lab loopback endpoints used by Sparring", async () => {
