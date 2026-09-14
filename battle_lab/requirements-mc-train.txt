@@ -1,0 +1,8 @@
+# Battle Lab M-C training extras. PyTorch is intentionally not pinned here so
+# Colab can reuse its GPU-enabled runtime instead of downloading another CUDA stack.
+stable-baselines3==2.8.0
+imitation @ git+https://github.com/cameronangliss/imitation.git@56eb3b295da5d52b8f7277c6ba206913b19ab110
+supersuit==3.11.0
+tensorboard==2.20.0
+huggingface_hub==0.36.2
+nashpy==0.0.43
