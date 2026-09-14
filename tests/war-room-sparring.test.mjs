@@ -160,6 +160,15 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.doesNotMatch(source, /Battle log/);
 });
 
+test("sparring move target picker survives identical polling snapshots", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /const actionSignature = unique\.map\(actionKey\)\.sort\(\)\.join\("\|\|"\)/);
+  assert.match(source, /useEffect\(\(\) => setPendingMove\(""\), \[actionSignature, effectiveMechanic\]\)/);
+  assert.doesNotMatch(source, /setPendingMove\(""\), \[actions, effectiveMechanic\]/);
+});
+
 test("web app proxies only the Battle Lab loopback endpoints used by Sparring", async () => {
   const sourcePath = fileURLToPath(new URL("../app/api/battle-lab/[...path]/route.ts", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
