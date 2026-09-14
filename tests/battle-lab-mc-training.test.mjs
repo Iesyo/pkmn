@@ -50,6 +50,43 @@ test("training artifacts pin M-C and keep the census separate from training", ()
   assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_training"/);
   assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_census"/);
   assert.doesNotMatch(notebookText, /PKMN_ROOT \/ "battle_lab" \/ "mc_census\.py"/);
+
+  const injectBlock = source.match(/def inject_mc_support[\s\S]*?\n\ndef scrape_mc_logs/);
+  assert.ok(injectBlock, "inject_mc_support block must exist");
+  assert.match(injectBlock[0], /with working_directory\(vgc_bench_checkout\):[\s\S]*?vgc_bench\.src\.utils/);
+});
+
+test("inject_mc_support imports VGC-Bench from its own checkout and restores cwd", () => {
+  const program = String.raw`
+import importlib
+import os
+import pathlib
+import sys
+import tempfile
+from battle_lab.mc_training import inject_mc_support
+
+root = pathlib.Path(tempfile.mkdtemp())
+caller = root / "caller"
+checkout = root / "vgc-bench"
+(caller).mkdir()
+(checkout / "vgc_bench" / "src").mkdir(parents=True)
+(checkout / "data").mkdir()
+(checkout / "data" / "abilities.json").write_text("[]")
+(checkout / "vgc_bench" / "src" / "utils.py").write_text(
+    'import json\nwith open("data/abilities.json") as f:\n    abilities = json.load(f)\nformat_map = {}\n'
+)
+(checkout / "vgc_bench" / "src" / "env.py").write_text('from .utils import format_map\n')
+(checkout / "vgc_bench" / "src" / "callback.py").write_text('from .utils import format_map\n')
+os.chdir(caller)
+inject_mc_support(checkout)
+assert pathlib.Path.cwd() == caller
+utils = importlib.import_module("vgc_bench.src.utils")
+assert utils.abilities == []
+assert utils.format_map["mc"] == "gen9championsvgc2026regmc"
+print("ok")
+`;
+  const output = execFileSync("python", ["-c", program], { cwd: root, encoding: "utf8" });
+  assert.match(output, /ok/);
 });
 
 test("census helpers expose reproducible rating, winner, and team-preview metrics", () => {

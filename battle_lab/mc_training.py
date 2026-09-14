@@ -325,11 +325,15 @@ def inject_mc_support(vgc_bench_checkout: Path) -> None:
     checkout = str(vgc_bench_checkout)
     if checkout not in sys.path:
         sys.path.insert(0, checkout)
-    utils = importlib.import_module("vgc_bench.src.utils")
-    utils.format_map["mc"] = DEFAULT_FORMAT
-    for module_name in ("vgc_bench.src.env", "vgc_bench.src.callback"):
-        module = importlib.import_module(module_name)
-        module.format_map["mc"] = DEFAULT_FORMAT
+    # VGC-Bench loads abilities/items/moves with paths relative to its checkout.
+    # Always import its modules while that checkout is the current directory, then
+    # restore the caller's cwd. This keeps Battle Lab callers independent of cwd.
+    with working_directory(vgc_bench_checkout):
+        utils = importlib.import_module("vgc_bench.src.utils")
+        utils.format_map["mc"] = DEFAULT_FORMAT
+        for module_name in ("vgc_bench.src.env", "vgc_bench.src.callback"):
+            module = importlib.import_module(module_name)
+            module.format_map["mc"] = DEFAULT_FORMAT
 
 
 def scrape_mc_logs(
