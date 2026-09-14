@@ -8,6 +8,7 @@ import {
   Crosshair,
   Database,
   ExternalLink,
+  Gamepad2,
   Hammer,
   Info,
   Loader2,
@@ -24,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 
+import { WarRoomSparring } from "@/components/vgc/war-room-sparring";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,7 +68,7 @@ import {
   type WarRoomSetSuggestion,
 } from "@/lib/war-room";
 
-type WarRoomMode = "audit" | "matchup" | "optimize";
+type WarRoomMode = "audit" | "matchup" | "optimize" | "sparring";
 
 type RivalSetState = {
   teamId: string;
@@ -133,6 +135,13 @@ const MODES: Array<{
     short: "Optimize",
     description: "Bloquea el core y contrasta integrantes y sets con evidencia actual.",
     icon: Settings2,
+  },
+  {
+    id: "sparring",
+    label: "Sparring",
+    short: "Sparring",
+    description: "Juega contra LIGHT M-C con un rival completo de VGCPastes o Mis pastes.",
+    icon: Gamepad2,
   },
 ];
 
@@ -1138,10 +1147,10 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
         <div className="h-px bg-gradient-to-r from-rose-400 via-amber-300 to-cyan-300" />
         <div className="p-5">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="max-w-3xl"><div className="flex flex-wrap items-center gap-2"><Swords className="size-5 text-rose-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-rose-200">War Room</p><Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Champions M-C</Badge></div><h1 className="mt-2 text-2xl font-black tracking-tight text-white">Del dato a una decisión de torneo</h1><p className="mt-1 text-xs leading-5 text-slate-500">Audita, prepara y optimiza con un motor determinista. Cada conclusión declara si proviene del set exacto, del team preview o del corpus.</p></div>
+            <div className="max-w-3xl"><div className="flex flex-wrap items-center gap-2"><Swords className="size-5 text-rose-300" /><p className="text-[10px] font-black uppercase tracking-[0.18em] text-rose-200">War Room</p><Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">Champions M-C</Badge></div><h1 className="mt-2 text-2xl font-black tracking-tight text-white">Del dato a una decisión de torneo</h1><p className="mt-1 text-xs leading-5 text-slate-500">Audita, prepara, optimiza y prueba el Team en combate. Cada conclusión declara si proviene del set exacto, del team preview o del corpus.</p></div>
             <div className="min-w-0 xl:w-[420px]"><label className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-600">Team y versión de trabajo</label><Select value={selectedTeam?.id ?? ""} onValueChange={changeTeam}><SelectTrigger className="mt-2 w-full border-white/10 bg-slate-950/70"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{versions.map((version) => { const storedGroup = groups.find((group) => group.versions.some((entry) => entry.id === version.id)); return <SelectItem key={version.id} value={version.id}>{storedGroup ? `${storedGroup.name} · v${formatVersion(version)}` : `${version.name} · borrador`}</SelectItem>; })}</SelectContent></Select></div>
           </div>
-          <div className="mt-5 grid gap-2 border-t border-white/7 pt-5 lg:grid-cols-3">
+          <div className="mt-5 grid gap-2 border-t border-white/7 pt-5 md:grid-cols-2 xl:grid-cols-4">
             {MODES.map((entry) => {
               const Icon = entry.icon;
               const active = mode === entry.id;
@@ -1166,6 +1175,8 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
       {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE} memberApplyState={memberApplyState} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoMember={undoMember} /> : null}
+
+      {resources && workingTeam && mode === "sparring" ? <WarRoomSparring team={workingTeam} corpusTeams={resources.corpus.teams} /> : null}
     </div>
   );
 }
