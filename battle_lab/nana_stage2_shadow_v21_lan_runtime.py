@@ -17,6 +17,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from contextlib import suppress
 from typing import Sequence
 
@@ -24,7 +26,14 @@ from battle_lab import nana_stage2_shadow_v21_runtime as nana_runtime
 from battle_lab.lan_tunnel import DEFAULT_BATTLE_LAB_PORTS, DEFAULT_GATEWAY_PORT
 
 
-DEFAULT_WAR_ROOM_PORT = 11829
+COMMON_WAR_ROOM_PORTS = (
+    11829,
+    5173,
+    3000,
+    3200,
+    *range(5174, 5184),
+    *range(3001, 3011),
+)
 
 
 def _port_is_open(port: int) -> bool:
@@ -33,6 +42,54 @@ def _port_is_open(port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _looks_like_war_room(port: int) -> bool:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/",
+        headers={"User-Agent": "like-no-one-ever-was-lan-probe/1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=0.7) as response:
+            payload = response.read(256 * 1024).decode("utf-8", errors="ignore").lower()
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+    return any(
+        marker in payload
+        for marker in (
+            "like no one ever was",
+            "like-no-one-ever-was",
+            "/@vite/client",
+            "__vite",
+        )
+    )
+
+
+def _resolve_war_room_port(explicit: int) -> int:
+    if explicit:
+        if not 1 <= explicit <= 65535:
+            raise SystemExit(f"Puerto de War Room inválido: {explicit}")
+        return explicit
+
+    environment_candidates = []
+    for name in ("WAR_ROOM_PORT", "PORT"):
+        raw = os.environ.get(name, "").strip()
+        if raw.isdigit():
+            environment_candidates.append(int(raw))
+
+    candidates = []
+    for value in (*environment_candidates, *COMMON_WAR_ROOM_PORTS):
+        if value not in candidates and value not in DEFAULT_BATTLE_LAB_PORTS:
+            candidates.append(value)
+    for candidate in candidates:
+        if _looks_like_war_room(candidate):
+            print(f"War Room detectado en 127.0.0.1:{candidate}.", flush=True)
+            return candidate
+
+    raise SystemExit(
+        "No pude detectar el puerto de War Room. Déjalo corriendo y vuelve a intentar, "
+        "o indica el puerto que muestra Vite con --war-room-port <PUERTO>."
+    )
 
 
 def _wait_port(port: int, process: subprocess.Popen[bytes], timeout: float = 8.0) -> None:
@@ -49,30 +106,38 @@ def _wait_port(port: int, process: subprocess.Popen[bytes], timeout: float = 8.0
 
 
 def _candidate_lan_addresses() -> list[str]:
-    candidates: set[str] = set()
-    with suppress(OSError):
-        for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            candidates.add(str(item[4][0]))
+    ordered: list[str] = []
+
+    def add(value: str) -> None:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return
+        if address.is_loopback:
+            return
+        if not (
+            address.is_private
+            or address.is_link_local
+            or address in ipaddress.ip_network("100.64.0.0/10")
+        ):
+            return
+        if value not in ordered:
+            ordered.append(value)
+
+    # Put the address chosen by the OS routing table first; this is normally the
+    # Wi-Fi/Ethernet address that another machine on the same LAN can reach.
     with suppress(OSError):
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             probe.connect(("8.8.8.8", 80))
-            candidates.add(str(probe.getsockname()[0]))
+            add(str(probe.getsockname()[0]))
         finally:
             probe.close()
 
-    def useful(value: str) -> bool:
-        try:
-            address = ipaddress.ip_address(value)
-        except ValueError:
-            return False
-        return not address.is_loopback and (
-            address.is_private
-            or address.is_link_local
-            or address in ipaddress.ip_network("100.64.0.0/10")
-        )
-
-    return sorted(value for value in candidates if useful(value))
+    with suppress(OSError):
+        for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(str(item[4][0]))
+    return ordered
 
 
 def parse_lan_args(
@@ -84,7 +149,8 @@ def parse_lan_args(
     parser.add_argument(
         "--war-room-port",
         type=int,
-        default=int(os.environ.get("WAR_ROOM_PORT", DEFAULT_WAR_ROOM_PORT)),
+        default=0,
+        help="Puerto de Vite/War Room. Si se omite, se intenta detectar automáticamente.",
     )
     parser.add_argument(
         "--lan-extra-port",
@@ -98,6 +164,7 @@ def parse_lan_args(
 
 def main(argv: Sequence[str] | None = None) -> int:
     lan_args, remaining = parse_lan_args(argv)
+    war_room_port = _resolve_war_room_port(lan_args.war_room_port)
     if _port_is_open(lan_args.lan_port):
         raise SystemExit(
             f"El puerto LAN {lan_args.lan_port} ya está ocupado. "
@@ -106,7 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ports = []
     for value in (
-        lan_args.war_room_port,
+        war_room_port,
         *DEFAULT_BATTLE_LAB_PORTS,
         *lan_args.lan_extra_port,
     ):
@@ -163,10 +230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
         print("El cliente te pedirá el token sin mostrarlo en pantalla.", flush=True)
-        print(
-            f"Luego abre en esa PC: http://127.0.0.1:{lan_args.war_room_port}",
-            flush=True,
-        )
+        print("Luego abre en esa PC:", flush=True)
+        print(f"http://127.0.0.1:{war_room_port}", flush=True)
         print(
             "Si Windows pregunta por Firewall, permite Python solo en redes privadas.",
             flush=True,
