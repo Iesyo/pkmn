@@ -17,9 +17,9 @@ test("direct LAN runtime keeps Nana v2.1 canonical and exposes only transport po
   assert.match(source, /STAGE2_MODEL_VERSION/);
   assert.match(source, /install_nana_stage2_shadow_v2_service/);
   assert.match(source, /host="0\.0\.0\.0"/);
-  assert.match(source, /--bind[\s\S]*0\.0\.0\.0/);
+  assert.match(source, /"--bind",\s*\n\s*"0\.0\.0\.0"/);
   assert.match(source, /exports\.bindaddress = '0\.0\.0\.0'/);
-  assert.match(source, /Private networks only|redes Privadas/);
+  assert.match(source, /redes Privadas/);
   assert.doesNotMatch(source, /lan_tunnel/);
 });
 
