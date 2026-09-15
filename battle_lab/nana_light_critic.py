@@ -299,6 +299,26 @@ def _legacy_teacher(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _turns_are_contiguous(current: dict[str, Any], nxt: dict[str, Any]) -> bool:
+    """Return whether two recorded decision prompts are adjacent in battle flow.
+
+    A forced-switch prompt may reuse the same Showdown turn number, so same-turn
+    adjacency is valid. A jump of two or more turns is never attributed to the
+    earlier action. New Nursery records also carry generation, which gives a
+    stronger prompt-level continuity check when both sides provide it.
+    """
+
+    current_turn = int(current.get("turn") or 0)
+    next_turn = int(nxt.get("turn") or 0)
+    if next_turn not in {current_turn, current_turn + 1}:
+        return False
+    current_generation = int(current.get("generation") or 0)
+    next_generation = int(nxt.get("generation") or 0)
+    if current_generation > 0 and next_generation > 0:
+        return next_generation == current_generation + 1
+    return True
+
+
 def extract_observations(
     events: Iterable[dict[str, Any]],
     *,
@@ -328,6 +348,7 @@ def extract_observations(
             model_action = payload.get("modelAction")
             light = payload.get("light")
             turn = payload.get("turn")
+            generation = payload.get("generation")
             model_actor = str(payload.get("modelActor") or "light")
             teacher = payload.get("teacher")
             if (
@@ -339,6 +360,7 @@ def extract_observations(
                 sessions[session_id]["turns"].append(
                     {
                         "turn": turn,
+                        "generation": int(generation) if isinstance(generation, int) else 0,
                         "timestamp": _event_timestamp(event),
                         "state": state,
                         "modelAction": model_action,
@@ -361,7 +383,17 @@ def extract_observations(
         teacher_default = bundle.get("teacher")
         if not isinstance(teacher_default, dict):
             teacher_default = _legacy_teacher(bundle.get("context") or {})
-        turns = sorted(bundle["turns"], key=lambda item: (item["turn"], item["timestamp"]))
+        # Timestamp is the source of truth for prompt order. Turn number alone is
+        # insufficient because forced switches may create a second prompt on the
+        # same Showdown turn.
+        turns = sorted(
+            bundle["turns"],
+            key=lambda item: (
+                item.get("timestamp") or "",
+                int(item.get("generation") or 0),
+                int(item.get("turn") or 0),
+            ),
+        )
         for index, item in enumerate(turns):
             if actor_filter is not None and item.get("modelActor") != actor_filter:
                 continue
@@ -370,7 +402,7 @@ def extract_observations(
             result: dict[str, Any] = {}
             if index + 1 < len(turns):
                 next_item = turns[index + 1]
-                if int(next_item["turn"]) > int(item["turn"]):
+                if _turns_are_contiguous(item, next_item):
                     after_state = next_item["state"]
             elif isinstance(bundle.get("end"), dict):
                 after_state = bundle["end"]["state"]
@@ -384,11 +416,14 @@ def extract_observations(
             outcome = transition_outcome(before_model, after_model)
             keys = context_keys(before_model, item["modelAction"], item["light"])
             teacher = item.get("teacher") if isinstance(item.get("teacher"), dict) else teacher_default
+            generation = int(item.get("generation") or 0)
+            sequence_id = f"g{generation}" if generation > 0 else f"seq{index}"
             rendered.append(
                 {
-                    "id": f"{session_id}:{int(item['turn'])}",
+                    "id": f"{session_id}:{int(item['turn'])}:{sequence_id}",
                     "sessionId": session_id,
                     "turn": int(item["turn"]),
+                    "generation": generation,
                     "timestamp": str(item["timestamp"] or ""),
                     "terminal": terminal,
                     "battleResult": str(result.get("winner") or "") if terminal else "",
@@ -406,7 +441,14 @@ def extract_observations(
                 }
             )
 
-    rendered.sort(key=lambda item: (item.get("timestamp") or "", item["sessionId"], item["turn"]))
+    rendered.sort(
+        key=lambda item: (
+            item.get("timestamp") or "",
+            item["sessionId"],
+            int(item.get("generation") or 0),
+            item["turn"],
+        )
+    )
     return rendered
 
 
@@ -467,12 +509,14 @@ def _recent_summary(
             "neutral": 0,
             "negative": 0,
         }
+
     def outcome(item: dict[str, Any]) -> float:
         if item.get("label") == "positive":
             return 1.0
         if item.get("label") == "negative":
             return 0.0
         return prior_trust
+
     return {
         "n": len(selected),
         "meanDelta": sum(_safe_float(item.get("delta")) for item in selected) / len(selected),
