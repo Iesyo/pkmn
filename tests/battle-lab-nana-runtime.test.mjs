@@ -30,7 +30,9 @@ test("Nana safely reuses only the exact pinned static Showdown renderer", () => 
   assert.match(source, /hashlib\.sha256\(local_path\.read_bytes\(\)\)/);
   assert.match(source, /hashlib\.sha256\(remote_bytes\)/);
   assert.match(source, /Nana lo reutilizará sin tomar propiedad del proceso/);
-  assert.match(source, /Returning a completed-like status prevents Nana from killing a process/);
+  assert.match(source, /return _BorrowedViewerProcess\(\), _BorrowedViewerLog\(\)/);
+  assert.match(source, /def poll\(\) -> int:/);
+  assert.match(source, /return 0/);
   assert.match(source, /install_reusable_viewer\(local_runtime\)/);
   assert.doesNotMatch(source, /terminate\(/);
   assert.doesNotMatch(source, /kill\(/);
