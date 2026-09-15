@@ -78,13 +78,20 @@ async def _wait_for_human_prompt(
     service: Any,
     session: Any,
     *,
+    turn: int,
     timeout: float,
 ) -> bool:
-    """Wait for a fresh human prompt without relying on Windows timer granularity.
+    """Wait for the exact fresh human prompt required by the base Nursery barrier.
 
     ``asyncio.sleep(0.005)`` is commonly rounded up to roughly one Windows timer
     tick. A cooperative ``sleep(0)`` yields to the peer websocket task directly,
     so the nominal grace window remains meaningful on the ROG as well as Linux.
+
+    The guard deliberately mirrors every base-barrier readiness condition before
+    delegating: fresh generation, waiting-choice phase, matching turn and legal
+    actions present. This keeps the guard -> base-barrier handoff atomic and
+    prevents a transient cross-websocket turn skew from becoming a blocking
+    ``nana_nursery_error``.
     """
 
     claimed = int(
@@ -98,9 +105,14 @@ async def _wait_for_human_prompt(
     deadline = loop.time() + max(0.0, float(timeout))
     while True:
         generation = int(getattr(session, "generation", 0) or 0)
+        state_turn = int(
+            (getattr(session, "battle_state", {}) or {}).get("turn", 0) or 0
+        )
         if (
             generation > claimed
             and getattr(session, "phase", "") == "waiting-choice"
+            and state_turn == int(turn)
+            and bool(getattr(session, "legal_actions", None))
         ):
             return True
         if loop.time() >= deadline:
@@ -111,10 +123,13 @@ async def _wait_for_human_prompt(
 async def _wait_for_possible_human_forced_switch(
     service: Any,
     session: Any,
+    *,
+    turn: int,
 ) -> bool:
     return await _wait_for_human_prompt(
         service,
         session,
+        turn=turn,
         timeout=FORCED_SWITCH_HUMAN_GRACE_SECONDS,
     )
 
@@ -238,6 +253,7 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                     if not await _wait_for_possible_human_forced_switch(
                         service,
                         session,
+                        turn=turn,
                     ):
                         _append_skip(
                             service,
@@ -256,12 +272,24 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                 else:
                     # Close the residual timeout path here instead of letting the
                     # base barrier emit a promotion-blocking nursery_error when the
-                    # human UI disappears or never publishes a prompt.
-                    if not (
-                        generation > claimed and phase == "waiting-choice"
-                    ) and not await _wait_for_human_prompt(
+                    # human UI disappears, lags on another websocket turn, or never
+                    # publishes a complete prompt.
+                    state_turn = int(
+                        (getattr(session, "battle_state", {}) or {}).get(
+                            "turn", 0
+                        )
+                        or 0
+                    )
+                    prompt_ready = (
+                        generation > claimed
+                        and phase == "waiting-choice"
+                        and state_turn == turn
+                        and bool(getattr(session, "legal_actions", None))
+                    )
+                    if not prompt_ready and not await _wait_for_human_prompt(
                         service,
                         session,
+                        turn=turn,
                         timeout=PRECHOICE_TIMEOUT_SECONDS,
                     ):
                         _append_skip(
@@ -274,6 +302,15 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                                 ),
                                 "phase": str(
                                     getattr(session, "phase", "") or ""
+                                ),
+                                "stateTurn": int(
+                                    (getattr(session, "battle_state", {}) or {}).get(
+                                        "turn", 0
+                                    )
+                                    or 0
+                                ),
+                                "hasLegalActions": bool(
+                                    getattr(session, "legal_actions", None)
                                 ),
                             },
                         )
