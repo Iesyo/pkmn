@@ -17,6 +17,8 @@ import json
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Sequence
@@ -46,6 +48,7 @@ from battle_lab.showdown_smoke import (
 SHOWDOWN_CLIENT_REPOSITORY = "https://github.com/smogon/pokemon-showdown-client.git"
 SHOWDOWN_CLIENT_COMMIT = "e47b8be4103b5e027cd191a024e383be88f37bfe"
 DEFAULT_VIEWER_PORT = 8767
+NATIVE_BRIDGE_MARKER = "battle-lab-native-showdown-controls-v1"
 
 
 def ensure_showdown_client(
@@ -195,6 +198,19 @@ def ensure_showdown_client(
     return timings
 
 
+def _native_bridge_available(port: int) -> bool:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/battle-lab-native-controls-health",
+        headers={"User-Agent": "like-no-one-ever-was-native-controls/1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            payload = response.read().decode("utf-8", errors="replace").strip()
+            return int(getattr(response, "status", 200)) == 200 and payload == NATIVE_BRIDGE_MARKER
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+
+
 def start_viewer_server(
     *,
     checkout: Path,
@@ -202,6 +218,11 @@ def start_viewer_server(
     port: int,
 ) -> tuple[subprocess.Popen[str], Any]:
     if port_is_open(port):
+        if not _native_bridge_available(port):
+            raise RuntimeError(
+                f"El renderer existente en el puerto local {port} no expone el bridge "
+                "de controles nativos; reinicia el runtime anterior antes de continuar."
+            )
         raise RuntimeError(
             f"El puerto local {port} ya está ocupado; Battle Lab no terminará procesos ajenos."
         )
@@ -233,12 +254,14 @@ def start_viewer_server(
                 "El servidor del cliente Showdown terminó durante el arranque.\n"
                 + tail(log_path)
             )
-        if port_is_open(port):
+        if port_is_open(port) and _native_bridge_available(port):
             return process, handle
         time.sleep(0.1)
     process.terminate()
     handle.close()
-    raise TimeoutError(f"El renderer Showdown no abrió 127.0.0.1:{port}.")
+    raise TimeoutError(
+        f"El renderer Showdown no abrió el bridge nativo en 127.0.0.1:{port}."
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
