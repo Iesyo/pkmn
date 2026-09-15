@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 BRIDGE_MARKER = "battle-lab-native-showdown-controls-v1"
 CLASSIC_PATH = "/play.pokemonshowdown.com/testclient-old.html"
 VENDOR_ALIAS = "/play.pokemonshowdown.com/battle-lab-vendor.html"
+HEALTH_PATH = "/battle-lab-native-controls-health"
 VERIFY_USER_AGENT = "like-no-one-ever-was-nana/0"
 
 
@@ -197,8 +198,21 @@ class BattleLabViewerHandler(http.server.SimpleHTTPRequestHandler):
         if not head_only:
             self.wfile.write(payload)
 
+    def _serve_health(self, *, head_only: bool = False) -> None:
+        payload = (BRIDGE_MARKER + "\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(payload)
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
         path = self._path_only()
+        if path == HEALTH_PATH:
+            self._serve_health()
+            return
         if path == VENDOR_ALIAS:
             self._serve_vendor_html()
             return
@@ -212,6 +226,9 @@ class BattleLabViewerHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802 - stdlib callback name
         path = self._path_only()
+        if path == HEALTH_PATH:
+            self._serve_health(head_only=True)
+            return
         if path == VENDOR_ALIAS:
             self._serve_vendor_html(head_only=True)
             return
