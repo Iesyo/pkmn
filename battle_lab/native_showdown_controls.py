@@ -10,8 +10,14 @@ that request.
 Modern Showdown team-preview requests include ``maxChosenTeamSize`` (for VGC,
 usually 4). The pinned classic client predates that request field, so the viewer
 bridge seeds its native ``battle.teamPreviewCount`` from the request before
-rendering controls. This module deliberately keeps preview validation strict:
-Battle Lab never invents or auto-fills missing picks.
+rendering controls. The classic client still serializes the full reordered team
+(`/team 123456`); Battle Lab validates that full permutation and consumes only
+the first ``maxChosenTeamSize`` entries. Missing picks are never invented.
+
+When the active service is Nana-enabled, the model has a stable Showdown
+identity: username ``Nana`` and avatar ``3``. The short-lived poke-env clients
+are explicitly disconnected at the end of every session so that the fixed name
+can be reused safely in the next BO1.
 
 This module is installed on top of whichever BattleLabLocalService is current
 (base Sparring, Nana 0/1, or Nana 2 shadow), so existing submit_preview and
@@ -26,12 +32,17 @@ import hashlib
 import logging
 import re
 import time
+from contextlib import suppress
 from typing import Any
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from battle_lab import local_sparring_service as sparring
+
+
+NANA_DISPLAY_NAME = "Nana"
+NANA_AVATAR = "3"
 
 
 class NativeShowdownChoice(BaseModel):
@@ -128,15 +139,58 @@ def _native_double_choice(order: Any, request: dict[str, Any]) -> str | None:
     return _normalize_native_command(f"choose {first},{second}")
 
 
-def _team_preview_order(command: str) -> list[int] | None:
+def _team_preview_shape(request: dict[str, Any] | None) -> tuple[int, int]:
+    request = request if isinstance(request, dict) else {}
+    side = request.get("side")
+    pokemon = side.get("pokemon") if isinstance(side, dict) else None
+    team_size = len(pokemon) if isinstance(pokemon, list) else 6
+    if team_size <= 0:
+        team_size = 6
+    try:
+        chosen = int(request.get("maxChosenTeamSize") or 0)
+    except (TypeError, ValueError):
+        chosen = 0
+    if chosen <= 0 or chosen > team_size:
+        chosen = team_size
+    return chosen, team_size
+
+
+def _team_preview_order(
+    command: str,
+    *,
+    request: dict[str, Any] | None = None,
+) -> list[int] | None:
     normalized = _normalize_native_command(command)
     if not normalized.startswith("team "):
         return None
     payload = normalized[5:].strip()
-    values = [int(value) for value in re.findall(r"\d+", payload)] if "," in payload else [int(char) for char in payload if char.isdigit()]
-    if len(values) != 4 or len(set(values)) != 4 or any(value < 1 or value > 6 for value in values):
+    values = (
+        [int(value) for value in re.findall(r"\d+", payload)]
+        if "," in payload
+        else [int(char) for char in payload if char.isdigit()]
+    )
+    expected_count, team_size = _team_preview_shape(request)
+
+    if len(values) == expected_count:
+        selected = values
+    elif (
+        len(values) == team_size
+        and len(set(values)) == team_size
+        and set(values) == set(range(1, team_size + 1))
+    ):
+        # The classic BattleRoom reorders the full party and serializes all slots.
+        # In pick-N formats, the first N entries are the actual brought Pokémon.
+        selected = values[:expected_count]
+    else:
         return None
-    return values
+
+    if (
+        len(selected) != expected_count
+        or len(set(selected)) != expected_count
+        or any(value < 1 or value > team_size for value in selected)
+    ):
+        return None
+    return selected
 
 
 def install_native_showdown_controls() -> type:
@@ -160,6 +214,8 @@ def install_native_showdown_controls() -> type:
         async def _run_session(self, session: Any) -> None:
             """Run the normal poke-env battle while exposing its private request."""
 
+            human: Any | None = None
+            model: Any | None = None
             try:
                 session.append_event("Verificando checkpoint, Showdown y equipos…")
                 await self.ensure_ready()
@@ -201,10 +257,11 @@ def install_native_showdown_controls() -> type:
                             "Team Preview: usa los controles nativos de Pokémon Showdown."
                         )
                         selected = await target.preview_future
+                        expected_count, team_size = _team_preview_shape(target.native_request)
                         if (
-                            len(selected) != 4
-                            or len(set(selected)) != 4
-                            or any(value < 1 or value > 6 for value in selected)
+                            len(selected) != expected_count
+                            or len(set(selected)) != expected_count
+                            or any(value < 1 or value > team_size for value in selected)
                         ):
                             raise RuntimeError("Team Preview inválido.")
                         self._selected_in_teampreview = True
@@ -282,8 +339,12 @@ def install_native_showdown_controls() -> type:
                     log_level=logging.WARNING,
                 )
                 assert self.runtime is not None
+                nana_enabled = hasattr(self, "nana")
+                model_name = NANA_DISPLAY_NAME if nana_enabled else f"BattleLab{suffix}"
+                model_avatar = NANA_AVATAR if nana_enabled else None
                 model = self.runtime.player_class(
-                    account_configuration=AccountConfiguration(f"BattleLab{suffix}", None),
+                    account_configuration=AccountConfiguration(model_name, None),
+                    avatar=model_avatar,
                     battle_format=sparring.DEFAULT_FORMAT,
                     server_configuration=server_configuration,
                     max_concurrent_battles=1,
@@ -295,7 +356,7 @@ def install_native_showdown_controls() -> type:
                 )
 
                 session.append_event(
-                    f"Rival listo: {session.opponent.get('label') or session.opponent.get('id')}."
+                    f"Rival listo: {model_name}."
                 )
                 previous_tags = set(human.battles)
                 await human.battle_against(model, n_battles=1)
@@ -318,6 +379,8 @@ def install_native_showdown_controls() -> type:
                     "turns": int(getattr(finished, "turn", 0) or 0),
                     "battleTag": str(getattr(finished, "battle_tag", "")),
                     "opponent": session.opponent,
+                    "modelDisplayName": model_name,
+                    "modelAvatar": model_avatar,
                 }
                 session.phase = "completed"
                 outcome = (
@@ -340,6 +403,14 @@ def install_native_showdown_controls() -> type:
                 session.legal_actions.clear()
                 self._native_reset(session)
                 session.append_event(f"Error: {error}")
+            finally:
+                # poke-env clients are long-lived by default. Close both sockets so the
+                # stable Nana username can be reused by the next local BO1.
+                for player in (human, model):
+                    if player is None:
+                        continue
+                    with suppress(Exception):
+                        await player.ps_client.stop_listening()
 
         def snapshot(self, session: Any) -> dict[str, Any]:
             data = super().snapshot(session)
@@ -361,7 +432,10 @@ def install_native_showdown_controls() -> type:
         ) -> dict[str, Any]:
             session = self.get_session(session_id)
             if session.phase == "team-preview":
-                order = _team_preview_order(command)
+                order = _team_preview_order(
+                    command,
+                    request=getattr(session, "native_request", None),
+                )
                 if order is None:
                     raise HTTPException(
                         status_code=422,
