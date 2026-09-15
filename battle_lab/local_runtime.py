@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Battle Lab local launcher with the classic Pokémon Showdown viewer.
+"""Battle Lab local launcher with the classic Pokémon Showdown client.
 
 The interactive policy/API stays in ``local_sparring_service``. This wrapper
 provisions the official Pokémon Showdown client at a pinned revision and serves
-it unchanged from a dedicated loopback port so War Room can embed the real
-battle renderer/log as a spectator. The AGPL client remains outside this
-repository under ``.battle-lab-runtime``.
+its vendor assets unchanged from a dedicated loopback port. A tiny Battle Lab
+wrapper, served outside the vendor checkout contents, feeds poke-env's private
+player request into the classic BattleRoom so War Room can use Showdown's native
+team-preview/move/target/switch controls without duplicating that UI.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from battle_lab.local_sparring_service import (
     DEFAULT_SHOWDOWN_PORT,
     main as sparring_main,
 )
+from battle_lab.native_showdown_controls import install_native_showdown_controls
 from battle_lab.showdown_smoke import (
     git_revision,
     installed_node_version,
@@ -51,7 +53,7 @@ def ensure_showdown_client(
     checkout: Path,
     logs_dir: Path,
 ) -> dict[str, Any]:
-    """Provision the unmodified classic Showdown test client at a pinned SHA."""
+    """Provision the unmodified classic Showdown client at a pinned SHA."""
 
     checkout.parent.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -205,15 +207,16 @@ def start_viewer_server(
         )
     log_path = logs_dir / "showdown-client-http.log"
     handle = log_path.open("w", encoding="utf-8")
+    viewer_server = Path(__file__).with_name("showdown_native_viewer.py")
     process = subprocess.Popen(
         [
             sys.executable,
-            "-m",
-            "http.server",
+            str(viewer_server),
+            "--port",
             str(port),
             "--bind",
             "127.0.0.1",
-            "--directory",
+            "--root",
             str(checkout),
         ],
         cwd=checkout,
@@ -227,7 +230,7 @@ def start_viewer_server(
         if process.poll() is not None:
             handle.close()
             raise RuntimeError(
-                "El servidor estático del cliente Showdown terminó durante el arranque.\n"
+                "El servidor del cliente Showdown terminó durante el arranque.\n"
                 + tail(log_path)
             )
         if port_is_open(port):
@@ -256,6 +259,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.host not in {"127.0.0.1", "localhost"}:
         raise SystemExit("Battle Lab local solo puede escuchar en loopback.")
 
+    # Layer native Showdown controls above the currently installed service
+    # (plain Sparring or any Nana stage). Existing submit hooks remain intact.
+    install_native_showdown_controls()
+
     runtime_root = args.runtime_root.expanduser().resolve()
     logs_dir = runtime_root / "logs"
     client_root = runtime_root / "pokemon-showdown-client"
@@ -267,13 +274,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     print(
-        "Renderer clásico listo en "
+        "Cliente clásico + controles nativos listo en "
         f"http://127.0.0.1:{args.viewer_port}/play.pokemonshowdown.com/testclient-old.html",
         flush=True,
     )
     print(
-        "Licencia: Pokémon Showdown Client se sirve sin modificar desde su checkout AGPLv3 "
-        f"fijado en {SHOWDOWN_CLIENT_COMMIT[:12]}.",
+        "Licencia: los assets de Pokémon Showdown Client se sirven sin modificar desde "
+        f"su checkout AGPLv3 fijado en {SHOWDOWN_CLIENT_COMMIT[:12]}; Battle Lab añade "
+        "solo un bridge loopback externo al código vendor.",
         flush=True,
     )
 
