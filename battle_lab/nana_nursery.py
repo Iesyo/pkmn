@@ -32,6 +32,7 @@ SELF_PRIOR_TRUST = 0.50
 SELF_PRIOR_WEIGHT = 6.0
 SELF_LOW_TRUST_VETO = 0.35
 SELF_LOW_TRUST_CONFIDENCE = 0.25
+PROMOTION_INTERVENTION_WINDOW = 20
 _EPS = 1e-12
 
 
@@ -41,6 +42,21 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return rendered if math.isfinite(rendered) else default
+
+
+def _chronological_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    indexed = [
+        (index, event)
+        for index, event in enumerate(events)
+        if isinstance(event, dict)
+    ]
+    indexed.sort(
+        key=lambda item: (
+            str(item[1].get("timestamp") or ""),
+            item[0],
+        )
+    )
+    return [event for _, event in indexed]
 
 
 def build_self_summary(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -187,26 +203,57 @@ def promotion_status(
     *,
     teacher_key: str,
 ) -> dict[str, Any]:
-    """Return an evidence-only recommendation for removing first wheels."""
+    """Return an evidence-only recommendation for removing first wheels.
 
-    materialized = list(events)
-    decisions: list[dict[str, Any]] = []
-    errors = 0
-    for event in materialized:
-        if not isinstance(event, dict):
-            continue
+    Runtime/instrumentation failures are scoped to the current teacher and to the
+    evidence window that would justify promotion. A single ancient transient
+    failure therefore cannot lock Nana forever, while any recent failure still
+    blocks additional autonomy.
+    """
+
+    materialized = _chronological_events(events)
+    session_teacher: dict[str, str] = {}
+    intervention_rows: list[tuple[int, dict[str, Any]]] = []
+
+    for index, event in enumerate(materialized):
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if event.get("type") == "nana_nursery_error":
+        session_id = str(event.get("sessionId") or "")
+        if event.get("type") == "nana_teacher_version":
             teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
-            if str(teacher.get("key") or "") in {"", teacher_key}:
-                errors += 1
+            key = str(teacher.get("key") or "")
+            if session_id and key:
+                session_teacher[session_id] = key
         if event.get("type") != "nana_nursery_decision":
             continue
         teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
         if str(teacher.get("key") or "") != teacher_key:
             continue
         if payload.get("intervened") is True:
-            decisions.append(payload)
+            intervention_rows.append((index, payload))
+
+    decisions = [payload for _, payload in intervention_rows]
+    if len(intervention_rows) >= PROMOTION_INTERVENTION_WINDOW:
+        window_start_index = intervention_rows[-PROMOTION_INTERVENTION_WINDOW][0]
+    else:
+        window_start_index = 0
+
+    errors = 0
+    error_types: dict[str, int] = {}
+    for index, event in enumerate(materialized):
+        if index < window_start_index:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type not in {"nana_nursery_error", "nana_nursery_recording_error"}:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
+        event_teacher_key = str(teacher.get("key") or "")
+        if not event_teacher_key:
+            event_teacher_key = session_teacher.get(str(event.get("sessionId") or ""), "")
+        if event_teacher_key != teacher_key:
+            continue
+        errors += 1
+        error_types[event_type] = error_types.get(event_type, 0) + 1
 
     observations = [
         item
@@ -229,6 +276,7 @@ def promotion_status(
         if observations
         else None
     )
+    orphan_observations = max(0, len(observations) - len(decisions))
 
     candidate = (
         len(decisions) >= 20
@@ -237,6 +285,7 @@ def promotion_status(
         and positives >= negatives
         and recent_negatives <= 3
         and errors == 0
+        and orphan_observations == 0
         and mean_regret is not None
         and mean_regret >= -0.07
     )
@@ -250,6 +299,11 @@ def promotion_status(
         "recent10Negative": recent_negatives,
         "meanObservedBoardDelta": mean_delta,
         "errors": errors,
+        "errorTypes": error_types,
+        "errorWindowInterventions": min(
+            len(decisions), PROMOTION_INTERVENTION_WINDOW
+        ),
+        "orphanObservedOutcomes": orphan_observations,
         "meanLightRegretLog": mean_regret,
         "candidateForMoreAutonomy": candidate,
         "automaticPromotion": False,
