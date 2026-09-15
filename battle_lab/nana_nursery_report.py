@@ -16,6 +16,7 @@ from battle_lab.nana_nursery import (
     promotion_status,
 )
 from battle_lab.nana_recorder import NanaRecorder
+from battle_lab.nana_teacher import latest_teacher_from_events
 
 
 def _pct(value: Any) -> str:
@@ -26,21 +27,10 @@ def _num(value: Any) -> str:
     return "n/a" if not isinstance(value, (int, float)) else f"{float(value):+.3f}"
 
 
-def _latest_teacher(events: list[dict[str, Any]]) -> dict[str, Any]:
-    for event in reversed(events):
-        if not isinstance(event, dict) or event.get("type") != "nana_teacher_version":
-            continue
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        teacher = payload.get("teacher")
-        if isinstance(teacher, dict) and teacher.get("key"):
-            return teacher
-    return {}
-
-
 def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
     recorder = NanaRecorder(runtime_root / "nana", profile_id=profile_id)
     events = list(recorder.iter_events())
-    teacher = _latest_teacher(events)
+    teacher = latest_teacher_from_events(events)
     teacher_key = str(teacher.get("key") or "")
     decisions: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
@@ -62,7 +52,8 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
     observations = extract_observations(events, actor_filter="nana")
     if teacher_key:
         observations = [
-            item for item in observations
+            item
+            for item in observations
             if str(item.get("teacherKey") or "") == teacher_key
         ]
     self_summary = build_self_summary(events)
