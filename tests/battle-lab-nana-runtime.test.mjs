@@ -39,7 +39,7 @@ test("Nana safely reuses only the exact pinned static Showdown renderer", () => 
 });
 
 test("Nana modules are syntactically valid", () => {
-  for (const filename of ["nana_policy.py", "nana_recorder.py", "nana_runtime.py"]) {
+  for (const filename of ["nana_policy.py", "nana_recorder.py", "nana_runtime.py", "nana_predictor.py", "nana_stage1_runtime.py", "nana_stage1_audit.py"]) {
     execFileSync(process.env.PYTHON ?? "python3", ["-m", "py_compile", path.join(root, "battle_lab", filename)], {
       cwd: root,
       encoding: "utf8",
