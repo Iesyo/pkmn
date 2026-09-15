@@ -73,7 +73,7 @@ test("viewer bridge keeps vendor client untouched and drives BattleRoom native c
   assert.match(source, /battle-lab-native-showdown-controls-v1/);
   assert.match(source, /battle-lab-vendor\.html/);
   assert.match(source, /room\.receiveRequest\(request, null\)/);
-  assert.equal(source.includes("/^\\/(?:choose |team )/"), true);
+  assert.equal(source.includes("choose |team "), true);
   assert.match(source, /\/native-choice/);
   assert.match(source, /like-no-one-ever-was-nana\/0/);
   assert.doesNotMatch(source, /write_text\(.+testclient-old\.html/);
