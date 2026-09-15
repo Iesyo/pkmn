@@ -1,0 +1,223 @@
+"""Conservative live-learning helpers for Nana 2.3 Nursery.
+
+Nursery is intentionally not a replacement policy. It may pick one near-LIGHT
+alternative per BO1 when Nana's human predictor supports it, then records the
+real outcome so later battles can learn from Nana's own experience.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+from typing import Any, Iterable
+
+from battle_lab.nana_light_critic import build_actor_summary, trust_for
+
+
+NURSERY_MODEL_VERSION = "nana2.3-nursery-live-v1"
+SELF_CRITIC_MODEL_VERSION = "nana-self-critic-v1"
+NURSERY_LAMBDA_CAP = 0.15
+MAX_INTERVENTIONS_PER_BATTLE = 1
+MIN_PREDICTION_CONFIDENCE = 0.08
+MIN_ALLOWED_LIGHT_REGRET_LOG = -0.08
+HIGH_LIGHT_TRUST_VETO = 0.96
+HIGH_LIGHT_TRUST_CONFIDENCE = 0.35
+SELF_PRIOR_TRUST = 0.50
+SELF_PRIOR_WEIGHT = 6.0
+SELF_LOW_TRUST_VETO = 0.35
+SELF_LOW_TRUST_CONFIDENCE = 0.25
+_EPS = 1e-12
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        rendered = float(value)
+    except (TypeError, ValueError):
+        return default
+    return rendered if math.isfinite(rendered) else default
+
+
+def build_self_summary(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    return build_actor_summary(
+        events,
+        actor="nana",
+        prior_trust=SELF_PRIOR_TRUST,
+        prior_weight=SELF_PRIOR_WEIGHT,
+        model_version=SELF_CRITIC_MODEL_VERSION,
+        influence=1.0,
+    )
+
+
+def write_self_summary(profile_root: Path, summary: dict[str, Any]) -> Path:
+    destination = Path(profile_root) / "nursery_experience.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
+    return destination
+
+
+def rebuild_self_for_recorder(recorder: Any) -> dict[str, Any]:
+    summary = build_self_summary(recorder.iter_events())
+    write_self_summary(recorder.profile_root, summary)
+    return summary
+
+
+def choose_candidate(
+    plan: dict[str, Any],
+    *,
+    light_trust: dict[str, Any],
+    self_trust: dict[str, Any],
+    lambda_cap: float = NURSERY_LAMBDA_CAP,
+) -> dict[str, Any]:
+    """Choose a live Nursery alternative or return an explicit fallback reason."""
+
+    if plan.get("eligible") is not True:
+        return {"intervene": False, "reason": str(plan.get("reason") or "not-eligible")}
+
+    confidence = _safe_float(plan.get("confidence"))
+    if confidence < MIN_PREDICTION_CONFIDENCE:
+        return {
+            "intervene": False,
+            "reason": "human-prediction-confidence-low",
+            "confidence": confidence,
+        }
+
+    light_trust_value = _safe_float(light_trust.get("trust"), 0.90)
+    light_trust_confidence = _safe_float(light_trust.get("confidence"))
+    if (
+        light_trust_confidence >= HIGH_LIGHT_TRUST_CONFIDENCE
+        and light_trust_value >= HIGH_LIGHT_TRUST_VETO
+    ):
+        return {
+            "intervene": False,
+            "reason": "light-critic-high-trust-veto",
+            "lightTrust": light_trust_value,
+            "lightTrustConfidence": light_trust_confidence,
+        }
+
+    self_trust_value = _safe_float(self_trust.get("trust"), SELF_PRIOR_TRUST)
+    self_trust_confidence = _safe_float(self_trust.get("confidence"))
+    if (
+        self_trust_confidence >= SELF_LOW_TRUST_CONFIDENCE
+        and self_trust_value <= SELF_LOW_TRUST_VETO
+    ):
+        return {
+            "intervene": False,
+            "reason": "nana-self-low-trust-veto",
+            "selfTrust": self_trust_value,
+            "selfTrustConfidence": self_trust_confidence,
+        }
+
+    canonical = plan.get("canonical") if isinstance(plan.get("canonical"), dict) else {}
+    canonical_counter = _safe_float(canonical.get("expectedCounter"))
+    confidence_scale = max(0.0, min(1.0, _safe_float(plan.get("confidenceScale"))))
+    effective_lambda = max(0.0, lambda_cap) * confidence_scale
+    canonical_score = effective_lambda * canonical_counter
+
+    ranked: list[tuple[float, dict[str, Any], float]] = []
+    for candidate in plan.get("candidatePool") or []:
+        if not isinstance(candidate, dict) or candidate.get("selectedByLight") is True:
+            continue
+        regret = _safe_float(candidate.get("lightRegretLog"))
+        if regret < MIN_ALLOWED_LIGHT_REGRET_LOG:
+            continue
+        delta_counter = _safe_float(candidate.get("expectedCounter")) - canonical_counter
+        if delta_counter <= _EPS:
+            continue
+        candidate_score = regret + effective_lambda * _safe_float(candidate.get("expectedCounter"))
+        margin = candidate_score - canonical_score
+        if margin <= _EPS:
+            continue
+        ranked.append((margin, candidate, delta_counter))
+
+    if not ranked:
+        return {
+            "intervene": False,
+            "reason": "no-live-candidate-inside-nursery-cap",
+            "lambdaCap": lambda_cap,
+            "effectiveLambda": effective_lambda,
+        }
+
+    ranked.sort(
+        key=lambda item: (
+            item[0],
+            item[2],
+            _safe_float(item[1].get("probability")),
+        ),
+        reverse=True,
+    )
+    margin, candidate, delta_counter = ranked[0]
+    required_effective = max(0.0, -_safe_float(candidate.get("lightRegretLog")) / delta_counter)
+    required_cap = required_effective / confidence_scale if confidence_scale > _EPS else math.inf
+    return {
+        "intervene": True,
+        "reason": "nursery-live-near-light",
+        "lambdaCap": lambda_cap,
+        "effectiveLambda": effective_lambda,
+        "margin": margin,
+        "requiredLambdaCap": required_cap,
+        "expectedCounterDelta": delta_counter,
+        "candidate": candidate,
+        "lightTrust": light_trust_value,
+        "lightTrustConfidence": light_trust_confidence,
+        "selfTrust": self_trust_value,
+        "selfTrustConfidence": self_trust_confidence,
+    }
+
+
+def promotion_status(
+    events: Iterable[dict[str, Any]],
+    *,
+    teacher_key: str,
+) -> dict[str, Any]:
+    """Evidence-only recommendation for removing the first set of training wheels.
+
+    This never changes runtime parameters automatically. The live system may
+    learn immediately; increasing autonomy still requires an explicit promotion
+    after enough real interventions and an architecture audit.
+    """
+
+    decisions: list[dict[str, Any]] = []
+    errors = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event.get("type") == "nana_nursery_error":
+            errors += 1
+        if event.get("type") != "nana_nursery_decision":
+            continue
+        teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
+        if str(teacher.get("key") or "") != teacher_key:
+            continue
+        if payload.get("intervened") is True:
+            decisions.append(payload)
+
+    regrets = [
+        _safe_float((item.get("selection") or {}).get("candidate", {}).get("lightRegretLog"))
+        for item in decisions
+        if isinstance(item.get("selection"), dict)
+    ]
+    candidate = (
+        len(decisions) >= 20
+        and errors == 0
+        and (sum(regrets) / len(regrets) if regrets else -1.0) >= -0.07
+    )
+    return {
+        "teacherKey": teacher_key,
+        "interventions": len(decisions),
+        "errors": errors,
+        "meanLightRegretLog": (sum(regrets) / len(regrets)) if regrets else None,
+        "candidateForMoreAutonomy": candidate,
+        "automaticPromotion": False,
+        "nextLevelIfPromoted": {
+            "maxInterventionsPerBattle": 2,
+            "lambdaCap": 0.20,
+        },
+    }
