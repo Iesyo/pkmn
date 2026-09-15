@@ -215,6 +215,102 @@ test("Nursery model yields for pre-choice state before inspecting LIGHT", () => 
   assert.match(source, /nursery-model-prechoice/);
 });
 
+test("LAN request guard serializes duplicate rqid deliveries and sends only once", () => {
+  const script = String.raw`
+import asyncio
+from types import SimpleNamespace
+from battle_lab.nana_stage2_nursery_lan_runtime import install_nursery_lan_request_guard
+
+class Nana:
+    def __init__(self): self.events=[]
+    def append_event(self, sid, typ, payload): self.events.append((sid,typ,payload))
+
+class ParentPlayer:
+    calls=0
+    async def _handle_battle_request(self, battle, maybe_default_order=False):
+        await asyncio.sleep(0.02)
+        type(self).calls += 1
+        return 'sent'
+    async def choose_move(self, current): return 'nursery'
+    def _raw_light_choose(self, current): return 'LIGHT'
+
+class Runtime:
+    player_class=ParentPlayer
+
+class Service:
+    def __init__(self):
+        self.runtime=Runtime()
+        self.active_session=SimpleNamespace(id='s1', generation=0, phase='resolving')
+        self.nana=Nana()
+        self._nana_teacher={'key':'K'}
+        self._nana_nursery_model_generation={'s1':0}
+    async def ensure_ready(self): pass
+
+async def main():
+    install_nursery_lan_request_guard(Service)
+    service=Service()
+    await service.ensure_ready()
+    player=service.runtime.player_class()
+    battle=SimpleNamespace(last_request={'rqid':7}, battle_tag='b1', turn=3)
+    await asyncio.gather(
+        player._handle_battle_request(battle),
+        player._handle_battle_request(battle),
+    )
+    assert ParentPlayer.calls == 1
+    skips=[e for e in service.nana.events if e[1]=='nana_nursery_skip']
+    assert len(skips) == 1
+    assert skips[0][2]['reason'] == 'duplicate-model-request'
+
+asyncio.run(main())
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("LAN request guard classifies model-only forced switch as benign skip", () => {
+  const script = String.raw`
+import asyncio
+from types import SimpleNamespace
+from battle_lab.nana_stage2_nursery_lan_runtime import install_nursery_lan_request_guard
+
+class Nana:
+    def __init__(self): self.events=[]
+    def append_event(self, sid, typ, payload): self.events.append((sid,typ,payload))
+
+class ParentPlayer:
+    async def _handle_battle_request(self, battle, maybe_default_order=False): return None
+    async def choose_move(self, current): raise AssertionError('Nursery barrier must not run')
+    def _raw_light_choose(self, current): return 'LIGHT'
+
+class Runtime:
+    player_class=ParentPlayer
+
+class Service:
+    def __init__(self):
+        self.runtime=Runtime()
+        self.active_session=SimpleNamespace(id='s1', generation=2, phase='resolving')
+        self.nana=Nana()
+        self._nana_teacher={'key':'K'}
+        self._nana_nursery_model_generation={'s1':2}
+    async def ensure_ready(self): pass
+
+async def main():
+    install_nursery_lan_request_guard(Service)
+    service=Service()
+    await service.ensure_ready()
+    player=service.runtime.player_class()
+    current=SimpleNamespace(turn=4, force_switch=[True,False])
+    result=await player.choose_move(current)
+    assert result == 'LIGHT'
+    skips=[e for e in service.nana.events if e[1]=='nana_nursery_skip']
+    assert len(skips) == 1
+    assert skips[0][2]['reason'] == 'model-only-force-switch-no-human-prompt'
+    assert skips[0][2]['promotionBlocking'] is False
+
+asyncio.run(main())
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("Nursery runtime records actual actor and keeps one-intervention wheels", () => {
   const source = readFileSync(runtime, "utf8");
   assert.match(source, /MAX_INTERVENTIONS_PER_BATTLE/);
@@ -238,11 +334,21 @@ test("Nursery preview and commit boundary cannot silently relabel a LIGHT fallba
   assert.match(source, /nana_nursery_recording_error/);
 });
 
-test("LAN launcher requires no client-side install and exposes Nursery live", () => {
+test("LAN launcher requires no client-side install and exposes guarded Nursery live", () => {
   const source = readFileSync(lanRuntime, "utf8");
   assert.match(source, /install_nursery_service/);
+  assert.match(source, /install_nursery_lan_request_guard/);
+  assert.match(source, /duplicate-model-request/);
+  assert.match(source, /nana_nursery_skip/);
   assert.match(source, /1 intervención near-LIGHT/);
   assert.match(source, /segunda PC solo abre la URL Network/);
+});
+
+test("Nursery report separates benign skips from errors", () => {
+  const source = readFileSync(report, "utf8");
+  assert.match(source, /nana_nursery_skip/);
+  assert.match(source, /skipReasons/);
+  assert.match(source, /recordingErrors/);
 });
 
 test("Nursery and teacher modules compile", () => {
