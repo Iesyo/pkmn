@@ -15,9 +15,11 @@ rendering controls. The classic client still serializes the full reordered team
 the first ``maxChosenTeamSize`` entries. Missing picks are never invented.
 
 When the active service is Nana-enabled, the model has a stable Showdown
-identity: username ``Nana`` and avatar ``3``. The short-lived poke-env clients
-are explicitly disconnected at the end of every session so that the fixed name
-can be reused safely in the next BO1.
+identity: username ``Nana`` and avatar ``3``. The avatar is explicitly re-applied
+and awaited after login but before battle creation, avoiding the poke-env login
+race where ``logged_in`` can unblock a challenge just before `/avatar 3` is sent.
+The short-lived poke-env clients are explicitly disconnected at the end of every
+session so that the fixed name can be reused safely in the next BO1.
 
 This module is installed on top of whichever BattleLabLocalService is current
 (base Sparring, Nana 0/1, or Nana 2 shadow), so existing submit_preview and
@@ -47,6 +49,24 @@ NANA_AVATAR = "3"
 
 class NativeShowdownChoice(BaseModel):
     command: str = Field(min_length=1, max_length=512)
+
+
+async def _pin_nana_avatar(player: Any, avatar: str = NANA_AVATAR) -> None:
+    """Serialize Nana's avatar change before any battle room can be created.
+
+    The pinned poke-env fork already requests the configured avatar during login,
+    but its ``logged_in`` event is set by the concurrent ``updateuser`` handler
+    before ``log_in`` finishes awaiting ``change_avatar``. A caller waiting only
+    on login can therefore start a challenge first. Awaiting a second idempotent
+    change here establishes an explicit websocket ordering barrier: `/avatar 3`
+    is sent before the later challenge that creates the battle room.
+    """
+
+    client = getattr(player, "ps_client", None)
+    change_avatar = getattr(client, "change_avatar", None)
+    if not callable(change_avatar):
+        raise RuntimeError("poke-env no expone change_avatar para fijar a Nana.")
+    await change_avatar(avatar)
 
 
 def _to_id(value: Any) -> str:
@@ -354,6 +374,9 @@ def install_native_showdown_controls() -> type:
                     deterministic=True,
                     log_level=logging.WARNING,
                 )
+
+                if nana_enabled:
+                    await _pin_nana_avatar(model, NANA_AVATAR)
 
                 session.append_event(
                     f"Rival listo: {model_name}."
