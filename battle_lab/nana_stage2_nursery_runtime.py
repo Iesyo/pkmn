@@ -8,6 +8,7 @@ identity prevents stale trust from leaking across future LIGHT upgrades.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any, Sequence
 
@@ -36,6 +37,54 @@ from battle_lab.nana_teacher import descriptor_for_service, latest_teacher_from_
 
 
 LIVE_INFLUENCE = 1.0
+PRECHOICE_TIMEOUT_SECONDS = 1.0
+PRECHOICE_POLL_SECONDS = 0.005
+
+
+async def _await_prechoice_prediction(
+    service: Any,
+    session: Any,
+    turn: int,
+    *,
+    consumed_generation: int,
+    timeout: float = PRECHOICE_TIMEOUT_SECONDS,
+) -> tuple[int, dict[str, Any]] | None:
+    """Wait cooperatively until the human request is ready, then predict pre-choice.
+
+    poke-env dispatches the human and model requests concurrently. Nursery used to
+    depend on an HTTP snapshot racing ahead of the model callback, which made most
+    turns ineligible as ``prediction-not-prechoice``. ``Player.choose_move`` may
+    return an awaitable in the pinned poke-env fork, so the model can yield to the
+    human-side callback without blocking the event loop. As soon as the human
+    request has published its legal actions/state, the prediction is computed and
+    cached before the user's actual choice is consumed.
+
+    ``consumed_generation`` prevents a forced-switch retry on the same Showdown
+    turn from reusing the previous prompt's prediction.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, float(timeout))
+    while True:
+        generation = int(getattr(session, "generation", 0) or 0)
+        state_turn = int((getattr(session, "battle_state", {}) or {}).get("turn", 0) or 0)
+        if (
+            generation > int(consumed_generation)
+            and getattr(session, "phase", "") == "waiting-choice"
+            and state_turn == int(turn)
+            and bool(getattr(session, "legal_actions", None))
+        ):
+            prediction = service._stage1_prediction(
+                session,
+                source="nursery-model-prechoice",
+            )
+            if isinstance(prediction, dict):
+                return generation, prediction
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return None
+        await asyncio.sleep(min(PRECHOICE_POLL_SECONDS, remaining))
 
 
 def install_nursery_service(*, profile_id: str) -> type:
@@ -62,6 +111,7 @@ def install_nursery_service(*, profile_id: str) -> type:
         )
         self._nana_nursery_player_wrapped = False
         self._nana_nursery_interventions: dict[str, int] = {}
+        self._nana_nursery_model_generation: dict[str, int] = {}
         self._nana_nursery_finished: set[str] = set()
         try:
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
@@ -124,7 +174,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 # Skip both Nana wrappers and call frozen LIGHT exactly once.
                 return super(observed_class, self).choose_move(current)
 
-            def choose_move(self, current: Any):
+            async def choose_move(self, current: Any):
                 # Preserve the ancestor's Team Preview escape hatch. Inspecting
                 # regular move masks during preview is invalid and would create a
                 # fake Nursery error on every battle.
@@ -135,6 +185,41 @@ def install_nursery_service(*, profile_id: str) -> type:
                 session = service.active_session
                 if session is None:
                     return self._raw_light_choose(current)
+
+                # The human and model requests arrive concurrently. Yield until
+                # the human request has published the *next* generation, then
+                # compute Nana's human prediction before the actual choice can be
+                # consumed. This removes the browser-snapshot race without ever
+                # peeking at the user's submitted action.
+                consumed_generation = service._nana_nursery_model_generation.get(
+                    session.id, 0
+                )
+                prechoice = await _await_prechoice_prediction(
+                    service,
+                    session,
+                    turn,
+                    consumed_generation=consumed_generation,
+                )
+                if prechoice is None:
+                    try:
+                        service.nana.append_event(
+                            session.id,
+                            "nana_nursery_error",
+                            {
+                                "modelVersion": NURSERY_MODEL_VERSION,
+                                "turn": turn,
+                                "teacher": copy.deepcopy(service._nana_teacher),
+                                "error": "prechoice synchronization timed out",
+                                "fallback": "LIGHT",
+                                "phase": "prechoice-sync-timeout",
+                            },
+                        )
+                    except Exception:
+                        pass
+                    return super().choose_move(current)
+
+                generation, cached = prechoice
+                service._nana_nursery_model_generation[session.id] = generation
 
                 # Phase 1: select a legal order with zero persistent side effects.
                 # Any failure here may safely fall back to the old shadow/LIGHT
@@ -149,21 +234,16 @@ def install_nursery_service(*, profile_id: str) -> type:
                         return self._raw_light_choose(current)
                     light = stage2_v2._enrich_joint_scores_strict(current, light)
 
-                    generation = int(getattr(session, "generation", 0) or 0)
-                    cached = service._nana_stage1_predictions.setdefault(
-                        session.id, {}
-                    ).get(generation)
                     state_turn = int((session.battle_state or {}).get("turn", 0) or 0)
                     turn_matched = (
                         cached is not None
                         and generation > 0
-                        and session.phase == "waiting-choice"
                         and state_turn == turn
                     )
                     plan = stage2_v2.shadow_rerank_v2(
                         light,
                         cached,
-                        prediction_source=("snapshot-cache" if cached is not None else "missing"),
+                        prediction_source="snapshot-cache",
                         prediction_generation=generation,
                         turn_matched=turn_matched,
                     )
@@ -352,6 +432,7 @@ def install_nursery_service(*, profile_id: str) -> type:
     async def start(self: Any, request: Any):
         session = await original_start(self, request)
         self._nana_nursery_interventions[session.id] = 0
+        self._nana_nursery_model_generation[session.id] = 0
         self._nana_teacher = descriptor_for_service(self)
         _apply_nursery_metadata(self)
         self.nana.append_event(
@@ -490,6 +571,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 pass
         finally:
             self._nana_nursery_interventions.pop(session.id, None)
+            self._nana_nursery_model_generation.pop(session.id, None)
 
     service_class.__init__ = __init__
     service_class._teacher_query_args = _teacher_query_args
