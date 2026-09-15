@@ -92,6 +92,20 @@ BRIDGE_HTML = r'''<!doctype html>
     var key = requestKey(snapshot);
     if (!force && key === lastAppliedKey) return true;
     var request = JSON.parse(JSON.stringify(snapshot.nativeRequest));
+
+    // The modern Showdown request tells us how many Pokémon must be chosen
+    // through maxChosenTeamSize. The pinned classic client predates that field
+    // and otherwise falls back to the doubles lead count (2), which is wrong
+    // for VGC bring-6-pick-4. Seed the Battle object's native preview count
+    // before receiveRequest() so the unmodified classic BattleRoom asks for
+    // exactly the server-required number of Pokémon.
+    if (request.teamPreview && room.battle) {
+      var chosenTeamSize = parseInt(request.maxChosenTeamSize || 0, 10);
+      if (chosenTeamSize > 0 && request.side && Array.isArray(request.side.pokemon) && chosenTeamSize <= request.side.pokemon.length) {
+        room.battle.teamPreviewCount = chosenTeamSize;
+      }
+    }
+
     room.receiveRequest(request, null);
     lastAppliedKey = key;
     return true;
