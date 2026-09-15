@@ -72,6 +72,7 @@ test("viewer bridge keeps vendor client untouched and drives BattleRoom native c
   const source = readFileSync(viewerBridge, "utf8");
   assert.match(source, /battle-lab-native-showdown-controls-v1/);
   assert.match(source, /battle-lab-vendor\.html/);
+  assert.match(source, /battle-lab-native-controls-health/);
   assert.match(source, /room\.receiveRequest\(request, null\)/);
   assert.equal(source.includes("choose |team "), true);
   assert.match(source, /\/native-choice/);
@@ -83,6 +84,7 @@ test("local runtime installs native controls above the active Nana/plain service
   const source = readFileSync(localRuntime, "utf8");
   assert.match(source, /install_native_showdown_controls\(\)/);
   assert.match(source, /showdown_native_viewer\.py/);
+  assert.match(source, /_native_bridge_available/);
   assert.match(source, /assets de Pokémon Showdown Client se sirven sin modificar/);
 });
 
