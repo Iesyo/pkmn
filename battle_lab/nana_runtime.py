@@ -9,7 +9,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import hashlib
 import os
+import urllib.error
+import urllib.request
+from pathlib import Path
 from typing import Any, Sequence
 
 from battle_lab import local_sparring_service as sparring
@@ -18,6 +22,27 @@ from battle_lab.nana_recorder import NanaRecorder
 
 
 DEFAULT_NANA_PROFILE = "default"
+_VIEWER_ASSETS = (
+    "play.pokemonshowdown.com/testclient-old.html",
+    "play.pokemonshowdown.com/js/battle.js",
+)
+
+
+class _BorrowedViewerProcess:
+    """Non-owned process adapter used when Nana reuses a verified renderer."""
+
+    @staticmethod
+    def poll() -> int:
+        # local_runtime only terminates viewer processes whose poll() is None.
+        # Returning a completed-like status prevents Nana from killing a process
+        # it did not start.
+        return 0
+
+
+class _BorrowedViewerLog:
+    @staticmethod
+    def close() -> None:
+        return None
 
 
 def _preview_order(value: Any) -> list[int]:
@@ -25,6 +50,79 @@ def _preview_order(value: Any) -> list[int]:
     if text.startswith("/team "):
         text = text[6:]
     return [int(character) for character in text if character.isdigit()]
+
+
+def _viewer_asset_matches(*, checkout: Path, port: int, relative: str) -> bool:
+    """Verify that an occupied viewer port serves Nana's pinned local asset."""
+
+    local_path = checkout / relative
+    if not local_path.is_file():
+        return False
+    url = f"http://127.0.0.1:{port}/{relative}"
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "like-no-one-ever-was-nana/0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            if int(getattr(response, "status", 200)) != 200:
+                return False
+            remote_bytes = response.read()
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+    local_digest = hashlib.sha256(local_path.read_bytes()).digest()
+    remote_digest = hashlib.sha256(remote_bytes).digest()
+    return local_digest == remote_digest
+
+
+def install_reusable_viewer(local_runtime: Any) -> None:
+    """Let Nana reuse an exact compatible renderer without killing its owner.
+
+    The baseline intentionally refuses every occupied port. Nana keeps that
+    safety rule except for the static Showdown viewer, which is immutable and
+    safe to share when the served HTML and battle.js exactly match the pinned
+    checkout that Nana just verified/provisioned.
+    """
+
+    original = local_runtime.start_viewer_server
+    if getattr(original, "_nana_reuse_wrapper", False):
+        return
+
+    def start_viewer_server(
+        *,
+        checkout: Path,
+        logs_dir: Path,
+        port: int,
+    ) -> tuple[Any, Any]:
+        try:
+            return original(checkout=checkout, logs_dir=logs_dir, port=port)
+        except RuntimeError as error:
+            occupied = f"El puerto local {port} ya está ocupado"
+            if occupied not in str(error):
+                raise
+            compatible = all(
+                _viewer_asset_matches(
+                    checkout=checkout,
+                    port=port,
+                    relative=relative,
+                )
+                for relative in _VIEWER_ASSETS
+            )
+            if not compatible:
+                raise RuntimeError(
+                    f"{error} El servicio existente no coincide con el renderer "
+                    "Showdown fijado por Battle Lab; Nana no lo reutilizará ni "
+                    "terminará un proceso ajeno."
+                ) from error
+            print(
+                f"Renderer clásico existente verificado en 127.0.0.1:{port}; "
+                "Nana lo reutilizará sin tomar propiedad del proceso.",
+                flush=True,
+            )
+            return _BorrowedViewerProcess(), _BorrowedViewerLog()
+
+    start_viewer_server._nana_reuse_wrapper = True  # type: ignore[attr-defined]
+    local_runtime.start_viewer_server = start_viewer_server
 
 
 def install_nana_service(*, profile_id: str) -> type:
@@ -258,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     install_nana_service(profile_id=nana_args.nana_profile)
     from battle_lab import local_runtime
 
+    install_reusable_viewer(local_runtime)
     return local_runtime.main(remaining)
 
 
