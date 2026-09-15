@@ -20,9 +20,16 @@ from battle_lab.native_showdown_controls import (
 )
 
 assert _normalize_native_command('/choose move 1 1, move 2 terastallize 2|9') == 'choose move 1 1,move 2 terastallize 2'
-assert _team_preview_order('/team 1234|7') == [1, 2, 3, 4]
-assert _team_preview_order('/team 1,2,3,4|7') == [1, 2, 3, 4]
-assert _team_preview_order('/team 12|7') is None
+request = {
+    'maxChosenTeamSize': 4,
+    'side': {'pokemon': [{}, {}, {}, {}, {}, {}]},
+}
+assert _team_preview_order('/team 1234|7', request=request) == [1, 2, 3, 4]
+assert _team_preview_order('/team 1,2,3,4|7', request=request) == [1, 2, 3, 4]
+assert _team_preview_order('/team 215346|7', request=request) == [2, 1, 5, 3]
+assert _team_preview_order('/team 2,1,5,3,4,6|7', request=request) == [2, 1, 5, 3]
+assert _team_preview_order('/team 12|7', request=request) is None
+assert _team_preview_order('/team 112346|7', request=request) is None
 
 class Move:
     id = 'protect'
@@ -67,6 +74,18 @@ test("native service exposes raw Showdown request while preserving Nana submit p
   assert.match(source, /native-team-preview/);
   assert.match(source, /native-waiting-choice/);
   assert.match(source, /\/sparring\/\{session_id\}\/native-choice/);
+  assert.match(source, /len\(values\) == team_size/);
+  assert.match(source, /selected = values\[:expected_count\]/);
+});
+
+test("Nana has a stable native Showdown identity and releases its websocket", () => {
+  const source = readFileSync(nativeBridge, "utf8");
+  assert.match(source, /NANA_DISPLAY_NAME = "Nana"/);
+  assert.match(source, /NANA_AVATAR = "3"/);
+  assert.match(source, /nana_enabled = hasattr\(self, "nana"\)/);
+  assert.match(source, /AccountConfiguration\(model_name, None\)/);
+  assert.match(source, /avatar=model_avatar/);
+  assert.match(source, /await player\.ps_client\.stop_listening\(\)/);
 });
 
 test("viewer bridge keeps vendor client untouched and drives BattleRoom native controls", () => {
