@@ -15,9 +15,7 @@ can still be verified safely.
 from __future__ import annotations
 
 import argparse
-import html
 import http.server
-import os
 from functools import partial
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -224,9 +222,6 @@ class BattleLabViewerHandler(http.server.SimpleHTTPRequestHandler):
                 self._serve_bridge(head_only=True)
             return
         super().do_HEAD()
-
-    def log_message(self, format: str, *args: object) -> None:
-        super().log_message(format, *args)
 
 
 def parse_args() -> argparse.Namespace:
