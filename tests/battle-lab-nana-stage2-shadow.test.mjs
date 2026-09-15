@@ -19,18 +19,18 @@ human_protect = {
     "second": {"kind": "move", "value": "Tailwind", "target": 0, "flags": []},
 }
 model_attack = {
-    "first": {"kind": "move", "value": "Thunderbolt", "target": -1, "flags": []},
+    "first": {"kind": "move", "value": "Thunderbolt", "target": 1, "flags": []},
     "second": {"kind": "move", "value": "Protect", "target": 0, "flags": []},
 }
 model_feint = {
-    "first": {"kind": "move", "value": "Feint", "target": -1, "flags": []},
+    "first": {"kind": "move", "value": "Feint", "target": 1, "flags": []},
     "second": {"kind": "move", "value": "Protect", "target": 0, "flags": []},
 }
 assert response_utility(model_attack, human_protect)["score"] == -1.0
 assert response_utility(model_feint, human_protect)["score"] == 1.0
 
 human_attack = {
-    "first": {"kind": "move", "value": "Thunderbolt", "target": -1, "flags": []},
+    "first": {"kind": "move", "value": "Thunderbolt", "target": 1, "flags": []},
     "second": {"kind": "move", "value": "Tailwind", "target": 0, "flags": []},
 }
 model_protect = {
@@ -42,17 +42,17 @@ assert response_utility(model_protect, human_attack)["score"] == 1.0
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
-test("Nana 2 shadow can rerank a LIGHT near-tie but never applies it", () => {
+test("Nana 2 shadow preserves LIGHT sequential-greedy at lambda zero and can rerank a near tie", () => {
   const script = String.raw`
 import math
-from battle_lab.nana_stage2_shadow_runtime import shadow_rerank
+from battle_lab.nana_stage2_shadow_runtime import _light_sequential_regrets, shadow_rerank
 
 canonical_action = {
-    "first": {"kind": "move", "value": "Thunderbolt", "target": -1, "flags": []},
+    "first": {"kind": "move", "value": "Thunderbolt", "target": 1, "flags": []},
     "second": {"kind": "move", "value": "Tailwind", "target": 0, "flags": []},
 }
 alternative_action = {
-    "first": {"kind": "move", "value": "Thunderbolt", "target": -2, "flags": []},
+    "first": {"kind": "move", "value": "Thunderbolt", "target": 2, "flags": []},
     "second": {"kind": "move", "value": "Tailwind", "target": 0, "flags": []},
 }
 far_action = {
@@ -61,12 +61,30 @@ far_action = {
 }
 light = {
     "waiting": False,
+    "canonicalAction": {"indices": [1, 1]},
+    "branches": [
+        {
+            "slot": 1,
+            "selectedIndex": 1,
+            "scores": [
+                {"index": 1, "probability": 0.50, "selected": True},
+                {"index": 2, "probability": 0.49, "selected": False},
+                {"index": 3, "probability": 0.10, "selected": False},
+            ],
+        },
+        {"slot": 2, "selectedIndex": 1, "scores": []},
+    ],
     "jointScores": [
-        {"indices": [1, 1], "labels": ["a", "b"], "probability": 0.50, "logProbability": math.log(0.50), "selectedByLight": True, "action": canonical_action},
-        {"indices": [2, 1], "labels": ["c", "b"], "probability": 0.49, "logProbability": math.log(0.49), "selectedByLight": False, "action": alternative_action},
-        {"indices": [3, 3], "labels": ["d", "d"], "probability": 0.10, "logProbability": math.log(0.10), "selectedByLight": False, "action": far_action},
+        {"indices": [1, 1], "labels": ["a", "b"], "probability": 0.45, "logProbability": math.log(0.45), "selectedByLight": True, "action": canonical_action},
+        {"indices": [2, 1], "labels": ["c", "b"], "probability": 0.441, "logProbability": math.log(0.441), "selectedByLight": False, "action": alternative_action},
+        {"indices": [3, 3], "labels": ["d", "d"], "probability": 0.09, "logProbability": math.log(0.09), "selectedByLight": False, "action": far_action},
     ],
 }
+regrets = _light_sequential_regrets(light)
+assert abs(regrets[(1, 1)]["lightRegretLog"]) < 1e-12
+assert regrets[(2, 1)]["lightRegretLog"] < 0.0
+assert regrets[(3, 3)]["lightRegretLog"] < regrets[(2, 1)]["lightRegretLog"]
+
 prediction = {
     "ready": True,
     "confidence": 0.15,
@@ -81,6 +99,7 @@ prediction = {
 plan = shadow_rerank(light, prediction)
 assert plan["eligible"] is True
 assert len(plan["candidatePool"]) == 2
+assert plan["canonical"]["indices"] == [1, 1]
 assert all(sweep["changed"] for sweep in plan["sweeps"])
 assert all(sweep["recommended"]["indices"] == [2, 1] for sweep in plan["sweeps"])
 
