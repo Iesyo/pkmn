@@ -23,10 +23,12 @@ class ParentPlayer:
     active=0
     max_active=0
     async def _handle_battle_request(self, battle, maybe_default_order=False):
-        type(self).active += 1
-        type(self).max_active=max(type(self).max_active,type(self).active)
-        await asyncio.sleep(0.02)
-        type(self).active -= 1
+        ParentPlayer.active += 1
+        ParentPlayer.max_active=max(ParentPlayer.max_active,ParentPlayer.active)
+        try:
+            await asyncio.sleep(0.02)
+        finally:
+            ParentPlayer.active -= 1
     async def choose_move(self, current): return 'nursery'
     def _raw_light_choose(self, current): return 'LIGHT'
 
@@ -61,7 +63,7 @@ class Nana:
     def append_event(self,*args): self.events.append(args)
 class ParentPlayer:
     calls=0
-    async def _handle_battle_request(self,battle,maybe_default_order=False): type(self).calls += 1
+    async def _handle_battle_request(self,battle,maybe_default_order=False): ParentPlayer.calls += 1
     async def choose_move(self,current): return 'nursery'
     def _raw_light_choose(self,current): return 'LIGHT'
 class Runtime: player_class=ParentPlayer
@@ -134,7 +136,10 @@ class Runtime: player_class=ParentPlayer
 class Service:
     def __init__(self):
         self.runtime=Runtime(); self.nana=Nana(); self._nana_teacher={'key':'K'}
-        self.active_session=SimpleNamespace(id='s1',generation=2,phase='resolving')
+        self.active_session=SimpleNamespace(
+            id='s1',generation=2,phase='resolving',
+            battle_state={'turn':3},legal_actions=[]
+        )
         self._nana_nursery_model_generation={'s1':2}
     async def ensure_ready(self): pass
 
@@ -144,6 +149,8 @@ async def main():
     async def human_prompt():
         await asyncio.sleep(0.04)
         service.active_session.generation=3
+        service.active_session.battle_state={'turn':4}
+        service.active_session.legal_actions=[{'id':'3:0'}]
         service.active_session.phase='waiting-choice'
     task=asyncio.create_task(human_prompt())
     result=await player.choose_move(SimpleNamespace(turn=4,force_switch=[True,False]))
@@ -203,7 +210,7 @@ class Nana:
     def append_event(self,*args): self.events.append(args)
 class ParentPlayer:
     calls=0
-    async def _handle_battle_request(self,battle,maybe_default_order=False): type(self).calls += 1
+    async def _handle_battle_request(self,battle,maybe_default_order=False): ParentPlayer.calls += 1
     async def choose_move(self,current): return 'nursery'
     def _raw_light_choose(self,current): return 'LIGHT'
 class Runtime: player_class=ParentPlayer
