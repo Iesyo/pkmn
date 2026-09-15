@@ -1,9 +1,10 @@
-"""Nana 2.3 Nursery live runtime on a trusted private LAN.
+"""Nana 2.3 Nursery LIVE runtime on the supported trusted-LAN path.
 
-This launcher also installs the live request guard required by the Nursery
-synchronization design. The guard serializes model-side Showdown requests,
-suppresses duplicate rqid deliveries, and classifies benign no-human-prompt
-situations as Nursery skips instead of promotion-blocking errors.
+Live Nursery is intentionally supported through this launcher while the generic
+non-LAN entrypoint remains diagnostic-only. The guard serializes model-side
+Showdown requests, suppresses duplicate rqid deliveries, and classifies benign
+no-human-prompt situations as Nursery skips instead of promotion-blocking
+errors.
 """
 
 from __future__ import annotations
@@ -17,11 +18,13 @@ from typing import Any, Sequence
 from battle_lab import nana_stage2_shadow_v21_lan_runtime as lan
 from battle_lab.nana_nursery import NURSERY_MODEL_VERSION
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
-from battle_lab.nana_stage2_nursery_runtime import install_nursery_service
+from battle_lab.nana_stage2_nursery_runtime import (
+    PRECHOICE_TIMEOUT_SECONDS,
+    install_nursery_service,
+)
 
 
 FORCED_SWITCH_HUMAN_GRACE_SECONDS = 0.05
-FORCED_SWITCH_POLL_SECONDS = 0.005
 
 
 def _request_key(battle: Any) -> str:
@@ -31,14 +34,27 @@ def _request_key(battle: Any) -> str:
     if isinstance(rqid, int):
         return f"{tag}|rqid={rqid}"
     try:
-        encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(
+            request,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     except Exception:
         encoded = repr(request)
-    digest = hashlib.sha256(encoded.encode("utf-8", errors="replace")).hexdigest()[:16]
+    digest = hashlib.sha256(
+        encoded.encode("utf-8", errors="replace")
+    ).hexdigest()[:16]
     return f"{tag}|request={digest}"
 
 
-def _append_skip(service: Any, *, turn: int, reason: str, details: dict[str, Any] | None = None) -> None:
+def _append_skip(
+    service: Any,
+    *,
+    turn: int,
+    reason: str,
+    details: dict[str, Any] | None = None,
+) -> None:
     session = getattr(service, "active_session", None)
     if session is None:
         return
@@ -58,31 +74,59 @@ def _append_skip(service: Any, *, turn: int, reason: str, details: dict[str, Any
         pass
 
 
-async def _wait_for_possible_human_forced_switch(service: Any, session: Any) -> bool:
-    """Give a simultaneous human forced-switch prompt a tiny scheduling grace."""
+async def _wait_for_human_prompt(
+    service: Any,
+    session: Any,
+    *,
+    timeout: float,
+) -> bool:
+    """Wait for a fresh human prompt without relying on Windows timer granularity.
+
+    ``asyncio.sleep(0.005)`` is commonly rounded up to roughly one Windows timer
+    tick. A cooperative ``sleep(0)`` yields to the peer websocket task directly,
+    so the nominal grace window remains meaningful on the ROG as well as Linux.
+    """
 
     claimed = int(
-        getattr(service, "_nana_nursery_model_generation", {}).get(session.id, 0) or 0
+        getattr(service, "_nana_nursery_model_generation", {}).get(
+            session.id,
+            0,
+        )
+        or 0
     )
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + FORCED_SWITCH_HUMAN_GRACE_SECONDS
+    deadline = loop.time() + max(0.0, float(timeout))
     while True:
         generation = int(getattr(session, "generation", 0) or 0)
-        if generation > claimed and getattr(session, "phase", "") == "waiting-choice":
+        if (
+            generation > claimed
+            and getattr(session, "phase", "") == "waiting-choice"
+        ):
             return True
-        remaining = deadline - loop.time()
-        if remaining <= 0:
+        if loop.time() >= deadline:
             return False
-        await asyncio.sleep(min(FORCED_SWITCH_POLL_SECONDS, remaining))
+        await asyncio.sleep(0)
+
+
+async def _wait_for_possible_human_forced_switch(
+    service: Any,
+    session: Any,
+) -> bool:
+    return await _wait_for_human_prompt(
+        service,
+        session,
+        timeout=FORCED_SWITCH_HUMAN_GRACE_SECONDS,
+    )
 
 
 def install_nursery_lan_request_guard(service_class: type) -> type:
     """Serialize/dedupe model requests before Nursery's async pre-choice barrier.
 
     The pinned poke-env client dispatches websocket messages as concurrent tasks.
-    Once Nursery choose_move became awaitable, two handlers for the same rqid
-    could otherwise both reach the same human generation and send two orders.
-    This guard makes one request key the single owner of the send path.
+    Once Nursery choose_move became awaitable, two handlers could otherwise race
+    on one human generation. Holding one per-player lock around the complete
+    request handler restores single-owner semantics; rqid dedupe is a second
+    guard against duplicate normal deliveries.
     """
 
     if getattr(service_class, "_nana_nursery_lan_request_guard", False):
@@ -123,9 +167,12 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                 battle: Any,
                 maybe_default_order: bool = False,
             ):
-                key = _request_key(battle)
                 async with self._guard_lock():
-                    if not maybe_default_order and key in self._nana_completed_request_keys:
+                    key = _request_key(battle)
+                    if (
+                        not maybe_default_order
+                        and key in self._nana_completed_request_keys
+                    ):
                         _append_skip(
                             service,
                             turn=int(getattr(battle, "turn", 0) or 0),
@@ -135,6 +182,7 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                         return None
 
                     self._nana_retry_request = bool(maybe_default_order)
+                    was_waiting = bool(getattr(battle, "_wait", False))
                     try:
                         result = await super()._handle_battle_request(
                             battle,
@@ -143,7 +191,9 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                     except Exception:
                         raise
                     else:
-                        if not maybe_default_order:
+                        # Do not mark a request as answered when poke-env exited
+                        # early on battle._wait without sending any order.
+                        if not maybe_default_order and not was_waiting:
                             self._nana_completed_request_keys.add(key)
                         return result
                     finally:
@@ -156,8 +206,6 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                     return await super().choose_move(current)
 
                 # [Invalid choice] retries have no fresh human decision to predict.
-                # Re-evaluate canonical LIGHT immediately and keep them outside the
-                # Nursery promotion-error channel.
                 if self._nana_retry_request:
                     _append_skip(
                         service,
@@ -167,14 +215,14 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                     return self._raw_light_choose(current)
 
                 claimed = int(
-                    service._nana_nursery_model_generation.get(session.id, 0) or 0
+                    service._nana_nursery_model_generation.get(session.id, 0)
+                    or 0
                 )
                 generation = int(getattr(session, "generation", 0) or 0)
                 phase = str(getattr(session, "phase", "") or "")
 
-                # If a human prompt already advanced and was consumed before the
-                # model callback acquired the serialized path, there is no honest
-                # pre-choice observation left to use. Fail closed without a 1s wait.
+                # A newer prompt that is no longer waiting-choice has already been
+                # consumed; it cannot honestly be used as a pre-choice sample.
                 if generation > claimed and phase != "waiting-choice":
                     service._nana_nursery_model_generation[session.id] = generation
                     _append_skip(
@@ -196,12 +244,44 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                             turn=turn,
                             reason="model-only-force-switch-no-human-prompt",
                             details={
-                                "generation": int(getattr(session, "generation", 0) or 0),
-                                "phase": str(getattr(session, "phase", "") or ""),
+                                "generation": int(
+                                    getattr(session, "generation", 0) or 0
+                                ),
+                                "phase": str(
+                                    getattr(session, "phase", "") or ""
+                                ),
+                            },
+                        )
+                        return self._raw_light_choose(current)
+                else:
+                    # Close the residual timeout path here instead of letting the
+                    # base barrier emit a promotion-blocking nursery_error when the
+                    # human UI disappears or never publishes a prompt.
+                    if not (
+                        generation > claimed and phase == "waiting-choice"
+                    ) and not await _wait_for_human_prompt(
+                        service,
+                        session,
+                        timeout=PRECHOICE_TIMEOUT_SECONDS,
+                    ):
+                        _append_skip(
+                            service,
+                            turn=turn,
+                            reason="prechoice-sync-timeout",
+                            details={
+                                "generation": int(
+                                    getattr(session, "generation", 0) or 0
+                                ),
+                                "phase": str(
+                                    getattr(session, "phase", "") or ""
+                                ),
                             },
                         )
                         return self._raw_light_choose(current)
 
+                # A fresh human prompt is now known to exist. The base Nursery
+                # barrier should resolve immediately and compute the actual
+                # nursery-model-prechoice prediction before the human submit path.
                 return await super().choose_move(current)
 
         NanaNurseryLanGuardPlayer.__name__ = "NanaNurseryLanGuardPlayer"
@@ -236,6 +316,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         flush=True,
     )
     print(
+        "Este launcher LAN es el único entrypoint autorizado para Nursery LIVE; "
+        "el runtime base queda solo para diagnóstico hasta generalizar el guard.",
+        flush=True,
+    )
+    print(
         "La segunda PC solo abre la URL Network de Vite; no ejecutes nada allí.",
         flush=True,
     )
@@ -243,8 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("IPs privadas detectadas: " + ", ".join(addresses), flush=True)
     print("API :8765 · Showdown :8766 · renderer :8767", flush=True)
     print(
-        "Guard activo: un solo envío por prompt; retries/forced-switch sin prompt "
-        "humano se registran como skips benignos.",
+        "Guard activo: un solo envío por prompt; retries/forced-switch/timeouts "
+        "sin prompt humano se registran como skips benignos.",
         flush=True,
     )
     print(
