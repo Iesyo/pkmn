@@ -34,15 +34,26 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
     teacher_key = str(teacher.get("key") or "")
     decisions: list[dict[str, Any]] = []
     reasons: Counter[str] = Counter()
+    skip_reasons: Counter[str] = Counter()
     sessions: set[str] = set()
-    errors = 0
+    nursery_errors = 0
+    recording_errors = 0
+
     for event in events:
         if not isinstance(event, dict):
             continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        if event.get("type") == "nana_nursery_error":
-            errors += 1
-        if event.get("type") != "nana_nursery_decision":
+        event_type = str(event.get("type") or "")
+        if event_type == "nana_nursery_error":
+            nursery_errors += 1
+            continue
+        if event_type == "nana_nursery_recording_error":
+            recording_errors += 1
+            continue
+        if event_type == "nana_nursery_skip":
+            skip_reasons[str(payload.get("reason") or "unknown")] += 1
+            continue
+        if event_type != "nana_nursery_decision":
             continue
         decisions.append(payload)
         sessions.add(str(event.get("sessionId") or ""))
@@ -71,7 +82,11 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
         "interventions": sum(item.get("intervened") is True for item in decisions),
         "fallbacks": sum(item.get("intervened") is not True for item in decisions),
         "decisionReasons": dict(reasons),
-        "errors": errors,
+        "skips": sum(skip_reasons.values()),
+        "skipReasons": dict(skip_reasons),
+        "errors": nursery_errors + recording_errors,
+        "nurseryErrors": nursery_errors,
+        "recordingErrors": recording_errors,
         "selfExperience": {
             "observations": len(observations),
             "positive": sum(item.get("label") == "positive" for item in observations),
@@ -103,6 +118,14 @@ def _print(report: dict[str, Any]) -> None:
         f"fallback LIGHT={report['fallbacks']} · errors={report['errors']}"
     )
     print(f"Reasons: {report['decisionReasons']}")
+    print(
+        f"Benign skips={report.get('skips', 0)} · "
+        f"reasons={report.get('skipReasons', {})}"
+    )
+    print(
+        f"Error detail: nursery={report.get('nurseryErrors', 0)} · "
+        f"recording={report.get('recordingErrors', 0)}"
+    )
     experience = report.get("selfExperience") or {}
     print(
         f"Nana real outcomes: n={experience.get('observations', 0)} · "
