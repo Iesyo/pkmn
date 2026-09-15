@@ -48,7 +48,7 @@ from battle_lab.showdown_smoke import (
 SHOWDOWN_CLIENT_REPOSITORY = "https://github.com/smogon/pokemon-showdown-client.git"
 SHOWDOWN_CLIENT_COMMIT = "e47b8be4103b5e027cd191a024e383be88f37bfe"
 DEFAULT_VIEWER_PORT = 8767
-NATIVE_BRIDGE_MARKER = "battle-lab-native-showdown-controls-v1"
+NATIVE_BRIDGE_MARKER = "battle-lab-native-showdown-controls-v2"
 
 
 class BorrowedNativeViewerProcess:
