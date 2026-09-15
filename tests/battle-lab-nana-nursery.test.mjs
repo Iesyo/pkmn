@@ -159,6 +159,62 @@ assert r['errors'] == 1
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("Nursery waits cooperatively for the next human pre-choice generation", () => {
+  const script = String.raw`
+import asyncio
+from types import SimpleNamespace
+from battle_lab.nana_stage2_nursery_runtime import _await_prechoice_prediction
+
+class Service:
+    def __init__(self):
+        self._nana_stage1_predictions={}
+        self.sources=[]
+    def _stage1_prediction(self, session, *, source):
+        self.sources.append(source)
+        prediction={'ready':True,'confidence':0.2}
+        self._nana_stage1_predictions.setdefault(session.id,{})[session.generation]=prediction
+        return prediction
+
+async def main():
+    service=Service()
+    session=SimpleNamespace(
+        id='s1', generation=1, phase='resolving',
+        battle_state={'turn':3}, legal_actions=[]
+    )
+    async def publish_human_request():
+        await asyncio.sleep(0.01)
+        session.generation=2
+        session.battle_state={'turn':4}
+        session.legal_actions=[{'id':'2:0'}]
+        session.phase='waiting-choice'
+    publisher=asyncio.create_task(publish_human_request())
+    result=await _await_prechoice_prediction(
+        service, session, 4, consumed_generation=1, timeout=0.2
+    )
+    await publisher
+    assert result is not None
+    generation,prediction=result
+    assert generation == 2
+    assert prediction['ready'] is True
+    assert service.sources == ['nursery-model-prechoice']
+    assert service._nana_stage1_predictions['s1'][2] is prediction
+
+asyncio.run(main())
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("Nursery model yields for pre-choice state before inspecting LIGHT", () => {
+  const source = readFileSync(runtime, "utf8");
+  const choose = source.indexOf("async def choose_move(self, current: Any)");
+  const wait = source.indexOf("await _await_prechoice_prediction(", choose);
+  const inspect = source.indexOf("inspect_light_decision(", choose);
+  assert.ok(choose >= 0 && wait > choose && inspect > wait);
+  assert.match(source, /consumed_generation/);
+  assert.match(source, /prechoice-sync-timeout/);
+  assert.match(source, /nursery-model-prechoice/);
+});
+
 test("Nursery runtime records actual actor and keeps one-intervention wheels", () => {
   const source = readFileSync(runtime, "utf8");
   assert.match(source, /MAX_INTERVENTIONS_PER_BATTLE/);
