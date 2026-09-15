@@ -3,9 +3,14 @@
 
 The pinned Pokémon Showdown checkout is never modified. Browser requests for
 ``testclient-old.html`` receive a tiny Battle Lab wrapper that embeds the real
-vendor page from an alias. The wrapper polls the loopback Sparring API, injects
-the raw player request into the native BattleRoom, and sends native `/team` or
-`/choose` decisions back to Battle Lab.
+vendor page from an alias. The wrapper polls the Sparring API on the same host
+that served the viewer, injects the raw player request into the native
+BattleRoom, and sends native `/team` or `/choose` decisions back to Battle Lab.
+
+When the viewer is opened through loopback, the API remains loopback. When an
+explicit LAN runtime exposes the viewer on a private address, the same bridge
+uses that address automatically instead of accidentally targeting the remote
+browser's own 127.0.0.1.
 
 Nana's compatibility verifier uses a dedicated User-Agent; for that request the
 original vendor HTML is returned byte-for-byte so an occupied compatible viewer
@@ -45,7 +50,7 @@ BRIDGE_HTML = r'''<!doctype html>
 (function () {
   'use strict';
   var marker = 'battle-lab-native-showdown-controls-v1';
-  var api = 'http://127.0.0.1:8765';
+  var api = location.protocol + '//' + location.hostname + ':8765';
   var frame = document.getElementById('showdown');
   var roomid = (location.hash || '').replace(/^#/, '');
   var activeSession = '';
