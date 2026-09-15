@@ -138,10 +138,18 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
     """Serialize/dedupe model requests before Nursery's async pre-choice barrier.
 
     The pinned poke-env client dispatches websocket messages as concurrent tasks.
-    Once Nursery choose_move became awaitable, two handlers could otherwise race
-    on one human generation. Holding one per-player lock around the complete
-    request handler restores single-owner semantics; rqid dedupe is a second
-    guard against duplicate normal deliveries.
+    Nursery's normal-turn choice path may yield while it waits for a human
+    pre-choice prompt, so two handlers could otherwise race on one generation.
+    Holding one per-player lock around the complete request handler restores
+    single-owner semantics; rqid dedupe is a second guard against duplicate normal
+    deliveries.
+
+    VGC-Bench's pinned Team Preview is different: it calls ``choose_move``
+    synchronously and explicitly rejects Awaitables. The LAN wrapper therefore
+    keeps the public ``choose_move`` method synchronous for preview, returning raw
+    LIGHT immediately, while normal turns return the coroutine produced by
+    ``_choose_move_live``. poke-env already supports either a direct BattleOrder or
+    an Awaitable on normal battle requests.
     """
 
     if getattr(service_class, "_nana_nursery_lan_request_guard", False):
@@ -214,7 +222,16 @@ def install_nursery_lan_request_guard(service_class: type) -> type:
                     finally:
                         self._nana_retry_request = False
 
-            async def choose_move(self, current: Any):
+            def choose_move(self, current: Any):
+                # VGC-Bench Team Preview calls self.choose_move synchronously and
+                # asserts the result is not Awaitable. Do not route preview through
+                # Nursery's async pre-choice machinery; frozen LIGHT already owns
+                # the canonical preview policy.
+                if getattr(current, "teampreview", False):
+                    return self._raw_light_choose(current)
+                return self._choose_move_live(current)
+
+            async def _choose_move_live(self, current: Any):
                 session = service.active_session
                 turn = int(getattr(current, "turn", 0) or 0)
                 if session is None:
