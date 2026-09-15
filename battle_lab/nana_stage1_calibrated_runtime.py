@@ -8,6 +8,7 @@ original Nana 1 runtime remains available for audit/reproducibility.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Sequence
@@ -76,7 +77,7 @@ class CalibratedNanaPredictor(NanaPredictorV1):
             )
             pair_count = self.pair_counts[(first, second)]
             if pair_count:
-                score += PAIR_WEIGHT * __import__("math").log1p(pair_count)
+                score += PAIR_WEIGHT * math.log1p(pair_count)
             scores.append(score)
 
         raw_probabilities = _softmax(scores)
