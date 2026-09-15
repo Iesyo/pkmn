@@ -116,6 +116,20 @@ test("sparring pool is limited to retrievable VGCPastes and Mis pastes sources",
   assert.deepEqual(sparringCorpusCandidates(teams).map((team) => team.id), ["vgc", "mine"]);
 });
 
+test("persistent War Room refreshes the Sparring corpus when it becomes active again", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring.tsx", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /fetch\(`\/api\/war-room\?format=\$\{WAR_ROOM_FORMAT_ID\}`/);
+  assert.match(source, /isWarRoomCorpusResponse\(payload\)/);
+  assert.match(source, /root\.closest<HTMLElement>\('\[role="tabpanel"\]'\)/);
+  assert.match(source, /attributeFilter: \["data-state", "hidden"\]/);
+  assert.match(source, /window\.addEventListener\("focus", refreshWhenActive\)/);
+  assert.match(source, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
+  assert.match(source, /corpusTeams=\{liveCorpusTeams\}/);
+  assert.doesNotMatch(source, /refresh=1/);
+});
+
 test("local sparring service is syntactically valid and loopback-only", async () => {
   const sourcePath = fileURLToPath(new URL("../battle_lab/local_sparring_service.py", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
