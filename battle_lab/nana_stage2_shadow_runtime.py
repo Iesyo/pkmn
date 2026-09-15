@@ -36,9 +36,6 @@ CONFIDENCE_REFERENCE = 0.15
 MIN_LIGHT_PROBABILITY_RATIO = 0.50
 _EPS = 1e-12
 
-# Self-protection moves whose effect is clear enough for the first shadow
-# response proxy. Keep this list deliberately small rather than pretending to
-# model every defensive interaction in VGC.
 _PROTECT_LIKE = {
     "protect",
     "detect",
@@ -57,18 +54,27 @@ def _token(value: Any) -> str:
 
 
 def _is_protect_like(half: Any) -> bool:
-    return isinstance(half, dict) and half.get("kind") == "move" and _token(half.get("value")) in _PROTECT_LIKE
+    return (
+        isinstance(half, dict)
+        and half.get("kind") == "move"
+        and _token(half.get("value")) in _PROTECT_LIKE
+    )
 
 
 def _is_protect_breaker(half: Any) -> bool:
-    return isinstance(half, dict) and half.get("kind") == "move" and _token(half.get("value")) in _PROTECT_BREAKERS
+    return (
+        isinstance(half, dict)
+        and half.get("kind") == "move"
+        and _token(half.get("value")) in _PROTECT_BREAKERS
+    )
 
 
 def _opponent_target_slot(half: Any) -> int | None:
-    """Map Showdown/poke-env direct foe target -1/-2 to zero-based slot.
+    """Map Showdown/poke-env direct foe target +1/+2 to zero-based slot.
 
-    Spread/self/ally/implicit targets intentionally return None; the shadow
-    heuristic must not guess at target semantics it cannot establish safely.
+    Pokémon Showdown uses positive target positions for foes and negative
+    positions for allies in Doubles. Spread/self/ally/implicit targets return
+    None so shadow v1 never guesses at ambiguous target semantics.
     """
 
     if not isinstance(half, dict) or half.get("kind") != "move":
@@ -77,17 +83,13 @@ def _opponent_target_slot(half: Any) -> int | None:
         target = int(half.get("target") or 0)
     except (TypeError, ValueError):
         return None
-    if target not in {-1, -2}:
+    if target not in {1, 2}:
         return None
-    return abs(target) - 1
+    return target - 1
 
 
 def response_utility(model_action: Any, human_action: Any) -> dict[str, Any]:
-    """Return a conservative, interpretable response proxy in [-1, 1].
-
-    Positive means the model action better counters the supplied human action
-    under the tiny rule set we are willing to trust in Nana 2 shadow v1.
-    """
+    """Return a conservative, interpretable response proxy in [-1, 1]."""
 
     if not isinstance(model_action, dict) or not isinstance(human_action, dict):
         return {"score": 0.0, "relevant": 0, "components": []}
@@ -98,8 +100,7 @@ def response_utility(model_action: Any, human_action: Any) -> dict[str, Any]:
     total = 0.0
     relevant = 0
 
-    # If the human is predicted to Protect a slot, direct attacks into that
-    # slot are bad; Feint is the one explicit breaker modeled in v1.
+    # Human Protect: avoid direct targeting unless the move is Feint.
     for human_slot, human_half in enumerate(human_halves):
         if not _is_protect_like(human_half):
             continue
@@ -118,8 +119,7 @@ def response_utility(model_action: Any, human_action: Any) -> dict[str, Any]:
                 }
             )
 
-    # If the human is predicted to use a direct move into one model slot,
-    # Protect-like actions on exactly that slot are a clear defensive response.
+    # Human direct attack: Protect on the targeted model slot is a clear reply.
     for human_slot, human_half in enumerate(human_halves):
         target_slot = _opponent_target_slot(human_half)
         if target_slot is None:
@@ -160,8 +160,7 @@ def _expected_response_utility(
             continue
         if probability <= 0:
             continue
-        utility = response_utility(model_action, candidate)["score"]
-        weighted += probability * float(utility)
+        weighted += probability * float(response_utility(model_action, candidate)["score"])
         probability_total += probability
     if probability_total <= 0:
         return 0.0
@@ -196,11 +195,89 @@ def _enrich_joint_scores(battle: Any, light: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _light_sequential_regrets(light: dict[str, Any]) -> dict[tuple[int, int], dict[str, float]]:
+    """Measure candidate regret relative to LIGHT's sequential-greedy rule.
+
+    LIGHT chooses branch 1 greedily, then branch 2 greedily under the mask
+    induced by branch 1. Joint probability sorting is *not* LIGHT's rule.
+    This regret construction guarantees that the canonical sequential choice
+    has score 0 and every strictly worse branch choice has score <= 0.
+    """
+
+    branches = light.get("branches") or []
+    if not isinstance(branches, list) or not branches:
+        return {}
+    first_branch = branches[0] if isinstance(branches[0], dict) else {}
+    first_scores = {
+        int(item["index"]): float(item.get("probability") or 0.0)
+        for item in first_branch.get("scores") or []
+        if isinstance(item, dict)
+        and isinstance(item.get("index"), int)
+        and float(item.get("probability") or 0.0) > 0
+    }
+    canonical = light.get("canonicalAction") or {}
+    canonical_indices = canonical.get("indices") or []
+    if not (
+        isinstance(canonical_indices, list)
+        and len(canonical_indices) == 2
+        and isinstance(canonical_indices[0], int)
+    ):
+        return {}
+    canonical_first_probability = first_scores.get(int(canonical_indices[0]), 0.0)
+    if canonical_first_probability <= 0:
+        return {}
+
+    joint = [item for item in light.get("jointScores") or [] if isinstance(item, dict)]
+    conditional_second: dict[tuple[int, int], float] = {}
+    max_second_by_first: dict[int, float] = {}
+    for candidate in joint:
+        indices = candidate.get("indices")
+        if not (
+            isinstance(indices, list)
+            and len(indices) == 2
+            and all(isinstance(value, int) for value in indices)
+        ):
+            continue
+        first_index, second_index = int(indices[0]), int(indices[1])
+        first_probability = first_scores.get(first_index, 0.0)
+        if first_probability <= 0:
+            continue
+        joint_probability = float(candidate.get("probability") or 0.0)
+        if joint_probability <= 0:
+            continue
+        second_probability = min(1.0, joint_probability / first_probability)
+        conditional_second[(first_index, second_index)] = second_probability
+        max_second_by_first[first_index] = max(
+            max_second_by_first.get(first_index, 0.0), second_probability
+        )
+
+    rendered: dict[tuple[int, int], dict[str, float]] = {}
+    for (first_index, second_index), second_probability in conditional_second.items():
+        first_probability = first_scores[first_index]
+        max_second = max_second_by_first.get(first_index, 0.0)
+        if max_second <= 0:
+            continue
+        first_regret = math.log(max(first_probability, _EPS)) - math.log(
+            max(canonical_first_probability, _EPS)
+        )
+        second_regret = math.log(max(second_probability, _EPS)) - math.log(
+            max(max_second, _EPS)
+        )
+        rendered[(first_index, second_index)] = {
+            "firstProbability": first_probability,
+            "secondConditionalProbability": second_probability,
+            "firstRegretLog": min(0.0, first_regret),
+            "secondRegretLog": min(0.0, second_regret),
+            "lightRegretLog": min(0.0, first_regret) + min(0.0, second_regret),
+        }
+    return rendered
+
+
 def shadow_rerank(
     light: dict[str, Any] | None,
     prediction: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Compute a lambda sweep without changing the actual LIGHT action."""
+    """Compute a lambda sweep while preserving LIGHT exactly at lambda=0."""
 
     if not isinstance(light, dict) or light.get("waiting") is not False:
         return {"eligible": False, "reason": "no-light-decision", "sweeps": []}
@@ -225,57 +302,60 @@ def shadow_rerank(
     canonical = next((item for item in joint if item.get("selectedByLight") is True), None)
     if not isinstance(canonical, dict):
         return {"eligible": False, "reason": "canonical-joint-missing", "sweeps": []}
-    try:
-        canonical_probability = float(canonical.get("probability") or 0.0)
-    except (TypeError, ValueError):
-        canonical_probability = 0.0
-    if canonical_probability <= 0:
-        return {"eligible": False, "reason": "canonical-probability-zero", "sweeps": []}
 
+    regrets = _light_sequential_regrets(light)
+    if not regrets:
+        return {"eligible": False, "reason": "light-regret-unavailable", "sweeps": []}
+
+    human_candidates = [
+        item for item in prediction.get("candidates") or [] if isinstance(item, dict)
+    ]
+    min_regret = math.log(MIN_LIGHT_PROBABILITY_RATIO)
     pool = []
     for candidate in joint:
         action = candidate.get("action")
-        if not isinstance(action, dict):
-            continue
-        try:
-            probability = float(candidate.get("probability") or 0.0)
-            log_probability = float(candidate.get("logProbability"))
-        except (TypeError, ValueError):
-            continue
-        if probability <= 0:
-            continue
-        if (
-            candidate.get("selectedByLight") is not True
-            and probability < canonical_probability * MIN_LIGHT_PROBABILITY_RATIO
+        indices = candidate.get("indices")
+        if not (
+            isinstance(action, dict)
+            and isinstance(indices, list)
+            and len(indices) == 2
+            and all(isinstance(value, int) for value in indices)
         ):
             continue
-        expected_counter = _expected_response_utility(
-            action,
-            [item for item in prediction.get("candidates") or [] if isinstance(item, dict)],
-        )
+        regret = regrets.get((int(indices[0]), int(indices[1])))
+        if not isinstance(regret, dict):
+            continue
+        light_regret = float(regret["lightRegretLog"])
+        if candidate.get("selectedByLight") is not True and light_regret < min_regret:
+            continue
         pool.append(
             {
-                "indices": copy.deepcopy(candidate.get("indices")),
+                "indices": copy.deepcopy(indices),
                 "labels": copy.deepcopy(candidate.get("labels")),
-                "probability": probability,
-                "logProbability": log_probability,
+                "probability": float(candidate.get("probability") or 0.0),
                 "selectedByLight": candidate.get("selectedByLight") is True,
                 "action": copy.deepcopy(action),
-                "expectedCounter": expected_counter,
+                "firstProbability": regret["firstProbability"],
+                "secondConditionalProbability": regret["secondConditionalProbability"],
+                "firstRegretLog": regret["firstRegretLog"],
+                "secondRegretLog": regret["secondRegretLog"],
+                "lightRegretLog": light_regret,
+                "expectedCounter": _expected_response_utility(action, human_candidates),
             }
         )
 
-    if not pool:
-        return {"eligible": False, "reason": "candidate-pool-empty", "sweeps": []}
+    canonical_pool = next((item for item in pool if item.get("selectedByLight") is True), None)
+    if not isinstance(canonical_pool, dict):
+        return {"eligible": False, "reason": "canonical-pool-missing", "sweeps": []}
 
-    canonical_indices = canonical.get("indices")
+    canonical_indices = canonical_pool.get("indices")
     confidence_scale = max(0.0, min(1.0, confidence / CONFIDENCE_REFERENCE))
     sweeps = []
     for lambda_cap in LAMBDA_CAPS:
         effective_lambda = lambda_cap * confidence_scale
         scored = []
         for candidate in pool:
-            combined = float(candidate["logProbability"]) + effective_lambda * float(
+            combined = float(candidate["lightRegretLog"]) + effective_lambda * float(
                 candidate["expectedCounter"]
             )
             scored.append((combined, candidate))
@@ -303,33 +383,10 @@ def shadow_rerank(
         "reason": "shadow-only",
         "confidence": confidence,
         "confidenceScale": confidence_scale,
-        "canonical": {
-            "indices": copy.deepcopy(canonical.get("indices")),
-            "labels": copy.deepcopy(canonical.get("labels")),
-            "probability": canonical_probability,
-            "logProbability": float(canonical.get("logProbability") or math.log(canonical_probability)),
-            "action": copy.deepcopy(canonical.get("action")),
-            "expectedCounter": _expected_response_utility(
-                canonical.get("action") or {},
-                [item for item in prediction.get("candidates") or [] if isinstance(item, dict)],
-            ),
-        },
+        "canonical": copy.deepcopy(canonical_pool),
         "candidatePool": pool,
         "sweeps": sweeps,
     }
-
-
-def _find_lambda_sweep(plan: dict[str, Any], lambda_cap: float) -> dict[str, Any] | None:
-    for sweep in plan.get("sweeps") or []:
-        if not isinstance(sweep, dict):
-            continue
-        try:
-            value = float(sweep.get("lambdaCap"))
-        except (TypeError, ValueError):
-            continue
-        if abs(value - lambda_cap) < 1e-9:
-            return sweep
-    return None
 
 
 def _evaluate_shadow(
@@ -417,8 +474,7 @@ def install_nana_stage2_shadow_service(*, profile_id: str) -> type:
                         )
                         if full_light.get("waiting") is False:
                             full_light = _enrich_joint_scores(current, full_light)
-                        # Critical shadow guardrail: the actual battle order is
-                        # still delegated to the already validated LIGHT path.
+                        # Critical guardrail: actual battle order stays on LIGHT.
                         order = super().choose_move(current)
                         session = service.active_session
                         if session is not None and full_light.get("waiting") is False:
@@ -465,6 +521,7 @@ def install_nana_stage2_shadow_service(*, profile_id: str) -> type:
                     "minShadowConfidence": MIN_SHADOW_CONFIDENCE,
                     "confidenceReference": CONFIDENCE_REFERENCE,
                     "minLightProbabilityRatio": MIN_LIGHT_PROBABILITY_RATIO,
+                    "lightBaseline": "sequential-greedy-regret",
                 },
             )
             return session
@@ -527,7 +584,6 @@ def install_nana_stage2_shadow_service(*, profile_id: str) -> type:
 
             result = await super().submit_choice(session_id, choice_id)
             if isinstance(actual_action, dict):
-                evaluation = _evaluate_shadow(plan, actual_action, prediction)
                 self.nana.append_event(
                     session_id,
                     "nana_stage2_shadow_evaluation",
@@ -535,7 +591,7 @@ def install_nana_stage2_shadow_service(*, profile_id: str) -> type:
                         "generation": generation,
                         "turn": turn,
                         "shadowModel": STAGE2_MODEL_VERSION,
-                        "evaluation": evaluation,
+                        "evaluation": _evaluate_shadow(plan, actual_action, prediction),
                     },
                 )
             return result
