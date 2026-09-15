@@ -22,6 +22,20 @@ test("Nana 0 observes but delegates the actual move to canonical LIGHT", () => {
   assert.doesNotMatch(source, /policy\s*=/);
 });
 
+test("Nana safely reuses only the exact pinned static Showdown renderer", () => {
+  const source = readFileSync(runtime, "utf8");
+  assert.match(source, /_VIEWER_ASSETS/);
+  assert.match(source, /testclient-old\.html/);
+  assert.match(source, /js\/battle\.js/);
+  assert.match(source, /hashlib\.sha256\(local_path\.read_bytes\(\)\)/);
+  assert.match(source, /hashlib\.sha256\(remote_bytes\)/);
+  assert.match(source, /Nana lo reutilizará sin tomar propiedad del proceso/);
+  assert.match(source, /Returning a completed-like status prevents Nana from killing a process/);
+  assert.match(source, /install_reusable_viewer\(local_runtime\)/);
+  assert.doesNotMatch(source, /terminate\(/);
+  assert.doesNotMatch(source, /kill\(/);
+});
+
 test("Nana modules are syntactically valid", () => {
   for (const filename of ["nana_policy.py", "nana_recorder.py", "nana_runtime.py"]) {
     execFileSync(process.env.PYTHON ?? "python3", ["-m", "py_compile", path.join(root, "battle_lab", filename)], {
