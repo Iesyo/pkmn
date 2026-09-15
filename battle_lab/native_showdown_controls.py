@@ -7,6 +7,12 @@ We expose poke-env's raw Showdown request to the browser and translate the
 client's canonical numeric `/choose` command back to the exact valid order for
 that request.
 
+Modern Showdown team-preview requests include ``maxChosenTeamSize`` (for VGC,
+usually 4). The pinned classic client predates that request field, so the viewer
+bridge seeds its native ``battle.teamPreviewCount`` from the request before
+rendering controls. This module deliberately keeps preview validation strict:
+Battle Lab never invents or auto-fills missing picks.
+
 This module is installed on top of whichever BattleLabLocalService is current
 (base Sparring, Nana 0/1, or Nana 2 shadow), so existing submit_preview and
 submit_choice overrides remain the single persistence path.
@@ -173,8 +179,6 @@ def install_native_showdown_controls() -> type:
                 from poke_env import AccountConfiguration, ServerConfiguration
                 from poke_env.player import Player
                 from poke_env.player.battle_order import DoubleBattleOrder
-
-                service = self
 
                 class _HumanPlayer(Player):
                     def __init__(self, *args: Any, sparring_session: Any, **kwargs: Any):
