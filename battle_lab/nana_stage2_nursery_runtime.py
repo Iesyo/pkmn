@@ -1,10 +1,9 @@
 """Nana 2.3 Nursery: first guarded live interventions.
 
-LIGHT remains the teacher/fallback, but Nana may execute at most one near-LIGHT
-alternative per BO1. Every real Nana intervention is recorded separately from
-LIGHT and becomes observational experience for Nana's own self-critic on later
-battles. Teacher checkpoint/regulation identity is persisted so future LIGHT
-upgrades start a fresh trust track instead of inheriting stale conclusions.
+LIGHT remains teacher/fallback, while Nana may execute at most one near-LIGHT
+alternative per BO1. Real Nana interventions are recorded distinctly and become
+experience for Nana's self-critic on later battles. Teacher checkpoint/regulation
+identity prevents stale trust from leaking across future LIGHT upgrades.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import copy
 from typing import Any, Sequence
 
 import numpy as np
+from poke_env.environment import DoublesEnv
 
 from battle_lab import local_sparring_service as sparring
 from battle_lab import nana_stage2_shadow_v2_runtime as stage2_v2
@@ -29,7 +29,6 @@ from battle_lab.nana_nursery import (
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_shadow_v22_runtime import (
-    LIGHT_CRITIC_MODEL_VERSION,
     STAGE2_MODEL_VERSION,
     install_light_critic_service,
 )
@@ -98,7 +97,6 @@ def install_nursery_service(*, profile_id: str) -> type:
 
     async def ensure_ready(self: Any) -> None:
         await original_ensure_ready(self)
-        # Refresh descriptor after runtime metadata has the canonical checkpoint hash.
         self._nana_teacher = descriptor_for_service(self)
         if self._nana_nursery_player_wrapped:
             return
@@ -120,9 +118,7 @@ def install_nursery_service(*, profile_id: str) -> type:
             _nana_nursery_player = True
 
             def _raw_light_choose(self, current: Any):
-                # Skip NanaStage2ShadowV2Player and NanaObservedPlayer so the
-                # canonical LIGHT order is evaluated exactly once. Nursery
-                # re-emits all recorder/shadow instrumentation itself below.
+                # Skip both Nana wrappers and call frozen LIGHT exactly once.
                 return super(observed_class, self).choose_move(current)
 
             def choose_move(self, current: Any):
@@ -131,14 +127,11 @@ def install_nursery_service(*, profile_id: str) -> type:
                 if session is None:
                     return self._raw_light_choose(current)
                 try:
-                    light = inspect_light_decision(
-                        self,
-                        current,
-                        include_joint_scores=True,
-                    )
+                    light = inspect_light_decision(self, current, include_joint_scores=True)
                     if light.get("waiting") is True:
                         return self._raw_light_choose(current)
                     light = stage2_v2._enrich_joint_scores_strict(current, light)
+
                     generation = int(getattr(session, "generation", 0) or 0)
                     cached = service._nana_stage1_predictions.setdefault(
                         session.id, {}
@@ -157,6 +150,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                         prediction_generation=generation,
                         turn_matched=turn_matched,
                     )
+
                     model_state = sparring._battle_snapshot(current)
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
@@ -217,7 +211,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             and all(isinstance(value, int) for value in indices)
                         ):
                             raise RuntimeError("Nursery candidate perdió sus índices legales.")
-                        executed_order = stage2_v2.DoublesEnv.action_to_order(  # type: ignore[attr-defined]
+                        executed_order = DoublesEnv.action_to_order(
                             np.asarray(indices, dtype=np.int64),
                             current,
                         )
@@ -286,15 +280,13 @@ def install_nursery_service(*, profile_id: str) -> type:
                         )
                     except Exception:
                         pass
-                    # Fault isolation: parent shadow wrapper preserves canonical
-                    # LIGHT + all previous observation instrumentation.
+                    # Full fault isolation: old shadow wrapper falls back to LIGHT.
                     return super().choose_move(current)
 
         NanaNurseryPlayer.__name__ = "NanaNurseryPlayer"
         self.runtime.player_class = NanaNurseryPlayer
         self._nana_nursery_player_wrapped = True
-        nana_meta = self.runtime_metadata.setdefault("nana", {})
-        nana_meta.update(
+        self.runtime_metadata.setdefault("nana", {}).update(
             {
                 "stage": 2.3,
                 "mode": "nursery-live-v1",
@@ -309,22 +301,18 @@ def install_nursery_service(*, profile_id: str) -> type:
     async def start(self: Any, request: Any):
         session = await original_start(self, request)
         self._nana_nursery_interventions[session.id] = 0
-        teacher = descriptor_for_service(self)
-        self._nana_teacher = teacher
+        self._nana_teacher = descriptor_for_service(self)
         self.nana.append_event(
             session.id,
             "nana_teacher_version",
-            {
-                "teacher": copy.deepcopy(teacher),
-                "reason": "nursery-live-session",
-            },
+            {"teacher": copy.deepcopy(self._nana_teacher), "reason": "nursery-live-session"},
         )
         self.nana.append_event(
             session.id,
             "nana_nursery_start",
             {
                 "modelVersion": NURSERY_MODEL_VERSION,
-                "teacher": copy.deepcopy(teacher),
+                "teacher": copy.deepcopy(self._nana_teacher),
                 "live": True,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
@@ -348,9 +336,13 @@ def install_nursery_service(*, profile_id: str) -> type:
         for key in ("_nurseryExecutedAction", "_nurseryActor", "_nurseryTeacher"):
             clean_light.pop(key, None)
         entry["model"] = {
-            "action": copy.deepcopy(executed if isinstance(executed, dict) else clean_light.get("canonicalAction")),
+            "action": copy.deepcopy(
+                executed if isinstance(executed, dict) else clean_light.get("canonicalAction")
+            ),
             "actor": actor,
-            "teacher": copy.deepcopy(teacher if isinstance(teacher, dict) else self._nana_teacher),
+            "teacher": copy.deepcopy(
+                teacher if isinstance(teacher, dict) else self._nana_teacher
+            ),
             "light": clean_light,
         }
         self._nana_flush_turn(session_id, turn)
@@ -372,7 +364,9 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "modelAction": model["action"],
                 "modelActor": model.get("actor") or "light",
                 "teacher": copy.deepcopy(model.get("teacher") or self._nana_teacher),
-                "lightCanonicalAction": copy.deepcopy((model.get("light") or {}).get("canonicalAction")),
+                "lightCanonicalAction": copy.deepcopy(
+                    (model.get("light") or {}).get("canonicalAction")
+                ),
                 "light": model["light"],
             },
         )
