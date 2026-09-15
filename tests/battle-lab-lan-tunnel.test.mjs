@@ -28,12 +28,16 @@ assert parse_handshake(b'BLT1 token nope\n') is None
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
-test("LAN tunnel performs an authenticated TCP round-trip without exposing target service", () => {
+test("LAN tunnel preflight and authenticated TCP round-trip verify the real target", () => {
   const script = String.raw`
 import asyncio
 import socket
 from contextlib import suppress
-from battle_lab.lan_tunnel import start_client_forwarders, start_gateway_server
+from battle_lab.lan_tunnel import (
+    probe_gateway_target,
+    start_client_forwarders,
+    start_gateway_server,
+)
 
 
 def free_port():
@@ -65,28 +69,46 @@ async def main():
         token=token,
         allowed_ports=[target_port],
     )
-    forwarders = await start_client_forwarders(
-        server='127.0.0.1',
-        gateway_port=gateway_port,
-        token=token,
-        mappings={local_port: target_port},
-    )
     try:
-        reader, writer = await asyncio.open_connection('127.0.0.1', local_port)
-        writer.write(b'nana-lan-roundtrip')
-        await writer.drain()
-        result = await asyncio.wait_for(reader.readexactly(len(b'nana-lan-roundtrip')), 3)
-        assert result == b'nana-lan-roundtrip'
-        writer.close()
-        with suppress(Exception):
-            await writer.wait_closed()
+        assert await probe_gateway_target(
+            server='127.0.0.1',
+            gateway_port=gateway_port,
+            token=token,
+            target_port=target_port,
+        ) == 'ok'
+        assert await probe_gateway_target(
+            server='127.0.0.1',
+            gateway_port=gateway_port,
+            token='wrong-token-xxxxxxxx',
+            target_port=target_port,
+        ) == 'ERR auth'
+
+        forwarders = await start_client_forwarders(
+            server='127.0.0.1',
+            gateway_port=gateway_port,
+            token=token,
+            mappings={local_port: target_port},
+        )
+        try:
+            reader, writer = await asyncio.open_connection('127.0.0.1', local_port)
+            writer.write(b'nana-lan-roundtrip')
+            await writer.drain()
+            result = await asyncio.wait_for(reader.readexactly(len(b'nana-lan-roundtrip')), 3)
+            assert result == b'nana-lan-roundtrip'
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+        finally:
+            for server in forwarders:
+                server.close()
+            await asyncio.gather(
+                *(server.wait_closed() for server in forwarders),
+                return_exceptions=True,
+            )
     finally:
-        for server in forwarders:
-            server.close()
         gateway.close()
         echo_server.close()
         await asyncio.gather(
-            *(server.wait_closed() for server in forwarders),
             gateway.wait_closed(),
             echo_server.wait_closed(),
             return_exceptions=True,
@@ -97,14 +119,24 @@ asyncio.run(main())
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8", timeout: 15_000 });
 });
 
-test("Nana LAN launcher keeps the canonical runtime and exposes only one authenticated gateway", () => {
+test("Nana LAN launcher keeps the canonical runtime and detects the real War Room port", () => {
   const source = readFileSync(launcher, "utf8");
   assert.match(source, /nana_stage2_shadow_v21_runtime/);
   assert.match(source, /battle_lab\.lan_tunnel/);
   assert.match(source, /BATTLE_LAB_LAN_TOKEN/);
   assert.match(source, /DEFAULT_GATEWAY_PORT/);
-  assert.match(source, /127\.0\.0\.1:/);
+  assert.match(source, /_resolve_war_room_port/);
+  assert.match(source, /5173/);
+  assert.match(source, /http:\/\/127\.0\.0\.1:/);
   assert.doesNotMatch(source, /--host\s+0\.0\.0\.0/);
+});
+
+test("LAN client performs explicit preflight before exposing local forwarders", () => {
+  const source = readFileSync(tunnel, "utf8");
+  assert.match(source, /probe_gateway_target/);
+  assert.match(source, /Verificando gateway y servicios Battle Lab/);
+  assert.match(source, /Preflight LAN falló/);
+  assert.match(source, /start_client_forwarders/);
 });
 
 test("LAN modules compile", () => {
