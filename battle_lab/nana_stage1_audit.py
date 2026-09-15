@@ -75,8 +75,10 @@ def audit_stage1(runtime_root: Path, profile_id: str) -> dict[str, Any]:
     ]
     if len(stage1) != 1:
         issues.append("Debe existir exactamente un evento nana_stage=1.")
-    elif float(_payload(stage1[0][1]).get("influence", -1)) != 0.0:
-        issues.append("Nana 1 no conserva influence=0.0.")
+    else:
+        influence = _payload(stage1[0][1]).get("influence")
+        if not isinstance(influence, (int, float)) or float(influence) != 0.0:
+            issues.append("Nana 1 no conserva influence=0.0.")
 
     predictions: dict[int, tuple[int, dict[str, Any]]] = {}
     observations: dict[int, tuple[int, dict[str, Any]]] = {}
