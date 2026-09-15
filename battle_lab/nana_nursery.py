@@ -1,8 +1,8 @@
 """Conservative live-learning helpers for Nana 2.3 Nursery.
 
-Nursery is intentionally not a replacement policy. It may pick one near-LIGHT
-alternative per BO1 when Nana's human predictor supports it, then records the
-real outcome so later battles can learn from Nana's own experience.
+Nursery may pick one near-LIGHT alternative per BO1 and then learn from the real
+transition produced by that intervention. Removing the first training wheels is
+an evidence gate, never an automatic side effect of playing more games.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
-from battle_lab.nana_light_critic import build_actor_summary, trust_for
+from battle_lab.nana_light_critic import (
+    build_actor_summary,
+    extract_observations,
+    trust_for,
+)
 
 
 NURSERY_MODEL_VERSION = "nana2.3-nursery-live-v1"
@@ -153,8 +157,15 @@ def choose_candidate(
         reverse=True,
     )
     margin, candidate, delta_counter = ranked[0]
-    required_effective = max(0.0, -_safe_float(candidate.get("lightRegretLog")) / delta_counter)
-    required_cap = required_effective / confidence_scale if confidence_scale > _EPS else math.inf
+    required_effective = max(
+        0.0,
+        -_safe_float(candidate.get("lightRegretLog")) / delta_counter,
+    )
+    required_cap = (
+        required_effective / confidence_scale
+        if confidence_scale > _EPS
+        else math.inf
+    )
     return {
         "intervene": True,
         "reason": "nursery-live-near-light",
@@ -176,21 +187,19 @@ def promotion_status(
     *,
     teacher_key: str,
 ) -> dict[str, Any]:
-    """Evidence-only recommendation for removing the first set of training wheels.
+    """Return an evidence-only recommendation for removing first wheels."""
 
-    This never changes runtime parameters automatically. The live system may
-    learn immediately; increasing autonomy still requires an explicit promotion
-    after enough real interventions and an architecture audit.
-    """
-
+    materialized = list(events)
     decisions: list[dict[str, Any]] = []
     errors = 0
-    for event in events:
+    for event in materialized:
         if not isinstance(event, dict):
             continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         if event.get("type") == "nana_nursery_error":
-            errors += 1
+            teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
+            if str(teacher.get("key") or "") in {"", teacher_key}:
+                errors += 1
         if event.get("type") != "nana_nursery_decision":
             continue
         teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
@@ -199,23 +208,54 @@ def promotion_status(
         if payload.get("intervened") is True:
             decisions.append(payload)
 
+    observations = [
+        item
+        for item in extract_observations(materialized, actor_filter="nana")
+        if str(item.get("teacherKey") or "") == teacher_key
+    ]
+    informative = [item for item in observations if item.get("label") in {"positive", "negative"}]
+    positives = sum(item.get("label") == "positive" for item in informative)
+    negatives = sum(item.get("label") == "negative" for item in informative)
+    recent = observations[-10:]
+    recent_negatives = sum(item.get("label") == "negative" for item in recent)
     regrets = [
         _safe_float((item.get("selection") or {}).get("candidate", {}).get("lightRegretLog"))
         for item in decisions
         if isinstance(item.get("selection"), dict)
     ]
+    mean_regret = (sum(regrets) / len(regrets)) if regrets else None
+    mean_delta = (
+        sum(_safe_float(item.get("delta")) for item in observations) / len(observations)
+        if observations
+        else None
+    )
+
     candidate = (
         len(decisions) >= 20
+        and len(observations) >= 15
+        and len(informative) >= 8
+        and positives >= negatives
+        and recent_negatives <= 3
         and errors == 0
-        and (sum(regrets) / len(regrets) if regrets else -1.0) >= -0.07
+        and mean_regret is not None
+        and mean_regret >= -0.07
     )
     return {
         "teacherKey": teacher_key,
         "interventions": len(decisions),
+        "observedInterventionOutcomes": len(observations),
+        "informativeOutcomes": len(informative),
+        "positive": positives,
+        "negative": negatives,
+        "recent10Negative": recent_negatives,
+        "meanObservedBoardDelta": mean_delta,
         "errors": errors,
-        "meanLightRegretLog": (sum(regrets) / len(regrets)) if regrets else None,
+        "meanLightRegretLog": mean_regret,
         "candidateForMoreAutonomy": candidate,
         "automaticPromotion": False,
+        "whyNotAutomatic": (
+            "Observed outcomes are still not counterfactual proof that Nana beat LIGHT."
+        ),
         "nextLevelIfPromoted": {
             "maxInterventionsPerBattle": 2,
             "lambdaCap": 0.20,
