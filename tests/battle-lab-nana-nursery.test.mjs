@@ -229,7 +229,7 @@ class ParentPlayer:
     calls=0
     async def _handle_battle_request(self, battle, maybe_default_order=False):
         await asyncio.sleep(0.02)
-        type(self).calls += 1
+        ParentPlayer.calls += 1
         return 'sent'
     async def choose_move(self, current): return 'nursery'
     def _raw_light_choose(self, current): return 'LIGHT'
