@@ -22,6 +22,7 @@ from battle_lab.native_showdown_controls import (
 assert _normalize_native_command('/choose move 1 1, move 2 terastallize 2|9') == 'choose move 1 1,move 2 terastallize 2'
 assert _team_preview_order('/team 1234|7') == [1, 2, 3, 4]
 assert _team_preview_order('/team 1,2,3,4|7') == [1, 2, 3, 4]
+assert _team_preview_order('/team 12|7') is None
 
 class Move:
     id = 'protect'
@@ -73,6 +74,8 @@ test("viewer bridge keeps vendor client untouched and drives BattleRoom native c
   assert.match(source, /battle-lab-native-showdown-controls-v1/);
   assert.match(source, /battle-lab-vendor\.html/);
   assert.match(source, /battle-lab-native-controls-health/);
+  assert.match(source, /request\.maxChosenTeamSize/);
+  assert.match(source, /room\.battle\.teamPreviewCount = chosenTeamSize/);
   assert.match(source, /room\.receiveRequest\(request, null\)/);
   assert.equal(source.includes("choose |team "), true);
   assert.match(source, /\/native-choice/);
