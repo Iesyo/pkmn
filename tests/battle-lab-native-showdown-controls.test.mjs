@@ -78,21 +78,50 @@ test("native service exposes raw Showdown request while preserving Nana submit p
   assert.match(source, /selected = values\[:expected_count\]/);
 });
 
-test("Nana has a stable native Showdown identity and releases its websocket", () => {
+test("Nana pins avatar 3 after login and before battle creation", () => {
+  const script = String.raw`
+import asyncio
+from battle_lab.native_showdown_controls import NANA_AVATAR, _pin_nana_avatar
+
+class Client:
+    def __init__(self):
+        self.calls = []
+    async def change_avatar(self, avatar):
+        self.calls.append(avatar)
+
+class Player:
+    def __init__(self):
+        self.ps_client = Client()
+
+player = Player()
+asyncio.run(_pin_nana_avatar(player))
+assert NANA_AVATAR == '3'
+assert player.ps_client.calls == ['3']
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+
   const source = readFileSync(nativeBridge, "utf8");
   assert.match(source, /NANA_DISPLAY_NAME = "Nana"/);
   assert.match(source, /NANA_AVATAR = "3"/);
   assert.match(source, /nana_enabled = hasattr\(self, "nana"\)/);
   assert.match(source, /AccountConfiguration\(model_name, None\)/);
   assert.match(source, /avatar=model_avatar/);
+  assert.match(source, /await _pin_nana_avatar\(model, NANA_AVATAR\)/);
+  assert.match(source, /await _pin_nana_avatar\(model, NANA_AVATAR\)[\s\S]*await human\.battle_against\(model, n_battles=1\)/);
   assert.match(source, /await player\.ps_client\.stop_listening\(\)/);
 });
 
-test("viewer bridge keeps vendor client untouched and drives BattleRoom native controls", () => {
+test("viewer bridge keeps vendor client untouched, pins local FX and drives BattleRoom native controls", () => {
   const source = readFileSync(viewerBridge, "utf8");
-  assert.match(source, /battle-lab-native-showdown-controls-v1/);
+  assert.match(source, /battle-lab-native-showdown-controls-v2/);
   assert.match(source, /battle-lab-vendor\.html/);
   assert.match(source, /battle-lab-native-controls-health/);
+  assert.match(source, /pinnedFxBase/);
+  assert.match(source, /localizeBattleFxUrl/);
+  assert.match(source, /parsed\.pathname\.indexOf\('\/fx\/'\) !== 0/);
+  assert.match(source, /child\.Dex\.fxPrefix = pinnedFxBase/);
+  assert.match(source, /data-battle-lab-fx-localized/);
+  assert.match(source, /MutationObserver/);
   assert.match(source, /request\.maxChosenTeamSize/);
   assert.match(source, /room\.battle\.teamPreviewCount = chosenTeamSize/);
   assert.match(source, /room\.receiveRequest\(request, null\)/);
@@ -102,12 +131,13 @@ test("viewer bridge keeps vendor client untouched and drives BattleRoom native c
   assert.doesNotMatch(source, /write_text\(.+testclient-old\.html/);
 });
 
-test("local runtime installs native controls and only reuses a verified native viewer", () => {
+test("local runtime installs native controls and only reuses a verified v2 viewer", () => {
   const source = readFileSync(localRuntime, "utf8");
   assert.match(source, /install_native_showdown_controls\(\)/);
   assert.match(source, /showdown_native_viewer\.py/);
   assert.match(source, /_native_bridge_available/);
   assert.match(source, /BorrowedNativeViewerProcess/);
+  assert.match(source, /battle-lab-native-showdown-controls-v2/);
   assert.match(source, /Bridge de controles nativos ya activo/);
   assert.match(source, /assets de Pokémon Showdown Client se sirven sin modificar/);
 });
