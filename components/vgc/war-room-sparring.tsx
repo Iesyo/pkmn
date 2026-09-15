@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { WarRoomSparring as LocalWarRoomSparring } from "./war-room-sparring/index";
 import type { TeamVersion } from "@/lib/types";
-import type { WarRoomCorpusTeam } from "@/lib/war-room";
+import {
+  WAR_ROOM_FORMAT_ID,
+  isWarRoomCorpusResponse,
+  type WarRoomCorpusTeam,
+} from "@/lib/war-room";
 
 /**
  * Transport adapter for War Room Sparring.
@@ -19,6 +23,13 @@ import type { WarRoomCorpusTeam } from "@/lib/war-room";
  * endpoint at the component boundary. The runtime's explicit LAN mode exposes
  * those two Showdown ports on the same host that serves the app, so replacing
  * only the host preserves every native Showdown path/hash and all Nana hooks.
+ *
+ * War Room is force-mounted so its working state survives navigation. That also
+ * means its original corpus snapshot can outlive changes made in Mis pastes.
+ * Sparring owns a live copy of the candidate corpus and refreshes it whenever
+ * the persistent War Room tab becomes active again, or when the browser regains
+ * focus. The regular War Room endpoint is used deliberately: private pastes are
+ * read fresh while the public VGCPastes source keeps its normal server cache.
  */
 export function WarRoomSparring({
   team,
@@ -28,6 +39,66 @@ export function WarRoomSparring({
   corpusTeams: WarRoomCorpusTeam[];
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const corpusRefreshController = useRef<AbortController | null>(null);
+  const [liveCorpusTeams, setLiveCorpusTeams] = useState(corpusTeams);
+
+  useEffect(() => {
+    setLiveCorpusTeams(corpusTeams);
+  }, [corpusTeams]);
+
+  const refreshCorpus = useCallback(async () => {
+    corpusRefreshController.current?.abort();
+    const controller = new AbortController();
+    corpusRefreshController.current = controller;
+
+    try {
+      const response = await fetch(`/api/war-room?format=${WAR_ROOM_FORMAT_ID}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as unknown;
+      if (!controller.signal.aborted && isWarRoomCorpusResponse(payload)) {
+        setLiveCorpusTeams(payload.teams);
+      }
+    } catch {
+      // Keep the last known-good corpus when a refresh is cancelled or unavailable.
+    } finally {
+      if (corpusRefreshController.current === controller) {
+        corpusRefreshController.current = null;
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const panel = root.closest<HTMLElement>('[role="tabpanel"]');
+    const refreshWhenActive = () => {
+      const inactive = panel?.getAttribute("data-state") === "inactive" || Boolean(panel?.hidden);
+      if (!inactive) void refreshCorpus();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshWhenActive();
+    };
+
+    refreshWhenActive();
+    const panelObserver = panel ? new MutationObserver(refreshWhenActive) : null;
+    panelObserver?.observe(panel, {
+      attributes: true,
+      attributeFilter: ["data-state", "hidden"],
+    });
+    window.addEventListener("focus", refreshWhenActive);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      panelObserver?.disconnect();
+      window.removeEventListener("focus", refreshWhenActive);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      corpusRefreshController.current?.abort();
+    };
+  }, [refreshCorpus]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -60,7 +131,7 @@ export function WarRoomSparring({
 
   return (
     <div ref={rootRef} className="contents">
-      <LocalWarRoomSparring team={team} corpusTeams={corpusTeams} />
+      <LocalWarRoomSparring team={team} corpusTeams={liveCorpusTeams} />
     </div>
   );
 }
