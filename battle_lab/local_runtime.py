@@ -51,6 +51,20 @@ DEFAULT_VIEWER_PORT = 8767
 NATIVE_BRIDGE_MARKER = "battle-lab-native-showdown-controls-v1"
 
 
+class BorrowedNativeViewerProcess:
+    """Completed-like process adapter for a verified bridge owned elsewhere."""
+
+    @staticmethod
+    def poll() -> int:
+        return 0
+
+
+class BorrowedNativeViewerLog:
+    @staticmethod
+    def close() -> None:
+        return None
+
+
 def ensure_showdown_client(
     *,
     checkout: Path,
@@ -216,15 +230,18 @@ def start_viewer_server(
     checkout: Path,
     logs_dir: Path,
     port: int,
-) -> tuple[subprocess.Popen[str], Any]:
+) -> tuple[Any, Any]:
     if port_is_open(port):
-        if not _native_bridge_available(port):
-            raise RuntimeError(
-                f"El renderer existente en el puerto local {port} no expone el bridge "
-                "de controles nativos; reinicia el runtime anterior antes de continuar."
+        if _native_bridge_available(port):
+            print(
+                f"Bridge de controles nativos ya activo en 127.0.0.1:{port}; "
+                "Battle Lab lo reutilizará sin tomar propiedad del proceso.",
+                flush=True,
             )
+            return BorrowedNativeViewerProcess(), BorrowedNativeViewerLog()
         raise RuntimeError(
-            f"El puerto local {port} ya está ocupado; Battle Lab no terminará procesos ajenos."
+            f"El renderer existente en el puerto local {port} no expone el bridge "
+            "de controles nativos; reinicia el runtime anterior antes de continuar."
         )
     log_path = logs_dir / "showdown-client-http.log"
     handle = log_path.open("w", encoding="utf-8")
