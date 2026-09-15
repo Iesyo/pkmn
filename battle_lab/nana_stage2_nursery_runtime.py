@@ -32,22 +32,10 @@ from battle_lab.nana_stage2_shadow_v22_runtime import (
     STAGE2_MODEL_VERSION,
     install_light_critic_service,
 )
-from battle_lab.nana_teacher import descriptor_for_service
+from battle_lab.nana_teacher import descriptor_for_service, latest_teacher_from_events
 
 
 LIVE_INFLUENCE = 1.0
-
-
-def _latest_teacher_key(events: Sequence[dict[str, Any]]) -> str:
-    for event in reversed(events):
-        if not isinstance(event, dict) or event.get("type") != "nana_teacher_version":
-            continue
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-        teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
-        key = str(teacher.get("key") or "")
-        if key:
-            return key
-    return ""
 
 
 def install_nursery_service(*, profile_id: str) -> type:
@@ -65,7 +53,8 @@ def install_nursery_service(*, profile_id: str) -> type:
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
         history = list(self.nana.iter_events())
-        self._nana_previous_teacher_key = _latest_teacher_key(history)
+        latest_teacher = latest_teacher_from_events(history)
+        self._nana_previous_teacher_key = str(latest_teacher.get("key") or "")
         self._nana_teacher = descriptor_for_service(self)
         self._nana_allow_legacy_teacher_fallback = (
             not self._nana_previous_teacher_key
@@ -95,9 +84,23 @@ def install_nursery_service(*, profile_id: str) -> type:
             ),
         }
 
+    def _apply_nursery_metadata(self: Any) -> None:
+        self.runtime_metadata.setdefault("nana", {}).update(
+            {
+                "stage": 2.3,
+                "mode": "nursery-live-v1",
+                "influence": LIVE_INFLUENCE,
+                "nurseryModel": NURSERY_MODEL_VERSION,
+                "lambdaCap": NURSERY_LAMBDA_CAP,
+                "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
+                "teacher": copy.deepcopy(self._nana_teacher),
+            }
+        )
+
     async def ensure_ready(self: Any) -> None:
         await original_ensure_ready(self)
         self._nana_teacher = descriptor_for_service(self)
+        _apply_nursery_metadata(self)
         if self._nana_nursery_player_wrapped:
             return
         assert self.runtime is not None
@@ -122,12 +125,26 @@ def install_nursery_service(*, profile_id: str) -> type:
                 return super(observed_class, self).choose_move(current)
 
             def choose_move(self, current: Any):
+                # Preserve the ancestor's Team Preview escape hatch. Inspecting
+                # regular move masks during preview is invalid and would create a
+                # fake Nursery error on every battle.
+                if getattr(current, "teampreview", False):
+                    return self._raw_light_choose(current)
+
                 turn = int(getattr(current, "turn", 0) or 0)
                 session = service.active_session
                 if session is None:
                     return self._raw_light_choose(current)
+
+                # Phase 1: select a legal order with zero persistent side effects.
+                # Any failure here may safely fall back to the old shadow/LIGHT
+                # wrapper because Nana has not claimed an intervention yet.
                 try:
-                    light = inspect_light_decision(self, current, include_joint_scores=True)
+                    light = inspect_light_decision(
+                        self,
+                        current,
+                        include_joint_scores=True,
+                    )
                     if light.get("waiting") is True:
                         return self._raw_light_choose(current)
                     light = stage2_v2._enrich_joint_scores_strict(current, light)
@@ -217,22 +234,54 @@ def install_nursery_service(*, profile_id: str) -> type:
                         )
                         executed_action = stage2_v2._structured_action(current, list(indices))
                         actor = "nana"
-                        service._nana_nursery_interventions[session.id] = used + 1
                     else:
                         if not (
                             isinstance(canonical_indices, list)
                             and len(canonical_indices) == 2
                             and all(isinstance(value, int) for value in canonical_indices)
                         ):
-                            return self._raw_light_choose(current)
+                            raise RuntimeError("LIGHT canonicalAction perdió sus índices legales.")
                         executed_order = self._raw_light_choose(current)
                         executed_action = stage2_v2._structured_action(
                             current,
                             [int(canonical_indices[0]), int(canonical_indices[1])],
                         )
                         actor = "light"
+                except Exception as error:
+                    try:
+                        service.nana.append_event(
+                            session.id,
+                            "nana_nursery_error",
+                            {
+                                "modelVersion": NURSERY_MODEL_VERSION,
+                                "turn": turn,
+                                "teacher": copy.deepcopy(service._nana_teacher),
+                                "error": f"{type(error).__name__}: {error}",
+                                "fallback": "LIGHT",
+                                "phase": "pre-commit",
+                            },
+                        )
+                    except Exception:
+                        pass
+                    # Pre-commit fault isolation: the parent shadow wrapper owns
+                    # canonical LIGHT plus its existing instrumentation.
+                    return super().choose_move(current)
 
+                # Commit point: from here the already-built order is the order we
+                # will return. Recording failures must NEVER switch the executed
+                # action back to LIGHT, otherwise history could claim Nana played
+                # a move that was not actually sent to Showdown.
+                if intervened:
+                    service._nana_nursery_interventions[session.id] = used + 1
+
+                recording_errors: list[str] = []
+                try:
                     service._nana_stage2_v2_note_light(session.id, turn, light)
+                except Exception as error:
+                    recording_errors.append(
+                        f"shadow-note:{type(error).__name__}: {error}"
+                    )
+                try:
                     service._nana_note_model_turn(
                         session.id,
                         turn,
@@ -243,6 +292,12 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "_nurseryTeacher": copy.deepcopy(service._nana_teacher),
                         },
                     )
+                except Exception as error:
+                    recording_errors.append(
+                        f"turn-record:{type(error).__name__}: {error}"
+                    )
+                    service._nana_pending.get(session.id, {}).pop(turn, None)
+                try:
                     service.nana.append_event(
                         session.id,
                         "nana_nursery_decision",
@@ -264,44 +319,41 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "selection": copy.deepcopy(selection),
                         },
                     )
-                    return executed_order
                 except Exception as error:
+                    recording_errors.append(
+                        f"decision-record:{type(error).__name__}: {error}"
+                    )
+
+                if recording_errors:
                     try:
                         service.nana.append_event(
                             session.id,
-                            "nana_nursery_error",
+                            "nana_nursery_recording_error",
                             {
                                 "modelVersion": NURSERY_MODEL_VERSION,
                                 "turn": turn,
                                 "teacher": copy.deepcopy(service._nana_teacher),
-                                "error": f"{type(error).__name__}: {error}",
-                                "fallback": "LIGHT",
+                                "actor": actor,
+                                "intervened": intervened,
+                                "errors": recording_errors,
+                                "executedAction": copy.deepcopy(executed_action),
+                                "fallback": False,
                             },
                         )
                     except Exception:
                         pass
-                    # Full fault isolation: old shadow wrapper falls back to LIGHT.
-                    return super().choose_move(current)
+                return executed_order
 
         NanaNurseryPlayer.__name__ = "NanaNurseryPlayer"
         self.runtime.player_class = NanaNurseryPlayer
         self._nana_nursery_player_wrapped = True
-        self.runtime_metadata.setdefault("nana", {}).update(
-            {
-                "stage": 2.3,
-                "mode": "nursery-live-v1",
-                "influence": LIVE_INFLUENCE,
-                "nurseryModel": NURSERY_MODEL_VERSION,
-                "lambdaCap": NURSERY_LAMBDA_CAP,
-                "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
-                "teacher": copy.deepcopy(self._nana_teacher),
-            }
-        )
+        _apply_nursery_metadata(self)
 
     async def start(self: Any, request: Any):
         session = await original_start(self, request)
         self._nana_nursery_interventions[session.id] = 0
         self._nana_teacher = descriptor_for_service(self)
+        _apply_nursery_metadata(self)
         self.nana.append_event(
             session.id,
             "nana_teacher_version",
@@ -353,10 +405,15 @@ def install_nursery_service(*, profile_id: str) -> type:
         model = entry.get("model")
         if human is None or model is None:
             return
+        try:
+            generation = int(getattr(self.get_session(session_id), "generation", 0) or 0)
+        except Exception:
+            generation = 0
         self.nana.append_event(
             session_id,
             "turn_choice",
             {
+                "generation": generation,
                 "turn": int(turn),
                 "state": human["state"],
                 "legalActions": human["legalActions"],
@@ -436,6 +493,7 @@ def install_nursery_service(*, profile_id: str) -> type:
 
     service_class.__init__ = __init__
     service_class._teacher_query_args = _teacher_query_args
+    service_class._apply_nursery_metadata = _apply_nursery_metadata
     service_class.ensure_ready = ensure_ready
     service_class.start = start
     service_class._nana_note_model_turn = _nana_note_model_turn
