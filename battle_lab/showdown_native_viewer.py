@@ -12,6 +12,12 @@ explicit LAN runtime exposes the viewer on a private address, the same bridge
 uses that address automatically instead of accidentally targeting the remote
 browser's own 127.0.0.1.
 
+The classic test client normally derives battle FX URLs from the live
+``play.pokemonshowdown.com`` client route. Battle Lab instead rewrites only
+``/fx/`` image requests to the matching pinned checkout served by this viewer.
+This keeps move animations version-aligned without modifying vendor files or
+changing Pokémon sprite ownership/licensing behavior.
+
 Nana's compatibility verifier uses a dedicated User-Agent; for that request the
 original vendor HTML is returned byte-for-byte so an occupied compatible viewer
 can still be verified safely.
@@ -26,7 +32,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-BRIDGE_MARKER = "battle-lab-native-showdown-controls-v1"
+BRIDGE_MARKER = "battle-lab-native-showdown-controls-v2"
 CLASSIC_PATH = "/play.pokemonshowdown.com/testclient-old.html"
 VENDOR_ALIAS = "/play.pokemonshowdown.com/battle-lab-vendor.html"
 HEALTH_PATH = "/battle-lab-native-controls-health"
@@ -34,7 +40,7 @@ VERIFY_USER_AGENT = "like-no-one-ever-was-nana/0"
 
 
 BRIDGE_HTML = r'''<!doctype html>
-<html lang="en" data-battle-lab-native-controls="v1">
+<html lang="en" data-battle-lab-native-controls="v2">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -49,8 +55,10 @@ BRIDGE_HTML = r'''<!doctype html>
 <script>
 (function () {
   'use strict';
-  var marker = 'battle-lab-native-showdown-controls-v1';
+  var marker = 'battle-lab-native-showdown-controls-v2';
   var api = location.protocol + '//' + location.hostname + ':8765';
+  var viewerOrigin = location.protocol + '//' + location.host;
+  var pinnedFxBase = viewerOrigin + '/play.pokemonshowdown.com/fx/';
   var frame = document.getElementById('showdown');
   var roomid = (location.hash || '').replace(/^#/, '');
   var activeSession = '';
@@ -60,7 +68,81 @@ BRIDGE_HTML = r'''<!doctype html>
 
   frame.src = 'battle-lab-vendor.html' + location.search + location.hash;
 
+  function localizeBattleFxUrl(value) {
+    if (!value) return '';
+    try {
+      var parsed = new URL(String(value), viewerOrigin + '/');
+      if (parsed.hostname !== 'play.pokemonshowdown.com') return '';
+      if (parsed.pathname.indexOf('/fx/') !== 0) return '';
+      return pinnedFxBase + parsed.pathname.slice('/fx/'.length) + parsed.search + parsed.hash;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function pinLocalBattleAssets() {
+    var child = frame.contentWindow;
+    if (!child || !child.document || child.__battleLabPinnedFx === marker) return false;
+    var doc = child.document;
+
+    // The pinned client calculates Dex.fxPrefix from the live Config route.
+    // Override the mutable prefix for code that consults it later, while the
+    // image rewriter below also catches BattleEffects URLs precomputed at load.
+    try {
+      if (child.Dex) child.Dex.fxPrefix = pinnedFxBase;
+    } catch (_) {}
+
+    function rewriteImage(image) {
+      if (!image || image.nodeType !== 1 || String(image.tagName).toUpperCase() !== 'IMG') return false;
+      if (image.getAttribute('data-battle-lab-fx-localized') === '1') return false;
+      var current = image.getAttribute('src') || '';
+      var localized = localizeBattleFxUrl(current);
+      if (!localized || localized === current) return false;
+      image.setAttribute('data-battle-lab-fx-localized', '1');
+      image.setAttribute('src', localized);
+      return true;
+    }
+
+    function scan(root) {
+      if (!root) return;
+      rewriteImage(root);
+      if (!root.querySelectorAll) return;
+      var images = root.querySelectorAll('img[src]');
+      for (var i = 0; i < images.length; i++) rewriteImage(images[i]);
+    }
+
+    scan(doc.documentElement);
+
+    var Observer = child.MutationObserver || window.MutationObserver;
+    if (Observer && doc.documentElement) {
+      var observer = new Observer(function (records) {
+        for (var i = 0; i < records.length; i++) {
+          var record = records[i];
+          if (record.type === 'attributes') rewriteImage(record.target);
+          for (var j = 0; j < record.addedNodes.length; j++) scan(record.addedNodes[j]);
+        }
+      });
+      observer.observe(doc.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src']
+      });
+      child.__battleLabFxObserver = observer;
+    }
+
+    // Safety net: if a remote FX request raced the observer and already failed,
+    // retry that exact asset from the pinned local checkout once.
+    doc.addEventListener('error', function (event) {
+      rewriteImage(event.target);
+    }, true);
+
+    child.__battleLabPinnedFx = marker;
+    return true;
+  }
+
   function childRoom() {
+    pinLocalBattleAssets();
     var child = frame.contentWindow;
     if (!child || !child.app || !roomid) return null;
     var rooms = child.app.rooms || {};
@@ -161,6 +243,7 @@ BRIDGE_HTML = r'''<!doctype html>
 
   async function poll() {
     try {
+      pinLocalBattleAssets();
       var healthResponse = await fetch(api + '/health', {cache: 'no-store'});
       if (!healthResponse.ok) return;
       var health = await healthResponse.json();
@@ -178,6 +261,7 @@ BRIDGE_HTML = r'''<!doctype html>
   }
 
   frame.addEventListener('load', function () {
+    pinLocalBattleAssets();
     setTimeout(function () { void poll(); }, 0);
   });
   setInterval(function () { void poll(); }, 300);
@@ -190,7 +274,7 @@ BRIDGE_HTML = r'''<!doctype html>
 
 
 class BattleLabViewerHandler(http.server.SimpleHTTPRequestHandler):
-    server_version = "BattleLabShowdownViewer/1"
+    server_version = "BattleLabShowdownViewer/2"
 
     def _path_only(self) -> str:
         return urlsplit(self.path).path
