@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authenticated TCP tunnel for remote Battle Lab use over a private LAN.
+"""Authenticated TCP tunnel for remote Battle Lab use over a trusted private LAN.
 
 Battle Lab deliberately keeps its existing services bound to 127.0.0.1. This
 module exposes a *single* authenticated gateway port on the host (for example,
@@ -12,16 +12,20 @@ or viewer directly on the LAN.
 Typical host side (normally launched by the Nana LAN wrapper):
 
     python -m battle_lab.lan_tunnel gateway \
-      --token <ephemeral-token> --allow-ports 11829 8765 8766 8767
+      --token <ephemeral-token> --allow-ports 8765 8766 8767
 
 Typical remote PC:
 
     python -m battle_lab.lan_tunnel client \
-      --server 192.168.1.50 --ports 11829 8765 8766 8767
+      --server 192.168.1.50 --ports 8765 8766 8767
 
 If --token is omitted, the client prompts without echo. The gateway can also
 read BATTLE_LAB_LAN_TOKEN so the token does not need to appear in its process
 arguments.
+
+The gateway authenticates peers but does not encrypt the TCP payload. It is
+intended for a trusted private LAN or for use *inside* an encrypted private
+transport such as Tailscale/VPN; it must not be port-forwarded to the Internet.
 """
 
 from __future__ import annotations
@@ -32,7 +36,6 @@ import getpass
 import hmac
 import ipaddress
 import os
-import socket
 from contextlib import suppress
 from typing import Iterable, Mapping, Sequence
 
@@ -227,6 +230,38 @@ async def start_gateway_server(
     return await asyncio.start_server(handler, bind, port)
 
 
+async def probe_gateway_target(
+    *,
+    server: str,
+    gateway_port: int,
+    token: str,
+    target_port: int,
+) -> str:
+    """Authenticate and verify that one loopback target is currently reachable."""
+
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(server, gateway_port),
+            HANDSHAKE_TIMEOUT_SECONDS,
+        )
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        return "gateway-unreachable"
+    try:
+        writer.write(build_handshake(token, target_port))
+        await writer.drain()
+        response = await asyncio.wait_for(
+            reader.readline(), HANDSHAKE_TIMEOUT_SECONDS
+        )
+        if response == b"OK\n":
+            return "ok"
+        rendered = response.decode("utf-8", errors="replace").strip()
+        return rendered or "no-response"
+    except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
+        return "probe-failed"
+    finally:
+        await _close_writer(writer)
+
+
 async def _client_connection(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -340,6 +375,29 @@ async def run_client(args: argparse.Namespace) -> int:
     if not token:
         token = getpass.getpass("Token LAN de Battle Lab: ")
     ports = _normalize_ports(args.ports)
+
+    failures: list[str] = []
+    print("Verificando gateway y servicios Battle Lab en la ROG…", flush=True)
+    for port in ports:
+        result = await probe_gateway_target(
+            server=args.server,
+            gateway_port=args.gateway_port,
+            token=token,
+            target_port=port,
+        )
+        if result == "ok":
+            print(f"  ✓ 127.0.0.1:{port} remoto accesible", flush=True)
+        else:
+            failures.append(f"{port}: {result}")
+            print(f"  ✗ 127.0.0.1:{port} remoto → {result}", flush=True)
+    if failures:
+        raise SystemExit(
+            "Preflight LAN falló. No se abrirán forwarders locales. "
+            "Comprueba que Nana LAN esté corriendo en la ROG, que el token sea el actual "
+            "y que Windows Firewall permita el gateway solo en red Privada. Detalle: "
+            + "; ".join(failures)
+        )
+
     mappings = {port: port for port in ports}
     servers = await start_client_forwarders(
         server=args.server,
@@ -353,7 +411,12 @@ async def run_client(args: argparse.Namespace) -> int:
         + ", ".join(f"127.0.0.1:{port}" for port in ports),
         flush=True,
     )
-    print("Mantén esta terminal abierta mientras juegas. Ctrl+C para cerrar.", flush=True)
+    print(
+        "Mantén esta terminal abierta y abre War Room usando la URL LAN de la ROG; "
+        "el iframe y sus servicios internos usarán estos puertos loopback.",
+        flush=True,
+    )
+    print("Ctrl+C para cerrar el túnel.", flush=True)
     try:
         await asyncio.gather(*(server.serve_forever() for server in servers))
     finally:
