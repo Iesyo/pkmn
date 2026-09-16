@@ -13,20 +13,64 @@ from battle_lab.mc_refresh_data import read_json
 from battle_lab.mc_rl_light_v3 import alias_mc_runtime_catalogs
 from battle_lab.mc_training import Progress, atomic_json, sha256_file, sha256_text, utc_now
 from battle_lab.showdown_smoke import running_showdown, validate_team
-from battle_lab.team_corpus import build_pairing_schedule
+from battle_lab.team_corpus import build_pairing_schedule, normalize_team_text
+from battle_lab.mc_team_split import team_signature
+
+
+def evaluation_corpus(run: Path, battle_format: str):
+    """Build a deduplicated evaluation view without changing the frozen dataset."""
+    split_root = run / "split"
+    split = read_json(split_root / "split_manifest.json")
+    for side in ("train", "holdout"):
+        actual = {p.name: sha256_file(p) for p in (split_root / side).glob("mc*.txt")}
+        if actual != split["fileHashes"][side]:
+            raise RuntimeError("The frozen team snapshot changed: " + side)
+        if set(actual) != set(split[side + "Files"]) or len(actual) != split[side + "Teams"]:
+            raise RuntimeError("Inconsistent frozen split manifest: " + side)
+    train_signatures = {team_signature(p) for p in (split_root / "train").glob("mc*.txt")}
+    view = run / "evaluation" / "corpus"
+    view.mkdir(parents=True, exist_ok=True)
+    groups, texts = {}, {}
+    for name in sorted(split["holdoutFiles"], key=lambda n: int(Path(n).stem[2:])):
+        path = split_root / "holdout" / name
+        if team_signature(path) in train_signatures:
+            raise RuntimeError("Train/holdout signature leakage before evaluation")
+        text = normalize_team_text(path.read_text(encoding="utf-8"))
+        digest = sha256_text(text)
+        groups.setdefault(digest, []).append(name)
+        texts[digest] = text
+    if len(groups) < 2:
+        raise RuntimeError("Fewer than two distinct holdout teams")
+    kept, fresh, removed = [], [], []
+    for digest, aliases in groups.items():
+        name = aliases[0]
+        kept.append(name)
+        (view / name).write_text(texts[digest], encoding="utf-8")
+        # An alias cannot make an old team fresh.
+        if all(n in split["freshHoldoutFiles"] for n in aliases):
+            fresh.append(name)
+        removed.extend({"file": n, "sameAs": name, "normalizedSha256": digest} for n in aliases[1:])
+    for stale in view.glob("mc*.txt"):
+        if stale.name not in kept:
+            stale.unlink()
+    manifest = {**split, "holdoutTeams": len(kept), "holdoutFiles": kept,
+                "freshHoldoutFiles": fresh, "freshHoldoutTeams": len(fresh),
+                "holdoutDir": str(view),
+                "fileHashes": {**split["fileHashes"],
+                               "holdout": {n: sha256_file(view / n) for n in kept}},
+                "sourceManifestSha256": sha256_file(split_root / "split_manifest.json"),
+                "sourceHoldoutTeams": split["holdoutTeams"], "removedDuplicates": removed}
+    atomic_json(view / "split_manifest.json", manifest)
+    corpus = load_holdout_corpus(view, view / "split_manifest.json", expected_count=len(kept),
+                                 battle_format=battle_format)
+    print(f"Holdout de evaluación: {len(kept)} equipos únicos; {len(removed)} copias equivalentes omitidas. Snapshot original conservado.", flush=True)
+    return corpus, manifest
 
 
 def evaluate(*, vgc_root: Path, showdown: Path, run: Path, champion: dict,
              candidate: dict, battles: int, seed: int, port: int, device: str,
              battle_format: str, code_sha: str, showdown_sha: str) -> dict:
-    split_root = run / "split"
-    split = read_json(split_root / "split_manifest.json")
-    corpus = load_holdout_corpus(split_root / "holdout", split_root / "split_manifest.json",
-                                 expected_count=split["holdoutTeams"], battle_format=battle_format)
-    for side in ("train", "holdout"):
-        actual = {p.name: sha256_file(p) for p in (split_root / side).glob("mc*.txt")}
-        if actual != split["fileHashes"][side]:
-            raise RuntimeError("The frozen team snapshot changed: " + side)
+    corpus, split = evaluation_corpus(run, battle_format)
     for model in (champion, candidate):
         if sha256_file(Path(model["checkpoint"])) != model["sha256"]:
             raise RuntimeError("Model bytes changed before evaluation")
@@ -69,6 +113,7 @@ def evaluate(*, vgc_root: Path, showdown: Path, run: Path, champion: dict,
                        "scorePercent": 100 * (wins + .5 * ties) / games if games else None}
     result = {"generatedAt": utc_now(), "state": "completed", "models": models,
               "comparison": comparison, "freshHoldout": fresh,
+              "holdoutView": {k: split[k] for k in ("holdoutTeams", "sourceHoldoutTeams", "removedDuplicates", "sourceManifestSha256")},
               "protocol": {"format": battle_format, "seed": seed, "schedule": meta,
                            "runtimeIdentity": identity, "showdownCommit": showdown_sha,
                            "pkmnCommit": code_sha, "catalogAliases": aliases,
@@ -77,4 +122,4 @@ def evaluate(*, vgc_root: Path, showdown: Path, run: Path, champion: dict,
               "artifacts": {"replays": str(output / "replays")}}
     atomic_json(output / "comparison.json", result)
     return {"comparisonFile": str(output / "comparison.json"), "comparison": comparison,
-            "freshHoldout": fresh, "battles": battles * 6}
+            "freshHoldout": fresh, "battles": battles * 6, "holdoutView": result["holdoutView"]}
