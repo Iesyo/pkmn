@@ -13,11 +13,8 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
-from battle_lab.nana_light_critic import (
-    build_actor_summary,
-    extract_observations,
-    trust_for,
-)
+from battle_lab.nana_light_critic import trust_for
+from battle_lab.nana_self_critic import build_actor_summary, extract_observations
 
 
 NURSERY_MODEL_VERSION = "nana2.3-nursery-live-v1"
