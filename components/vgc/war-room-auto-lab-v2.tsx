@@ -34,26 +34,45 @@ type RunPreset = "quick" | "standard" | "deep";
 
 const PRESETS: Record<
   RunPreset,
-  { label: string; opponents: number; battlesPerOpponent: number; description: string }
+  {
+    label: string;
+    opponents: number;
+    initialBattlesPerOpponent: number;
+    deepDiveOpponents: number;
+    additionalBattlesPerDeepDive: number;
+    description: string;
+  }
 > = {
   quick: {
     label: "Rápido",
     opponents: 18,
-    battlesPerOpponent: 12,
-    description: "18 rivales · 216 batallas. Auditoría rápida con muestra amplia.",
+    initialBattlesPerOpponent: 8,
+    deepDiveOpponents: 6,
+    additionalBattlesPerDeepDive: 12,
+    description: "18 × 8 para mapear el meta + 6 × 12 para confirmar señales. 216 batallas.",
   },
   standard: {
     label: "Normal",
-    opponents: 24,
-    battlesPerOpponent: 20,
-    description: "24 rivales · 480 batallas. Auditoría intensiva con mayor repetición por matchup.",
+    opponents: 40,
+    initialBattlesPerOpponent: 8,
+    deepDiveOpponents: 10,
+    additionalBattlesPerDeepDive: 16,
+    description: "40 × 8 para cobertura + 10 × 16 para confirmación. 480 batallas.",
   },
   deep: {
     label: "Profundo · meta actual",
     opponents: 100,
-    battlesPerOpponent: 10,
-    description: "100 rivales recientes · 1,000 batallas. Solo los VGCPastes M-C más recientes por Date Shared.",
+    initialBattlesPerOpponent: 6,
+    deepDiveOpponents: 20,
+    additionalBattlesPerDeepDive: 20,
+    description: "100 × 6 del meta reciente + 20 × 20 de confirmación. 1,000 batallas.",
   },
+};
+
+type ConfidenceInterval = {
+  low: number;
+  high: number;
+  width: number;
 };
 
 type RecordRow = {
@@ -62,6 +81,7 @@ type RecordRow = {
   losses: number;
   ties: number;
   scorePercent: number;
+  confidence95?: ConfidenceInterval;
 };
 
 type MatchupRow = RecordRow & {
@@ -69,13 +89,39 @@ type MatchupRow = RecordRow & {
   label: string;
   roster: string[];
   archetypes: string[];
+  confidence95: ConfidenceInterval;
+  deepDive: boolean;
+  evidenceLevel: "screening" | "confirmed";
 };
 
 type AutoLabAudit = {
   signal: {
     games: number;
+    uniqueOpponents: number;
     level: "exploratory" | "directional" | "stronger";
     note: string;
+  };
+  dataQuality: {
+    games: number;
+    screeningGames: number;
+    deepeningGames: number;
+    uniqueOpponents: number;
+    uniqueRosters: number;
+    deepDiveOpponents: number;
+    parsedReplays: number;
+    replayCoveragePercent: number;
+    uniquePreviewCombinations: number;
+    candidateAlphaGames: number;
+    candidateBetaGames: number;
+    sideImbalanceGames: number;
+  };
+  policySensitivity: {
+    status: "insufficient" | "review" | "stable";
+    alphaScorePercent: number;
+    betaScorePercent: number;
+    sideGapPercentagePoints: number;
+    note: string;
+    limitation: string;
   };
   goodMatchups: MatchupRow[];
   badMatchups: MatchupRow[];
@@ -87,6 +133,7 @@ type AutoLabAudit = {
     selectedRate: number;
     leadGames: number;
     scoreWhenSelected: number;
+    confidence95: ConfidenceInterval;
     signal: "rarely-selected" | "review" | "ok";
   }>;
   moveSignals: Array<{
@@ -98,19 +145,36 @@ type AutoLabAudit = {
     losses: number;
     ties: number;
     scoreWhenUsed: number;
+    confidence95: ConfidenceInterval;
     signal: "review" | "observed";
   }>;
   opponentPokemonPressure: Array<{
     pokemon: string;
+    observedGames: number;
     lossGames: number;
     lossShare: number;
+    lossRate: number;
+    lossRateLift: number;
+    exposureRate: number;
+    uniqueOpponents: number;
+    confidence95: ConfidenceInterval;
+    priorityScore: number;
   }>;
   opponentCorePressure: Array<{
     core: string;
+    observedGames: number;
     lossGames: number;
     lossShare: number;
+    lossRate: number;
+    lossRateLift: number;
+    exposureRate: number;
+    uniqueOpponents: number;
+    confidence95: ConfidenceInterval;
+    priorityScore: number;
   }>;
-  archetypePerformance: Array<RecordRow & { archetype: string }>;
+  archetypePerformance: Array<
+    RecordRow & { archetype: string; uniqueOpponents: number; confidence95: ConfidenceInterval }
+  >;
   recurringLossPatterns: Array<{
     pattern: string;
     count: number;
@@ -124,19 +188,49 @@ type AutoLabAudit = {
   limitations: string[];
 };
 
+type AdaptiveSampling = {
+  strategy: "adaptive-two-stage";
+  heuristic: string;
+  screening: {
+    opponents: number;
+    battlesPerOpponent: number;
+    battlesPerCandidate: number;
+  };
+  deepDive: {
+    opponents: number;
+    additionalBattlesPerOpponent: number;
+    battlesPerCandidate: number;
+    selected: Array<{
+      id: string;
+      label: string;
+      archetypes: string[];
+      priorityScore: number;
+      recurrentRiskScore: number;
+      selectionRank: number;
+      reasons: string[];
+    }>;
+  };
+  battlesPerCandidate: number;
+};
+
 type AutoLabResult = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   benchmark: "light-mc-team-gauntlet";
   policy: string;
   totalBattles: number;
-  battlesPerOpponent: number;
+  sampling: AdaptiveSampling;
   opponents: Array<{
     id: string;
     label: string;
     roster: string[];
     archetypes: string[];
   }>;
-  baseline: RecordRow & { id: string; label: string };
+  baseline: RecordRow & {
+    id: string;
+    label: string;
+    poolEstimate: RecordRow;
+    adaptiveCombined: RecordRow;
+  };
   audit: AutoLabAudit;
   caveat: string;
 };
@@ -160,6 +254,7 @@ type AutoLabJob = {
   currentCandidateId: string | null;
   currentCandidateLabel: string | null;
   currentOpponentId: string | null;
+  samplingStage: "screening" | "deepening" | null;
   events: string[];
   result: AutoLabResult | null;
 };
@@ -352,9 +447,22 @@ function MatchupCard({ row, tone }: { row: MatchupRow; tone: "good" | "bad" }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h4 className="truncate text-sm font-black text-white">{row.label}</h4>
-          <p className="mt-1 font-mono text-[11px] text-slate-400">
-            {row.wins}-{row.losses}-{row.ties} · {row.games} partidas
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <p className="font-mono text-[11px] text-slate-400">
+              {row.wins}-{row.losses}-{row.ties} · {row.games} partidas
+            </p>
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-[9px]",
+                row.deepDive
+                  ? "border-cyan-300/20 bg-cyan-300/[0.05] text-cyan-200"
+                  : "border-white/10 text-slate-400",
+              )}
+            >
+              {row.deepDive ? "Confirmado" : "Barrido"}
+            </Badge>
+          </div>
         </div>
         <strong
           className={cn(
@@ -365,6 +473,9 @@ function MatchupCard({ row, tone }: { row: MatchupRow; tone: "good" | "bad" }) {
           {row.scorePercent.toFixed(1)}%
         </strong>
       </div>
+      <p className="mt-2 text-[10px] text-slate-500">
+        IC95% {row.confidence95.low.toFixed(1)}–{row.confidence95.high.toFixed(1)}%
+      </p>
       <div className="mt-3">
         <SpriteStrip species={row.roster} size={34} />
       </div>
@@ -446,7 +557,7 @@ function ArchetypeCard({ row }: { row: AutoLabAudit["archetypePerformance"][numb
         />
       </div>
       <p className="mt-2 text-[11px] text-slate-400">
-        {row.games} partidas · {row.wins}-{row.losses}-{row.ties}
+        {row.games} partidas · {row.uniqueOpponents} rivales · IC95% {row.confidence95.low.toFixed(1)}–{row.confidence95.high.toFixed(1)}%
       </p>
     </article>
   );
@@ -472,17 +583,17 @@ function OpponentThreatCard({
           <div className="flex items-center justify-between gap-3">
             <h3 className="truncate text-sm font-black text-white">{row.pokemon}</h3>
             <span className="font-mono text-sm font-black text-amber-200">
-              {row.lossShare.toFixed(1)}%
+              {row.lossRate.toFixed(1)}%
             </span>
           </div>
           <div className="mt-2 flex items-center gap-2">
             <Progress
-              value={row.lossShare}
+              value={row.lossRate}
               className="h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-amber-300"
             />
           </div>
           <p className="mt-2 text-[11px] leading-4 text-slate-400">
-            Apareció en {row.lossGames} derrotas · {row.lossShare.toFixed(1)}% de las derrotas analizadas.
+            {row.lossGames}/{row.observedGames} derrotas cuando apareció · {row.lossRateLift >= 0 ? "+" : ""}{row.lossRateLift.toFixed(1)} pp vs referencia · {row.uniqueOpponents} rivales.
           </p>
         </div>
       </div>
@@ -505,15 +616,15 @@ function OpponentCoreCard({
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Progress
-          value={row.lossShare}
+          value={row.lossRate}
           className="h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300"
         />
         <span className="w-12 text-right font-mono text-[11px] font-black text-violet-200">
-          {row.lossShare.toFixed(1)}%
+          {row.lossRate.toFixed(1)}%
         </span>
       </div>
       <p className="mt-2 text-[11px] leading-4 text-slate-400">
-        {row.lossGames} derrotas asociadas · {row.lossShare.toFixed(1)}% de las derrotas analizadas.
+        {row.lossGames}/{row.observedGames} derrotas al aparecer · {row.lossRateLift >= 0 ? "+" : ""}{row.lossRateLift.toFixed(1)} pp vs referencia · {row.uniqueOpponents} rivales.
       </p>
     </article>
   );
@@ -677,7 +788,7 @@ export function WarRoomAutoLab({
 
       if (preset === "deep" && loaded.length < spec.opponents) {
         throw new Error(
-          `Profundo necesita ${spec.opponents} VGCPastes M-C recientes validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`,
+          `Profundo necesita ${spec.opponents} VGCPastes M-C actuales, recientes y validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`,
         );
       }
       if (loaded.length < Math.min(6, spec.opponents)) {
@@ -700,7 +811,9 @@ export function WarRoomAutoLab({
             label,
             teamPaste: paste,
           })),
-          battlesPerOpponent: spec.battlesPerOpponent,
+          initialBattlesPerOpponent: spec.initialBattlesPerOpponent,
+          deepDiveOpponents: Math.min(spec.deepDiveOpponents, loaded.length),
+          additionalBattlesPerDeepDive: spec.additionalBattlesPerDeepDive,
         }),
       });
       const payload = await readPayload(response);
@@ -796,7 +909,9 @@ export function WarRoomAutoLab({
                     {PRESETS[value].label}
                   </span>
                   <span className="mt-0.5 block text-[10px] text-slate-400">
-                    {PRESETS[value].opponents} rivales × {PRESETS[value].battlesPerOpponent}
+                    {PRESETS[value].opponents} × {PRESETS[value].initialBattlesPerOpponent}
+                    {" + "}
+                    {PRESETS[value].deepDiveOpponents} × {PRESETS[value].additionalBattlesPerDeepDive}
                   </span>
                 </button>
               ))}
@@ -859,7 +974,7 @@ export function WarRoomAutoLab({
                 {job.phase === "finalizing"
                   ? "Generando informe de combate…"
                   : job.currentOpponentId
-                    ? `Probando ${job.currentOpponentId}`
+                    ? `${job.samplingStage === "deepening" ? "Confirmando" : "Mapeando"} ${job.currentOpponentId}`
                     : job.phase === "preparing"
                       ? "Preparando arena…"
                       : "Gauntlet en curso"}
@@ -887,10 +1002,10 @@ export function WarRoomAutoLab({
         <div className="mt-5 space-y-5">
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {[
-              ["Score LIGHT-Team", `${job.result.baseline.scorePercent.toFixed(1)}%`, "text-cyan-100"],
+              ["Score cobertura", `${job.result.baseline.poolEstimate.scorePercent.toFixed(1)}%`, "text-cyan-100"],
               [
-                "Registro",
-                `${job.result.baseline.wins}-${job.result.baseline.losses}-${job.result.baseline.ties}`,
+                "Registro cobertura",
+                `${job.result.baseline.poolEstimate.wins}-${job.result.baseline.poolEstimate.losses}-${job.result.baseline.poolEstimate.ties}`,
                 "text-white",
               ],
               ["Rivales", `${job.result.opponents.length}`, "text-white"],
@@ -911,6 +1026,92 @@ export function WarRoomAutoLab({
                 <p className={cn("mt-1 text-2xl font-black", tone)}>{value}</p>
               </div>
             ))}
+          </section>
+
+          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-[24px] border border-cyan-300/12 bg-cyan-300/[0.025] p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-300">
+                    Muestreo adaptativo
+                  </p>
+                  <h3 className="mt-1 text-lg font-black text-white">
+                    Cobertura primero, confirmación después
+                  </h3>
+                </div>
+                <Badge
+                  variant="outline"
+                  className="border-cyan-300/15 bg-cyan-300/[0.03] text-[10px] text-cyan-200"
+                >
+                  {job.result.sampling.screening.opponents} × {job.result.sampling.screening.battlesPerOpponent}
+                  {" + "}
+                  {job.result.sampling.deepDive.opponents} × {job.result.sampling.deepDive.additionalBattlesPerOpponent}
+                </Badge>
+              </div>
+              <p className="mt-2 text-[11px] leading-5 text-slate-400">
+                {job.result.sampling.heuristic}. Los rivales confirmados conservan el mismo
+                piloto LIGHT y reciben batallas nuevas, con semillas de Preview no repetidas.
+              </p>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {job.result.sampling.deepDive.selected.slice(0, 4).map((row) => (
+                  <article
+                    key={row.id}
+                    className="rounded-xl border border-white/8 bg-slate-950/45 px-3 py-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <strong className="truncate text-[11px] text-white">
+                        #{row.selectionRank} · {row.label}
+                      </strong>
+                      <span className="font-mono text-[10px] text-cyan-200">
+                        {row.priorityScore.toFixed(1)}
+                      </span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">
+                      {row.reasons.join(" ")}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
+              <p className="text-[10px] font-black uppercase tracking-[0.14em] text-violet-300">
+                Calidad de datos
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                {[
+                  ["Rosters únicos", audit.dataQuality.uniqueRosters],
+                  ["Rivales", audit.dataQuality.uniqueOpponents],
+                  ["Preview distintos", audit.dataQuality.uniquePreviewCombinations],
+                  ["Barrido / confirm.", `${audit.dataQuality.screeningGames} / ${audit.dataQuality.deepeningGames}`],
+                  ["Replay coverage", `${audit.dataQuality.replayCoveragePercent.toFixed(1)}%`],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-xl border border-white/8 bg-slate-950/45 p-3">
+                    <p className="text-[10px] text-slate-500">{label}</p>
+                    <strong className="mt-0.5 block text-sm text-white">{value}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 rounded-xl border border-white/8 bg-slate-950/45 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <strong className="text-[11px] text-white">Sensibilidad de ejecución</strong>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[9px]",
+                      audit.policySensitivity.status === "review"
+                        ? "border-amber-300/20 text-amber-200"
+                        : "border-white/10 text-slate-300",
+                    )}
+                  >
+                    Δ lados {audit.policySensitivity.sideGapPercentagePoints.toFixed(1)} pp
+                  </Badge>
+                </div>
+                <p className="mt-1 text-[10px] leading-4 text-slate-400">
+                  {audit.policySensitivity.note} {audit.policySensitivity.limitation}
+                </p>
+              </div>
+            </div>
           </section>
 
           <section className="rounded-[24px] border border-cyan-300/12 bg-cyan-300/[0.025] p-5">
