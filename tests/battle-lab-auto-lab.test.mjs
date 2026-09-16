@@ -25,10 +25,11 @@ test("Auto Lab balances sides, samples only candidate Team Preview and audits th
   assert.match(source, /auto_lab_preview_sampling/);
   assert.match(source, /self\.deterministic = False/);
   assert.match(source, /self\.deterministic = previous/);
-  assert.match(source, /_preview_seed\(opponent_id, index\)/);
+  assert.match(source, /preview_index_offset \+ index/);
+  assert.match(source, /_preview_seed\(opponent_id, preview_index\)/);
   assert.match(source, /summary\["teamPreview"\]/);
   assert.match(source, /build_auto_lab_audit/);
-  assert.match(source, /"schemaVersion": 2/);
+  assert.match(source, /"schemaVersion": 3/);
   assert.match(source, /if len\(opponents\) > 100/);
   execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
@@ -159,7 +160,7 @@ test("War Room keeps full-set package generation available for Optimize", () => 
   assert.match(source, /selectAutoLabOpponentCandidates/);
 });
 
-test("Deep audit prioritizes the newest current VGCPastes while quick and normal keep broad coverage", () => {
+test("Adaptive audit preserves each budget while widening and deduplicating the opponent pool", () => {
   const source = fs.readFileSync(variants, "utf8");
   const ui = fs.readFileSync(panelV2, "utf8");
 
@@ -167,12 +168,145 @@ test("Deep audit prioritizes the newest current VGCPastes while quick and normal
   assert.match(source, /team\.source === "vgcpastes"/);
   assert.match(source, /Date\.parse\(value\.trim\(\)\)/);
   assert.match(source, /right\.sharedAt - left\.sharedAt/);
-  assert.match(ui, /opponents:\s*18,\s*battlesPerOpponent:\s*12/);
-  assert.match(ui, /opponents:\s*24,\s*battlesPerOpponent:\s*20/);
-  assert.match(ui, /opponents:\s*100,\s*battlesPerOpponent:\s*10/);
+  assert.match(source, /selectRosterDiverse/);
+  assert.match(source, /rosterSignature/);
+  assert.match(ui, /opponents:\s*18,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*6,\s*additionalBattlesPerDeepDive:\s*12/);
+  assert.match(ui, /opponents:\s*40,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*10,\s*additionalBattlesPerDeepDive:\s*16/);
+  assert.match(ui, /opponents:\s*100,\s*initialBattlesPerOpponent:\s*6,\s*deepDiveOpponents:\s*20,\s*additionalBattlesPerDeepDive:\s*20/);
   assert.match(ui, /preset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
-  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C recientes validados por Showdown/);
-  assert.match(ui, /Solo los VGCPastes M-C más recientes por Date Shared/);
+  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C actuales, recientes y validados por Showdown/);
+  assert.match(ui, /100 × 6 del meta reciente \+ 20 × 20 de confirmación/);
+});
+
+test("Adaptive sampling ranks recurrent risk, adds confidence and never reuses preview seeds", () => {
+  const source = fs.readFileSync(core, "utf8");
+  const api = fs.readFileSync(service, "utf8");
+  const ui = fs.readFileSync(panelV2, "utf8");
+  assert.match(source, /class AdaptiveSamplingPlan/);
+  assert.match(source, /select_deep_dive_opponents/);
+  assert.match(source, /prevalence \* severity \* repeatability \* confidence/);
+  assert.match(source, /preview_index_offset=sampling_plan\.initial_battles_per_opponent/);
+  assert.match(api, /initialBattlesPerOpponent/);
+  assert.match(api, /deepDiveOpponents/);
+  assert.match(api, /additionalBattlesPerDeepDive/);
+  assert.match(ui, /Cobertura primero, confirmación después/);
+  assert.match(ui, /IC95%/);
+
+  const script = `
+from battle_lab.auto_lab import AdaptiveSamplingPlan, _preview_seed, select_deep_dive_opponents
+
+plan = AdaptiveSamplingPlan(8, 6, 12)
+assert plan.battles_per_candidate(18) == 216
+assert AdaptiveSamplingPlan(8, 10, 16).battles_per_candidate(40) == 480
+assert AdaptiveSamplingPlan(6, 20, 20).battles_per_candidate(100) == 1000
+assert _preview_seed("rain", 0) != _preview_seed("rain", 8)
+
+report = {"scorePercent": 50, "byOpponent": {
+    "rain-a": {"games": 8, "wins": 0, "losses": 8, "ties": 0, "scorePercent": 0, "confidence95": {"low": 0, "high": 32.4, "width": 32.4}},
+    "rain-b": {"games": 8, "wins": 1, "losses": 7, "ties": 0, "scorePercent": 12.5, "confidence95": {"low": 2.2, "high": 47.1, "width": 44.9}},
+    "tr-a": {"games": 8, "wins": 2, "losses": 6, "ties": 0, "scorePercent": 25, "confidence95": {"low": 7.1, "high": 59.1, "width": 52}},
+    "tailwind-a": {"games": 8, "wins": 7, "losses": 1, "ties": 0, "scorePercent": 87.5, "confidence95": {"low": 52.9, "high": 97.8, "width": 44.9}},
+}}
+opponents = {
+    "rain-a": {"label": "Rain A", "archetypes": ["Rain"]},
+    "rain-b": {"label": "Rain B", "archetypes": ["Rain"]},
+    "tr-a": {"label": "TR", "archetypes": ["Trick Room"]},
+    "tailwind-a": {"label": "TW", "archetypes": ["Tailwind"]},
+}
+selected = select_deep_dive_opponents(report, opponents, 2)
+assert [row["id"] for row in selected] == ["rain-a", "tr-a"], selected
+assert selected[0]["components"]["repeatability"] == 1.0, selected
+assert selected[0]["screening"]["confidence95"]["high"] == 32.4, selected
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("Adaptive confirmation does not bias the broad pool or archetype estimate", () => {
+  const script = `
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from battle_lab.auto_lab_audit import build_auto_lab_audit
+
+def battle(tag, opponent, winner, stage):
+    return {
+        "battleTag": tag,
+        "pairing": {"alphaTeamId": "baseline", "betaTeamId": opponent},
+        "winnerSide": winner,
+        "samplingStage": stage,
+        "teamPreview": {"alpha": []},
+    }
+
+summaries = [
+    battle("screen-hard", "hard", "beta", "screening"),
+    battle("screen-good", "good", "alpha", "screening"),
+    battle("deep-hard-1", "hard", "beta", "deepening"),
+    battle("deep-hard-2", "hard", "beta", "deepening"),
+]
+candidate_report = {
+    "scorePercent": 25,
+    "poolEstimate": {"games": 2, "wins": 1, "losses": 1, "ties": 0, "scorePercent": 50},
+    "byOpponent": {
+        "hard": {"games": 3, "wins": 0, "losses": 3, "ties": 0, "scorePercent": 0, "confidence95": {"low": 0, "high": 56.15, "width": 56.15}, "deepDive": True, "evidenceLevel": "confirmed"},
+        "good": {"games": 1, "wins": 1, "losses": 0, "ties": 0, "scorePercent": 100, "confidence95": {"low": 20.65, "high": 100, "width": 79.35}, "deepDive": False, "evidenceLevel": "screening"},
+    },
+}
+opponents = {
+    "hard": {"label": "Hard Rain", "roster": ["A", "B", "C", "D", "E", "F"], "archetypes": ["Rain"]},
+    "good": {"label": "Good Rain", "roster": ["G", "H", "I", "J", "K", "L"], "archetypes": ["Rain"]},
+}
+with TemporaryDirectory() as tmp:
+    result = build_auto_lab_audit(
+        candidate_id="baseline",
+        candidate_roster=["One", "Two", "Three", "Four", "Five", "Six"],
+        summaries=summaries,
+        candidate_report=candidate_report,
+        opponents=opponents,
+        replay_root=Path(tmp),
+        sampling={"deepDive": {"opponents": 1}},
+    )
+rain = result["archetypePerformance"][0]
+assert rain["scorePercent"] == 50, rain
+assert rain["adaptiveCombined"]["scorePercent"] == 25, rain
+assert result["dataQuality"]["screeningGames"] == 2, result["dataQuality"]
+assert result["dataQuality"]["deepeningGames"] == 2, result["dataQuality"]
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("Opponent selection spends early slots on distinct rosters before duplicate builds", () => {
+  const script = `
+import assert from "node:assert/strict";
+import { selectAutoLabRecentVgcPastesCandidates } from "./lib/war-room-auto-lab.ts";
+
+const make = (id, dateShared, pokemon) => ({
+  id,
+  source: "vgcpastes",
+  savedPasteId: "",
+  playerName: id,
+  tournament: "",
+  rank: "",
+  dateShared,
+  pokepasteUrl: "https://pokepast.es/example",
+  pokemon,
+  formatId: "gen9vgc2026regmc",
+  formatLabel: "M-C",
+  regulationWeight: 1,
+  historical: false,
+  setEvidenceEligible: true,
+});
+const rosterA = ["A", "B", "C", "D", "E", "F"];
+const selected = selectAutoLabRecentVgcPastesCandidates([
+  make("a-new", "2026-09-16", rosterA),
+  make("a-copy", "2026-09-15", [...rosterA].reverse()),
+  make("b", "2026-09-14", ["G", "H", "I", "J", "K", "L"]),
+  make("c", "2026-09-13", ["M", "N", "O", "P", "Q", "R"]),
+], 3);
+assert.deepEqual(selected.map((team) => team.id), ["a-new", "b", "c"]);
+`;
+  execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
+    cwd: root,
+    encoding: "utf8",
+  });
 });
 
 test("Auto Lab preflight skips invalid source pastes before starting the gauntlet", () => {
