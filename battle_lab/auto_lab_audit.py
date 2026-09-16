@@ -29,6 +29,14 @@ PROTECTIVE_MOVES = {
     "Silk Trap",
     "Spiky Shield",
 }
+DYNAMIC_FORM_SUFFIXES = {
+    "mega",
+    "megax",
+    "megay",
+    "primal",
+    "ultra",
+    "gmax",
+}
 
 
 @dataclass
@@ -46,6 +54,33 @@ class AutoLabReplayFacts:
 
 def _normalize_user(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _species_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _canonical_candidate_species(value: str, candidate_roster: Sequence[str]) -> str:
+    """Map Showdown ids/battle forms back to the six Team Builder identities."""
+
+    key = _species_key(value)
+    if not key:
+        return value
+    exact = {_species_key(name): name for name in candidate_roster}
+    if key in exact:
+        return exact[key]
+
+    # Team Preview can expose a transient battle form (for example mawilemega)
+    # while the Team Builder identity is the base species (Mawile). Collapse only
+    # known battle-only suffixes so distinct legal formes are not merged casually.
+    for name in sorted(candidate_roster, key=lambda item: len(_species_key(item)), reverse=True):
+        base = _species_key(name)
+        if not base or not key.startswith(base):
+            continue
+        suffix = key[len(base):]
+        if suffix in DYNAMIC_FORM_SUFFIXES:
+            return name
+    return value
 
 
 def _protocol_side(value: str) -> str | None:
@@ -75,7 +110,9 @@ def _extract_protocol(replay_html: str) -> list[str]:
     return [line for line in protocol.splitlines() if line.startswith("|")]
 
 
-def _candidate_protocol_side(lines: Sequence[str], summary: Mapping[str, Any], candidate_id: str) -> str:
+def _candidate_protocol_side(
+    lines: Sequence[str], summary: Mapping[str, Any], candidate_id: str
+) -> str:
     pairing = summary.get("pairing", {})
     candidate_side = "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
     expected_user = str(summary.get("players", {}).get(candidate_side) or "")
@@ -84,7 +121,11 @@ def _candidate_protocol_side(lines: Sequence[str], summary: Mapping[str, Any], c
     wanted = _normalize_user(expected_user)
     for line in lines:
         parts = line.split("|")
-        if len(parts) >= 4 and parts[1] == "player" and _normalize_user(parts[3]) == wanted:
+        if (
+            len(parts) >= 4
+            and parts[1] == "player"
+            and _normalize_user(parts[3]) == wanted
+        ):
             return parts[2]
     raise ValueError(f"No se encontró {candidate_side}={expected_user} en el replay")
 
@@ -140,38 +181,57 @@ def parse_auto_lab_replay(
             side = _protocol_side(actor)
             slot = _slot(actor)
             if side == candidate_side:
-                species = slots.get((side, slot or ""), actor.split(":", 1)[-1].strip())
+                species = slots.get(
+                    (side, slot or ""), actor.split(":", 1)[-1].strip()
+                )
                 move = parts[3]
                 target = parts[4] if len(parts) >= 5 else ""
                 moves[species][move] += 1
-                current_move = {"actor": actor, "species": species, "move": move, "target": target, "turn": turn}
+                current_move = {
+                    "actor": actor,
+                    "species": species,
+                    "move": move,
+                    "target": target,
+                    "turn": turn,
+                }
                 if move in PROTECTIVE_MOVES:
                     previous = last_protection_turn.get(actor)
                     if previous == turn - 1:
-                        events.append({"type": "consecutive-protection", "move": move, "species": species, "turn": turn})
+                        events.append(
+                            {
+                                "type": "consecutive-protection",
+                                "move": move,
+                                "species": species,
+                                "turn": turn,
+                            }
+                        )
                     last_protection_turn[actor] = turn
             else:
                 current_move = None
             continue
         if command in {"-immune", "-fail"} and len(parts) >= 3 and current_move:
             event_type = "immune" if command == "-immune" else "failed"
-            events.append({
-                "type": event_type,
-                "move": current_move["move"],
-                "species": current_move["species"],
-                "target": parts[2],
-                "turn": turn,
-            })
-            continue
-        if command in {"-activate", "-block"} and len(parts) >= 4 and current_move:
-            if "protect" in "|".join(parts[3:]).lower():
-                events.append({
-                    "type": "target-protected",
+            events.append(
+                {
+                    "type": event_type,
                     "move": current_move["move"],
                     "species": current_move["species"],
                     "target": parts[2],
                     "turn": turn,
-                })
+                }
+            )
+            continue
+        if command in {"-activate", "-block"} and len(parts) >= 4 and current_move:
+            if "protect" in "|".join(parts[3:]).lower():
+                events.append(
+                    {
+                        "type": "target-protected",
+                        "move": current_move["move"],
+                        "species": current_move["species"],
+                        "target": parts[2],
+                        "turn": turn,
+                    }
+                )
             continue
         if command == "faint" and len(parts) >= 3 and first_faint_conceded is None:
             first_faint_conceded = _protocol_side(parts[2]) == candidate_side
@@ -182,7 +242,9 @@ def parse_auto_lab_replay(
         warnings.append("No se recuperaron ambos leads del rival.")
     return AutoLabReplayFacts(
         leads=[leads[key] for key in ("a", "b") if key in leads],
-        opponent_leads=[opponent_leads[key] for key in ("a", "b") if key in opponent_leads],
+        opponent_leads=[
+            opponent_leads[key] for key in ("a", "b") if key in opponent_leads
+        ],
         observed_pokemon=observed,
         opponent_observed_pokemon=opponent_observed,
         move_counts={species: dict(counter) for species, counter in moves.items()},
@@ -206,7 +268,19 @@ def classify_archetypes(team_text: str) -> list[str]:
         ("Redirection", ("- follow me", "- rage powder")),
         ("Screens", ("- reflect", "- light screen", "- aurora veil")),
         ("Perish", ("- perish song",)),
-        ("Setup", ("- swords dance", "- nasty plot", "- calm mind", "- dragon dance", "- quiver dance", "- bulk up", "- belly drum", "- coil")),
+        (
+            "Setup",
+            (
+                "- swords dance",
+                "- nasty plot",
+                "- calm mind",
+                "- dragon dance",
+                "- quiver dance",
+                "- bulk up",
+                "- belly drum",
+                "- coil",
+            ),
+        ),
     ]
     for label, needles in checks:
         if any(needle in text for needle in needles):
@@ -216,7 +290,16 @@ def classify_archetypes(team_text: str) -> list[str]:
 
 def _score(row: Mapping[str, int]) -> float:
     games = int(row.get("games", 0))
-    return round(100 * (int(row.get("wins", 0)) + 0.5 * int(row.get("ties", 0))) / games, 2) if games else 0.0
+    return (
+        round(
+            100
+            * (int(row.get("wins", 0)) + 0.5 * int(row.get("ties", 0)))
+            / games,
+            2,
+        )
+        if games
+        else 0.0
+    )
 
 
 def _outcome(summary: Mapping[str, Any], candidate_id: str) -> str:
@@ -232,7 +315,11 @@ def _outcome(summary: Mapping[str, Any], candidate_id: str) -> str:
 
 def _opponent_id(summary: Mapping[str, Any], candidate_id: str) -> str:
     pairing = summary.get("pairing", {})
-    return str(pairing.get("betaTeamId") if pairing.get("alphaTeamId") == candidate_id else pairing.get("alphaTeamId"))
+    return str(
+        pairing.get("betaTeamId")
+        if pairing.get("alphaTeamId") == candidate_id
+        else pairing.get("alphaTeamId")
+    )
 
 
 def _replay_path(replay_root: Path, battle_tag: str) -> Path | None:
@@ -258,8 +345,15 @@ def build_auto_lab_audit(
     replay_root: Path,
 ) -> dict[str, Any]:
     total = len(summaries)
-    signal_level = "exploratory" if total < 24 else "directional" if total < 60 else "stronger"
+    signal_level = (
+        "exploratory" if total < 24 else "directional" if total < 60 else "stronger"
+    )
     overall_score = float(candidate_report.get("scorePercent", 0.0) or 0.0)
+    roster = [str(name) for name in candidate_roster if str(name)]
+    roster_set = set(roster)
+    roster_order = {name: index for index, name in enumerate(roster)}
+    canonical = lambda value: _canonical_candidate_species(str(value), roster)
+
     facts: dict[str, AutoLabReplayFacts] = {}
     replay_errors: list[dict[str, str]] = []
     for summary in summaries:
@@ -269,51 +363,79 @@ def build_auto_lab_audit(
             replay_errors.append({"battleTag": tag, "error": "Replay ausente"})
             continue
         try:
-            facts[tag] = parse_auto_lab_replay(path.read_text(encoding="utf-8"), summary, candidate_id)
+            facts[tag] = parse_auto_lab_replay(
+                path.read_text(encoding="utf-8"), summary, candidate_id
+            )
         except Exception as error:
             replay_errors.append({"battleTag": tag, "error": str(error)[:240]})
 
     matchup_rows: list[dict[str, Any]] = []
     for opponent_id, row in candidate_report.get("byOpponent", {}).items():
         meta = opponents.get(opponent_id, {})
-        matchup_rows.append({
-            "id": opponent_id,
-            "label": meta.get("label", opponent_id),
-            "roster": list(meta.get("roster", [])),
-            "archetypes": list(meta.get("archetypes", [])),
-            **row,
-        })
-    matchup_rows.sort(key=lambda row: (float(row.get("scorePercent", 0)), str(row.get("label", ""))))
+        matchup_rows.append(
+            {
+                "id": opponent_id,
+                "label": meta.get("label", opponent_id),
+                "roster": list(meta.get("roster", [])),
+                "archetypes": list(meta.get("archetypes", [])),
+                **row,
+            }
+        )
+    matchup_rows.sort(
+        key=lambda row: (
+            float(row.get("scorePercent", 0)),
+            str(row.get("label", "")),
+        )
+    )
 
-    lead_rows: dict[str, dict[str, int]] = defaultdict(lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0})
-    selection_rows: dict[str, dict[str, int]] = {name: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "leadGames": 0} for name in candidate_roster}
-    move_rows: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "uses": 0})
+    lead_rows: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+    )
+    selection_rows: dict[str, dict[str, int]] = {
+        name: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "leadGames": 0}
+        for name in roster
+    }
+    move_rows: dict[tuple[str, str], dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "uses": 0}
+    )
     opponent_pokemon_losses: Counter[str] = Counter()
     opponent_core_losses: Counter[str] = Counter()
-    archetype_rows: dict[str, dict[str, int]] = defaultdict(lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0})
+    archetype_rows: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+    )
     pattern_counts: Counter[str] = Counter()
 
     for summary in summaries:
         outcome = _outcome(summary, candidate_id)
         pairing = summary.get("pairing", {})
-        candidate_side = "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
+        candidate_side = (
+            "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
+        )
         preview = list(summary.get("teamPreview", {}).get(candidate_side, []) or [])
+        canonical_preview: list[str] = []
         for species in preview:
-            row = selection_rows.setdefault(species, {"games": 0, "wins": 0, "losses": 0, "ties": 0, "leadGames": 0})
+            identity = canonical(species)
+            if identity in roster_set and identity not in canonical_preview:
+                canonical_preview.append(identity)
+        for identity in canonical_preview:
+            row = selection_rows[identity]
             row["games"] += 1
             row[outcome] += 1
 
         replay = facts.get(str(summary.get("battleTag") or ""))
         if replay:
-            lead_key = " + ".join(replay.leads) if replay.leads else "No recuperado"
+            canonical_leads = [canonical(species) for species in replay.leads]
+            lead_key = " + ".join(canonical_leads) if canonical_leads else "No recuperado"
             lead = lead_rows[lead_key]
             lead["games"] += 1
             lead[outcome] += 1
-            for species in replay.leads:
-                selection_rows.setdefault(species, {"games": 0, "wins": 0, "losses": 0, "ties": 0, "leadGames": 0})["leadGames"] += 1
+            for identity in canonical_leads:
+                if identity in roster_set:
+                    selection_rows[identity]["leadGames"] += 1
             for species, moves in replay.move_counts.items():
+                identity = canonical(species)
                 for move, uses in moves.items():
-                    row = move_rows[(species, move)]
+                    row = move_rows[(identity, move)]
                     row["games"] += 1
                     row[outcome] += 1
                     row["uses"] += uses
@@ -328,53 +450,92 @@ def build_auto_lab_audit(
                 if replay.first_faint_conceded:
                     pattern_counts["LIGHT recibió la primera baja"] += 1
                 for event in replay.observable_events:
-                    pattern_counts[f"{event['type']}: {event.get('move', '—')}"] += 1
+                    pattern_counts[
+                        f"{event['type']}: {event.get('move', '—')}"
+                    ] += 1
 
         opponent_id = _opponent_id(summary, candidate_id)
-        for tag in opponents.get(opponent_id, {}).get("archetypes", ["Balance / Other"]):
+        for tag in opponents.get(opponent_id, {}).get(
+            "archetypes", ["Balance / Other"]
+        ):
             row = archetype_rows[str(tag)]
             row["games"] += 1
             row[outcome] += 1
 
-    leads = [{"lead": label, **row, "scorePercent": _score(row)} for label, row in lead_rows.items()]
-    leads.sort(key=lambda row: (-row["games"], -row["scorePercent"], row["lead"]))
+    leads = [
+        {"lead": label, **row, "scorePercent": _score(row)}
+        for label, row in lead_rows.items()
+    ]
+    leads.sort(
+        key=lambda row: (-row["games"], -row["scorePercent"], row["lead"])
+    )
 
     selection_usage = []
     for species, row in selection_rows.items():
         games = row["games"]
         selected_rate = round(100 * games / total, 2) if total else 0.0
         score = _score(row)
-        signal = "rarely-selected" if total >= 12 and selected_rate <= 20 else "review" if games >= 3 and score + 15 < overall_score else "ok"
-        selection_usage.append({
-            "pokemon": species,
-            "selectedGames": games,
-            "selectedRate": selected_rate,
-            "leadGames": row["leadGames"],
-            "scoreWhenSelected": score,
-            "signal": signal,
-        })
-    selection_usage.sort(key=lambda row: (row["selectedRate"], row["pokemon"]))
+        signal = (
+            "rarely-selected"
+            if total >= 12 and selected_rate <= 20
+            else "review"
+            if games >= 3 and score + 15 < overall_score
+            else "ok"
+        )
+        selection_usage.append(
+            {
+                "pokemon": species,
+                "selectedGames": games,
+                "selectedRate": selected_rate,
+                "leadGames": row["leadGames"],
+                "scoreWhenSelected": score,
+                "signal": signal,
+            }
+        )
+    selection_usage.sort(
+        key=lambda row: roster_order.get(row["pokemon"], len(roster_order))
+    )
 
     move_signals = []
     for (species, move), row in move_rows.items():
         score = _score(row)
-        signal = "review" if row["games"] >= 3 and score + 15 < overall_score else "observed"
-        move_signals.append({
-            "pokemon": species,
-            "move": move,
-            "gamesUsed": row["games"],
-            "totalUses": row["uses"],
-            "wins": row["wins"],
-            "losses": row["losses"],
-            "ties": row["ties"],
-            "scoreWhenUsed": score,
-            "signal": signal,
-        })
-    move_signals.sort(key=lambda row: (0 if row["signal"] == "review" else 1, -row["gamesUsed"], row["pokemon"], row["move"]))
+        signal = (
+            "review"
+            if row["games"] >= 3 and score + 15 < overall_score
+            else "observed"
+        )
+        move_signals.append(
+            {
+                "pokemon": species,
+                "move": move,
+                "gamesUsed": row["games"],
+                "totalUses": row["uses"],
+                "wins": row["wins"],
+                "losses": row["losses"],
+                "ties": row["ties"],
+                "scoreWhenUsed": score,
+                "signal": signal,
+            }
+        )
+    move_signals.sort(
+        key=lambda row: (
+            0 if row["signal"] == "review" else 1,
+            -row["gamesUsed"],
+            row["pokemon"],
+            row["move"],
+        )
+    )
 
-    archetypes = [{"archetype": label, **row, "scorePercent": _score(row)} for label, row in archetype_rows.items()]
-    archetypes.sort(key=lambda row: (row["scorePercent"], -row["games"], row["archetype"]))
-    losses = sum(1 for summary in summaries if _outcome(summary, candidate_id) == "losses")
+    archetypes = [
+        {"archetype": label, **row, "scorePercent": _score(row)}
+        for label, row in archetype_rows.items()
+    ]
+    archetypes.sort(
+        key=lambda row: (row["scorePercent"], -row["games"], row["archetype"])
+    )
+    losses = sum(
+        1 for summary in summaries if _outcome(summary, candidate_id) == "losses"
+    )
 
     return {
         "signal": {
@@ -396,19 +557,35 @@ def build_auto_lab_audit(
         "setSignals": [row for row in selection_usage if row["signal"] != "ok"],
         "moveSignals": move_signals[:12],
         "opponentPokemonPressure": [
-            {"pokemon": species, "lossGames": count, "lossShare": round(100 * count / losses, 2) if losses else 0.0}
+            {
+                "pokemon": species,
+                "lossGames": count,
+                "lossShare": round(100 * count / losses, 2) if losses else 0.0,
+            }
             for species, count in opponent_pokemon_losses.most_common(10)
         ],
         "opponentCorePressure": [
-            {"core": core, "lossGames": count, "lossShare": round(100 * count / losses, 2) if losses else 0.0}
+            {
+                "core": core,
+                "lossGames": count,
+                "lossShare": round(100 * count / losses, 2) if losses else 0.0,
+            }
             for core, count in opponent_core_losses.most_common(8)
         ],
         "archetypePerformance": archetypes,
         "recurringLossPatterns": [
-            {"pattern": pattern, "count": count, "lossShare": round(100 * count / losses, 2) if losses else 0.0}
+            {
+                "pattern": pattern,
+                "count": count,
+                "lossShare": round(100 * count / losses, 2) if losses else 0.0,
+            }
             for pattern, count in pattern_counts.most_common(10)
         ],
-        "replayCoverage": {"expected": total, "parsed": len(facts), "errors": replay_errors[:12]},
+        "replayCoverage": {
+            "expected": total,
+            "parsed": len(facts),
+            "errors": replay_errors[:12],
+        },
         "limitations": [
             "Mide compatibilidad entre LIGHT M-C y el Team dentro de este pool; no la calidad objetiva del Team ni tu win rate.",
             "Auto Lab muestrea solo Team Preview del candidato; las decisiones por turno permanecen deterministas.",
