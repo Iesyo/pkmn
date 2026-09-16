@@ -32,16 +32,20 @@ test("Auto Lab balances sides, samples only candidate Team Preview and audits th
   execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
 
-test("empirical audit remains runnable even when no alternate full set exists", () => {
-  const source = fs.readFileSync(core, "utf8");
+test("Audit runs baseline-only while Optimize owns contextual set proposals", () => {
   const api = fs.readFileSync(service, "utf8");
   const ui = fs.readFileSync(panelV2, "utf8");
+  const room = fs.readFileSync(warRoom, "utf8");
 
-  assert.doesNotMatch(source, /Auto Lab requiere al menos una variante/);
   assert.match(api, /variants: list\[AutoLabTeamPayload\] = Field\(default_factory=list/);
-  assert.doesNotMatch(ui, /!preparation\.variants\.length/);
-  assert.match(ui, /La auditoría del Team actual sí puede ejecutarse/);
-  assert.match(ui, /Esta ronda fue solo auditoría del baseline/);
+  assert.match(api, /MAX_OPPONENTS = 24/);
+  assert.doesNotMatch(ui, /buildAutoLabVariants|optimizeTeam|Paquete de set completo|Copiar set candidato/);
+  assert.match(ui, /Los paquetes de set se quedaron en/);
+  assert.match(ui, /Optimizar o construir/);
+  assert.doesNotMatch(ui, /variants:/);
+  assert.match(room, /function SetSuggestionCard/);
+  assert.match(room, /Set search/);
+  assert.match(room, /result\.sets\.map\(\(suggestion\) => <SetSuggestionCard/);
 });
 
 test("Auto Lab replay audit exposes the requested empirical dimensions with cautious wording", () => {
@@ -52,7 +56,6 @@ test("Auto Lab replay audit exposes the requested empirical dimensions with caut
     "problematicOpponents",
     "leadPerformance",
     "selectionUsage",
-    "setSignals",
     "moveSignals",
     "opponentPokemonPressure",
     "opponentCorePressure",
@@ -92,9 +95,8 @@ test("local and Nana runtimes expose Auto Lab before serving LAN traffic", () =>
   assert.match(route, /Auto Lab no está cargado en el runtime local/);
 });
 
-test("War Room generates complete contextual set packages instead of isolated moves", () => {
+test("War Room keeps full-set package generation available for Optimize", () => {
   const source = fs.readFileSync(variants, "utf8");
-  assert.match(source, /MAX_AUTO_LAB_VARIANTS = 4/);
   assert.match(source, /applySetPackage/);
   assert.match(source, /suggestion\.proposal\.item/);
   assert.match(source, /suggestion\.proposal\.ability/);
@@ -106,26 +108,26 @@ test("War Room generates complete contextual set packages instead of isolated mo
   assert.match(source, /selectAutoLabOpponentCandidates/);
 });
 
-test("War Room surfaces the full empirical audit under Audit while Sparring stays manual", () => {
+test("Audit spends the old A/B budget on a wider current-team corpus and renders visual evidence", () => {
   assert.match(fs.readFileSync(panel, "utf8"), /war-room-auto-lab-v2/);
   const ui = fs.readFileSync(panelV2, "utf8");
   assert.match(ui, /Auto Lab · auditoría empírica/);
-  assert.match(ui, /Paquete de set completo/);
-  assert.match(ui, /Matchups más favorables/);
-  assert.match(ui, /Matchups más duros/);
+  assert.match(ui, /opponents: 12, battlesPerOpponent: 6/);
+  assert.match(ui, /opponents: 18, battlesPerOpponent: 12/);
+  assert.match(ui, /opponents: 24, battlesPerOpponent: 20/);
+  assert.match(ui, /getSpriteUrl/);
+  assert.match(ui, /SpriteStrip/);
+  assert.match(ui, /Matchups favorables/);
+  assert.match(ui, /Matchups duros/);
   assert.match(ui, /Ranking de rivales problemáticos/);
-  assert.match(ui, /Leads que mejor funcionan/);
-  assert.match(ui, /Selección del roster/);
-  assert.match(ui, /Pokémon casi nunca seleccionados/);
-  assert.match(ui, /Pokémon rivales asociados a derrotas/);
-  assert.match(ui, /Cores \/ leads rivales asociados a derrotas/);
-  assert.match(ui, /Moves a revisar/);
+  assert.match(ui, /Leads propios/);
+  assert.match(ui, /Uso del roster/);
+  assert.match(ui, /Pokémon rivales ligados a derrotas/);
+  assert.match(ui, /Cores \/ leads rivales ligados a derrotas/);
+  assert.match(ui, /Moves que merecen revisión/);
   assert.match(ui, /Patrones recurrentes en derrotas/);
   assert.match(ui, /Rendimiento por arquetipo/);
   assert.match(ui, /selectAutoLabOpponentCandidates/);
-  assert.match(ui, /battlesPerOpponent: 4/);
-  assert.match(ui, /battlesPerOpponent: 6/);
-  assert.match(ui, /battlesPerOpponent: 10/);
 
   const room = fs.readFileSync(warRoom, "utf8");
   assert.match(room, /import \{ WarRoomAutoLab \} from "@\/components\/vgc\/war-room-auto-lab"/);
