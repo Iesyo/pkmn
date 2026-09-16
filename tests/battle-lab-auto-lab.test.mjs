@@ -12,6 +12,7 @@ const runtime = path.join(root, "battle_lab", "local_runtime.py");
 const proxy = path.join(root, "app", "api", "battle-lab", "[...path]", "route.ts");
 const variants = path.join(root, "lib", "war-room-auto-lab.ts");
 const panel = path.join(root, "components", "vgc", "war-room-auto-lab.tsx");
+const warRoom = path.join(root, "components", "vgc", "war-room.tsx");
 const sparring = path.join(root, "components", "vgc", "war-room-sparring.tsx");
 
 test("Auto Lab keeps LIGHT fixed and compares identical opponent/side schedules", () => {
@@ -39,6 +40,8 @@ test("local runtime and loopback proxy expose Auto Lab without changing Sparring
   assert.match(route, /auto-lab/);
   assert.match(route, /sparring/);
   assert.match(route, /model-info/);
+  assert.match(route, /upstream\.status === 404 && relativePath\.startsWith\("auto-lab"\)/);
+  assert.match(route, /Auto Lab no está cargado en el runtime local/);
 });
 
 test("War Room generates attributable one-field variants before battle validation", () => {
@@ -50,14 +53,20 @@ test("War Room generates attributable one-field variants before battle validatio
   assert.doesNotMatch(source, /species:\s*change\.suggested/);
 });
 
-test("War Room surfaces Auto Lab with progress, ETA and A\/B results", () => {
+test("War Room surfaces Auto Lab under Audit, while Sparring stays manual", () => {
   const ui = fs.readFileSync(panel, "utf8");
   assert.match(ui, /Auto Lab · Auditar \+ Optimizar \+ Gauntlet/);
   assert.match(ui, /\/api\/battle-lab\/auto-lab/);
   assert.match(ui, /etaSeconds/);
   assert.match(ui, /deltaPercentagePoints/);
   assert.match(ui, /Nana no participa/);
+
+  const room = fs.readFileSync(warRoom, "utf8");
+  assert.match(room, /import \{ WarRoomAutoLab \} from "@\/components\/vgc\/war-room-auto-lab"/);
+  assert.match(room, /mode === "audit"[\s\S]*<AuditView result=\{audit\} \/>[\s\S]*<WarRoomAutoLab team=\{workingTeam\}/);
+
   const adapter = fs.readFileSync(sparring, "utf8");
-  assert.match(adapter, /Auto Lab · Auditar \+ Optimizar/);
-  assert.match(adapter, /WarRoomAutoLab/);
+  assert.doesNotMatch(adapter, /WarRoomAutoLab/);
+  assert.doesNotMatch(adapter, /Auto Lab · Auditar \+ Optimizar/);
+  assert.match(adapter, /LocalWarRoomSparring/);
 });
