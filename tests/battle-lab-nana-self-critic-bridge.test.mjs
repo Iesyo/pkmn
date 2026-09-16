@@ -95,7 +95,7 @@ assert extract_observations(events, actor_filter='nana') == []
   run(script);
 });
 
-test("Nana self-critic may use session_end only when the intervention is the last model decision", () => {
+test("Nana self-critic may use session_end after the real same-generation human observation", () => {
   const script = String.raw`
 from battle_lab.nana_self_critic import extract_observations
 
@@ -118,6 +118,11 @@ events = [
     {'timestamp':'2026-09-16T00:00:00Z','sessionId':'s','type':'turn_choice','payload':{
         'turn':9,'generation':12,'state':before,
         'modelAction':{'first':{'kind':'move','value':'finish'}},'modelActor':'nana','light':{},
+    }},
+    # Real runtime ordering: the same generation's observed human choice is
+    # appended after the model turn_choice and must not block terminal learning.
+    {'timestamp':'2026-09-16T00:00:00.500Z','sessionId':'s','type':'human_choice_observed','payload':{
+        'turn':9,'generation':12,'state':before,'action':{'id':'12:1'},'prediction':{},
     }},
     {'timestamp':'2026-09-16T00:00:01Z','sessionId':'s','type':'session_end','payload':{
         'finalState':final,'result':{'winner':'model'},
