@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from battle_lab.nana_audit import DEFAULT_RUNTIME_ROOT
-from battle_lab.nana_light_critic import extract_observations
 from battle_lab.nana_nursery import (
     NURSERY_MODEL_VERSION,
     build_self_summary,
     promotion_status,
 )
 from battle_lab.nana_recorder import NanaRecorder
+from battle_lab.nana_self_critic import extract_observations
 from battle_lab.nana_teacher import latest_teacher_from_events
 
 
@@ -73,6 +73,10 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
         "automaticPromotion": False,
         "interventions": 0,
     }
+    bridged = sum(
+        (item.get("continuity") or {}).get("kind") == "benign-skip-bridge"
+        for item in observations
+    )
     return {
         "profileId": recorder.profile_id,
         "modelVersion": NURSERY_MODEL_VERSION,
@@ -89,6 +93,7 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
         "recordingErrors": recording_errors,
         "selfExperience": {
             "observations": len(observations),
+            "bridgedObservations": bridged,
             "positive": sum(item.get("label") == "positive" for item in observations),
             "neutral": sum(item.get("label") == "neutral" for item in observations),
             "negative": sum(item.get("label") == "negative" for item in observations),
@@ -129,6 +134,7 @@ def _print(report: dict[str, Any]) -> None:
     experience = report.get("selfExperience") or {}
     print(
         f"Nana real outcomes: n={experience.get('observations', 0)} · "
+        f"bridged={experience.get('bridgedObservations', 0)} · "
         f"+/=/−={experience.get('positive',0)}/{experience.get('neutral',0)}/{experience.get('negative',0)} · "
         f"mean board Δ={_num(experience.get('meanDelta'))}"
     )
