@@ -1,6 +1,7 @@
 """Offline behavioral checks for the periodic M-C pipeline; no GPU or network."""
 import copy
 import csv
+import io
 import json
 import sys
 import tempfile
@@ -36,6 +37,43 @@ class RefreshChecks(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+
+    def test_timing_separates_active_work_from_pauses_and_preserves_interrupted_attempts(self):
+        status = {"phaseAttempts": [
+            {"stage": "rl", "startedAt": "2026-09-16T00:00:00+00:00", "heartbeatAt": "2026-09-16T00:00:10+00:00",
+             "elapsedSeconds": 10, "state": "running", "measurementComplete": False}]}
+        with patch.object(pipeline, "utc_now", return_value="2026-09-16T01:00:00+00:00"):
+            second = pipeline.start_phase_timing(status, "rl")
+        self.assertEqual(status["phaseAttempts"][0]["state"], "interrupted")
+        second.update(elapsedSeconds=20, finishedAt="2026-09-16T01:00:20+00:00",
+                      state="completed", measurementComplete=True)
+        summary = pipeline.timing_summary(status)
+        self.assertEqual(summary["observedActiveSeconds"], 30)
+        self.assertEqual(summary["observedTrainingSeconds"], 30)
+        self.assertEqual(summary["wallSeconds"], 3620)
+        self.assertEqual(summary["phaseSeconds"], {"rl": 30})
+        self.assertFalse(summary["measurementComplete"])
+        self.assertFalse(pipeline.timing_summary({})["available"])
+
+    def test_child_persists_failed_and_resumed_timings_without_using_eta_cache(self):
+        run = self.root / "run"
+        status = {"completedStages": [], "totalStages": 8}
+        estimates = {"rl": 999999}
+        processes = [SimpleNamespace(stdout=io.StringIO("worker done\n"), poll=lambda code=code: code, returncode=code)
+                     for code in (1, 0)]
+        with patch.object(pipeline.subprocess, "Popen", side_effect=processes):
+            with self.assertRaisesRegex(RuntimeError, "código 1"):
+                pipeline.run_child("rl", run, status, estimates)
+            status = data.read_json(run / "status.json")
+            self.assertEqual(status["phaseAttempts"][0]["state"], "failed")
+            self.assertEqual(estimates["rl"], 999999)
+            pipeline.run_child("rl", run, status, estimates)
+        saved = data.read_json(run / "status.json")
+        self.assertEqual([item["state"] for item in saved["phaseAttempts"]], ["failed", "completed"])
+        summary = pipeline.timing_summary(saved)
+        self.assertTrue(summary["measurementComplete"])
+        self.assertLess(summary["observedActiveSeconds"], 5)
+        self.assertEqual(estimates["rl"], saved["phaseAttempts"][-1]["elapsedSeconds"])
 
     def test_human_pilot_keeps_quality_gate_and_freezes_its_threshold(self):
         self.assertFalse(pipeline.bc_data_gate(1056, 9695)["bcEligible"])
@@ -546,8 +584,13 @@ class RefreshChecks(unittest.TestCase):
             atomic_json(run / "phases" / (name + ".json"), value)
         config = {"root": str(self.root), "mode": "LIGHT", "champion": champion,
                   "codeSha": "fixture-code", "showdownSha": "fixture-showdown"}
-        report = pipeline.write_report(run, config, {"state": "completed"})
+        status = {"state": "completed", "phaseAttempts": [
+            {"stage": "rl", "startedAt": "2026-09-16T00:00:00+00:00", "finishedAt": "2026-09-16T00:01:00+00:00",
+             "elapsedSeconds": 60, "state": "completed", "measurementComplete": True}]}
+        report = pipeline.write_report(run, config, status)
         self.assertEqual(report["verdict"], "MEJORA_OBSERVADA")
+        self.assertEqual(report["timing"]["observedTrainingSeconds"], 60)
+        self.assertIn("Aprendizaje BC + PPO registrado: 1m 00s", (run / "report.txt").read_text())
         self.assertEqual(pipeline.ensure_champion(self.root), champion)
         rows = list(csv.DictReader((run / "comparison.csv").read_text().splitlines()))
         self.assertEqual(len(rows), 3)
