@@ -168,8 +168,60 @@ test("Deep audit prioritizes the newest current VGCPastes while quick and normal
   assert.match(ui, /opponents: 24, battlesPerOpponent: 20/);
   assert.match(ui, /opponents: 100, battlesPerOpponent: 10/);
   assert.match(ui, /preset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
-  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C recientes battle-ready/);
+  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C recientes validados por Showdown/);
   assert.match(ui, /Solo los VGCPastes M-C más recientes por Date Shared/);
+});
+
+test("Auto Lab preflight skips invalid source pastes before starting the gauntlet", () => {
+  const api = fs.readFileSync(service, "utf8");
+  const ui = fs.readFileSync(panelV2, "utf8");
+  assert.match(api, /class ValidateAutoLabTeamsRequest/);
+  assert.match(api, /validate_auto_lab_payloads/);
+  assert.match(api, /@app\.post\("\/auto-lab\/validate"\)/);
+  assert.match(ui, /validateBattleReadyBatch/);
+  assert.match(ui, /\/api\/battle-lab\/auto-lab\/validate/);
+  assert.match(ui, /verdict\?\.valid/);
+  assert.match(ui, /rejected \+= 1/);
+  assert.match(ui, /loaded\.length < spec\.opponents/);
+  assert.match(ui, /Preflight Showdown M-C/);
+
+  const script = `
+import asyncio
+from pathlib import Path
+from unittest.mock import patch
+from battle_lab.auto_lab_service import AutoLabTeamPayload, validate_auto_lab_payloads
+
+block = """Pikachu @ Light Ball
+Ability: Static
+Level: 50
+EVs: 4 HP / 252 SpA / 252 Spe
+Timid Nature
+- Thunderbolt
+- Protect
+- Volt Switch
+- Fake Tears"""
+team = "\\n\\n".join([block] * 6)
+payloads = [
+    AutoLabTeamPayload(id="bad", label="Archaludon inválido", teamPaste=team),
+    AutoLabTeamPayload(id="good", label="Siguiente paste reciente", teamPaste=team),
+]
+
+async def main():
+    calls = iter([RuntimeError("Archaludon's move Precipice Blades does not exist in Gen 9."), "ok"])
+    def fake_validate(*args, **kwargs):
+        value = next(calls)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    with patch("battle_lab.auto_lab_service.validate_team", side_effect=fake_validate):
+        results = await validate_auto_lab_payloads(Path("."), payloads)
+    assert results[0]["valid"] is False, results
+    assert "Precipice Blades" in results[0]["error"], results
+    assert results[1]["valid"] is True, results
+
+asyncio.run(main())
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
 test("Audit renders visual evidence while Sparring stays manual", () => {
