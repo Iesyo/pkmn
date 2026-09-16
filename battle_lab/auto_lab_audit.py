@@ -8,6 +8,7 @@ measure human ladder strength or prove that a move/set is intrinsically bad.
 from __future__ import annotations
 
 import html
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -302,6 +303,33 @@ def _score(row: Mapping[str, int]) -> float:
     )
 
 
+def _confidence95(row: Mapping[str, Any], *, positive_key: str = "wins") -> dict[str, float]:
+    """Wilson interval in percentage points for a binary or half-point record."""
+
+    games = int(row.get("games", 0) or 0)
+    if games < 1:
+        return {"low": 0.0, "high": 100.0, "width": 100.0}
+    points = float(row.get(positive_key, 0) or 0)
+    if positive_key == "wins":
+        points += 0.5 * float(row.get("ties", 0) or 0)
+    score = points / games
+    z = 1.95996398454
+    denominator = 1 + z * z / games
+    center = (score + z * z / (2 * games)) / denominator
+    margin = (
+        z
+        * math.sqrt(score * (1 - score) / games + z * z / (4 * games * games))
+        / denominator
+    )
+    low = max(0.0, center - margin) * 100
+    high = min(1.0, center + margin) * 100
+    return {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "width": round(high - low, 2),
+    }
+
+
 def _outcome(summary: Mapping[str, Any], candidate_id: str) -> str:
     pairing = summary.get("pairing", {})
     side = "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
@@ -374,12 +402,11 @@ def build_auto_lab_audit(
     candidate_report: Mapping[str, Any],
     opponents: Mapping[str, Mapping[str, Any]],
     replay_root: Path,
+    sampling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     total = len(summaries)
-    signal_level = (
-        "exploratory" if total < 24 else "directional" if total < 60 else "stronger"
-    )
-    overall_score = float(candidate_report.get("scorePercent", 0.0) or 0.0)
+    pool_estimate = candidate_report.get("poolEstimate", candidate_report)
+    overall_score = float(pool_estimate.get("scorePercent", 0.0) or 0.0)
     roster = [str(name) for name in candidate_roster if str(name)]
     roster_set = set(roster)
     roster_order = {name: index for index, name in enumerate(roster)}
@@ -431,12 +458,26 @@ def build_auto_lab_audit(
     move_rows: dict[tuple[str, str], dict[str, int]] = defaultdict(
         lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "uses": 0}
     )
-    opponent_pokemon_losses: Counter[str] = Counter()
-    opponent_core_losses: Counter[str] = Counter()
+    opponent_pokemon_rows: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+    )
+    opponent_core_rows: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+    )
+    opponent_pokemon_ids: dict[str, set[str]] = defaultdict(set)
+    opponent_core_ids: dict[str, set[str]] = defaultdict(set)
+    opponent_pokemon_screening_games: Counter[str] = Counter()
+    opponent_core_screening_games: Counter[str] = Counter()
     archetype_rows: dict[str, dict[str, int]] = defaultdict(
         lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
     )
+    archetype_screening_rows: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+    )
+    archetype_opponents: dict[str, set[str]] = defaultdict(set)
     pattern_counts: Counter[str] = Counter()
+    preview_signatures: set[tuple[str, ...]] = set()
+    candidate_side_counts: Counter[str] = Counter()
 
     for summary in summaries:
         outcome = _outcome(summary, candidate_id)
@@ -444,6 +485,7 @@ def build_auto_lab_audit(
         candidate_side = (
             "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
         )
+        candidate_side_counts[candidate_side] += 1
         preview = list(summary.get("teamPreview", {}).get(candidate_side, []) or [])
         canonical_preview: list[str] = []
         for species in preview:
@@ -454,6 +496,8 @@ def build_auto_lab_audit(
             row = selection_rows[identity]
             row["games"] += 1
             row[outcome] += 1
+        if canonical_preview:
+            preview_signatures.add(tuple(sorted(canonical_preview)))
 
         replay = facts.get(str(summary.get("battleTag") or ""))
         if replay:
@@ -472,12 +516,24 @@ def build_auto_lab_audit(
                     row["games"] += 1
                     row[outcome] += 1
                     row["uses"] += uses
+            opponent_id = _opponent_id(summary, candidate_id)
+            for species in set(replay.opponent_observed_pokemon):
+                pressure = opponent_pokemon_rows[species]
+                pressure["games"] += 1
+                pressure[outcome] += 1
+                opponent_pokemon_ids[species].add(opponent_id)
+                if summary.get("samplingStage") != "deepening":
+                    opponent_pokemon_screening_games[species] += 1
+            core = replay.opponent_leads or replay.opponent_observed_pokemon[:2]
+            if len(core) >= 2:
+                core_key = " + ".join(sorted(core[:2]))
+                pressure = opponent_core_rows[core_key]
+                pressure["games"] += 1
+                pressure[outcome] += 1
+                opponent_core_ids[core_key].add(opponent_id)
+                if summary.get("samplingStage") != "deepening":
+                    opponent_core_screening_games[core_key] += 1
             if outcome == "losses":
-                for species in set(replay.opponent_observed_pokemon):
-                    opponent_pokemon_losses[species] += 1
-                core = replay.opponent_leads or replay.opponent_observed_pokemon[:2]
-                if len(core) >= 2:
-                    opponent_core_losses[" + ".join(sorted(core[:2]))] += 1
                 if replay.turns <= 5:
                     pattern_counts["Derrota en 5 turnos o menos"] += 1
                 if replay.first_faint_conceded:
@@ -494,9 +550,19 @@ def build_auto_lab_audit(
             row = archetype_rows[str(tag)]
             row["games"] += 1
             row[outcome] += 1
+            if summary.get("samplingStage") != "deepening":
+                screening_row = archetype_screening_rows[str(tag)]
+                screening_row["games"] += 1
+                screening_row[outcome] += 1
+            archetype_opponents[str(tag)].add(opponent_id)
 
     leads = [
-        {"lead": label, **row, "scorePercent": _score(row)}
+        {
+            "lead": label,
+            **row,
+            "scorePercent": _score(row),
+            "confidence95": _confidence95(row),
+        }
         for label, row in lead_rows.items()
     ]
     leads.sort(
@@ -508,11 +574,12 @@ def build_auto_lab_audit(
         games = row["games"]
         selected_rate = round(100 * games / total, 2) if total else 0.0
         score = _score(row)
+        interval = _confidence95(row)
         signal = (
             "rarely-selected"
             if total >= 12 and selected_rate <= 20
             else "review"
-            if games >= 3 and score + 15 < overall_score
+            if games >= 6 and interval["high"] + 5 < overall_score
             else "ok"
         )
         selection_usage.append(
@@ -522,6 +589,7 @@ def build_auto_lab_audit(
                 "selectedRate": selected_rate,
                 "leadGames": row["leadGames"],
                 "scoreWhenSelected": score,
+                "confidence95": interval,
                 "signal": signal,
             }
         )
@@ -532,9 +600,10 @@ def build_auto_lab_audit(
     move_signals = []
     for (species, move), row in move_rows.items():
         score = _score(row)
+        interval = _confidence95(row)
         signal = (
             "review"
-            if row["games"] >= 3 and score + 15 < overall_score
+            if row["games"] >= 6 and interval["high"] + 5 < overall_score
             else "observed"
         )
         move_signals.append(
@@ -547,6 +616,7 @@ def build_auto_lab_audit(
                 "losses": row["losses"],
                 "ties": row["ties"],
                 "scoreWhenUsed": score,
+                "confidence95": interval,
                 "signal": signal,
             }
         )
@@ -559,27 +629,223 @@ def build_auto_lab_audit(
         )
     )
 
-    archetypes = [
-        {"archetype": label, **row, "scorePercent": _score(row)}
-        for label, row in archetype_rows.items()
-    ]
+    archetypes = []
+    for label, combined_row in archetype_rows.items():
+        screening_row = archetype_screening_rows.get(label, combined_row)
+        archetypes.append(
+            {
+                "archetype": label,
+                **screening_row,
+                "scorePercent": _score(screening_row),
+                "confidence95": _confidence95(screening_row),
+                "uniqueOpponents": len(archetype_opponents[label]),
+                "adaptiveCombined": {
+                    **combined_row,
+                    "scorePercent": _score(combined_row),
+                    "confidence95": _confidence95(combined_row),
+                },
+            }
+        )
     archetypes.sort(
         key=lambda row: (row["scorePercent"], -row["games"], row["archetype"])
     )
     losses = sum(
         1 for summary in summaries if _outcome(summary, candidate_id) == "losses"
     )
+    parsed_summaries = [
+        summary
+        for summary in summaries
+        if str(summary.get("battleTag") or "") in facts
+    ]
+    parsed_losses = sum(
+        1 for summary in parsed_summaries if _outcome(summary, candidate_id) == "losses"
+    )
+    parsed_screening_summaries = [
+        summary
+        for summary in parsed_summaries
+        if summary.get("samplingStage") != "deepening"
+    ]
+    pool_games = int(pool_estimate.get("games", 0) or 0)
+    reference_loss_rate = (
+        100 * int(pool_estimate.get("losses", 0) or 0) / pool_games
+        if pool_games
+        else 100 * parsed_losses / len(parsed_summaries)
+        if parsed_summaries
+        else 0.0
+    )
+
+    pokemon_pressure: list[dict[str, Any]] = []
+    for species, row in opponent_pokemon_rows.items():
+        games = row["games"]
+        loss_rate = 100 * row["losses"] / games if games else 0.0
+        screening_games = opponent_pokemon_screening_games[species]
+        exposure_rate = (
+            100 * screening_games / len(parsed_screening_summaries)
+            if parsed_screening_summaries
+            else 0.0
+        )
+        interval = _confidence95(row, positive_key="losses")
+        confidence = max(0.0, 1 - interval["width"] / 100)
+        lift = loss_rate - reference_loss_rate
+        priority = (
+            exposure_rate
+            / 100
+            * (0.55 * max(0.0, lift) / 100 + 0.45 * loss_rate / 100)
+            * confidence
+        )
+        pokemon_pressure.append(
+            {
+                "pokemon": species,
+                "observedGames": games,
+                "screeningObservedGames": screening_games,
+                "lossGames": row["losses"],
+                "lossRate": round(loss_rate, 2),
+                "lossRateLift": round(lift, 2),
+                "exposureRate": round(exposure_rate, 2),
+                "uniqueOpponents": len(opponent_pokemon_ids[species]),
+                "confidence95": interval,
+                "priorityScore": round(priority * 100, 2),
+                "lossShare": round(100 * row["losses"] / losses, 2) if losses else 0.0,
+            }
+        )
+    pokemon_pressure.sort(
+        key=lambda row: (
+            -float(row["priorityScore"]),
+            -int(row["observedGames"]),
+            str(row["pokemon"]),
+        )
+    )
+
+    core_pressure: list[dict[str, Any]] = []
+    for core, row in opponent_core_rows.items():
+        games = row["games"]
+        loss_rate = 100 * row["losses"] / games if games else 0.0
+        screening_games = opponent_core_screening_games[core]
+        exposure_rate = (
+            100 * screening_games / len(parsed_screening_summaries)
+            if parsed_screening_summaries
+            else 0.0
+        )
+        interval = _confidence95(row, positive_key="losses")
+        confidence = max(0.0, 1 - interval["width"] / 100)
+        lift = loss_rate - reference_loss_rate
+        priority = (
+            exposure_rate
+            / 100
+            * (0.55 * max(0.0, lift) / 100 + 0.45 * loss_rate / 100)
+            * confidence
+        )
+        core_pressure.append(
+            {
+                "core": core,
+                "observedGames": games,
+                "screeningObservedGames": screening_games,
+                "lossGames": row["losses"],
+                "lossRate": round(loss_rate, 2),
+                "lossRateLift": round(lift, 2),
+                "exposureRate": round(exposure_rate, 2),
+                "uniqueOpponents": len(opponent_core_ids[core]),
+                "confidence95": interval,
+                "priorityScore": round(priority * 100, 2),
+                "lossShare": round(100 * row["losses"] / losses, 2) if losses else 0.0,
+            }
+        )
+    core_pressure.sort(
+        key=lambda row: (
+            -float(row["priorityScore"]),
+            -int(row["observedGames"]),
+            str(row["core"]),
+        )
+    )
+
+    unique_opponents = len({_opponent_id(summary, candidate_id) for summary in summaries})
+    unique_rosters = len(
+        {
+            tuple(sorted(str(species).lower() for species in meta.get("roster", [])))
+            for meta in opponents.values()
+            if meta.get("roster")
+        }
+    )
+    replay_rate = 100 * len(facts) / total if total else 0.0
+    deep_dive = sampling.get("deepDive", {}) if isinstance(sampling, Mapping) else {}
+    deep_dive_count = int(deep_dive.get("opponents", 0) or 0)
+    if total < 48 or unique_opponents < 8 or replay_rate < 50:
+        signal_level = "exploratory"
+    elif total < 240 or unique_opponents < 30 or replay_rate < 80:
+        signal_level = "directional"
+    else:
+        signal_level = "stronger"
+
+    side_rows: dict[str, dict[str, int]] = {
+        "alpha": {"games": 0, "wins": 0, "losses": 0, "ties": 0},
+        "beta": {"games": 0, "wins": 0, "losses": 0, "ties": 0},
+    }
+    for summary in summaries:
+        pairing = summary.get("pairing", {})
+        side = "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
+        side_rows[side]["games"] += 1
+        side_rows[side][_outcome(summary, candidate_id)] += 1
+    side_scores = {side: _score(row) for side, row in side_rows.items()}
+    side_gap = abs(side_scores["alpha"] - side_scores["beta"])
+    if min(row["games"] for row in side_rows.values()) < 8:
+        policy_status = "insufficient"
+    elif side_gap >= 15:
+        policy_status = "review"
+    else:
+        policy_status = "stable"
 
     return {
         "signal": {
             "games": total,
+            "uniqueOpponents": unique_opponents,
             "level": signal_level,
             "note": (
                 "Muestra exploratoria: úsala para detectar qué merece más batallas."
                 if signal_level == "exploratory"
-                else "Muestra direccional: compara patrones, no diferencias pequeñas."
+                else "Muestra direccional: la cobertura es útil, pero compara patrones e intervalos, no diferencias pequeñas."
                 if signal_level == "directional"
-                else "Muestra más fuerte para este benchmark LIGHT-equipo; sigue sin ser win rate humano."
+                else "Muestra más fuerte por volumen, variedad de rivales y cobertura de replay; sigue sin ser win rate humano."
+            ),
+        },
+        "dataQuality": {
+            "games": total,
+            "screeningGames": pool_games,
+            "deepeningGames": max(0, total - pool_games),
+            "uniqueOpponents": unique_opponents,
+            "uniqueRosters": unique_rosters,
+            "deepDiveOpponents": deep_dive_count,
+            "parsedReplays": len(facts),
+            "replayCoveragePercent": round(replay_rate, 2),
+            "uniquePreviewCombinations": len(preview_signatures),
+            "candidateAlphaGames": candidate_side_counts["alpha"],
+            "candidateBetaGames": candidate_side_counts["beta"],
+            "sideImbalanceGames": abs(
+                candidate_side_counts["alpha"] - candidate_side_counts["beta"]
+            ),
+        },
+        "policySensitivity": {
+            "status": policy_status,
+            "alphaScorePercent": side_scores["alpha"],
+            "betaScorePercent": side_scores["beta"],
+            "sideGapPercentagePoints": round(side_gap, 2),
+            "note": (
+                "Brecha de lados: revisa sesgo de ejecución o emparejamiento antes de culpar al Team."
+                if policy_status == "review"
+                else "No apareció una brecha grande entre lados dentro de esta muestra."
+                if policy_status == "stable"
+                else "Aún no hay suficientes partidas por lado para leer sensibilidad de ejecución."
+            ),
+            "limitation": "Es un control de sensibilidad por lado, no una confirmación con un segundo piloto o política.",
+        },
+        "heuristic": {
+            "deepDive": (
+                "prevalence × severity × repeatability × confidence; la selección también reserva peso "
+                "para incertidumbre y diversidad de arquetipos"
+            ),
+            "matchups": "Score con intervalo Wilson 95%; screening y confirmación se etiquetan por separado.",
+            "pressure": (
+                "Prioridad por exposición × tasa de derrota sobre la referencia × confianza; "
+                "no por conteo bruto de derrotas."
             ),
         },
         "goodMatchups": list(reversed(matchup_rows[-5:])),
@@ -589,22 +855,8 @@ def build_auto_lab_audit(
         "selectionUsage": selection_usage,
         "setSignals": [row for row in selection_usage if row["signal"] != "ok"],
         "moveSignals": move_signals[:12],
-        "opponentPokemonPressure": [
-            {
-                "pokemon": species,
-                "lossGames": count,
-                "lossShare": round(100 * count / losses, 2) if losses else 0.0,
-            }
-            for species, count in opponent_pokemon_losses.most_common(10)
-        ],
-        "opponentCorePressure": [
-            {
-                "core": core,
-                "lossGames": count,
-                "lossShare": round(100 * count / losses, 2) if losses else 0.0,
-            }
-            for core, count in opponent_core_losses.most_common(8)
-        ],
+        "opponentPokemonPressure": pokemon_pressure[:10],
+        "opponentCorePressure": core_pressure[:8],
         "archetypePerformance": archetypes,
         "recurringLossPatterns": [
             {
@@ -623,6 +875,7 @@ def build_auto_lab_audit(
             "Mide compatibilidad entre LIGHT M-C y el Team dentro de este pool; no la calidad objetiva del Team ni tu win rate.",
             "Auto Lab muestrea solo Team Preview del candidato; las decisiones por turno permanecen deterministas.",
             "Los scores por move/set son correlaciones de uso, no evidencia causal de que ese recurso sea malo.",
+            "La sensibilidad de política se aproxima por lado; para separarla del Team hace falta un segundo piloto o política.",
             "Los arquetipos son etiquetas observables y pueden solaparse (por ejemplo Rain + Tailwind).",
             "El RNG de daño/efectos de Showdown no se empareja entre baseline y variantes.",
         ],
