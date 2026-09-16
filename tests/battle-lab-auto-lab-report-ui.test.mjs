@@ -10,7 +10,11 @@ const component = path.join(root, "components", "vgc", "war-room-auto-lab-v2.tsx
 test("Auto Lab report keeps the agreed visual hierarchy", () => {
   const source = fs.readFileSync(component, "utf8");
 
-  assert.doesNotMatch(source, /Ranking de rivales problemáticos/);
+  assert.equal(
+    source.includes("Ranking de rivales problemáticos"),
+    false,
+    "the redundant problematic-opponents ranking must stay out of the rendered report",
+  );
 
   const archetypes = source.indexOf("Rendimiento por arquetipo");
   const favorable = source.indexOf("Matchups favorables");
