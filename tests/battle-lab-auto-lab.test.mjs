@@ -137,6 +137,7 @@ test("local and Nana runtimes expose Auto Lab before serving LAN traffic", () =>
 
   const route = fs.readFileSync(proxy, "utf8");
   assert.match(route, /auto-lab/);
+  assert.match(route, /auto-lab\(\?:\\\/validate\|\\\/[a-f0-9]/);
   assert.match(route, /sparring/);
   assert.match(route, /model-info/);
   assert.match(route, /upstream\.status === 404 && relativePath\.startsWith\("auto-lab"\)/);
