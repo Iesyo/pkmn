@@ -128,6 +128,7 @@ test("persistent War Room refreshes the Sparring corpus when it becomes active a
   assert.match(source, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
   assert.match(source, /corpusTeams=\{liveCorpusTeams\}/);
   assert.doesNotMatch(source, /refresh=1/);
+  assert.doesNotMatch(source, /WarRoomAutoLab/);
 });
 
 test("local sparring service is syntactically valid and loopback-only", async () => {
@@ -183,13 +184,14 @@ test("sparring move target picker survives identical polling snapshots", async (
   assert.doesNotMatch(source, /setPendingMove\(""\), \[actions, effectiveMechanic\]/);
 });
 
-test("web app proxies only the Battle Lab loopback endpoints used by Sparring", async () => {
+test("web app proxies only the Battle Lab loopback endpoints used by Sparring and Auto Lab", async () => {
   const sourcePath = fileURLToPath(new URL("../app/api/battle-lab/[...path]/route.ts", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
 
   assert.match(source, /127\.0\.0\.1:8765/);
   assert.match(source, /ALLOWED_PATH/);
   assert.match(source, /health\|model-info\|sparring/);
+  assert.match(source, /auto-lab/);
   assert.match(source, /team-preview\|choice/);
   assert.match(source, /export async function GET/);
   assert.match(source, /export async function POST/);
