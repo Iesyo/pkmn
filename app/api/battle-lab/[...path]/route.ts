@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 const BATTLE_LAB_LOOPBACK = "http://127.0.0.1:8765";
-const ALLOWED_PATH = /^(?:health|model-info|sparring(?:\/[a-f0-9]{16}(?:\/(?:team-preview|choice))?)?|auto-lab(?:\/[a-f0-9]{16})?)$/;
+const ALLOWED_PATH = /^(?:health|model-info|sparring(?:\/[a-f0-9]{16}(?:\/(?:team-preview|choice))?)?|auto-lab(?:\/validate|\/[a-f0-9]{16})?)$/;
 
 async function forward(
   request: Request,
