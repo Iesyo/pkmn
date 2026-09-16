@@ -11,6 +11,39 @@ defecto es LIGHT: 196.608 pasos adicionales y 500 batallas directas por rival,
 1.500 en total (productivo, VGC-Bench base y Simple Heuristics). NORMAL añade 786.432 pasos; HARD añade 3.145.728. CENSUS termina
 después de convertir las partidas y no entrena ni evalúa.
 
+## Experimento HARD frente al modelo promovido
+
+El piloto HARD solicitado el 2026-09-16 continúa desde el champion BC+PPO
+`MC-20260916T200255271236Z`, SHA `5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2`.
+Añade **10 épocas BC** si se supera el filtro humano y **3.145.728 pasos PPO**
+(16 veces el presupuesto LIGHT). El mismo Colab de Drive queda configurado HARD,
+`auto`, RUN_ID vacío, CUDA, 2 entornos, workers automáticos, mínimo BC de 9500 y
+500 batallas por rival. Los valores generales del notebook de Git siguen en LIGHT.
+
+Los campos PRODUCTION_CHECKPOINT y PRODUCTION_SHA256 de ese experimento fijan
+el modelo promovido como rival directo, además del base y Simple Heuristics.
+Esto evita volver a comparar únicamente con LIGHT histórico. Es una referencia
+de evaluación explícita y no demuestra qué modelo está cargado en la ROG.
+El candidato queda guardado para revisión con PROMOTE_CANDIDATE desactivado.
+
+El ciclo recoge novedades y congela sus datos. Mide el beneficio de continuar
+entrenando con HARD desde el champion actual; no es una comparación desde la
+misma inicialización y el mismo corpus que el LIGHT anterior. Más entrenamiento
+puede mejorar o empeorar el resultado; se interpretan los tres rivales por separado.
+
+Como estimación previa, la última fase PPO LIGHT tardó 1729,36 segundos en L4:
+al mismo ritmo, HARD necesitaría unos 7 h 41 min solo de PPO, más preparación,
+BC y evaluación (aproximadamente 8 h en total). Cambios de GPU, CPU o duración
+de las partidas pueden alterar el tiempo. El progreso real del runner ajusta su ETA.
+
+`report.json` y `report.txt` incluyen tiempos activos observados por fase,
+BC+PPO, evaluación y ciclo completo; el tiempo transcurrido separa las pausas
+entre sesiones. Los intentos persisten en `status.json`, incluidos los fallidos,
+y no se toman tiempos del caché de otra corrida. Se excluyen montaje de Drive
+e instalación inicial del notebook. Una desconexión abrupta conserva el último
+heartbeat y marca la medición parcial. Para reanudar se mantiene `auto` y la misma
+configuración; no seleccionar `new` durante una ejecución incompleta.
+
 Requiere el LIGHT M-C histórico y su split, conservados bajo
 `Colabs/LikeNoOneEverWas/BattleLab/MC-Training/`:
 
