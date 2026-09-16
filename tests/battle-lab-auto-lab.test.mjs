@@ -29,6 +29,7 @@ test("Auto Lab balances sides, samples only candidate Team Preview and audits th
   assert.match(source, /summary\["teamPreview"\]/);
   assert.match(source, /build_auto_lab_audit/);
   assert.match(source, /"schemaVersion": 2/);
+  assert.match(source, /if len\(opponents\) > 100/);
   execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
 
@@ -38,7 +39,7 @@ test("Audit runs baseline-only while Optimize owns contextual set proposals", ()
   const room = fs.readFileSync(warRoom, "utf8");
 
   assert.match(api, /variants: list\[AutoLabTeamPayload\] = Field\(default_factory=list/);
-  assert.match(api, /MAX_OPPONENTS = 24/);
+  assert.match(api, /MAX_OPPONENTS = 100/);
   assert.doesNotMatch(ui, /buildAutoLabVariants|optimizeTeam|Paquete de set completo|Copiar set candidato/);
   assert.match(ui, /Los paquetes de set se quedaron en/);
   assert.match(ui, /Optimizar o construir/);
@@ -155,13 +156,26 @@ test("War Room keeps full-set package generation available for Optimize", () => 
   assert.match(source, /selectAutoLabOpponentCandidates/);
 });
 
-test("Audit spends the old A/B budget on a wider current-team corpus and renders visual evidence", () => {
+test("Deep audit prioritizes the newest current VGCPastes while quick and normal keep broad coverage", () => {
+  const source = fs.readFileSync(variants, "utf8");
+  const ui = fs.readFileSync(panelV2, "utf8");
+
+  assert.match(source, /export function selectAutoLabRecentVgcPastesCandidates/);
+  assert.match(source, /team\.source === "vgcpastes"/);
+  assert.match(source, /Date\.parse\(value\.trim\(\)\)/);
+  assert.match(source, /right\.sharedAt - left\.sharedAt/);
+  assert.match(ui, /opponents: 18, battlesPerOpponent: 12/);
+  assert.match(ui, /opponents: 24, battlesPerOpponent: 20/);
+  assert.match(ui, /opponents: 100, battlesPerOpponent: 10/);
+  assert.match(ui, /preset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
+  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C recientes battle-ready/);
+  assert.match(ui, /Solo los VGCPastes M-C más recientes por Date Shared/);
+});
+
+test("Audit renders visual evidence while Sparring stays manual", () => {
   assert.match(fs.readFileSync(panel, "utf8"), /war-room-auto-lab-v2/);
   const ui = fs.readFileSync(panelV2, "utf8");
   assert.match(ui, /Auto Lab · auditoría empírica/);
-  assert.match(ui, /opponents: 12, battlesPerOpponent: 6/);
-  assert.match(ui, /opponents: 18, battlesPerOpponent: 12/);
-  assert.match(ui, /opponents: 24, battlesPerOpponent: 20/);
   assert.match(ui, /getSpriteUrl/);
   assert.match(ui, /SpriteStrip/);
   assert.match(ui, /Matchups favorables/);
@@ -174,7 +188,6 @@ test("Audit spends the old A/B budget on a wider current-team corpus and renders
   assert.match(ui, /Moves que merecen revisión/);
   assert.match(ui, /Patrones recurrentes en derrotas/);
   assert.match(ui, /Rendimiento por arquetipo/);
-  assert.match(ui, /selectAutoLabOpponentCandidates/);
 
   const room = fs.readFileSync(warRoom, "utf8");
   assert.match(room, /import \{ WarRoomAutoLab \} from "@\/components\/vgc\/war-room-auto-lab"/);
