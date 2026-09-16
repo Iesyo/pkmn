@@ -370,6 +370,17 @@ async def run_auto_lab_gauntlet(
             },
         )
         for opponent in opponent_records:
+            await _notify(
+                progress,
+                {
+                    "phase": "running",
+                    "candidateId": candidate.id,
+                    "candidateLabel": candidate.description,
+                    "opponentId": opponent.id,
+                    "completedBattles": completed_battles,
+                    "totalBattles": total_battles,
+                },
+            )
             schedule = build_candidate_schedule(
                 candidate,
                 [opponent],
@@ -405,6 +416,18 @@ async def run_auto_lab_gauntlet(
             **summarize_candidate(candidate.id, all_summaries),
         }
 
+    await _notify(
+        progress,
+        {
+            "phase": "finalizing",
+            "candidateId": baseline.id,
+            "candidateLabel": baseline.label,
+            "opponentId": "",
+            "completedBattles": completed_battles,
+            "totalBattles": total_battles,
+        },
+    )
+
     baseline_report = reports[baseline.id]
     variant_reports: list[dict[str, Any]] = []
     for variant in variants:
@@ -432,7 +455,8 @@ async def run_auto_lab_gauntlet(
         }
         for record in opponent_records
     }
-    audit = build_auto_lab_audit(
+    audit = await asyncio.to_thread(
+        build_auto_lab_audit,
         candidate_id=baseline.id,
         candidate_roster=list(candidate_records[0].roster),
         summaries=summaries_by_candidate[baseline.id],
