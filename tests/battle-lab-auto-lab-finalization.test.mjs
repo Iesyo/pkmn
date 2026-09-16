@@ -7,6 +7,9 @@ import { execFileSync } from "node:child_process";
 
 const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const audit = path.join(root, "battle_lab", "auto_lab_audit.py");
+const core = path.join(root, "battle_lab", "auto_lab.py");
+const service = path.join(root, "battle_lab", "auto_lab_service.py");
+const ui = path.join(root, "components", "vgc", "war-room-auto-lab-v2.tsx");
 
 test("Auto Lab indexes replay files once instead of rescanning the tree per battle", () => {
   const source = fs.readFileSync(audit, "utf8");
@@ -33,5 +36,24 @@ with TemporaryDirectory() as tmp:
     assert all(index[tag].name == f"{tag}.html" for tag in tags)
 `;
   execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
-  execFileSync("python", ["-m", "py_compile", audit], { cwd: root, encoding: "utf8" });
+});
+
+test("Deep finalization leaves the event loop free and exposes a finalizing phase", () => {
+  const source = fs.readFileSync(core, "utf8");
+  const serviceSource = fs.readFileSync(service, "utf8");
+  assert.match(source, /"phase": "finalizing"/);
+  assert.match(source, /audit = await asyncio\.to_thread\(\s*build_auto_lab_audit,/s);
+  assert.match(source, /"opponentId": opponent\.id,[\s\S]*completedBattles/);
+  assert.match(serviceSource, /payload_phase in \{"running", "finalizing"\}/);
+  assert.match(serviceSource, /Generando informe…/);
+  execFileSync("python", ["-m", "py_compile", core, audit, service], { cwd: root, encoding: "utf8" });
+});
+
+test("War Room retries transient Auto Lab poll failures instead of abandoning the finished job", () => {
+  const source = fs.readFileSync(ui, "utf8");
+  assert.match(source, /"finalizing"/);
+  assert.match(source, /pollFailuresRef/);
+  assert.match(source, /reintentando consulta de estado/);
+  assert.match(source, /window\.setTimeout\(\(\) => void poll\(jobId\), delay\)/);
+  assert.match(source, /Generando informe de combate/);
 });
