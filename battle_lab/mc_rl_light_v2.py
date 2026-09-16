@@ -262,6 +262,25 @@ def run_light(
                 write_status(**result)
                 return result
 
+            import torch
+            policy_device = next(ppo.policy.parameters()).device
+            parameter_count = sum(p.numel() for p in ppo.policy.parameters())
+            if policy_device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(policy_device)
+
+            def runtime_stats() -> dict[str, Any]:
+                stats = {"policyDevice": str(policy_device), "policyParameters": parameter_count,
+                         "simulationEnvs": num_envs, "vectorEnvs": int(env.num_envs),
+                         "sessionStartStep": start_step, "memoryScope": "current_training_process"}
+                if policy_device.type == "cuda":
+                    stats.update(gpuName=torch.cuda.get_device_name(policy_device),
+                                 cudaAllocatedMiB=round(torch.cuda.memory_allocated(policy_device) / 2**20, 1),
+                                 cudaPeakAllocatedMiB=round(torch.cuda.max_memory_allocated(policy_device) / 2**20, 1),
+                                 cudaPeakReservedMiB=round(torch.cuda.max_memory_reserved(policy_device) / 2**20, 1))
+                return stats
+
+            print("Runtime PPO: " + json.dumps(runtime_stats(), ensure_ascii=False), flush=True)
+
             class VisibleLightCallback(BaseCallback):
                 def __init__(self) -> None:
                     super().__init__()
@@ -287,6 +306,7 @@ def run_light(
                         etaSeconds=None,
                         checkpoint=str(self.last_checkpoint) if self.last_checkpoint else str(baseline),
                         device=device,
+                        runtime=runtime_stats(),
                     )
 
                 def _on_rollout_start(self) -> None:
@@ -340,6 +360,7 @@ def run_light(
                             actorGrad=current >= actor_unfreeze_step,
                             checkpoint=str(self.last_checkpoint) if self.last_checkpoint else str(baseline),
                             device=device,
+                            runtime=runtime_stats(),
                         )
                     return True
 
@@ -382,7 +403,9 @@ def run_light(
                 "finalCheckpoint": str(final),
                 "finalCheckpointSha256": sha256_file(final),
                 "seconds": round(elapsed, 3),
+                "runtime": runtime_stats(),
             }
+            print("Runtime PPO final: " + json.dumps(result["runtime"], ensure_ascii=False), flush=True)
             atomic_json(summary_path, result)
             write_status(**result)
             latest_text.write_text(
