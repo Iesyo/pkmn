@@ -198,9 +198,13 @@ def extract_observations(
                 later_model_turn = any(
                     other["index"] > item["index"] for other in model_turns
                 )
+                later_human_prompt = any(
+                    prompt["index"] > item["index"] for prompt in prompts
+                )
                 end = bundle.get("end")
                 if (
                     not later_model_turn
+                    and not later_human_prompt
                     and isinstance(end, dict)
                     and end["index"] > item["index"]
                 ):
