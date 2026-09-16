@@ -334,8 +334,8 @@ async def run_auto_lab_gauntlet(
 
     if len(variants) > 8:
         raise ValueError("Auto Lab admite como máximo 8 variantes por ejecución.")
-    if len(opponents) > 24:
-        raise ValueError("Auto Lab admite como máximo 24 rivales por ejecución.")
+    if len(opponents) > 100:
+        raise ValueError("Auto Lab admite como máximo 100 rivales por ejecución.")
 
     candidate_records = [baseline.record(origin="auto-lab-baseline")]
     candidate_records.extend(
