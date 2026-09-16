@@ -158,7 +158,7 @@ async def run_model_suite(*, model_id: str, runtime: Any, checkpoint_sha256: str
                     candidate = {}
                 if _valid_chunk(candidate, checkpoint_sha256=checkpoint_sha256, schedule_sha256=schedule_sha256, baseline_id=spec.id, battles_per_baseline=battles_per_baseline):
                     chunk = candidate
-                    print(f'♻️ {model_id} × {spec.label}: reutilizando 500 batallas', flush=True)
+                    print(f'♻️ {model_id} × {spec.label}: reutilizando {battles_per_baseline} batallas', flush=True)
             if chunk is None:
                 atomic_json(status_path, {'generatedAt': utc_now(), 'state': 'running', 'model': model_id, 'control': spec.id, 'completedChunks': completed_offset + control_index - 1, 'totalChunks': len(BASELINE_SPECS) * 2})
                 print(f'\n⚔️ {model_id} vs {spec.label} · {battles_per_baseline} combates', flush=True)
