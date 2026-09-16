@@ -47,7 +47,9 @@ identidad, tamaño, SHA-256 y resultado del benchmark directo: 58% contra LIGHT
 productivo, 62.2% contra el base y 64.6% contra Simple Heuristics (500 partidas/rival).
 
 [Descargar mc-20260916-bc-ppo.zip](https://drive.google.com/file/d/1B8-CutEs9Eb2CO-hMnXKx0KVXH6q3e5G/view).
-Guárdalo en Descargas. Es un checkpoint privado en Drive; no se publica el peso en Git.
+Guárdalo sin descomprimir en **`models/` dentro del proyecto**, por ejemplo
+`C:\workspace\pkmn\models\mc-20260916-bc-ppo.zip`. Esa carpeta se incluye con sus
+instrucciones; los pesos locales quedan excluidos de Git.
 SHA-256: `5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2`.
 
 Detén únicamente el runtime Python de Battle Lab con Ctrl+C y, desde la raíz del
@@ -57,11 +59,15 @@ repositorio actualizado, ejecuta en PowerShell:
 .\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release install --runtime-root .\.battle-lab-runtime
 ```
 
-Busca el archivo correcto en Descargas por nombre y hash (incluye las copias con
-sufijo de descarga). Para otra carpeta añade `--source "C:\ruta\mc-20260916-bc-ppo.zip"`.
+Busca el ZIP correcto en la carpeta `models/` del proyecto por tamaño y hash.
+Acepta también el nombre original `step-000196608.zip` y sufijos de descarga;
+con varios modelos, selecciona el que coincide con el manifiesto de la versión
+promovida. Para otro archivo añade `--source "C:\ruta\mc-20260916-bc-ppo.zip"`,
+o usa `--models-dir "C:\otra\carpeta"` para cambiar la carpeta de búsqueda.
 Verifica tamaño, SHA y estructura SB3 antes de reemplazar nada. Conserva el modelo
-anterior en `models/backups/<sha>.zip`, reemplaza atómicamente
-`models/step-000196608.zip` y registra `models/active-model.json`. La ruta existente
+anterior en `.battle-lab-runtime/models/backups/<sha>.zip`, reemplaza atómicamente
+`.battle-lab-runtime/models/step-000196608.zip` y registra
+`.battle-lab-runtime/models/active-model.json`. La ruta existente
 permanece compatible con tus comandos de arranque. No toca equipos ni memoria Nana.
 
 Reinicia **el mismo comando de runtime que ya usabas** (incluido Nana/LAN). Desde
@@ -72,7 +78,7 @@ otra terminal confirma el hash cargado:
 ```
 
 `verify` consulta `/model-info`, compara hash y regulación, y guarda
-`models/activation.json`. Instalar el archivo y seleccionar el champion de Colab
+`.battle-lab-runtime/models/activation.json`. Instalar el archivo y seleccionar el champion de Colab
 son pasos distintos de comprobar que el runtime vivo lo cargó. Sparring y Auto Lab
 (Auditar y evaluación de variantes) comparten esa política. Nana identifica el
 nuevo teacher por SHA y separa su confianza previa; conserva el historial personal.
