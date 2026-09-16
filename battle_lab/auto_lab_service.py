@@ -18,15 +18,16 @@ from pydantic import BaseModel, Field
 
 from battle_lab import local_sparring_service as local
 from battle_lab import vgc_bench_battle as battle
-from battle_lab.auto_lab import AutoLabTeam, run_auto_lab_gauntlet
+from battle_lab.auto_lab import AdaptiveSamplingPlan, AutoLabTeam, run_auto_lab_gauntlet
 from battle_lab.showdown_smoke import DEFAULT_FORMAT, validate_team
 
 
 MAX_VARIANTS = 6
 MAX_OPPONENTS = 100
 MAX_PREFLIGHT_TEAMS = 12
-DEFAULT_BATTLES_PER_OPPONENT = 2
-MAX_BATTLES_PER_OPPONENT = 20
+DEFAULT_INITIAL_BATTLES_PER_OPPONENT = 2
+MAX_INITIAL_BATTLES_PER_OPPONENT = 20
+MAX_ADDITIONAL_BATTLES_PER_DEEP_DIVE = 40
 
 
 class AutoLabTeamPayload(BaseModel):
@@ -43,10 +44,16 @@ class StartAutoLabRequest(BaseModel):
     baseline: AutoLabTeamPayload
     variants: list[AutoLabTeamPayload] = Field(default_factory=list, max_length=MAX_VARIANTS)
     opponents: list[AutoLabTeamPayload] = Field(min_length=1, max_length=MAX_OPPONENTS)
-    battlesPerOpponent: int = Field(
-        default=DEFAULT_BATTLES_PER_OPPONENT,
+    initialBattlesPerOpponent: int = Field(
+        default=DEFAULT_INITIAL_BATTLES_PER_OPPONENT,
         ge=2,
-        le=MAX_BATTLES_PER_OPPONENT,
+        le=MAX_INITIAL_BATTLES_PER_OPPONENT,
+    )
+    deepDiveOpponents: int = Field(default=0, ge=0, le=MAX_OPPONENTS)
+    additionalBattlesPerDeepDive: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_ADDITIONAL_BATTLES_PER_DEEP_DIVE,
     )
 
 
@@ -62,6 +69,7 @@ class AutoLabJob:
     current_candidate_id: str = ""
     current_candidate_label: str = ""
     current_opponent_id: str = ""
+    sampling_stage: str = ""
     result: dict[str, Any] | None = None
     events: list[str] = field(default_factory=lambda: ["Auto Lab en cola…"])
     task: asyncio.Task[None] | None = None
@@ -205,6 +213,7 @@ def install_auto_lab_service() -> type:
             "currentCandidateId": job.current_candidate_id or None,
             "currentCandidateLabel": job.current_candidate_label or None,
             "currentOpponentId": job.current_opponent_id or None,
+            "samplingStage": job.sampling_stage or None,
             "events": list(job.events),
             "result": job.result,
         }
@@ -232,8 +241,31 @@ def install_auto_lab_service() -> type:
             raise HTTPException(status_code=409, detail="Hay un Sparring activo; termínalo antes de ejecutar Auto Lab.")
         if self.active_auto_lab is not None:
             raise HTTPException(status_code=409, detail="Ya existe un Gauntlet Auto Lab activo.")
-        if request.battlesPerOpponent % 2:
-            raise HTTPException(status_code=422, detail="battlesPerOpponent debe ser par para equilibrar ambos lados.")
+        if request.initialBattlesPerOpponent % 2:
+            raise HTTPException(
+                status_code=422,
+                detail="initialBattlesPerOpponent debe ser par para equilibrar ambos lados.",
+            )
+        if request.additionalBattlesPerDeepDive % 2:
+            raise HTTPException(
+                status_code=422,
+                detail="additionalBattlesPerDeepDive debe ser par para equilibrar ambos lados.",
+            )
+        if request.deepDiveOpponents > len(request.opponents):
+            raise HTTPException(
+                status_code=422,
+                detail="deepDiveOpponents no puede superar la cantidad de rivales.",
+            )
+        if request.deepDiveOpponents and request.additionalBattlesPerDeepDive < 2:
+            raise HTTPException(
+                status_code=422,
+                detail="La fase profunda requiere al menos 2 batallas adicionales por rival.",
+            )
+        if not request.deepDiveOpponents and request.additionalBattlesPerDeepDive:
+            raise HTTPException(
+                status_code=422,
+                detail="No puede haber batallas profundas sin rivales profundizados.",
+            )
 
         payloads = [request.baseline, *request.variants, *request.opponents]
         ids = [item.id for item in payloads]
@@ -248,8 +280,15 @@ def install_auto_lab_service() -> type:
                     detail=f"{item.label} no es battle-ready: {'; '.join(issues[:8])}",
                 )
 
+        sampling_plan = AdaptiveSamplingPlan(
+            initial_battles_per_opponent=request.initialBattlesPerOpponent,
+            deep_dive_opponents=request.deepDiveOpponents,
+            additional_battles_per_deep_dive=request.additionalBattlesPerDeepDive,
+        )
         job = AutoLabJob(id=uuid.uuid4().hex[:16], request=request)
-        job.total_battles = (1 + len(request.variants)) * len(request.opponents) * request.battlesPerOpponent
+        job.total_battles = (1 + len(request.variants)) * sampling_plan.battles_per_candidate(
+            len(request.opponents)
+        )
         self.auto_lab_jobs[job.id] = job
         job.task = asyncio.create_task(self._run_auto_lab(job))
         return job
@@ -284,13 +323,16 @@ def install_auto_lab_service() -> type:
                 job.current_candidate_label = str(payload.get("candidateLabel") or job.current_candidate_label)
                 if "opponentId" in payload:
                     job.current_opponent_id = str(payload.get("opponentId") or "")
+                if "samplingStage" in payload:
+                    job.sampling_stage = str(payload.get("samplingStage") or "")
                 if job.phase == "finalizing":
                     job.append_event(
                         f"Combates terminados: {job.completed_battles}/{job.total_battles}. Generando informe…"
                     )
                 elif job.current_opponent_id:
+                    stage = "confirmación" if job.sampling_stage == "deepening" else "barrido"
                     job.append_event(
-                        f"{job.current_candidate_label}: {job.current_opponent_id} · {job.completed_battles}/{job.total_battles}"
+                        f"{stage} · {job.current_candidate_label}: {job.current_opponent_id} · {job.completed_battles}/{job.total_battles}"
                     )
 
             replay_root = self.replays_root / "auto-lab" / job.id
@@ -302,7 +344,11 @@ def install_auto_lab_service() -> type:
                 baseline=_payload_team(job.request.baseline),
                 variants=[_payload_team(item) for item in job.request.variants],
                 opponents=[_payload_team(item) for item in job.request.opponents],
-                battles_per_opponent=job.request.battlesPerOpponent,
+                sampling_plan=AdaptiveSamplingPlan(
+                    initial_battles_per_opponent=job.request.initialBattlesPerOpponent,
+                    deep_dive_opponents=job.request.deepDiveOpponents,
+                    additional_battles_per_deep_dive=job.request.additionalBattlesPerDeepDive,
+                ),
                 timeout=300.0,
                 replay_root=replay_root,
                 progress=progress,
