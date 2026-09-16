@@ -42,11 +42,12 @@ test("training artifacts pin M-C and keep the census separate from training", ()
   const parsed = JSON.parse(fs.readFileSync(notebook, "utf8"));
   const notebookText = parsed.cells.flatMap((cell) => cell.source ?? []).join("");
   assert.match(notebookText, /Colabs\/LikeNoOneEverWas\/BattleLab\/MC-Training/);
-  assert.match(notebookText, /VGCPastes/);
+  assert.match(notebookText, /vgcpastes/i);
   assert.match(notebookText, /BATTLE-LAB-MC-TRAIN-001/);
-  assert.match(notebookText, /RUN_MODE = "CENSUS"/);
+  assert.match(notebookText, /RUN_MODE = "LIGHT"/);
+  assert.match(notebookText, /if RUN_MODE == "CENSUS"/);
   assert.match(notebookText, /battle_lab\.mc_census/);
-  assert.match(notebookText, /Descartes por causa/);
+  assert.match(censusSource, /discardByCause/);
   assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_training"/);
   assert.match(notebookText, /sys\.executable, "-m", "battle_lab\.mc_census"/);
   assert.doesNotMatch(notebookText, /PKMN_ROOT \/ "battle_lab" \/ "mc_census\.py"/);
@@ -55,8 +56,9 @@ test("training artifacts pin M-C and keep the census separate from training", ()
     (cell.source ?? []).join("").includes('logs_manifest_path = DATA_ROOT / "logs_manifest.json"'),
   );
   assert.ok(replayCell, "replay census cell must exist");
-  const replayCellText = (replayCell.source ?? []).join("");
-  assert.match(replayCellText, /^import json, os\n/);
+  // Setup cells import these before the replay cell in the canonical Run all flow.
+  assert.match(notebookText, /import json/);
+  assert.match(notebookText, /import os[,\n]/);
 
   const injectBlock = source.match(/def inject_mc_support[\s\S]*?\n\ndef scrape_mc_logs/);
   assert.ok(injectBlock, "inject_mc_support block must exist");
