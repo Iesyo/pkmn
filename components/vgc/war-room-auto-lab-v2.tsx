@@ -27,6 +27,7 @@ import type { WarRoomCorpusTeam } from "@/lib/war-room";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 900;
+const MAX_POLL_BACKOFF_MS = 5_000;
 const LOAD_BATCH = 6;
 
 type RunPreset = "quick" | "standard" | "deep";
@@ -67,7 +68,7 @@ type AutoLabResult = {
 };
 type AutoLabJob = {
   id: string;
-  phase: "queued" | "preparing" | "running" | "completed" | "error" | "cancelled";
+  phase: "queued" | "preparing" | "running" | "finalizing" | "completed" | "error" | "cancelled";
   error: string;
   completedBattles: number;
   totalBattles: number;
@@ -166,6 +167,7 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
   const [runError, setRunError] = useState("");
   const [preflight, setPreflight] = useState<AutoLabPreflightStatus | null>(null);
   const pollRef = useRef<number | null>(null);
+  const pollFailuresRef = useRef(0);
   const teamKey = useMemo(() => `${team.id}|${team.paste}`, [team.id, team.paste]);
   const baselinePaste = useMemo(() => serializeShowdownPaste(team.pokemon, team.mechanics ?? ["mega"]), [team]);
   const baselineReady = inspectBattleReadyPaste(baselinePaste);
@@ -176,15 +178,24 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
       const payload = await readPayload(response);
       if (!response.ok) throw new Error(errorText(payload, "No se pudo consultar Auto Lab."));
       const next = payload as AutoLabJob;
+      pollFailuresRef.current = 0;
+      setRunError("");
       setJob(next);
       if (["completed", "error", "cancelled"].includes(next.phase)) return;
       pollRef.current = window.setTimeout(() => void poll(jobId), POLL_MS);
-    } catch (error) { setRunError(error instanceof Error ? error.message : "Se perdió la conexión con Auto Lab."); }
+    } catch (error) {
+      pollFailuresRef.current += 1;
+      const message = error instanceof Error ? error.message : "Se perdió la conexión con Auto Lab.";
+      setRunError(`${message} · reintentando consulta de estado…`);
+      const delay = Math.min(MAX_POLL_BACKOFF_MS, POLL_MS * (pollFailuresRef.current + 1));
+      pollRef.current = window.setTimeout(() => void poll(jobId), delay);
+    }
   }
 
   async function startAudit() {
     if (!baselineReady.ready) return;
     if (pollRef.current != null) window.clearTimeout(pollRef.current);
+    pollFailuresRef.current = 0;
     setStarting(true); setRunError(""); setJob(null); setPreflight({ checked: 0, valid: 0, rejected: 0, lastRejected: "" });
     try {
       const spec = PRESETS[preset];
@@ -269,12 +280,12 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
 
   const audit = job?.result?.audit;
   return <section className="rounded-[26px] border border-cyan-300/12 bg-cyan-300/[0.02] p-5">
-    <div className="flex flex-wrap items-start justify-between gap-4"><div className="max-w-3xl"><div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300"><ShieldCheck className="size-3.5" />Auto Lab · auditoría empírica</div><h2 className="mt-1 text-lg font-black text-white">Tortura el Team actual contra un meta mucho más ancho</h2><p className="mt-1 text-[10px] leading-4 text-slate-500">Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</p></div>{job ? <Button type="button" variant="outline" size="sm" onClick={() => { setJob(null); setRunError(""); setPreflight(null); }} disabled={job.phase === "running" || job.phase === "preparing"} className="gap-2 border-white/10 text-[9px]"><RefreshCw className="size-3.5" />Limpiar informe</Button> : null}</div>
+    <div className="flex flex-wrap items-start justify-between gap-4"><div className="max-w-3xl"><div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300"><ShieldCheck className="size-3.5" />Auto Lab · auditoría empírica</div><h2 className="mt-1 text-lg font-black text-white">Tortura el Team actual contra un meta mucho más ancho</h2><p className="mt-1 text-[10px] leading-4 text-slate-500">Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</p></div>{job ? <Button type="button" variant="outline" size="sm" onClick={() => { setJob(null); setRunError(""); setPreflight(null); }} disabled={job.phase === "running" || job.phase === "preparing" || job.phase === "finalizing"} className="gap-2 border-white/10 text-[9px]"><RefreshCw className="size-3.5" />Limpiar informe</Button> : null}</div>
 
     <div className="mt-5 rounded-2xl border border-white/7 bg-slate-950/45 p-4"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-500">Cobertura del Gauntlet</p><div className="mt-2 flex flex-wrap gap-2">{(Object.keys(PRESETS) as RunPreset[]).map((value) => <button key={value} type="button" onClick={() => { setPreset(value); setPreflight(null); }} disabled={Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className={cn("rounded-xl border px-3 py-2 text-left transition", preset === value ? "border-cyan-300/30 bg-cyan-300/[0.08]" : "border-white/8 bg-slate-950/30 hover:border-white/15")}><span className={cn("block text-[9px] font-black", preset === value ? "text-cyan-100" : "text-slate-300")}>{PRESETS[value].label}</span><span className="mt-0.5 block text-[8px] text-slate-600">{PRESETS[value].opponents} rivales × {PRESETS[value].battlesPerOpponent}</span></button>)}</div><p className="mt-2 text-[9px] text-slate-600">{PRESETS[preset].description}</p></div><Button type="button" onClick={() => void startAudit()} disabled={starting || !baselineReady.ready || Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{starting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{starting ? "Validando meta…" : "Auditar Team con LIGHT"}</Button></div>{!baselineReady.ready ? <p className="mt-3 text-[9px] text-rose-300">El Team actual no es battle-ready: {baselineReady.issues[0]}</p> : null}{preflight ? <div className="mt-3 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.025] px-3 py-2 text-[8px] text-slate-500"><strong className="text-cyan-200">Preflight Showdown M-C:</strong> {preflight.valid}/{PRESETS[preset].opponents} válidos · {preflight.rejected} descartados · {preflight.checked} revisados{preflight.lastRejected ? <div className="mt-1 truncate text-amber-200/70" title={preflight.lastRejected}>Último descarte: {preflight.lastRejected}</div> : null}</div> : null}</div>
 
     {runError ? <div className="mt-4 flex items-start gap-2 rounded-2xl border border-rose-300/15 bg-rose-300/[0.04] p-4 text-xs text-rose-200"><AlertTriangle className="mt-0.5 size-4 shrink-0" />{runError}</div> : null}
-    {job && !job.result ? <div className="mt-4 rounded-2xl border border-cyan-300/12 bg-cyan-300/[0.025] p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Swords className="size-4 text-cyan-300" /><strong className="text-xs text-white">{job.currentOpponentId ? `Probando ${job.currentOpponentId}` : job.phase === "preparing" ? "Preparando arena…" : "Gauntlet en curso"}</strong></div><span className="font-mono text-[9px] text-slate-500">{job.completedBattles}/{job.totalBattles}</span></div><Progress value={Math.max(0, Math.min(100, job.progress * 100))} className="mt-3 h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-cyan-300" /><div className="mt-2 flex justify-between text-[8px] text-slate-600"><span>Transcurrido {seconds(job.elapsedSeconds)}</span><span>ETA {seconds(job.etaSeconds)}</span></div>{job.error ? <p className="mt-3 text-[9px] text-rose-300">{job.error}</p> : null}</div> : null}
+    {job && !job.result ? <div className="mt-4 rounded-2xl border border-cyan-300/12 bg-cyan-300/[0.025] p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Swords className="size-4 text-cyan-300" /><strong className="text-xs text-white">{job.phase === "finalizing" ? "Generando informe de combate…" : job.currentOpponentId ? `Probando ${job.currentOpponentId}` : job.phase === "preparing" ? "Preparando arena…" : "Gauntlet en curso"}</strong></div><span className="font-mono text-[9px] text-slate-500">{job.completedBattles}/{job.totalBattles}</span></div><Progress value={Math.max(0, Math.min(100, job.progress * 100))} className="mt-3 h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-cyan-300" /><div className="mt-2 flex justify-between text-[8px] text-slate-600"><span>Transcurrido {seconds(job.elapsedSeconds)}</span><span>ETA {job.phase === "finalizing" ? "armando informe" : seconds(job.etaSeconds)}</span></div>{job.error ? <p className="mt-3 text-[9px] text-rose-300">{job.error}</p> : null}</div> : null}
 
     {job?.result && audit ? <div className="mt-5 space-y-4">
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><div className="rounded-2xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-600">Score LIGHT-Team</p><p className="mt-1 text-xl font-black text-cyan-100">{job.result.baseline.scorePercent.toFixed(1)}%</p></div><div className="rounded-2xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-600">Registro</p><p className="mt-1 text-xl font-black text-white">{job.result.baseline.wins}-{job.result.baseline.losses}-{job.result.baseline.ties}</p></div><div className="rounded-2xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-600">Rivales</p><p className="mt-1 text-xl font-black text-white">{job.result.opponents.length}</p></div><div className="rounded-2xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-600">Batallas</p><p className="mt-1 text-xl font-black text-white">{audit.signal.games}</p></div><div className="rounded-2xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-600">Replays</p><p className="mt-1 text-xl font-black text-white">{audit.replayCoverage.parsed}/{audit.replayCoverage.expected}</p></div></section>
