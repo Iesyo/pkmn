@@ -285,6 +285,41 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
     raise ValueError(stage)
 
 
+def start_phase_timing(status: dict, stage: str) -> dict:
+    """Keep observed work from every attempt, including Colab interruptions."""
+    attempts = status.setdefault("phaseAttempts", [])
+    for previous in attempts:
+        if previous["state"] == "running":
+            previous["state"] = "interrupted"
+    attempt = {"stage": stage, "startedAt": utc_now(), "elapsedSeconds": 0.0,
+               "state": "running", "measurementComplete": False}
+    attempts.append(attempt)
+    return attempt
+
+
+def timing_summary(status: dict) -> dict:
+    attempts = status.get("phaseAttempts", [])
+    if not attempts:
+        return {"available": False, "note": "Esta corrida no registró tiempos por intento."}
+    phases = {}
+    for attempt in attempts:
+        phases[attempt["stage"]] = phases.get(attempt["stage"], 0.0) + attempt["elapsedSeconds"]
+    phases = {stage: round(seconds, 2) for stage, seconds in phases.items()}
+    first = attempts[0]["startedAt"]
+    last = attempts[-1].get("finishedAt") or attempts[-1].get("heartbeatAt") or attempts[-1]["startedAt"]
+    wall = max(0.0, (datetime.fromisoformat(last) - datetime.fromisoformat(first)).total_seconds())
+    return {"available": True, "startedAt": first, "lastObservedAt": last,
+            "observedActiveSeconds": round(sum(phases.values()), 2),
+            "observedTrainingSeconds": round(sum(phases.get(stage, 0) for stage in ("bc", "rl")), 2),
+            "observedEvaluationSeconds": phases.get("evaluate", 0.0),
+            "wallSeconds": round(wall, 2), "phaseSeconds": phases,
+            "attempts": len(attempts),
+            "measurementComplete": all(attempt.get("measurementComplete", False) for attempt in attempts),
+            "scope": "Fases ejecutadas de este ciclo; excluye montaje de Drive e instalación inicial del notebook. "
+                     "Activo suma los intentos registrados; transcurrido incluye pausas entre sesiones. "
+                     "Una desconexión abrupta puede perder el tiempo posterior al último heartbeat."}
+
+
 def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
               *, worker_config: Path | None = None, status_root: Path | None = None) -> None:
     status_root = status_root or run
@@ -303,7 +338,10 @@ def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
     reader.start()
     started = last_output = time.monotonic()
     last_heartbeat = 0.0
+    attempt = start_phase_timing(status, stage)
+    succeeded = False
     try:
+        atomic_json(status_root / "status.json", status)
         with log_path.open("a", encoding="utf-8") as log:
             while proc.poll() is None or reader.is_alive() or not lines.empty():
                 try:
@@ -324,12 +362,14 @@ def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
                           f"{LABELS[stage]} · {human_seconds(elapsed)} · ETA fase {human_seconds(eta)}", flush=True)
                     status.update(phase=stage, heartbeatAt=utc_now(), phaseElapsedSeconds=round(elapsed, 1),
                                   phaseEtaSeconds=eta, state="running")
+                    attempt.update(elapsedSeconds=round(elapsed, 2), heartbeatAt=status["heartbeatAt"])
                     atomic_json(status_root / "status.json", status)
                     last_heartbeat = time.monotonic()
                 if proc.poll() is None and time.monotonic() - last_output > 1800:
                     raise RuntimeError(f"{stage}: 30 minutos sin salida del proceso; se conserva el checkpoint.")
         if proc.returncode:
             raise RuntimeError(f"La fase {stage} terminó con código {proc.returncode}; consulta {log_path}")
+        succeeded = True
     finally:
         if proc.poll() is None:
             os.killpg(proc.pid, signal.SIGTERM)
@@ -339,7 +379,10 @@ def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
         reader.join(timeout=2)
-    phase_seconds[stage] = round(time.monotonic() - started, 2)
+        attempt.update(elapsedSeconds=round(time.monotonic() - started, 2), finishedAt=utc_now(),
+                       state="completed" if succeeded else "failed", measurementComplete=True)
+        atomic_json(status_root / "status.json", status)
+    phase_seconds[stage] = attempt["elapsedSeconds"]
 
 
 def write_report(run: Path, config: dict, status: dict, *, report_root: Path | None = None) -> dict:
@@ -355,6 +398,7 @@ def write_report(run: Path, config: dict, status: dict, *, report_root: Path | N
     direct = (comparison or {}).get("protocol") == "direct-v1"
     report = {"schemaVersion": 1, "generatedAt": utc_now(), "runId": run.name,
               "state": status["state"], "verdict": verdict, "config": config, "phases": phases,
+              "timing": timing_summary(status),
               "previousRunId": previous.get("runId"), "championChanged": False,
               "note": "El gate heredado detecta mejora observada. No prueba significancia estadística ni nivel humano. El champion y la ROG no se reemplazan automáticamente."}
     if direct:
@@ -371,6 +415,17 @@ def write_report(run: Path, config: dict, status: dict, *, report_root: Path | N
              f"Trayectorias / transiciones elegibles: {phases['trajectories']['trajectories']} / {phases['trajectories']['transitions']}",
              f"BC-MC: {phases.get('bc', {}).get('state', 'pendiente' if phases['trajectories']['bcEligible'] else 'datos insuficientes')}",
              f"Mínimo BC: 1000 trayectorias / {config.get('bcMinTransitions', 10000)} transiciones"]
+    timing = report["timing"]
+    if timing["available"]:
+        lines += ["", f"Tiempo activo registrado del ciclo: {human_seconds(timing['observedActiveSeconds'])}",
+                  f"Aprendizaje BC + PPO registrado: {human_seconds(timing['observedTrainingSeconds'])}",
+                  f"Evaluación registrada: {human_seconds(timing['observedEvaluationSeconds'])}",
+                  f"Tiempo transcurrido, incluidas pausas: {human_seconds(timing['wallSeconds'])}"]
+        for stage, seconds in timing["phaseSeconds"].items():
+            lines.append(f"  {LABELS.get(stage, stage)}: {human_seconds(seconds)}")
+        lines.append(timing["scope"])
+        if not timing["measurementComplete"]:
+            lines.append("Medición parcial: al menos un intento perdió su cierre; se conserva solo el tiempo observado.")
     for fmt, scrape in phases["replays"]["formats"].items():
         lines.append(f"Fuente {fmt}: {scrape['stopReason']} · {scrape['pages']} páginas · +{scrape['added']} partidas")
     lines.append("Filtro humano: " + json.dumps(phases["split"]["filter"]["counts"], ensure_ascii=False))
