@@ -239,7 +239,7 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
                 actor_unfreeze_step=98304 if initial["state"] == "completed" else 0)
         return artifact_result(Path(result["finalCheckpoint"]), state="completed",
                                checkpoint=result["finalCheckpoint"], sha256=result["finalCheckpointSha256"],
-                               steps=result["finalStep"])
+                               steps=result["finalStep"], runtime=result.get("runtime", {}))
     if stage == "evaluate":
         from battle_lab.mc_refresh_eval import evaluate
         candidate = read_json(run / "phases" / "rl.json")
@@ -251,10 +251,13 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
     raise ValueError(stage)
 
 
-def run_child(stage: str, run: Path, status: dict, phase_seconds: dict) -> None:
+def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
+              *, worker_config: Path | None = None) -> None:
     log_path = run / "logs" / (stage + ".log")
     log_path.parent.mkdir(exist_ok=True)
     command = [sys.executable, "-u", "-m", "battle_lab.mc_refresh", "--worker-stage", stage, "--worker-run", str(run)]
+    if worker_config is not None:
+        command += ["--worker-config", str(worker_config)]
     proc = subprocess.Popen(command, cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, bufsize=1, start_new_session=True)
     lines = queue.Queue()
@@ -329,7 +332,17 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
     for fmt, scrape in phases["replays"]["formats"].items():
         lines.append(f"Fuente {fmt}: {scrape['stopReason']} · {scrape['pages']} páginas · +{scrape['added']} partidas")
     lines.append("Filtro humano: " + json.dumps(phases["split"]["filter"]["counts"], ensure_ascii=False))
+    if "numEnvs" in config:
+        lines.append(f"Entrenamiento: {config['device']} · {config['numEnvs']} entornos; evaluación: una batalla simultánea")
+    runtime = phases.get("rl", {}).get("runtime", {})
+    if runtime:
+        lines.append("Runtime PPO medido: " + json.dumps(runtime, ensure_ascii=False))
+    if config.get("evaluationRecovery"):
+        lines.append("Código del entrenamiento conservado: " + config["evaluationRecovery"]["trainingCodeSha"])
     if comparison:
+        view = evaluation.get("holdoutView", {})
+        if view:
+            lines.append(f"Holdout evaluado: {view['holdoutTeams']} equipos únicos de {view['sourceHoldoutTeams']} archivos reservados")
         lines += [f"Batallas de evaluación: {evaluation['battles']}",
                   f"Score global champion: {comparison['publicOverallScorePercent']:.2f}%",
                   f"Score global candidato: {comparison['lightOverallScorePercent']:.2f}%",
@@ -354,6 +367,68 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
     (refresh / "latest_run.txt").write_text(text, encoding="utf-8")
     print(text, flush=True)
     return report
+
+
+def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict) -> tuple[Path, dict]:
+    """Validate a completed training run before allowing an evaluation-only code update."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("Invalid recovery RUN_ID")
+    run = root / "Refresh" / "runs" / run_id
+    original = read_json(run / "config.json")
+    if not original or Path(original["root"]).resolve() != root.resolve():
+        raise RuntimeError("Falta la configuración original de esta corrida.")
+    if original.get("mode") == "CENSUS":
+        raise RuntimeError("Un censo sin entrenamiento no puede recuperar evaluación.")
+    if versions != original["runtimeVersions"]:
+        raise RuntimeError("El runtime cambió; restaura las versiones de config.json antes de evaluar.")
+    candidate = read_json(run / "phases" / "rl.json", {})
+    if candidate.get("state") != "completed" or candidate.get("steps", -1) < original["profile"]["steps"]:
+        raise RuntimeError("El entrenamiento no está completo; no se puede saltar a evaluación.")
+    for stage in STAGES[:-1]:
+        phase = read_json(run / "phases" / (stage + ".json"))
+        if not phase:
+            raise RuntimeError("Falta una fase anterior completa: " + stage)
+        print("Verificando fase conservada: " + stage, flush=True)
+        check_artifact(phase)
+    for model in (original["champion"], candidate):
+        if sha256_file(Path(model["checkpoint"])) != model["sha256"]:
+            raise RuntimeError("El modelo guardado cambió antes de recuperar evaluación.")
+    config = {**original, "codeSha": code_sha,
+              "evaluationRecovery": {"trainingCodeSha": original["codeSha"],
+                                     "sourceConfigSha256": sha256_file(run / "config.json"),
+                                     "candidateSha256": candidate["sha256"],
+                                     "scope": ["prepare", "evaluate"]}}
+    return run, config
+
+
+def recover_evaluation(root: Path, run_id: str = "") -> None:
+    run_id = run_id or read_json(root / "Refresh" / "active_run.json", {}).get("runId", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("No hay una corrida válida que recuperar.")
+    original = read_json(root / "Refresh" / "runs" / run_id / "config.json")
+    if not original:
+        raise RuntimeError("No existe config.json para la corrida seleccionada.")
+    run, config = recovery_config(root, run_id, code_sha=git_sha(PROJECT_ROOT),
+                                  versions=runtime_versions(original["device"]))
+    config_path = run / "recovery" / "evaluation_config.json"
+    atomic_json(config_path, config)
+    status = read_json(run / "status.json", {})
+    status.update(completedStages=list(STAGES[:-1]), totalStages=len(STAGES), runId=run_id,
+                  state="running", recovery=config["evaluationRecovery"])
+    status.pop("error", None)
+    status.pop("finishedAt", None)
+    durations = {}
+    print("♻️ Recuperación: se conservan datos y checkpoint; solo se prepara el motor y se evalúa.", flush=True)
+    try:
+        for stage in ("prepare", "evaluate"):
+            run_child(stage, run, status, durations, worker_config=config_path)
+        status.update(state="completed", completedStages=list(STAGES), finishedAt=utc_now())
+        write_report(run, config, status)
+        atomic_json(run / "status.json", status)
+    except BaseException as error:
+        status.update(state="failed", error=f"{type(error).__name__}: {error}", failedAt=utc_now())
+        atomic_json(run / "status.json", status)
+        raise
 
 
 def promote(root: Path, run_id: str) -> dict:
@@ -397,15 +472,28 @@ def main(argv=None) -> int:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--promote-run", default="")
+    parser.add_argument("--recover-evaluation", action="store_true")
     parser.add_argument("--worker-stage", choices=STAGES)
     parser.add_argument("--worker-run", type=Path)
+    parser.add_argument("--worker-config", type=Path)
     args = parser.parse_args(argv)
     if args.worker_stage:
-        config = read_json(args.worker_run / "config.json")
+        if args.worker_config:
+            expected = args.worker_run / "recovery" / "evaluation_config.json"
+            if args.worker_config.resolve() != expected.resolve() or args.worker_stage not in ("prepare", "evaluate"):
+                raise RuntimeError("La recuperación solo permite preparar y evaluar.")
+            config = read_json(expected)
+            if sha256_file(args.worker_run / "config.json") != config["evaluationRecovery"]["sourceConfigSha256"]:
+                raise RuntimeError("La configuración original cambió durante la recuperación.")
+        else:
+            config = read_json(args.worker_run / "config.json")
         if git_sha(PROJECT_ROOT) != config["codeSha"]:
             raise RuntimeError("Worker is running a different code snapshot")
         result = perform_stage(args.worker_stage, config, args.worker_run)
-        atomic_json(args.worker_run / "phases" / (args.worker_stage + ".json"), result)
+        phase_dir = args.worker_run / "phases"
+        if args.worker_config and args.worker_stage == "prepare":
+            phase_dir = args.worker_run / "recovery" / "phases"
+        atomic_json(phase_dir / (args.worker_stage + ".json"), result)
         return 0
     if args.root is None:
         parser.error("--root is required")
@@ -419,6 +507,9 @@ def main(argv=None) -> int:
             raise RuntimeError("Ya hay una corrida escribiendo en esta línea de modelos.") from None
         if args.promote_run:
             promote(root, args.promote_run)
+            return 0
+        if args.recover_evaluation:
+            recover_evaluation(root, args.run_id)
             return 0
         if args.battles < 2 or args.battles % 2 or args.replay_pages < 1 or args.num_envs not in (1, 2, 4):
             parser.error("battles must be even >=2; replay-pages >=1; num-envs one of 1,2,4")
