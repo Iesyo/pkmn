@@ -24,6 +24,7 @@ from battle_lab.showdown_smoke import DEFAULT_FORMAT, validate_team
 
 MAX_VARIANTS = 6
 MAX_OPPONENTS = 100
+MAX_PREFLIGHT_TEAMS = 12
 DEFAULT_BATTLES_PER_OPPONENT = 2
 MAX_BATTLES_PER_OPPONENT = 20
 
@@ -32,6 +33,10 @@ class AutoLabTeamPayload(BaseModel):
     id: str = Field(min_length=1, max_length=96)
     label: str = Field(min_length=1, max_length=160)
     teamPaste: str = Field(min_length=1)
+
+
+class ValidateAutoLabTeamsRequest(BaseModel):
+    teams: list[AutoLabTeamPayload] = Field(min_length=1, max_length=MAX_PREFLIGHT_TEAMS)
 
 
 class StartAutoLabRequest(BaseModel):
@@ -69,6 +74,60 @@ class AutoLabJob:
 
 def _payload_team(value: AutoLabTeamPayload) -> AutoLabTeam:
     return AutoLabTeam(id=value.id, label=value.label, team_text=value.teamPaste)
+
+
+def _validation_error(error: Exception) -> str:
+    value = " ".join(str(error).split())
+    return value[:1200] or error.__class__.__name__
+
+
+async def validate_auto_lab_payloads(
+    showdown_root: Any,
+    payloads: list[AutoLabTeamPayload],
+) -> list[dict[str, Any]]:
+    """Validate exact pastes with the same Showdown command used by the gauntlet.
+
+    Structural completeness is checked first to avoid spawning Node for pastes
+    that are obviously incomplete. A bad opponent is returned as a verdict,
+    not raised, so the caller can skip it and continue through a recency-ordered
+    candidate pool. Runtime/infrastructure failures still surface per team and
+    the final gauntlet defensively revalidates the selected 100.
+    """
+
+    results: list[dict[str, Any]] = []
+    for item in payloads:
+        complete, issues = local.strict_complete_team(item.teamPaste)
+        if not complete:
+            results.append(
+                {
+                    "id": item.id,
+                    "label": item.label,
+                    "valid": False,
+                    "error": f"No es battle-ready: {'; '.join(issues[:8])}",
+                }
+            )
+            continue
+        try:
+            await asyncio.to_thread(validate_team, showdown_root, DEFAULT_FORMAT, item.teamPaste)
+        except Exception as error:
+            results.append(
+                {
+                    "id": item.id,
+                    "label": item.label,
+                    "valid": False,
+                    "error": _validation_error(error),
+                }
+            )
+        else:
+            results.append(
+                {
+                    "id": item.id,
+                    "label": item.label,
+                    "valid": True,
+                    "error": "",
+                }
+            )
+    return results
 
 
 def _frozen_light_runtime(runtime: Any) -> battle.ModelRuntime:
@@ -155,6 +214,18 @@ def install_auto_lab_service() -> type:
         if job is None:
             raise HTTPException(status_code=404, detail="Gauntlet Auto Lab no encontrado.")
         return job
+
+    async def validate_auto_lab_teams(
+        self: Any,
+        request: ValidateAutoLabTeamsRequest,
+    ) -> dict[str, Any]:
+        if self.active_session is not None:
+            raise HTTPException(status_code=409, detail="Hay un Sparring activo; termínalo antes de prevalidar Auto Lab.")
+        if self.active_auto_lab is not None:
+            raise HTTPException(status_code=409, detail="Ya existe un Gauntlet Auto Lab activo.")
+        await self.ensure_ready()
+        results = await validate_auto_lab_payloads(self.showdown_root, request.teams)
+        return {"format": DEFAULT_FORMAT, "results": results}
 
     async def start_auto_lab(self: Any, request: StartAutoLabRequest) -> AutoLabJob:
         if self.active_session is not None:
@@ -253,12 +324,17 @@ def install_auto_lab_service() -> type:
     service_class.shutdown = shutdown
     service_class.auto_lab_snapshot = auto_lab_snapshot
     service_class.get_auto_lab_job = get_auto_lab_job
+    service_class.validate_auto_lab_teams = validate_auto_lab_teams
     service_class.start_auto_lab = start_auto_lab
     service_class._run_auto_lab = _run_auto_lab
     service_class._auto_lab_installed = True
 
     def build_app(service: Any):
         app = original_build_app(service)
+
+        @app.post("/auto-lab/validate")
+        async def validate_auto_lab_route(request: ValidateAutoLabTeamsRequest) -> dict[str, Any]:
+            return await service.validate_auto_lab_teams(request)
 
         @app.post("/auto-lab")
         async def start_auto_lab_route(request: StartAutoLabRequest) -> dict[str, Any]:
