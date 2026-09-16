@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import time
+from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from battle_lab import vgc_bench_battle as battle
 from battle_lab.auto_lab_audit import build_auto_lab_audit, classify_archetypes
@@ -57,6 +59,45 @@ class AutoLabTeam:
         )
 
 
+@dataclass(frozen=True)
+class AdaptiveSamplingPlan:
+    """Two-stage budget: broad screening followed by targeted confirmation."""
+
+    initial_battles_per_opponent: int
+    deep_dive_opponents: int
+    additional_battles_per_deep_dive: int
+
+    def validate(self, opponent_count: int) -> None:
+        if (
+            not 2 <= self.initial_battles_per_opponent <= 20
+            or self.initial_battles_per_opponent % 2
+        ):
+            raise ValueError("initial_battles_per_opponent debe ser par y estar entre 2 y 20.")
+        if not 0 <= self.deep_dive_opponents <= opponent_count:
+            raise ValueError(
+                "deep_dive_opponents debe estar entre 0 y la cantidad de rivales."
+            )
+        if self.deep_dive_opponents == 0:
+            if self.additional_battles_per_deep_dive != 0:
+                raise ValueError(
+                    "additional_battles_per_deep_dive debe ser 0 sin rivales profundizados."
+                )
+        elif (
+            not 2 <= self.additional_battles_per_deep_dive <= 40
+            or self.additional_battles_per_deep_dive % 2
+        ):
+            raise ValueError(
+                "additional_battles_per_deep_dive debe ser par y estar entre 2 y 40."
+            )
+
+    def battles_per_candidate(self, opponent_count: int) -> int:
+        self.validate(opponent_count)
+        return (
+            opponent_count * self.initial_battles_per_opponent
+            + self.deep_dive_opponents * self.additional_battles_per_deep_dive
+        )
+
+
 def build_candidate_schedule(
     candidate: TeamRecord,
     opponents: Sequence[TeamRecord],
@@ -80,9 +121,40 @@ def build_candidate_schedule(
     return schedule
 
 
-def summarize_candidate(candidate_id: str, summaries: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def _confidence95(row: Mapping[str, int | float]) -> dict[str, float]:
+    """Wilson interval for match points, with ties worth half a point."""
+
+    games = int(row.get("games", 0) or 0)
+    if games < 1:
+        return {"low": 0.0, "high": 100.0, "width": 100.0}
+    points = float(row.get("wins", 0) or 0) + 0.5 * float(row.get("ties", 0) or 0)
+    score = points / games
+    z = 1.95996398454
+    denominator = 1 + z * z / games
+    center = (score + z * z / (2 * games)) / denominator
+    margin = (
+        z
+        * math.sqrt(score * (1 - score) / games + z * z / (4 * games * games))
+        / denominator
+    )
+    low = max(0.0, center - margin) * 100
+    high = min(1.0, center + margin) * 100
+    return {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "width": round(high - low, 2),
+    }
+
+
+def summarize_candidate(
+    candidate_id: str,
+    summaries: Sequence[dict[str, Any]],
+    *,
+    deep_dive_ids: Sequence[str] = (),
+) -> dict[str, Any]:
     wins = losses = ties = 0
     by_opponent: dict[str, dict[str, int | float]] = {}
+    deep_dive_set = set(deep_dive_ids)
 
     for summary in summaries:
         pairing = summary.get("pairing", {})
@@ -114,16 +186,154 @@ def summarize_candidate(candidate_id: str, summaries: Sequence[dict[str, Any]]) 
             100 * (int(row["wins"]) + 0.5 * int(row["ties"])) / games,
             2,
         ) if games else 0.0
+        row["confidence95"] = _confidence95(row)
+    for opponent_id, row in by_opponent.items():
+        deep_dive = opponent_id in deep_dive_set
+        row["deepDive"] = deep_dive
+        row["evidenceLevel"] = "confirmed" if deep_dive else "screening"
     return {**score, "byOpponent": by_opponent}
 
 
+def select_deep_dive_opponents(
+    candidate_report: Mapping[str, Any],
+    opponents: Mapping[str, Mapping[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Rank stage-one matchups by recurrent risk plus useful uncertainty.
+
+    The primary risk term is prevalence × severity × repeatability × confidence.
+    A smaller exploration term retains uncertain matchups, and a greedy diversity
+    bonus prevents the confirmation budget from collapsing into one archetype.
+    """
+
+    by_opponent = candidate_report.get("byOpponent", {})
+    if limit <= 0 or not isinstance(by_opponent, Mapping):
+        return []
+    opponent_ids = [str(value) for value in by_opponent]
+    if not opponent_ids:
+        return []
+
+    overall = float(candidate_report.get("scorePercent", 0.0) or 0.0) / 100
+    archetype_members: dict[str, list[str]] = {}
+    weak_by_archetype: Counter[str] = Counter()
+    for opponent_id in opponent_ids:
+        meta = opponents.get(opponent_id, {})
+        tags = [str(tag) for tag in meta.get("archetypes", [])] or ["Balance / Other"]
+        score = float(by_opponent[opponent_id].get("scorePercent", 0.0) or 0.0) / 100
+        for tag in tags:
+            archetype_members.setdefault(tag, []).append(opponent_id)
+            if score < max(0.45, overall - 0.05):
+                weak_by_archetype[tag] += 1
+
+    ranked: list[dict[str, Any]] = []
+    for opponent_id in opponent_ids:
+        row = by_opponent[opponent_id]
+        meta = opponents.get(opponent_id, {})
+        tags = [str(tag) for tag in meta.get("archetypes", [])] or ["Balance / Other"]
+        score = float(row.get("scorePercent", 0.0) or 0.0) / 100
+        interval = row.get("confidence95")
+        if not isinstance(interval, Mapping):
+            interval = _confidence95(row)
+        width = float(interval.get("width", 100.0) or 100.0) / 100
+        severity = min(1.0, max(0.0, (max(0.5, overall) - score) / 0.5))
+        prevalence = max(
+            len(archetype_members.get(tag, [])) / len(opponent_ids) for tag in tags
+        )
+        repeatability = max(
+            weak_by_archetype[tag] / max(1, len(archetype_members.get(tag, [])))
+            for tag in tags
+        )
+        confidence = max(0.0, min(1.0, 1 - width))
+        recurrent_risk = prevalence * severity * repeatability * confidence
+        priority = 0.65 * recurrent_risk + 0.2 * severity + 0.15 * width
+        reasons: list[str] = []
+        if severity >= 0.35:
+            reasons.append(
+                f"Severidad: {score * 100:.1f}% vs {overall * 100:.1f}% global."
+            )
+        recurrent_tag = max(
+            tags,
+            key=lambda tag: (
+                weak_by_archetype[tag] / max(1, len(archetype_members.get(tag, []))),
+                len(archetype_members.get(tag, [])),
+                tag,
+            ),
+        )
+        recurrent_count = weak_by_archetype[recurrent_tag]
+        member_count = len(archetype_members.get(recurrent_tag, []))
+        if recurrent_count >= 2:
+            reasons.append(
+                f"Repetición: {recurrent_count}/{member_count} rivales {recurrent_tag} quedaron bajo la referencia."
+            )
+        if width >= 0.45:
+            reasons.append(
+                f"Incertidumbre: IC95% {float(interval.get('low', 0)):.1f}–{float(interval.get('high', 100)):.1f}%."
+            )
+        if not reasons:
+            reasons.append("Confirmación de cobertura para evitar depender de una sola pasada.")
+        ranked.append(
+            {
+                "id": opponent_id,
+                "label": meta.get("label", opponent_id),
+                "archetypes": tags,
+                "priorityScore": round(priority * 100, 2),
+                "recurrentRiskScore": round(recurrent_risk * 100, 2),
+                "components": {
+                    "prevalence": round(prevalence, 4),
+                    "severity": round(severity, 4),
+                    "repeatability": round(repeatability, 4),
+                    "confidence": round(confidence, 4),
+                    "uncertainty": round(width, 4),
+                },
+                "screening": {
+                    "games": int(row.get("games", 0) or 0),
+                    "wins": int(row.get("wins", 0) or 0),
+                    "losses": int(row.get("losses", 0) or 0),
+                    "ties": int(row.get("ties", 0) or 0),
+                    "scorePercent": round(score * 100, 2),
+                    "confidence95": dict(interval),
+                },
+                "reasons": reasons,
+            }
+        )
+
+    selected: list[dict[str, Any]] = []
+    covered_archetypes: Counter[str] = Counter()
+    remaining = list(ranked)
+    target_count = min(limit, len(remaining))
+    while remaining and len(selected) < target_count:
+        def selection_key(item: Mapping[str, Any]) -> tuple[float, float, str]:
+            tags = [str(tag) for tag in item.get("archetypes", [])]
+            diversity_bonus = 16.0 if any(covered_archetypes[tag] == 0 for tag in tags) else 0.0
+            concentration_penalty = 1.5 * min(
+                (covered_archetypes[tag] for tag in tags), default=0
+            )
+            adjusted = float(item.get("priorityScore", 0.0)) + diversity_bonus - concentration_penalty
+            return (adjusted, float(item.get("priorityScore", 0.0)), str(item.get("id", "")))
+
+        chosen = max(remaining, key=selection_key)
+        remaining.remove(chosen)
+        chosen["selectionRank"] = len(selected) + 1
+        selected.append(chosen)
+        for tag in chosen["archetypes"]:
+            covered_archetypes[str(tag)] += 1
+    return selected
+
+
 def compare_with_baseline(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    delta = round(float(candidate["scorePercent"]) - float(baseline["scorePercent"]), 2)
-    common = sorted(set(baseline.get("byOpponent", {})) & set(candidate.get("byOpponent", {})))
+    baseline_pool = baseline.get("poolEstimate", baseline)
+    candidate_pool = candidate.get("poolEstimate", candidate)
+    delta = round(
+        float(candidate_pool["scorePercent"]) - float(baseline_pool["scorePercent"]),
+        2,
+    )
+    baseline_matchups = baseline.get("screeningByOpponent", baseline.get("byOpponent", {}))
+    candidate_matchups = candidate.get("screeningByOpponent", candidate.get("byOpponent", {}))
+    common = sorted(set(baseline_matchups) & set(candidate_matchups))
     improved = regressed = tied = 0
     for opponent_id in common:
-        before = float(baseline["byOpponent"][opponent_id]["scorePercent"])
-        after = float(candidate["byOpponent"][opponent_id]["scorePercent"])
+        before = float(baseline_matchups[opponent_id]["scorePercent"])
+        after = float(candidate_matchups[opponent_id]["scorePercent"])
         if after > before:
             improved += 1
         elif after < before:
@@ -189,6 +399,7 @@ async def run_candidate_battles(
     candidate_id: str,
     timeout: float,
     replay_dir: Path,
+    preview_index_offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Run one candidate schedule while sampling only that candidate's Team Preview."""
 
@@ -250,7 +461,8 @@ async def run_candidate_battles(
             opponent_id = (
                 pairing.beta.id if pairing.alpha.id == candidate_id else pairing.alpha.id
             )
-            _seed_torch(runtime, _preview_seed(opponent_id, index))
+            preview_index = preview_index_offset + index
+            _seed_torch(runtime, _preview_seed(opponent_id, preview_index))
 
             previous_tags = set(player_a.battles)
             started = time.monotonic()
@@ -294,7 +506,7 @@ async def run_candidate_battles(
                 "alpha": _selected_preview(alpha_battle),
                 "beta": _selected_preview(beta_battle) if beta_battle is not None else [],
             }
-            summary["previewSeed"] = _preview_seed(opponent_id, index)
+            summary["previewSeed"] = _preview_seed(opponent_id, preview_index)
             summaries.append(summary)
             player_a.reset_battles()
             player_b.reset_battles()
@@ -325,7 +537,7 @@ async def run_auto_lab_gauntlet(
     baseline: AutoLabTeam,
     variants: Sequence[AutoLabTeam],
     opponents: Sequence[AutoLabTeam],
-    battles_per_opponent: int,
+    sampling_plan: AdaptiveSamplingPlan,
     timeout: float,
     replay_root: Path,
     progress: ProgressCallback | None = None,
@@ -334,8 +546,11 @@ async def run_auto_lab_gauntlet(
 
     if len(variants) > 8:
         raise ValueError("Auto Lab admite como máximo 8 variantes por ejecución.")
+    if not opponents:
+        raise ValueError("Auto Lab requiere al menos un rival.")
     if len(opponents) > 100:
         raise ValueError("Auto Lab admite como máximo 100 rivales por ejecución.")
+    sampling_plan.validate(len(opponents))
 
     candidate_records = [baseline.record(origin="auto-lab-baseline")]
     candidate_records.extend(
@@ -348,32 +563,38 @@ async def run_auto_lab_gauntlet(
     if len(ids) != len(set(ids)):
         raise ValueError("Los IDs de baseline, variantes y rivales deben ser únicos.")
 
-    total_battles = (
-        len(candidate_records) * len(opponent_records) * battles_per_opponent
+    total_battles = len(candidate_records) * sampling_plan.battles_per_candidate(
+        len(opponent_records)
     )
     completed_battles = 0
     reports: dict[str, dict[str, Any]] = {}
     summaries_by_candidate: dict[str, list[dict[str, Any]]] = {}
+    opponent_meta = {
+        record.id: {
+            "id": record.id,
+            "label": record.description,
+            "roster": list(record.roster),
+            "archetypes": classify_archetypes(record.team_text),
+        }
+        for record in opponent_records
+    }
 
-    for candidate_index, candidate in enumerate(candidate_records):
-        all_summaries: list[dict[str, Any]] = []
-        await _notify(
-            progress,
-            {
-                "phase": "running",
-                "candidateId": candidate.id,
-                "candidateLabel": candidate.description,
-                "candidateIndex": candidate_index,
-                "candidateCount": len(candidate_records),
-                "completedBattles": completed_battles,
-                "totalBattles": total_battles,
-            },
-        )
-        for opponent in opponent_records:
+    async def run_stage(
+        candidate: TeamRecord,
+        stage_opponents: Sequence[TeamRecord],
+        *,
+        battles_per_opponent: int,
+        preview_index_offset: int,
+        sampling_stage: str,
+    ) -> list[dict[str, Any]]:
+        nonlocal completed_battles
+        stage_summaries: list[dict[str, Any]] = []
+        for opponent in stage_opponents:
             await _notify(
                 progress,
                 {
                     "phase": "running",
+                    "samplingStage": sampling_stage,
                     "candidateId": candidate.id,
                     "candidateLabel": candidate.description,
                     "opponentId": opponent.id,
@@ -386,7 +607,6 @@ async def run_auto_lab_gauntlet(
                 [opponent],
                 battles_per_opponent=battles_per_opponent,
             )
-            opponent_replays = replay_root / candidate.id / opponent.id
             summaries = await run_candidate_battles(
                 runtime=runtime,
                 port=port,
@@ -394,14 +614,18 @@ async def run_auto_lab_gauntlet(
                 schedule=schedule,
                 candidate_id=candidate.id,
                 timeout=timeout,
-                replay_dir=opponent_replays,
+                replay_dir=replay_root / candidate.id / opponent.id,
+                preview_index_offset=preview_index_offset,
             )
-            all_summaries.extend(summaries)
+            for summary in summaries:
+                summary["samplingStage"] = sampling_stage
+            stage_summaries.extend(summaries)
             completed_battles += len(summaries)
             await _notify(
                 progress,
                 {
                     "phase": "running",
+                    "samplingStage": sampling_stage,
                     "candidateId": candidate.id,
                     "candidateLabel": candidate.description,
                     "opponentId": opponent.id,
@@ -409,11 +633,128 @@ async def run_auto_lab_gauntlet(
                     "totalBattles": total_battles,
                 },
             )
+        return stage_summaries
+
+    baseline_record = candidate_records[0]
+    await _notify(
+        progress,
+        {
+            "phase": "running",
+            "samplingStage": "screening",
+            "candidateId": baseline_record.id,
+            "candidateLabel": baseline_record.description,
+            "candidateIndex": 0,
+            "candidateCount": len(candidate_records),
+            "completedBattles": completed_battles,
+            "totalBattles": total_battles,
+        },
+    )
+    baseline_screening = await run_stage(
+        baseline_record,
+        opponent_records,
+        battles_per_opponent=sampling_plan.initial_battles_per_opponent,
+        preview_index_offset=0,
+        sampling_stage="screening",
+    )
+    screening_report = summarize_candidate(baseline.id, baseline_screening)
+    deep_dive_selection = select_deep_dive_opponents(
+        screening_report,
+        opponent_meta,
+        sampling_plan.deep_dive_opponents,
+    )
+    deep_dive_ids = [str(item["id"]) for item in deep_dive_selection]
+    records_by_id = {record.id: record for record in opponent_records}
+    deep_dive_records = [records_by_id[opponent_id] for opponent_id in deep_dive_ids]
+    baseline_deepening = (
+        await run_stage(
+            baseline_record,
+            deep_dive_records,
+            battles_per_opponent=sampling_plan.additional_battles_per_deep_dive,
+            preview_index_offset=sampling_plan.initial_battles_per_opponent,
+            sampling_stage="deepening",
+        )
+        if deep_dive_records
+        else []
+    )
+    baseline_summaries = [*baseline_screening, *baseline_deepening]
+    summaries_by_candidate[baseline.id] = baseline_summaries
+    baseline_combined_report = summarize_candidate(
+        baseline.id,
+        baseline_summaries,
+        deep_dive_ids=deep_dive_ids,
+    )
+    reports[baseline.id] = {
+        "id": baseline.id,
+        "label": baseline.label,
+        **baseline_combined_report,
+        "poolEstimate": {
+            key: value
+            for key, value in screening_report.items()
+            if key != "byOpponent"
+        },
+        "adaptiveCombined": {
+            key: value
+            for key, value in baseline_combined_report.items()
+            if key != "byOpponent"
+        },
+        "screeningByOpponent": screening_report["byOpponent"],
+    }
+
+    for candidate_index, candidate in enumerate(candidate_records[1:], start=1):
+        await _notify(
+            progress,
+            {
+                "phase": "running",
+                "samplingStage": "screening",
+                "candidateId": candidate.id,
+                "candidateLabel": candidate.description,
+                "candidateIndex": candidate_index,
+                "candidateCount": len(candidate_records),
+                "completedBattles": completed_battles,
+                "totalBattles": total_battles,
+            },
+        )
+        screening = await run_stage(
+            candidate,
+            opponent_records,
+            battles_per_opponent=sampling_plan.initial_battles_per_opponent,
+            preview_index_offset=0,
+            sampling_stage="screening",
+        )
+        deepening = (
+            await run_stage(
+                candidate,
+                deep_dive_records,
+                battles_per_opponent=sampling_plan.additional_battles_per_deep_dive,
+                preview_index_offset=sampling_plan.initial_battles_per_opponent,
+                sampling_stage="deepening",
+            )
+            if deep_dive_records
+            else []
+        )
+        all_summaries = [*screening, *deepening]
         summaries_by_candidate[candidate.id] = all_summaries
+        screening_summary = summarize_candidate(candidate.id, screening)
+        combined_summary = summarize_candidate(
+            candidate.id,
+            all_summaries,
+            deep_dive_ids=deep_dive_ids,
+        )
         reports[candidate.id] = {
             "id": candidate.id,
             "label": candidate.description,
-            **summarize_candidate(candidate.id, all_summaries),
+            **combined_summary,
+            "poolEstimate": {
+                key: value
+                for key, value in screening_summary.items()
+                if key != "byOpponent"
+            },
+            "adaptiveCombined": {
+                key: value
+                for key, value in combined_summary.items()
+                if key != "byOpponent"
+            },
+            "screeningByOpponent": screening_summary["byOpponent"],
         }
 
     await _notify(
@@ -441,19 +782,39 @@ async def run_auto_lab_gauntlet(
     variant_reports.sort(
         key=lambda item: (
             -float(item["comparison"]["deltaPercentagePoints"]),
-            -float(item["scorePercent"]),
+            -float(item.get("poolEstimate", item)["scorePercent"]),
             str(item["label"]),
         )
     )
 
-    opponent_meta = {
-        record.id: {
-            "id": record.id,
-            "label": record.description,
-            "roster": list(record.roster),
-            "archetypes": classify_archetypes(record.team_text),
-        }
-        for record in opponent_records
+    sampling = {
+        "strategy": "adaptive-two-stage",
+        "heuristic": (
+            "prevalence × severity × repeatability × confidence, con una cuota "
+            "menor de incertidumbre y diversidad de arquetipos"
+        ),
+        "screening": {
+            "opponents": len(opponent_records),
+            "battlesPerOpponent": sampling_plan.initial_battles_per_opponent,
+            "battlesPerCandidate": (
+                len(opponent_records) * sampling_plan.initial_battles_per_opponent
+            ),
+        },
+        "deepDive": {
+            "opponents": len(deep_dive_ids),
+            "additionalBattlesPerOpponent": (
+                sampling_plan.additional_battles_per_deep_dive
+            ),
+            "battlesPerCandidate": (
+                len(deep_dive_ids) * sampling_plan.additional_battles_per_deep_dive
+            ),
+            "selected": deep_dive_selection,
+        },
+        "battlesPerCandidate": sampling_plan.battles_per_candidate(
+            len(opponent_records)
+        ),
+        "selectionSource": "baseline-screening",
+        "sameTargetsAcrossCandidates": True,
     }
     audit = await asyncio.to_thread(
         build_auto_lab_audit,
@@ -463,10 +824,11 @@ async def run_auto_lab_gauntlet(
         candidate_report=baseline_report,
         opponents=opponent_meta,
         replay_root=replay_root / baseline.id,
+        sampling=sampling,
     )
 
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "benchmark": "light-mc-team-gauntlet",
         "policy": "LIGHT M-C turns deterministic; candidate Team Preview sampled",
         "previewExploration": {
@@ -474,7 +836,7 @@ async def run_auto_lab_gauntlet(
             "turnPolicyDeterministic": True,
             "seedAlignedAcrossCandidates": True,
         },
-        "battlesPerOpponent": battles_per_opponent,
+        "sampling": sampling,
         "opponents": list(opponent_meta.values()),
         "totalBattles": total_battles,
         "baseline": baseline_report,
