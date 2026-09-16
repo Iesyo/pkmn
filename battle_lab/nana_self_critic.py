@@ -180,7 +180,7 @@ def extract_observations(
     """Extract Nana outcomes while bridging only fully explained benign gaps."""
 
     materialized = list(events)
-    if actor_filter not in {"nana", None}:
+    if actor_filter != "nana":
         return critic.extract_observations(materialized, actor_filter=actor_filter)
 
     augmented, bridge_meta = _augment_with_benign_skip_bridges(materialized)
