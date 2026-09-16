@@ -299,8 +299,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.host not in {"127.0.0.1", "localhost"}:
         raise SystemExit("Battle Lab local solo puede escuchar en loopback.")
 
-    # Layer native Showdown controls above the currently installed service
-    # (plain Sparring or any Nana stage). Existing submit hooks remain intact.
+    # Layer Auto Lab and native Showdown controls above the currently installed
+    # service (plain Sparring or any Nana stage). Existing hooks remain intact.
+    from battle_lab.auto_lab_service import install_auto_lab_service
+
+    install_auto_lab_service()
     install_native_showdown_controls()
 
     runtime_root = args.runtime_root.expanduser().resolve()
