@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 
+import { WarRoomAutoLab } from "@/components/vgc/war-room-auto-lab";
 import { WarRoomSparring } from "@/components/vgc/war-room-sparring";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1170,7 +1171,12 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
         </section>
       ) : null}
 
-      {resources && workingTeam && mode === "audit" && audit ? <AuditView result={audit} /> : null}
+      {resources && workingTeam && mode === "audit" && audit ? (
+        <div className="space-y-4">
+          <AuditView result={audit} />
+          <WarRoomAutoLab team={workingTeam} corpusTeams={resources.corpus.teams} />
+        </div>
+      ) : null}
 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
