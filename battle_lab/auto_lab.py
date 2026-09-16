@@ -110,7 +110,10 @@ def summarize_candidate(candidate_id: str, summaries: Sequence[dict[str, Any]]) 
     score = summarize_vgc_bench_record(wins=wins, losses=losses, ties=ties)
     for row in by_opponent.values():
         games = int(row["games"])
-        row["scorePercent"] = round(100 * (int(row["wins"]) + 0.5 * int(row["ties"])) / games, 2) if games else 0.0
+        row["scorePercent"] = round(
+            100 * (int(row["wins"]) + 0.5 * int(row["ties"])) / games,
+            2,
+        ) if games else 0.0
     return {**score, "byOpponent": by_opponent}
 
 
@@ -149,7 +152,9 @@ def compare_with_baseline(baseline: dict[str, Any], candidate: dict[str, Any]) -
 
 
 def _preview_seed(opponent_id: str, battle_index: int) -> int:
-    digest = hashlib.sha256(f"auto-lab-preview-v2|{opponent_id}|{battle_index}".encode()).hexdigest()
+    digest = hashlib.sha256(
+        f"auto-lab-preview-v2|{opponent_id}|{battle_index}".encode()
+    ).hexdigest()
     return int(digest[:8], 16)
 
 
@@ -165,7 +170,11 @@ def _selected_preview(current_battle: Any) -> list[str]:
     for pokemon in getattr(current_battle, "team", {}).values():
         if not bool(getattr(pokemon, "selected_in_teampreview", False)):
             continue
-        species = str(getattr(pokemon, "species", "") or getattr(pokemon, "name", "") or "")
+        species = str(
+            getattr(pokemon, "species", "")
+            or getattr(pokemon, "name", "")
+            or ""
+        )
         if species and species not in output:
             output.append(species)
     return output[:4]
@@ -238,15 +247,22 @@ async def run_candidate_battles(
             player_b.update_team(pairing.beta.team_text)
             player_a.auto_lab_preview_sampling = pairing.alpha.id == candidate_id
             player_b.auto_lab_preview_sampling = pairing.beta.id == candidate_id
-            opponent_id = pairing.beta.id if pairing.alpha.id == candidate_id else pairing.alpha.id
+            opponent_id = (
+                pairing.beta.id if pairing.alpha.id == candidate_id else pairing.alpha.id
+            )
             _seed_torch(runtime, _preview_seed(opponent_id, index))
 
             previous_tags = set(player_a.battles)
             started = time.monotonic()
-            await asyncio.wait_for(player_a.battle_against(player_b, n_battles=1), timeout=timeout)
+            await asyncio.wait_for(
+                player_a.battle_against(player_b, n_battles=1),
+                timeout=timeout,
+            )
             new_tags = set(player_a.battles) - previous_tags
             if len(new_tags) != 1:
-                raise RuntimeError(f"Se esperaba una batalla y aparecieron {len(new_tags)}: {sorted(new_tags)}")
+                raise RuntimeError(
+                    f"Se esperaba una batalla y aparecieron {len(new_tags)}: {sorted(new_tags)}"
+                )
             tag = new_tags.pop()
             alpha_battle = player_a.battles[tag]
             if not alpha_battle.finished:
@@ -259,8 +275,10 @@ async def run_candidate_battles(
                 player_b.username,
             )
             summary["winnerSide"] = (
-                "alpha" if summary["winner"] == player_a.username
-                else "beta" if summary["winner"] == player_b.username
+                "alpha"
+                if summary["winner"] == player_a.username
+                else "beta"
+                if summary["winner"] == player_b.username
                 else "tie"
             )
             summary["pairing"] = {
@@ -268,7 +286,10 @@ async def run_candidate_battles(
                 "alphaTeamId": pairing.alpha.id,
                 "betaTeamId": pairing.beta.id,
             }
-            summary["players"] = {"alpha": player_a.username, "beta": player_b.username}
+            summary["players"] = {
+                "alpha": player_a.username,
+                "beta": player_b.username,
+            }
             summary["teamPreview"] = {
                 "alpha": _selected_preview(alpha_battle),
                 "beta": _selected_preview(beta_battle) if beta_battle is not None else [],
@@ -285,7 +306,10 @@ async def run_candidate_battles(
     return summaries
 
 
-async def _notify(callback: ProgressCallback | None, payload: dict[str, Any]) -> None:
+async def _notify(
+    callback: ProgressCallback | None,
+    payload: dict[str, Any],
+) -> None:
     if callback is None:
         return
     result = callback(payload)
@@ -306,40 +330,51 @@ async def run_auto_lab_gauntlet(
     replay_root: Path,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    """Evaluate baseline + full-set variants and audit the baseline empirically."""
+    """Evaluate the baseline, optional full-set variants, and audit the baseline."""
 
-    if not variants:
-        raise ValueError("Auto Lab requiere al menos una variante.")
     if len(variants) > 8:
         raise ValueError("Auto Lab admite como máximo 8 variantes por ejecución.")
     if len(opponents) > 24:
         raise ValueError("Auto Lab admite como máximo 24 rivales por ejecución.")
 
     candidate_records = [baseline.record(origin="auto-lab-baseline")]
-    candidate_records.extend(item.record(origin="auto-lab-variant") for item in variants)
-    opponent_records = [item.record(origin="auto-lab-opponent") for item in opponents]
+    candidate_records.extend(
+        item.record(origin="auto-lab-variant") for item in variants
+    )
+    opponent_records = [
+        item.record(origin="auto-lab-opponent") for item in opponents
+    ]
     ids = [record.id for record in [*candidate_records, *opponent_records]]
     if len(ids) != len(set(ids)):
         raise ValueError("Los IDs de baseline, variantes y rivales deben ser únicos.")
 
-    total_battles = len(candidate_records) * len(opponent_records) * battles_per_opponent
+    total_battles = (
+        len(candidate_records) * len(opponent_records) * battles_per_opponent
+    )
     completed_battles = 0
     reports: dict[str, dict[str, Any]] = {}
     summaries_by_candidate: dict[str, list[dict[str, Any]]] = {}
 
     for candidate_index, candidate in enumerate(candidate_records):
         all_summaries: list[dict[str, Any]] = []
-        await _notify(progress, {
-            "phase": "running",
-            "candidateId": candidate.id,
-            "candidateLabel": candidate.description,
-            "candidateIndex": candidate_index,
-            "candidateCount": len(candidate_records),
-            "completedBattles": completed_battles,
-            "totalBattles": total_battles,
-        })
+        await _notify(
+            progress,
+            {
+                "phase": "running",
+                "candidateId": candidate.id,
+                "candidateLabel": candidate.description,
+                "candidateIndex": candidate_index,
+                "candidateCount": len(candidate_records),
+                "completedBattles": completed_battles,
+                "totalBattles": total_battles,
+            },
+        )
         for opponent in opponent_records:
-            schedule = build_candidate_schedule(candidate, [opponent], battles_per_opponent=battles_per_opponent)
+            schedule = build_candidate_schedule(
+                candidate,
+                [opponent],
+                battles_per_opponent=battles_per_opponent,
+            )
             opponent_replays = replay_root / candidate.id / opponent.id
             summaries = await run_candidate_battles(
                 runtime=runtime,
@@ -352,14 +387,17 @@ async def run_auto_lab_gauntlet(
             )
             all_summaries.extend(summaries)
             completed_battles += len(summaries)
-            await _notify(progress, {
-                "phase": "running",
-                "candidateId": candidate.id,
-                "candidateLabel": candidate.description,
-                "opponentId": opponent.id,
-                "completedBattles": completed_battles,
-                "totalBattles": total_battles,
-            })
+            await _notify(
+                progress,
+                {
+                    "phase": "running",
+                    "candidateId": candidate.id,
+                    "candidateLabel": candidate.description,
+                    "opponentId": opponent.id,
+                    "completedBattles": completed_battles,
+                    "totalBattles": total_battles,
+                },
+            )
         summaries_by_candidate[candidate.id] = all_summaries
         reports[candidate.id] = {
             "id": candidate.id,
@@ -371,7 +409,12 @@ async def run_auto_lab_gauntlet(
     variant_reports: list[dict[str, Any]] = []
     for variant in variants:
         report = reports[variant.id]
-        variant_reports.append({**report, "comparison": compare_with_baseline(baseline_report, report)})
+        variant_reports.append(
+            {
+                **report,
+                "comparison": compare_with_baseline(baseline_report, report),
+            }
+        )
     variant_reports.sort(
         key=lambda item: (
             -float(item["comparison"]["deltaPercentagePoints"]),
@@ -414,7 +457,8 @@ async def run_auto_lab_gauntlet(
         "variants": variant_reports,
         "bestVariantId": (
             variant_reports[0]["id"]
-            if variant_reports and variant_reports[0]["comparison"]["verdict"] == "improved"
+            if variant_reports
+            and variant_reports[0]["comparison"]["verdict"] == "improved"
             else None
         ),
         "audit": audit,
