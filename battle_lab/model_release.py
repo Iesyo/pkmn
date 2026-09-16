@@ -14,6 +14,7 @@ from pathlib import Path
 from battle_lab.mc_training import atomic_json, sha256_file, utc_now
 
 MANIFEST = Path(__file__).with_suffix(".json")
+DEFAULT_MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
 ACTIVE_NAME = "step-000196608.zip"  # Keep existing ROG launch commands compatible.
 DEFAULT_ROOT = Path.home() / ".local" / "share" / "like-no-one-ever-was" / "battle-lab"
 
@@ -67,11 +68,19 @@ def copy_verified(source: Path, target: Path, digest: str) -> None:
         partial.unlink(missing_ok=True)
 
 
-def find_download(spec: dict, folder: Path) -> Path:
-    for path in sorted(folder.glob(Path(spec["fileName"]).stem + "*.zip")):
+def find_model(spec: dict, folder: Path) -> Path:
+    """Find reviewed bytes in the project's drop folder, regardless of ZIP name."""
+    folder = folder.expanduser().resolve()
+    paths = []
+    if folder.is_dir():
+        paths = sorted((path for path in folder.iterdir() if path.is_file() and path.suffix.lower() == ".zip"),
+                       key=lambda path: (path.name != spec["fileName"], path.name))
+    for path in paths:
         if path.stat().st_size == spec["bytes"] and sha256_file(path) == spec["sha256"]:
             return path
-    raise RuntimeError(f"Descarga {spec['fileName']} en {folder}, o indica --source. Enlace: {spec['downloadUrl']}")
+    detail = "Los ZIP encontrados no coinciden en tamaño o SHA-256. " if paths else "No hay archivos ZIP. "
+    raise RuntimeError(f"{detail}Coloca {spec['fileName']} sin descomprimir en {folder}, "
+                       f"o indica --source. Enlace: {spec['downloadUrl']}")
 
 
 def install_release(source: Path, runtime_root: Path, spec: dict) -> dict:
@@ -169,21 +178,25 @@ def main(argv=None) -> int:
     parser.add_argument("action", choices=("install", "rollback", "verify"))
     parser.add_argument("--runtime-root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--source", type=Path)
-    parser.add_argument("--downloads", type=Path, default=Path.home() / "Downloads")
+    parser.add_argument("--models-dir", "--downloads", dest="models_dir", type=Path, default=DEFAULT_MODELS_DIR,
+                        help="Carpeta de ZIP; por defecto, models/ dentro del proyecto.")
     parser.add_argument("--service-url", default="http://127.0.0.1:8765")
     args = parser.parse_args(argv)
-    if args.action == "verify":
-        result = verify_running_model(args.runtime_root, args.service_url)
-        print("Modelo activo verificado: " + result["expectedSha256"], flush=True)
-    else:
-        require_stopped(args.service_url)
-        spec = release_spec()
-        result = (rollback(args.runtime_root) if args.action == "rollback" else
-                  install_release(args.source or find_download(spec, args.downloads), args.runtime_root, spec))
-        print("Instalado: " + result["label"] + " · " + result["sha256"], flush=True)
-        if result.get("previous"):
-            print("Respaldo: " + result["previous"]["checkpoint"], flush=True)
-        print("Reinicia tu runtime habitual: la ruta --checkpoint se conserva. Después ejecuta model_release verify.", flush=True)
+    try:
+        if args.action == "verify":
+            result = verify_running_model(args.runtime_root, args.service_url)
+            print("Modelo activo verificado: " + result["expectedSha256"], flush=True)
+        else:
+            require_stopped(args.service_url)
+            spec = release_spec()
+            result = (rollback(args.runtime_root) if args.action == "rollback" else
+                      install_release(args.source or find_model(spec, args.models_dir), args.runtime_root, spec))
+            print("Instalado: " + result["label"] + " · " + result["sha256"], flush=True)
+            if result.get("previous"):
+                print("Respaldo: " + result["previous"]["checkpoint"], flush=True)
+            print("Reinicia tu runtime habitual: la ruta --checkpoint se conserva. Después ejecuta model_release verify.", flush=True)
+    except (RuntimeError, OSError, zipfile.BadZipFile) as error:
+        parser.exit(1, f"Error: {error}\n")
     return 0
 
 
