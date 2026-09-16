@@ -1,14 +1,14 @@
 # Battle Lab: ciclo periódico M-C
 
 `colab/Battle_Lab_MC_Refresh.ipynb` reúne la actualización de datos, BC condicional,
-PPO y comparación champion/candidato. Deriva del patrón operativo 40_017 v3 y
+PPO y evaluación directa del candidato. Deriva del patrón operativo 40_017 v3 y
 reutiliza los runners LIGHT v3 y holdout ya empleados por Battle Lab.
 
 ## Ejecutar
 
 Abrir el notebook en Colab, elegir GPU y ejecutar todas las celdas. El valor por
-defecto es LIGHT: 196.608 pasos adicionales y 500 batallas por control/modelo,
-3.000 en total. NORMAL añade 786.432 pasos; HARD añade 3.145.728. CENSUS termina
+defecto es LIGHT: 196.608 pasos adicionales y 500 batallas directas por rival,
+1.500 en total (productivo, VGC-Bench base y Simple Heuristics). NORMAL añade 786.432 pasos; HARD añade 3.145.728. CENSUS termina
 después de convertir las partidas y no entrena ni evalúa.
 
 Requiere el LIGHT M-C histórico y su split, conservados bajo
@@ -51,7 +51,7 @@ El piloto usa una **corrida nueva**, LIGHT, con `BC_MIN_TRANSITIONS=9500`.
 El ciclo vuelve a recoger novedades, aplica los filtros y registra el umbral en
 su configuración inmutable; no transforma la corrida previa de self-play ni sus
 resultados. La fase BC aprende tres épocas y después sigue PPO y el benchmark.
-La comparación sigue siendo frente al champion vigente; esta corrida no es una
+El piloto histórico se comparó indirectamente con el champion; esa corrida no es una
 ablación aislada del efecto humano frente al candidato anterior de 76,20%.
 
 BC adapta los lotes a los bloques disponibles y utiliza todas sus transiciones,
@@ -117,25 +117,66 @@ rollout y al terminar. Se excluyen checkpoints incompletos mediante SHA-256.
 La reanudación conserva los pesos/progreso; no promete reproducir exactamente
 la secuencia aleatoria de entornos y batallas de una ejecución ininterrumpida.
 
+## Evaluación directa: productivo, base y Simple Heuristics
+
+Los ciclos nuevos usan `direct-v1`: el candidato se enfrenta a tres rivales:
+
+- **Productivo**: LIGHT M-C documentado, SHA-256 `fa8687d08feeb169f4eb4f4a078b65971346e2ef5b0ca0ff899e811721075759`.
+- **Base**: checkpoint público VGC-Bench BC, revisión `204c76741829ca0681629e41382043c385850d5c`, SHA-256 `57f5edcab415cf6ccc1b6231923c8b66d3b1b7249b6b2562b97531471e4ca60b`.
+- **Simple Heuristics**: `SimpleHeuristicsPlayer` del fork de poke-env fijado.
+
+La referencia productiva se resuelve independientemente de `champion.json`:
+`PRODUCTION_CHECKPOINT` y `PRODUCTION_SHA256` juntos, después `Refresh/production.json`
+si existe (campos `id`, `checkpoint`, `sha256`, `format`), y finalmente el LIGHT
+histórico. Seleccionar un champion de entrenamiento no cambia esta referencia.
+Se comprueban los bytes antes de jugar. Es la política productiva documentada;
+no consulta la ROG ni evalúa la memoria/adaptación personal de Nana.
+
+Cada rival recibe las mismas parejas de equipos holdout. En la segunda partida
+se intercambian las políticas, de modo que el candidato juega ambos equipos y
+lados. Los modelos controlan Team Preview; Simple Heuristics conserva el preview
+del fork. Las decisiones de política son deterministas; el RNG de Showdown es
+independiente. `BATTLES_PER_CONTROL=500` ahora significa 500 por rival: 1.500 en total.
+
+Para evaluar pesos ya guardados, usar **`RUN_ACTION="direct_evaluation"`** y el
+`RUN_ID` deseado (vacío usa la corrida activa). No recoge datos ni entrena otra vez.
+Verifica los hashes y versiones originales y ejecuta solo preparación/evaluación.
+Conserva `config.json`, fases, estado e informe originales. El informe nuevo queda
+en `runs/<RUN_ID>/direct_evaluation/report.txt`, `report.json` y `comparison.csv`;
+`Refresh/latest_direct_run.txt` y `latest_direct_result.json` lo señalan.
+
+Los resultados, bloques y replays están en
+`runs/<RUN_ID>/evaluation/direct-v1/<identidad>/`, con carpetas
+`replays/production/`, `replays/base/` y `replays/simple-heuristics/`.
+Los `.html` se descargan y abren en el navegador. Cada partida del informe incluye
+el archivo correspondiente; una interrupción puede dejar replays adicionales de
+un bloque incompleto que no se cuentan en el resultado. Solo se reanudan bloques
+completos de 20 partidas, validando agenda, pesos, corpus, código y runtime.
+Los cambios de contrato crean otra carpeta; nunca reutilizan resultados incompatibles.
+
 ## Interpretar y seleccionar
 
-Champion y candidato juegan la misma agenda espejada contra Random, Max Base
-Power y Simple Heuristics. Cada bloque reutilizado identifica modelo, agenda y
-runtime. El gate heredado exige mejorar contra Simple Heuristics y no retroceder
-en el score global equiponderado. Los empates cuentan medio punto.
+La métrica principal es el score directo contra producción (victoria=1, empate=0.5).
+El gate descriptivo marca ventaja observada si supera 50%. Base y Simple Heuristics
+se informan por separado: no se promedian rivales distintos para afirmar mejora.
+Las corridas históricas conservan su protocolo de comparación indirecta contra
+Random, Max Base Power y Simple Heuristics y su gate original. `recover_evaluation`
+recupera ese protocolo; `direct_evaluation` genera la nueva prueba por separado.
 
 `MEJORA_OBSERVADA` es una comparación descriptiva: Showdown mantiene RNG
 independiente entre modelos y el gate no demuestra significancia estadística ni
 nivel contra jugadores humanos. Al reutilizar el grupo reservado para seleccionar
-modelos, pasa a actuar como validación. El informe separa la muestra de equipos
-recién reservados; puede ser pequeña o no existir.
+modelos, pasa a actuar como validación. El benchmark histórico separa la muestra de equipos
+recién reservados; puede ser pequeña o no existir. El directo informa el número
+de equipos holdout reutilizados y no los presenta como una muestra inédita.
 
 Cada ejecución conserva `report.txt`, `report.json`, `comparison.csv`, checkpoints,
 chunks y replays sin empaquetarlos. `Refresh/latest_run.txt` y `latest_result.json`
 apuntan al último resultado completo. Los checkpoints SB3 usan su formato ZIP
 nativo; no se generan bundles ZIP de resultados.
 
-La celda final está desactivada por defecto. Activarla después de revisar un PASS
+La celda final está desactivada por defecto. Tras una evaluación directa usa su
+informe nuevo, no el resultado histórico, para la selección explícita. Activarla después de revisar un PASS
 selecciona explícitamente el candidato como champion del siguiente ciclo, siempre
 que el champion de referencia no haya cambiado. Registra padre y ejecución en
 `promotion.json`. La instalación en ROG y el uso por Nana son pasos separados.
@@ -148,5 +189,5 @@ de páginas, contratos de reanudación, hashes, informes y selección explícita
 Se comprueba también la sintaxis de todas las celdas y los tests existentes de
 LIGHT v2/v3, entrenamiento, split, censo extendido y benchmark.
 
-El entrenamiento y las 3.000 batallas de este nuevo ciclo deben ejecutarse en
+El entrenamiento y las 1.500 batallas directas del nuevo protocolo se ejecutan en
 Colab. Las pruebas locales no constituyen un resultado de calidad del candidato.
