@@ -50,6 +50,15 @@ No se conoce todo el corpus de entrenamiento del checkpoint público antecesor.
 
 ## Reanudación y recursos
 
+Colab puede mostrar avisos de pip por incompatibilidades con sus paquetes
+preinstalados Transformers, Gradio, Diffusers o Google ADK. Este ciclo no los usa.
+El fork fijado de poke-env exige websockets 16 y el stack validado conserva
+huggingface_hub 0.36.2. No cambiar esas versiones mientras corre el entrenamiento.
+Una instalación que termina correctamente y pasa las pruebas estructurales aún
+no confirma el runtime de entrenamiento: al iniciar el ciclo se importan las
+librerías reales y se comprueba una operación mínima NumPy/PyTorch en el
+dispositivo elegido. Si falla, el error se propaga antes de recoger datos.
+
 `RUN_ACTION="auto"` reanuda una ejecución pendiente compatible o empieza una
 nueva si la anterior terminó. `new` inicia otro ciclo; `resume` exige uno pendiente.
 `RUN_ID` permite señalar una ejecución concreta. La libreta carga el commit exacto
