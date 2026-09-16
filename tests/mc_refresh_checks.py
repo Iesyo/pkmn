@@ -35,6 +35,48 @@ class RefreshChecks(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
+    def test_human_pilot_keeps_quality_gate_and_freezes_its_threshold(self):
+        self.assertFalse(pipeline.bc_data_gate(1056, 9695)["bcEligible"])
+        self.assertTrue(pipeline.bc_data_gate(1056, 9695, 9500)["bcEligible"])
+        self.assertFalse(pipeline.bc_data_gate(999, 9695, 9500)["bcEligible"])
+        self.assertFalse(pipeline.bc_data_gate(1056, 9499, 9500)["bcEligible"])
+        with self.assertRaises(ValueError):
+            pipeline.bc_data_gate(1056, 9695, 1)
+        config = {"codeSha": "pilot", "bcMinTransitions": 9500}
+        run = pipeline.select_run(self.root, config)
+        with self.assertRaisesRegex(RuntimeError, "configuración"):
+            pipeline.select_run(self.root, {**config, "bcMinTransitions": 10000}, run_id=run.name)
+        self.assertEqual(data.read_json(run / "config.json"), config)
+
+    def test_bc_small_and_uneven_blocks_use_every_example_without_oversized_batches(self):
+        from battle_lab.mc_training import train_bc_block
+        class Learner:
+            batch_size = minibatch_size = 1024
+            def __init__(self):
+                self.trained, self.sizes = [], []
+            def set_demonstrations(self, transitions):
+                if len(transitions) < self.minibatch_size:
+                    raise ValueError("fewer transitions than batch size")
+                self.current = transitions
+            def train(self, n_epochs):
+                self.assert_complete_batch = len(self.current) == self.batch_size == self.minibatch_size
+                if not self.assert_complete_batch or n_epochs != 1:
+                    raise AssertionError("lost tail or repeated epoch")
+                self.trained.extend(self.current)
+                self.sizes.append(len(self.current))
+        # This mirrors the failure in imitation's pinned make_data_loader.
+        learner = Learner()
+        with self.assertRaises(ValueError):
+            learner.set_demonstrations(list(range(987)))
+        for count in (1, 987, 1024, 1025, 2049, 9695):
+            learner = Learner()
+            stats = train_bc_block(learner, list(range(count)))
+            self.assertEqual(learner.trained, list(range(count)))
+            self.assertEqual(stats["transitions"], count)
+            self.assertTrue(all(0 < n <= 1024 for n in learner.sizes))
+        with self.assertRaises(ValueError):
+            train_bc_block(Learner(), [])
+
     def legacy(self):
         source = self.root / "legacy"
         manifest = {"signatureLeakage": 0}
