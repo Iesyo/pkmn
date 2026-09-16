@@ -40,8 +40,23 @@ Un archivo ZIP más reciente no cambia esa selección.
    ganador, rating ≥1.200 y deduplicación antes de convertir las trayectorias.
    También se registran las firmas vistas en partidas para impedir que pasen
    después del entrenamiento humano a la evaluación mediante un nuevo paste.
-5. Ejecutar BC solo con ≥1.000 trayectorias y ≥10.000 transiciones elegibles.
+5. Ejecutar BC con ≥1.000 trayectorias y el mínimo de transiciones elegido.
+   `BC_MIN_TRANSITIONS=9500` habilita el primer piloto humano solicitado con el
+   corpus cercano al mínimo anterior (1.056 trayectorias / 9.695 transiciones).
+   `10000` mantiene el criterio estándar. Ambos son umbrales operativos, sin
+   garantía de calidad; no se rebajan rating, ganador ni exclusión del holdout.
    Con menos datos, el candidato parte directamente del champion para PPO.
+
+El piloto usa una **corrida nueva**, LIGHT, con `BC_MIN_TRANSITIONS=9500`.
+El ciclo vuelve a recoger novedades, aplica los filtros y registra el umbral en
+su configuración inmutable; no transforma la corrida previa de self-play ni sus
+resultados. La fase BC aprende tres épocas y después sigue PPO y el benchmark.
+La comparación sigue siendo frente al champion vigente; esta corrida no es una
+ablación aislada del efecto humano frente al candidato anterior de 76,20%.
+
+BC adapta los lotes a los bloques disponibles y utiliza todas sus transiciones,
+incluidos bloques menores de 1.024 y los restos. Cada época registra las
+transiciones utilizadas y conserva estado del optimizador y checkpoint.
 
 Los archivos usados por fases completas llevan hashes. Cada ejecución mantiene
 su copia de pastes, logs, split y trayectorias. Cambiar esos datos bloquea su
