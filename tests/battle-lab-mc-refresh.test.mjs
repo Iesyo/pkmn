@@ -26,12 +26,12 @@ with tempfile.TemporaryDirectory() as temp:
     (refresh/'active_run.json').write_text(json.dumps({'runId': 'saved-run'}))
     (run/'config.json').write_text(json.dumps({'codeSha': 'training-sha'}))
     (run/'status.json').write_text(json.dumps({'state': 'failed'}))
-    for action in ('auto', 'resume', 'recover_evaluation'):
+    for action in ('auto', 'resume', 'recover_evaluation', 'direct_evaluation'):
         for selected in ('', 'saved-run'):
             scope = dict(json=json, re=re, REFRESH=refresh, RUN_ID=selected,
                          RUN_ACTION=action, PKMN_REF='fixed-branch')
             exec(bootstrap, scope)
-            assert scope['source_ref'] == ('fixed-branch' if action == 'recover_evaluation' else 'training-sha')
+            assert scope['source_ref'] == ('fixed-branch' if action in ('recover_evaluation', 'direct_evaluation') else 'training-sha')
     calls = []
     scope = dict(sys=sys, ROOT=refresh, REPO=refresh, RUN_ID='saved-run',
                  RUN_ACTION='recover_evaluation', run=lambda command, cwd: calls.append(command))
@@ -39,6 +39,13 @@ with tempfile.TemporaryDirectory() as temp:
     exec(''.join(nb['cells'][5]['source']), scope)
     assert calls == [[sys.executable, '-u', '-m', 'battle_lab.mc_refresh', '--root', refresh,
                       '--recover-evaluation', '--run-id', 'saved-run']]
+    scope.update(RUN_ACTION='direct_evaluation', BATTLES_PER_CONTROL=500,
+                 PRODUCTION_CHECKPOINT='', PRODUCTION_SHA256='')
+    exec(''.join(nb['cells'][5]['source']), scope)
+    command = calls[-1]
+    assert '--direct-evaluation' in command and '--mode' not in command
+    assert command[command.index('--battles') + 1] == 500
+    assert command[-2:] == ['--run-id', 'saved-run']
 `], { cwd: root, encoding: "utf8" });
 });
 
