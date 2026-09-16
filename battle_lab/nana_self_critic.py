@@ -199,7 +199,9 @@ def extract_observations(
                     other["index"] > item["index"] for other in model_turns
                 )
                 later_human_prompt = any(
-                    prompt["index"] > item["index"] for prompt in prompts
+                    prompt["index"] > item["index"]
+                    and int(prompt.get("generation") or 0) > current_generation
+                    for prompt in prompts
                 )
                 end = bundle.get("end")
                 if (
