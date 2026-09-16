@@ -233,7 +233,7 @@ test("Audit renders visual evidence while Sparring stays manual", () => {
   assert.match(ui, /SpriteStrip/);
   assert.match(ui, /Matchups favorables/);
   assert.match(ui, /Matchups duros/);
-  assert.match(ui, /Ranking de rivales problemáticos/);
+  assert.doesNotMatch(ui, /Ranking de rivales problemáticos/);
   assert.match(ui, /Leads propios/);
   assert.match(ui, /Uso del roster/);
   assert.match(ui, /Pokémon rivales ligados a derrotas/);
