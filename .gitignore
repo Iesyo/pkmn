@@ -44,6 +44,10 @@ next-env.d.ts
 /.battle-lab-runtime/
 .venv-battle-lab/
 
+# Local model drop folder; keep instructions, never checkpoint weights.
+/models/*
+!/models/README.md
+
 # python
 __pycache__/
 *.py[cod]
