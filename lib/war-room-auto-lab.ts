@@ -36,7 +36,7 @@ const AUTO_LAB_SOURCES = ["tournament", "scouting-library", "vgcpastes"] as cons
 
 type AutoLabSource = (typeof AUTO_LAB_SOURCES)[number];
 
-function clonePokemon(team: PokemonSet[]) {
+function clonePokemon(team: PokemonSet[]): PokemonSet[] {
   return team.map((set) => ({
     ...set,
     mechanics: set.mechanics ? { ...set.mechanics } : undefined,
@@ -62,6 +62,42 @@ function stableHash(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function rosterSignature(team: WarRoomCorpusTeam) {
+  const roster = team.pokemon
+    .map((species) => species.trim().toLowerCase().replace(/[^a-z0-9]+/g, ""))
+    .filter(Boolean)
+    .sort();
+  return roster.length ? roster.join("|") : `unknown:${team.id}`;
+}
+
+function selectRosterDiverse(ordered: WarRoomCorpusTeam[], limit: number) {
+  const output: WarRoomCorpusTeam[] = [];
+  const selected = new Set<string>();
+  const rosterCounts = new Map<string, number>();
+
+  // First maximize distinct rosters, then allow a second build of the same six.
+  for (const rosterCap of [1, 2]) {
+    for (const team of ordered) {
+      if (output.length >= limit) return output;
+      if (selected.has(team.id)) continue;
+      const signature = rosterSignature(team);
+      if ((rosterCounts.get(signature) ?? 0) >= rosterCap) continue;
+      output.push(team);
+      selected.add(team.id);
+      rosterCounts.set(signature, (rosterCounts.get(signature) ?? 0) + 1);
+    }
+  }
+
+  // Preserve availability when a small corpus contains many copies of one roster.
+  for (const team of ordered) {
+    if (output.length >= limit) break;
+    if (selected.has(team.id)) continue;
+    output.push(team);
+    selected.add(team.id);
+  }
+  return output;
 }
 
 function applySetPackage(team: PokemonSet[], suggestion: WarRoomSetSuggestion) {
@@ -189,33 +225,23 @@ export function selectAutoLabOpponentCandidates(
     );
   }
 
-  const output: WarRoomCorpusTeam[] = [];
+  const ordered: WarRoomCorpusTeam[] = [];
   const seen = new Set<string>();
   let cursor = 0;
-  while (output.length < limit) {
+  while (true) {
     let added = false;
     for (const source of AUTO_LAB_SOURCES) {
       const team = buckets.get(source)?.[cursor];
       if (!team || seen.has(team.id)) continue;
-      output.push(team);
+      ordered.push(team);
       seen.add(team.id);
       added = true;
-      if (output.length >= limit) break;
     }
     if (!added) break;
     cursor += 1;
   }
 
-  if (output.length < limit) {
-    const leftovers = autoLabCorpusCandidates(teams)
-      .filter((team) => !seen.has(team.id))
-      .sort((left, right) => stableHash(`${seedKey}|all|${left.id}`) - stableHash(`${seedKey}|all|${right.id}`));
-    for (const team of leftovers) {
-      output.push(team);
-      if (output.length >= limit) break;
-    }
-  }
-  return output;
+  return selectRosterDiverse(ordered, limit);
 }
 
 function autoLabDateValue(value: string) {
@@ -228,7 +254,7 @@ export function selectAutoLabRecentVgcPastesCandidates(
   limit: number,
 ) {
   if (limit <= 0) return [];
-  return teams
+  const recent = teams
     .map((team, index) => ({ team, index, sharedAt: autoLabDateValue(team.dateShared) }))
     .filter(({ team, sharedAt }) =>
       !team.historical
@@ -241,6 +267,6 @@ export function selectAutoLabRecentVgcPastesCandidates(
       || left.index - right.index
       || left.team.id.localeCompare(right.team.id),
     )
-    .slice(0, limit)
     .map(({ team }) => team);
+  return selectRosterDiverse(recent, limit);
 }
