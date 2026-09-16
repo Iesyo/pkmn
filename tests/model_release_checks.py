@@ -1,9 +1,11 @@
 """Checkpoint installation safety without loading a policy or requiring CUDA."""
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +28,7 @@ class ModelReleaseChecks(unittest.TestCase):
             "id": "new-release", "label": "New model", "format": "test-format",
             "sha256": release.sha256_file(self.source), "bytes": self.source.stat().st_size,
             "fileName": self.source.name, "downloadUrl": "https://example.test/model",
+            "previous": {"id": "old-release", "label": "Old model", "sha256": self.old_sha},
         }
 
     @staticmethod
@@ -92,11 +95,43 @@ class ModelReleaseChecks(unittest.TestCase):
     def test_download_suffix_is_accepted_and_stale_receipt_is_rejected(self):
         renamed = self.source.with_name("candidate (1).zip")
         self.source.rename(renamed)
-        self.assertEqual(release.find_download(self.spec, self.root), renamed)
+        self.assertEqual(release.find_model(self.spec, self.root), renamed)
         release.install_release(renamed, self.runtime, self.spec)
         self.make_zip(self.active, "unverified replacement")
         with self.assertRaisesRegex(RuntimeError, "cambió"):
             release.checkpoint_identity(self.active, release.sha256_file(self.active))
+
+    def test_native_filename_is_selected_by_hash_among_other_zips(self):
+        renamed = self.source.with_name("step-000196608.ZIP")
+        self.source.rename(renamed)
+        self.make_zip(self.source, "old weights")
+        (self.root / "directory.zip").mkdir()
+        self.assertEqual(release.find_model(self.spec, self.root), renamed)
+        renamed.unlink()
+        with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+            release.find_model(self.spec, self.root)
+        self.assertEqual(release.sha256_file(self.active), self.old_sha)
+
+    def test_cli_uses_project_models_from_another_working_directory(self):
+        models = self.root / "project" / "models"
+        models.mkdir(parents=True)
+        previous_cwd = Path.cwd()
+        self.addCleanup(os.chdir, previous_cwd)
+        os.chdir(self.root)
+        with patch.object(release, "DEFAULT_MODELS_DIR", models), \
+             patch.object(release, "release_spec", return_value=self.spec), \
+             patch.object(release, "require_stopped"), \
+             redirect_stdout(io.StringIO()):
+            errors = io.StringIO()
+            with redirect_stderr(errors), self.assertRaises(SystemExit) as result:
+                release.main(["install", "--runtime-root", str(self.runtime)])
+            self.assertEqual(result.exception.code, 1)
+            self.assertIn(str(models), errors.getvalue())
+            self.assertNotIn("Traceback", errors.getvalue())
+            self.assertEqual(release.sha256_file(self.active), self.old_sha)
+            self.source.rename(models / "step-000196608.zip")
+            self.assertEqual(release.main(["install", "--runtime-root", str(self.runtime)]), 0)
+        self.assertEqual(release.sha256_file(self.active), self.spec["sha256"])
 
     def test_live_verification_rejects_old_hash_and_records_loaded_model(self):
         release.install_release(self.source, self.runtime, self.spec)
