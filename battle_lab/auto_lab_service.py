@@ -10,9 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -38,7 +36,7 @@ class AutoLabTeamPayload(BaseModel):
 
 class StartAutoLabRequest(BaseModel):
     baseline: AutoLabTeamPayload
-    variants: list[AutoLabTeamPayload] = Field(min_length=1, max_length=MAX_VARIANTS)
+    variants: list[AutoLabTeamPayload] = Field(default_factory=list, max_length=MAX_VARIANTS)
     opponents: list[AutoLabTeamPayload] = Field(min_length=1, max_length=MAX_OPPONENTS)
     battlesPerOpponent: int = Field(
         default=DEFAULT_BATTLES_PER_OPPONENT,
@@ -82,7 +80,6 @@ def _frozen_light_runtime(runtime: Any) -> battle.ModelRuntime:
         None,
     )
     if light_class is None:
-        # Plain local runtime already exposes the canonical class directly.
         if player_class.__name__ == "BattleLabPolicyPlayer":
             light_class = player_class
         else:
@@ -199,7 +196,7 @@ def install_auto_lab_service() -> type:
             light_runtime = _frozen_light_runtime(self.runtime)
             job.phase = "running"
             job.append_event(
-                f"Gauntlet listo: {1 + len(job.request.variants)} Teams × {len(job.request.opponents)} rivales."
+                f"Gauntlet listo: baseline + {len(job.request.variants)} sets candidatos × {len(job.request.opponents)} rivales."
             )
 
             async def progress(payload: dict[str, Any]) -> None:
@@ -230,9 +227,12 @@ def install_auto_lab_service() -> type:
             job.result = result
             job.phase = "completed"
             best = result.get("bestVariantId")
-            job.append_event(
-                f"Gauntlet terminado · mejor variante: {best}." if best else "Gauntlet terminado · ninguna variante superó el baseline."
-            )
+            if best:
+                job.append_event(f"Auditoría terminada · mejor set candidato: {best}.")
+            elif job.request.variants:
+                job.append_event("Auditoría terminada · ningún set candidato superó el baseline.")
+            else:
+                job.append_event("Auditoría del baseline terminada · no había sets alternativos que comparar.")
         except asyncio.CancelledError:
             job.phase = "cancelled"
             job.append_event("Gauntlet cancelado.")
