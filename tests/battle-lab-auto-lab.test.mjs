@@ -32,6 +32,18 @@ test("Auto Lab balances sides, samples only candidate Team Preview and audits th
   execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
 
+test("empirical audit remains runnable even when no alternate full set exists", () => {
+  const source = fs.readFileSync(core, "utf8");
+  const api = fs.readFileSync(service, "utf8");
+  const ui = fs.readFileSync(panelV2, "utf8");
+
+  assert.doesNotMatch(source, /Auto Lab requiere al menos una variante/);
+  assert.match(api, /variants: list\[AutoLabTeamPayload\] = Field\(default_factory=list/);
+  assert.doesNotMatch(ui, /!preparation\.variants\.length/);
+  assert.match(ui, /La auditoría del Team actual sí puede ejecutarse/);
+  assert.match(ui, /Esta ronda fue solo auditoría del baseline/);
+});
+
 test("Auto Lab replay audit exposes the requested empirical dimensions with cautious wording", () => {
   const source = fs.readFileSync(audit, "utf8");
   for (const key of [
@@ -103,6 +115,7 @@ test("War Room surfaces the full empirical audit under Audit while Sparring stay
   assert.match(ui, /Matchups más duros/);
   assert.match(ui, /Ranking de rivales problemáticos/);
   assert.match(ui, /Leads que mejor funcionan/);
+  assert.match(ui, /Selección del roster/);
   assert.match(ui, /Pokémon casi nunca seleccionados/);
   assert.match(ui, /Pokémon rivales asociados a derrotas/);
   assert.match(ui, /Cores \/ leads rivales asociados a derrotas/);
