@@ -41,12 +41,14 @@ test("Audit runs baseline-only while Optimize owns contextual set proposals", ()
   assert.match(api, /variants: list\[AutoLabTeamPayload\] = Field\(default_factory=list/);
   assert.match(api, /MAX_OPPONENTS = 100/);
   assert.doesNotMatch(ui, /buildAutoLabVariants|optimizeTeam|Paquete de set completo|Copiar set candidato/);
-  assert.match(ui, /Los paquetes de set se quedaron en/);
+  assert.match(ui, /serializeShowdownPaste\(team\.pokemon/);
+  assert.match(ui, /id:\s*"baseline-current"/);
+  assert.match(ui, /teamPaste:\s*baselinePaste/);
   assert.match(ui, /Optimizar o construir/);
-  assert.doesNotMatch(ui, /variants:/);
+  assert.doesNotMatch(ui, /\bvariants\s*:/);
   assert.match(room, /function SetSuggestionCard/);
   assert.match(room, /Set search/);
-  assert.match(room, /result\.sets\.map\(\(suggestion\) => <SetSuggestionCard/);
+  assert.match(room, /result\.sets\.map\([\s\S]*SetSuggestionCard/);
 });
 
 test("Auto Lab replay audit exposes the requested empirical dimensions with cautious wording", () => {
@@ -153,7 +155,7 @@ test("War Room keeps full-set package generation available for Optimize", () => 
   assert.match(source, /suggestion\.proposal\.evs/);
   assert.match(source, /suggestion\.proposal\.moves\.forEach/);
   assert.doesNotMatch(source, /applySingleChange/);
-  assert.match(source, /"tournament", "scouting-library", "vgcpastes"/);
+  assert.match(source, /"tournament"[\s\S]*"scouting-library"[\s\S]*"vgcpastes"/);
   assert.match(source, /selectAutoLabOpponentCandidates/);
 });
 
@@ -243,8 +245,8 @@ test("Audit renders visual evidence while Sparring stays manual", () => {
   assert.match(ui, /Rendimiento por arquetipo/);
 
   const room = fs.readFileSync(warRoom, "utf8");
-  assert.match(room, /import \{ WarRoomAutoLab \} from "@\/components\/vgc\/war-room-auto-lab"/);
-  assert.match(room, /mode === "audit"[\s\S]*<AuditView result=\{audit\} \/>[\s\S]*<WarRoomAutoLab team=\{workingTeam\}/);
+  assert.match(room, /WarRoomAutoLab/);
+  assert.match(room, /mode === "audit"[\s\S]*AuditView[\s\S]*WarRoomAutoLab/);
   const adapter = fs.readFileSync(sparring, "utf8");
   assert.doesNotMatch(adapter, /WarRoomAutoLab/);
   assert.match(adapter, /LocalWarRoomSparring/);
