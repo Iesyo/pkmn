@@ -48,6 +48,14 @@ LABELS = {"prepare": "Preparar motores fijados", "teams": "Actualizar pastes",
           "rl": "PPO/self-play", "evaluate": "Comparar con el champion"}
 
 
+def bc_data_gate(trajectories: int, transitions: int, minimum_transitions: int = 10000) -> dict:
+    if minimum_transitions not in (9500, 10000):
+        raise ValueError("El mínimo BC debe ser 9500 (piloto) o 10000 (estándar).")
+    return {"bcEligible": trajectories >= 1000 and transitions >= minimum_transitions,
+            "bcMinimumTrajectories": 1000, "bcMinimumTransitions": minimum_transitions,
+            "bcDataPolicy": "pilot_9500" if minimum_transitions == 9500 else "standard_10000"}
+
+
 def git_sha(root: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 
@@ -210,11 +218,13 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
                                                      num_workers=workers, min_rating=1200, only_winner=True)
         return artifact_result(run / "human" / "trajs_manifest.json", **result,
                                files=(run / "human" / "trajs").glob("*.pkl"),
-                               bcEligible=result["trajectories"] >= 1000 and result["transitions"] >= 10000)
+                               **bc_data_gate(result["trajectories"], result["transitions"],
+                                              config.get("bcMinTransitions", 10000)))
     if stage == "bc":
         human = read_json(run / "phases" / "trajectories.json")
         if not human["bcEligible"]:
-            return {"state": "skipped", "reason": "Insufficient eligible human demonstrations (1000 trajectories/10000 transitions).",
+            minimum = human.get("bcMinimumTransitions", 10000)
+            return {"state": "skipped", "reason": f"Insufficient eligible human demonstrations (1000 trajectories/{minimum} transitions).",
                     **config["champion"]}
         split = read_json(run / "split" / "split_manifest.json")
         training.install_mc_teams(vgc, run / "split" / "train")
@@ -225,7 +235,9 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
             num_workers=workers,
             initial_checkpoint=Path(config["champion"]["checkpoint"]), initial_sha256=config["champion"]["sha256"])
         return artifact_result(Path(result["finalCheckpoint"]), state="completed",
-                               checkpoint=result["finalCheckpoint"], sha256=result["finalCheckpointSha256"])
+                               checkpoint=result["finalCheckpoint"], sha256=result["finalCheckpointSha256"],
+                               epochs=result["epochs"], trainingHistory=result["history"],
+                               dataPolicy=human.get("bcDataPolicy", "standard_10000"))
     if stage == "rl":
         from battle_lab import mc_rl_light_v2 as runner
         runner.extend_mc_runtime_catalogs = alias_mc_runtime_catalogs
@@ -328,7 +340,8 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
              f"Equipos train / holdout: {phases['split']['trainTeams']} / {phases['split']['holdoutTeams']}",
              f"Equipos holdout recién reservados: {phases['split']['freshHoldoutTeams']}",
              f"Trayectorias / transiciones elegibles: {phases['trajectories']['trajectories']} / {phases['trajectories']['transitions']}",
-             f"BC-MC: {'habilitable' if phases['trajectories']['bcEligible'] else 'datos insuficientes; se conserva self-play'}"]
+             f"BC-MC: {phases.get('bc', {}).get('state', 'pendiente' if phases['trajectories']['bcEligible'] else 'datos insuficientes')}",
+             f"Mínimo BC: 1000 trayectorias / {config.get('bcMinTransitions', 10000)} transiciones"]
     for fmt, scrape in phases["replays"]["formats"].items():
         lines.append(f"Fuente {fmt}: {scrape['stopReason']} · {scrape['pages']} páginas · +{scrape['added']} partidas")
     lines.append("Filtro humano: " + json.dumps(phases["split"]["filter"]["counts"], ensure_ascii=False))
@@ -467,6 +480,7 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=260916)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--num-envs", type=int, default=2)
+    parser.add_argument("--bc-min-transitions", type=int, choices=(9500, 10000), default=10000)
     parser.add_argument("--battles", type=int, default=500)
     parser.add_argument("--replay-pages", type=int, default=100)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -525,6 +539,7 @@ def main(argv=None) -> int:
                   "runtimeVersions": runtime_versions(device),
                   "vgcBenchSha": VGC_BENCH_COMMIT, "workers": resolve_workers(args.workers),
                   "numEnvs": args.num_envs, "battles": args.battles, "replayPages": args.replay_pages,
+                  "bcMinTransitions": args.bc_min_transitions,
                   "seed": args.seed, "device": device, "port": args.port}
         run = select_run(root, config, args.run_action, args.run_id)
         stages = STAGES[:5] if args.mode == "CENSUS" else STAGES
