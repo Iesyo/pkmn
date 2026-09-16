@@ -18,7 +18,10 @@ import { Progress } from "@/components/ui/progress";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import { serializeShowdownPaste } from "@/lib/team-builder";
 import type { TeamVersion } from "@/lib/types";
-import { selectAutoLabOpponentCandidates } from "@/lib/war-room-auto-lab";
+import {
+  selectAutoLabOpponentCandidates,
+  selectAutoLabRecentVgcPastesCandidates,
+} from "@/lib/war-room-auto-lab";
 import { inspectBattleReadyPaste } from "@/lib/war-room-sparring";
 import type { WarRoomCorpusTeam } from "@/lib/war-room";
 import { cn } from "@/lib/utils";
@@ -29,9 +32,9 @@ const LOAD_BATCH = 6;
 type RunPreset = "quick" | "standard" | "deep";
 
 const PRESETS: Record<RunPreset, { label: string; opponents: number; battlesPerOpponent: number; description: string }> = {
-  quick: { label: "Rápido", opponents: 12, battlesPerOpponent: 6, description: "12 rivales · 72 batallas. Screening amplio del Team actual." },
-  standard: { label: "Normal", opponents: 18, battlesPerOpponent: 12, description: "18 rivales · 216 batallas. Mejor señal por matchup, lead y arquetipo." },
-  deep: { label: "Profundo", opponents: 24, battlesPerOpponent: 20, description: "24 rivales · 480 batallas. Auditoría extensa antes de tocar el Team." },
+  quick: { label: "Rápido", opponents: 18, battlesPerOpponent: 12, description: "18 rivales · 216 batallas. Auditoría rápida con muestra amplia." },
+  standard: { label: "Normal", opponents: 24, battlesPerOpponent: 20, description: "24 rivales · 480 batallas. Auditoría intensiva con mayor repetición por matchup." },
+  deep: { label: "Profundo · meta actual", opponents: 100, battlesPerOpponent: 10, description: "100 rivales recientes · 1,000 batallas. Solo los VGCPastes M-C más recientes por Date Shared." },
 };
 
 type RecordRow = { games: number; wins: number; losses: number; ties: number; scorePercent: number };
@@ -162,7 +165,9 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
     setStarting(true); setRunError(""); setJob(null);
     try {
       const spec = PRESETS[preset];
-      const pool = selectAutoLabOpponentCandidates(corpusTeams, spec.opponents * 3, teamKey);
+      const pool = preset === "deep"
+        ? selectAutoLabRecentVgcPastesCandidates(corpusTeams, spec.opponents * 3)
+        : selectAutoLabOpponentCandidates(corpusTeams, spec.opponents * 3, teamKey);
       const loaded: Array<{ team: WarRoomCorpusTeam; paste: string }> = [];
       for (let offset = 0; offset < pool.length && loaded.length < spec.opponents; offset += LOAD_BATCH) {
         const batch = await Promise.all(pool.slice(offset, offset + LOAD_BATCH).map(async (candidate) => {
@@ -171,13 +176,20 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
         }));
         for (const item of batch) if (item && loaded.length < spec.opponents) loaded.push(item);
       }
+      if (preset === "deep" && loaded.length < spec.opponents) {
+        throw new Error(`Profundo necesita ${spec.opponents} VGCPastes M-C recientes battle-ready; solo encontramos ${loaded.length}.`);
+      }
       if (loaded.length < Math.min(6, spec.opponents)) throw new Error("No hay suficientes rivales battle-ready entre VGCPastes, torneos y Mis pastes.");
       const response = await fetch("/api/battle-lab/auto-lab", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           baseline: { id: "baseline-current", label: `${team.name} · Team actual`, teamPaste: baselinePaste },
-          opponents: loaded.map(({ team: opponent, paste }, index) => ({ id: `opponent-${index + 1}`, label: [opponent.playerName, opponent.tournament].filter(Boolean).join(" · ") || `Rival ${index + 1}`, teamPaste: paste })),
+          opponents: loaded.map(({ team: opponent, paste }, index) => ({
+            id: `opponent-${index + 1}`,
+            label: [preset === "deep" ? opponent.dateShared : "", opponent.playerName, opponent.tournament].filter(Boolean).join(" · ") || `Rival ${index + 1}`,
+            teamPaste: paste,
+          })),
           battlesPerOpponent: spec.battlesPerOpponent,
         }),
       });
