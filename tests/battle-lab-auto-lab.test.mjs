@@ -165,9 +165,9 @@ test("Deep audit prioritizes the newest current VGCPastes while quick and normal
   assert.match(source, /team\.source === "vgcpastes"/);
   assert.match(source, /Date\.parse\(value\.trim\(\)\)/);
   assert.match(source, /right\.sharedAt - left\.sharedAt/);
-  assert.match(ui, /opponents: 18, battlesPerOpponent: 12/);
-  assert.match(ui, /opponents: 24, battlesPerOpponent: 20/);
-  assert.match(ui, /opponents: 100, battlesPerOpponent: 10/);
+  assert.match(ui, /opponents:\s*18,\s*battlesPerOpponent:\s*12/);
+  assert.match(ui, /opponents:\s*24,\s*battlesPerOpponent:\s*20/);
+  assert.match(ui, /opponents:\s*100,\s*battlesPerOpponent:\s*10/);
   assert.match(ui, /preset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
   assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C recientes validados por Showdown/);
   assert.match(ui, /Solo los VGCPastes M-C más recientes por Date Shared/);
