@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { WarRoomAutoLab } from "./war-room-auto-lab";
 import { WarRoomSparring as LocalWarRoomSparring } from "./war-room-sparring/index";
 import type { TeamVersion } from "@/lib/types";
 import {
@@ -9,9 +10,10 @@ import {
   isWarRoomCorpusResponse,
   type WarRoomCorpusTeam,
 } from "@/lib/war-room";
+import { cn } from "@/lib/utils";
 
 /**
- * Transport adapter for War Room Sparring.
+ * Transport adapter for War Room Sparring + Auto Lab.
  *
  * The Battle Lab implementation was originally loopback-only and therefore
  * emits a classic Showdown iframe that points at 127.0.0.1:8767/8766. That is
@@ -41,6 +43,7 @@ export function WarRoomSparring({
   const rootRef = useRef<HTMLDivElement>(null);
   const corpusRefreshController = useRef<AbortController | null>(null);
   const [liveCorpusTeams, setLiveCorpusTeams] = useState(corpusTeams);
+  const [panel, setPanel] = useState<"sparring" | "auto-lab">("sparring");
 
   useEffect(() => {
     setLiveCorpusTeams(corpusTeams);
@@ -74,9 +77,9 @@ export function WarRoomSparring({
     const root = rootRef.current;
     if (!root) return;
 
-    const panel = root.closest<HTMLElement>('[role="tabpanel"]');
+    const hostPanel = root.closest<HTMLElement>('[role="tabpanel"]');
     const refreshWhenActive = () => {
-      const inactive = panel?.getAttribute("data-state") === "inactive" || Boolean(panel?.hidden);
+      const inactive = hostPanel?.getAttribute("data-state") === "inactive" || Boolean(hostPanel?.hidden);
       if (!inactive) void refreshCorpus();
     };
     const onVisibilityChange = () => {
@@ -84,8 +87,8 @@ export function WarRoomSparring({
     };
 
     refreshWhenActive();
-    const panelObserver = panel ? new MutationObserver(refreshWhenActive) : null;
-    panelObserver?.observe(panel, {
+    const panelObserver = hostPanel ? new MutationObserver(refreshWhenActive) : null;
+    panelObserver?.observe(hostPanel, {
       attributes: true,
       attributeFilter: ["data-state", "hidden"],
     });
@@ -130,8 +133,33 @@ export function WarRoomSparring({
   }, []);
 
   return (
-    <div ref={rootRef} className="contents">
-      <LocalWarRoomSparring team={team} corpusTeams={liveCorpusTeams} />
+    <div ref={rootRef} className="space-y-4">
+      <div className="inline-flex rounded-2xl border border-white/8 bg-slate-950/45 p-1">
+        <button
+          type="button"
+          onClick={() => setPanel("sparring")}
+          className={cn(
+            "rounded-xl px-4 py-2 text-[9px] font-black transition",
+            panel === "sparring" ? "bg-cyan-300/12 text-cyan-100" : "text-slate-500 hover:text-slate-300",
+          )}
+        >
+          Sparring
+        </button>
+        <button
+          type="button"
+          onClick={() => setPanel("auto-lab")}
+          className={cn(
+            "rounded-xl px-4 py-2 text-[9px] font-black transition",
+            panel === "auto-lab" ? "bg-violet-300/12 text-violet-100" : "text-slate-500 hover:text-slate-300",
+          )}
+        >
+          Auto Lab · Auditar + Optimizar
+        </button>
+      </div>
+
+      {panel === "auto-lab"
+        ? <WarRoomAutoLab team={team} corpusTeams={liveCorpusTeams} />
+        : <div className="contents"><LocalWarRoomSparring team={team} corpusTeams={liveCorpusTeams} /></div>}
     </div>
   );
 }
