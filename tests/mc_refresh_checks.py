@@ -2,8 +2,10 @@
 import copy
 import csv
 import json
+import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -342,11 +344,173 @@ class RefreshChecks(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SHA-256"):
             pipeline.ensure_champion(self.root)
 
+    def test_production_reference_is_independent_from_training_champion(self):
+        prod = self.root / "production.zip"
+        prod.write_bytes(b"deployed policy")
+        spec = {"id": "production", "checkpoint": str(prod), "sha256": sha256_file(prod), "format": FMT}
+        atomic_json(self.root / "Refresh" / "production.json", spec)
+        atomic_json(self.root / "Refresh" / "champion.json", {"sha256": "another policy"})
+        self.assertEqual(pipeline.production_reference(self.root)["sha256"], spec["sha256"])
+        self.assertFalse(pipeline.production_reference(self.root)["liveDeploymentVerified"])
+        with self.assertRaises(ValueError):
+            pipeline.production_reference(self.root, str(prod))
+        prod.write_bytes(b"changed bytes")
+        with self.assertRaisesRegex(RuntimeError, "SHA-256"):
+            pipeline.production_reference(self.root)
+
+    def test_direct_recovery_preserves_original_reports_status_and_training(self):
+        run, original, _ = self.recovery_fixture()
+        atomic_json(run / "status.json", {"state": "completed"})
+        atomic_json(run / "report.json", {"legacy": "keep"})
+        atomic_json(run / "phases" / "evaluate.json", {"legacy": "keep"})
+        before = {p: sha256_file(p) for p in run.rglob("*") if p.is_file()}
+        calls = []
+        def child(stage, selected_run, status, durations, *, worker_config, status_root):
+            calls.append(stage)
+            self.assertEqual(status_root, run / "direct_evaluation")
+            config = data.read_json(worker_config)
+            self.assertEqual(config["evaluationProtocol"], "direct-v1")
+            self.assertEqual(config["battles"], 22)
+            self.assertEqual(config["evaluationRecovery"]["trainingCodeSha"], "original-code")
+            with patch.object(pipeline, "perform_stage", return_value={"directStage": stage}):
+                pipeline.main(["--worker-stage", stage, "--worker-run", str(run),
+                               "--worker-config", str(worker_config)])
+            self.assertEqual(data.read_json(status_root / "phases" / (stage + ".json")), {"directStage": stage})
+        with patch.object(pipeline, "git_sha", return_value="direct-code"), \
+             patch.object(pipeline, "runtime_versions", return_value=original["runtimeVersions"]), \
+             patch.object(pipeline, "production_reference", return_value={"sha256": "production"}), \
+             patch.object(pipeline, "run_child", side_effect=child), \
+             patch.object(pipeline, "write_report") as report:
+            pipeline.recover_evaluation(self.root, run.name, direct=True, battles=22)
+            self.assertEqual(report.call_args.kwargs["report_root"], run / "direct_evaluation")
+        self.assertEqual(calls, ["prepare", "evaluate"])
+        self.assertEqual(before, {p: sha256_file(p) for p in before})
+        self.assertEqual(data.read_json(run / "direct_evaluation" / "status.json")["state"], "completed")
+
+    def test_direct_matchups_use_distinct_policies_mirror_sides_and_resume(self):
+        from battle_lab import mc_refresh_eval as evaluation
+        from battle_lab import mc_training as training
+        from battle_lab.team_corpus import TeamPairing
+        run = self.root / "Refresh" / "runs" / "fixture"
+        run.mkdir(parents=True)
+        specs = {}
+        for name in ("candidate", "production", "base"):
+            path = run / (name + ".zip")
+            path.write_bytes(name.encode())
+            specs[name] = {"checkpoint": str(path), "sha256": sha256_file(path)}
+        teams = [SimpleNamespace(id=name, team_text=name) for name in ("team-A", "team-B")]
+        split = {"fileHashes": {"holdout": {"a": "hash-a", "b": "hash-b"}}, "sourceManifestSha256": "frozen",
+                 "holdoutTeams": 2, "sourceHoldoutTeams": 2, "removedDuplicates": []}
+        played, instances, loads = [], [], []
+        class Player:
+            def __init__(self, *, account_configuration, team, policy=None, save_replays=None, **kwargs):
+                self.username = account_configuration.username
+                self.policy, self.team, self.replay_dir = policy, team, save_replays
+                self.battles, self.stopped = {}, False
+                self.ps_client = SimpleNamespace(stop_listening=self.stop)
+                instances.append(self)
+            async def stop(self):
+                self.stopped = True
+            def update_team(self, team):
+                self.team = team
+            def reset_battles(self):
+                self.battles.clear()
+            async def battle_against(self, other, n_battles):
+                played.append((self.policy, other.policy, self.team, other.team))
+                tag = "fixture-" + str(len(played))
+                # Alpha always wins: candidate must get one win and one loss per pair.
+                self.battles[tag] = SimpleNamespace(won=True, lost=False, finished=True, battle_tag=tag, turn=5)
+                other.battles[tag] = SimpleNamespace(won=False, lost=True, finished=True, battle_tag=tag, turn=5)
+                for player in (self, other):
+                    if player.replay_dir:
+                        (Path(player.replay_dir) / f"{player.username} - {tag}.html").write_text("replay")
+        def loader(**kwargs):
+            name = kwargs["checkpoint"].stem
+            loads.append(name)
+            return SimpleNamespace(policy=name, player_class=Player, metadata={"fixture": name})
+        modules = {"poke_env": SimpleNamespace(AccountConfiguration=lambda name, _: SimpleNamespace(username=name),
+                                               ServerConfiguration=lambda *args: args),
+                   "poke_env.player": SimpleNamespace(SimpleHeuristicsPlayer=Player)}
+        params = dict(vgc_root=self.root, showdown=self.root, run=run, production=specs["production"],
+                      candidate=specs["candidate"], battles=2, seed=1, port=8000, device="cpu",
+                      battle_format=FMT, code_sha="code", showdown_sha="showdown", runtime_versions={"poke-env": "pin"})
+        with patch.dict(sys.modules, modules), \
+             patch.object(training, "download_baseline", return_value=Path(specs["base"]["checkpoint"])), \
+             patch.object(training, "VGC_BENCH_CHECKPOINT_SHA256", specs["base"]["sha256"]), \
+             patch.object(evaluation, "evaluation_corpus", return_value=(SimpleNamespace(teams=teams), split)), \
+             patch.object(evaluation, "alias_mc_runtime_catalogs", return_value={}), \
+             patch.object(evaluation, "validate_team"), \
+             patch.object(evaluation, "build_pairing_schedule", return_value=[TeamPairing(*teams)]), \
+             patch.object(evaluation, "running_showdown", return_value=nullcontext()), \
+             patch.object(evaluation.battle, "load_model_runtime", side_effect=loader):
+            result = evaluation.evaluate_direct(**params)
+            self.assertEqual(loads, ["candidate", "production", "base"])
+            self.assertEqual([p[:2] for p in played], [("candidate", "production"), ("production", "candidate"),
+                              ("candidate", "base"), ("base", "candidate"), ("candidate", None), (None, "candidate")])
+            self.assertTrue(all(p[2:] == ("team-A", "team-B") for p in played))
+            self.assertTrue(all(p.stopped for p in instances))
+            self.assertEqual(result["battles"], 6)
+            self.assertEqual(set(result["comparison"]["opponents"]), set(evaluation.DIRECT_OPPONENTS))
+            for record in result["comparison"]["opponents"].values():
+                self.assertEqual((record["wins"], record["losses"], record["scorePercent"]), (1, 1, 50))
+            for item in data.read_json(Path(result["comparisonFile"]))["items"]:
+                self.assertTrue(Path(item["replayFile"]).is_file())
+            self.assertEqual(evaluation.evaluate_direct(**params)["comparison"], result["comparison"])
+            self.assertEqual(len(played), 6, "completed matches must be reused")
+            different = evaluation.evaluate_direct(**{**params, "code_sha": "new-code"})
+            self.assertNotEqual(different["comparisonFile"], result["comparisonFile"])
+            self.assertEqual(len(played), 12, "another contract cannot reuse old results")
+            chunk_path = next(Path(result["comparisonFile"]).parent.glob("chunks/production/*.json"))
+            chunk = data.read_json(chunk_path)
+            chunk["items"].pop()
+            atomic_json(chunk_path, chunk)
+            with self.assertRaisesRegex(RuntimeError, "incompleto"):
+                evaluation.evaluate_direct(**params)
+            Path(specs["production"]["checkpoint"]).write_bytes(b"changed")
+            with self.assertRaisesRegex(RuntimeError, "pesos cambiaron"):
+                evaluation.evaluate_direct(**params)
+
     def test_promotion_requires_completed_observed_improvement(self):
         run = self.root / "Refresh" / "runs" / "fixture"
         atomic_json(run / "report.json", {"state": "completed", "verdict": "SIN_MEJORA"})
         with self.assertRaisesRegex(RuntimeError, "benchmark completo"):
             pipeline.promote(self.root, "fixture")
+
+    def test_direct_report_and_selection_use_new_evaluation_and_preserve_legacy(self):
+        run, original, candidate = self.recovery_fixture()
+        champion = {**original["champion"], "id": "production", "format": FMT}
+        atomic_json(self.root / "Refresh" / "champion.json", champion)
+        atomic_json(run / "report.json", {"legacy": True, "verdict": "SIN_MEJORA"})
+        atomic_json(self.root / "Refresh" / "latest_result.json", {"runId": "legacy"})
+        report_dir = run / "direct_evaluation"
+        comparison_file = run / "evaluation" / "direct-v1" / "fixture" / "comparison.json"
+        records = {key: {"games": 4, "wins": 3, "losses": 1, "ties": 0,
+                          "scorePercent": 75, "replays": str(run / "replays" / key)}
+                   for key in ("production", "base", "simple-heuristics")}
+        comparison = {"protocol": "direct-v1", "verdict": "pass", "opponents": records}
+        atomic_json(comparison_file, comparison)
+        comparison_file.with_suffix(".csv").write_text("opponent,wins,losses,ties,candidate_score_pct\nproduction,3,1,0,75\n")
+        atomic_json(report_dir / "phases" / "evaluate.json", pipeline.artifact_result(
+            comparison_file, comparisonFile=str(comparison_file), comparison=comparison,
+            battles=12, holdoutView={"holdoutTeams": 2}))
+        for key, value in {"teams": {"usableTeams": 5}, "replays": {"totalLogs": 20, "addedLogs": 1, "formats": {}},
+                           "split": {"eligibleLogs": 10, "trainTeams": 3, "holdoutTeams": 2,
+                                     "freshHoldoutTeams": 0, "filter": {"counts": {}}},
+                           "trajectories": {"trajectories": 10, "transitions": 20, "bcEligible": False}}.items():
+            atomic_json(run / "phases" / (key + ".json"), value)
+        config = {**original, "champion": champion, "production": champion, "showdownSha": "pin"}
+        frozen = [run / "config.json", run / "report.json", self.root / "Refresh" / "latest_result.json"]
+        before = {p: sha256_file(p) for p in frozen}
+        result = pipeline.write_report(run, config, {"state": "completed"}, report_root=report_dir)
+        self.assertEqual(result["verdict"], "MEJORA_OBSERVADA")
+        self.assertEqual(result["phases"]["evaluate"]["comparison"], comparison)
+        self.assertIn("Candidato vs production", (report_dir / "report.txt").read_text())
+        self.assertNotIn("Score global", (report_dir / "report.txt").read_text())
+        self.assertEqual(before, {p: sha256_file(p) for p in frozen})
+        self.assertEqual(pipeline.ensure_champion(self.root), champion)
+        selected = pipeline.promote(self.root, run.name, direct=True)
+        self.assertEqual(selected["sha256"], sha256_file(candidate))
+        self.assertEqual(data.read_json(run / "promotion.json")["benchmarkReport"], str(report_dir / "report.json"))
 
     def test_complete_report_and_explicit_promotion_use_actual_comparison(self):
         from battle_lab.mc_holdout_benchmark import compare_model_reports, BASELINE_SPECS
