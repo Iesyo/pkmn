@@ -146,7 +146,7 @@ def _frozen_light_runtime(runtime: Any) -> battle.ModelRuntime:
                 "No se encontró BattleLabPolicyPlayer en el runtime cargado; Auto Lab no usará una capa adaptativa por accidente."
             )
     metadata = dict(getattr(runtime, "metadata", {}) or {})
-    metadata.update({"autoLabPolicy": "LIGHT M-C", "adaptiveLayer": False})
+    metadata.update({"autoLabPolicy": metadata.get("modelLabel", "LIGHT M-C"), "adaptiveLayer": False})
     return battle.ModelRuntime(
         policy=runtime.policy,
         player_class=light_class,
@@ -257,7 +257,7 @@ def install_auto_lab_service() -> type:
     async def _run_auto_lab(self: Any, job: AutoLabJob) -> None:
         try:
             job.phase = "preparing"
-            job.append_event("Verificando LIGHT M-C, Showdown y equipos…")
+            job.append_event("Verificando el modelo activo, Showdown y equipos…")
             await self.ensure_ready()
             assert self.runtime is not None
 
