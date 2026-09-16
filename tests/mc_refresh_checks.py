@@ -99,6 +99,121 @@ class RefreshChecks(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "overlap"):
             data.assign_signature(state, roster("a"), "holdout")
 
+    def test_snapshot_deduplicates_normalized_legacy_and_current_pastes(self):
+        legacy = self.legacy()
+        teams = self.root / "teams"
+        teams.mkdir()
+        for i, tag in enumerate(("a", "b", "c", "d")):
+            (teams / f"mc{i}.txt").write_text(team(roster(tag)).replace("\n", "  \n"))
+        result = data.snapshot_split(teams=teams, output=self.root / "split",
+                                     registry=self.root / "partitions.json", legacy_split=legacy)
+        self.assertEqual(result["trainTeams"], 2)
+        self.assertEqual(result["holdoutTeams"], 2)
+
+    def test_evaluation_view_fixes_duplicates_without_mutating_frozen_snapshot(self):
+        from battle_lab.mc_refresh_eval import evaluation_corpus
+        from battle_lab.mc_holdout_benchmark import load_holdout_corpus
+        legacy = self.legacy()
+        teams = self.root / "teams"
+        teams.mkdir()
+        for i, tag in enumerate(("a", "b")):
+            (teams / f"mc{i}.txt").write_text(team(roster(tag)))
+        split_root = self.root / "split"
+        split = data.snapshot_split(teams=teams, output=split_root,
+                                    registry=self.root / "partitions.json", legacy_split=legacy)
+        name = split["holdoutFiles"][0]
+        duplicate = "mc99999999999999999999.txt"
+        (split_root / "holdout" / duplicate).write_text((split_root / "holdout" / name).read_text().replace("\n", " \n"))
+        split["holdoutFiles"].append(duplicate)
+        split["holdoutTeams"] += 1
+        split["fileHashes"]["holdout"][duplicate] = sha256_file(split_root / "holdout" / duplicate)
+        split["freshHoldoutFiles"] = [duplicate]
+        atomic_json(split_root / "split_manifest.json", split)
+        before = {str(p): sha256_file(p) for p in split_root.rglob("*") if p.is_file()}
+        with self.assertRaisesRegex(RuntimeError, "duplicado por contenido"):
+            load_holdout_corpus(split_root / "holdout", split_root / "split_manifest.json", expected_count=3, battle_format=FMT)
+        corpus, view = evaluation_corpus(self.root, FMT)
+        self.assertEqual(len(corpus.teams), 2)
+        self.assertEqual(len(view["removedDuplicates"]), 1)
+        self.assertEqual(view["freshHoldoutTeams"], 0)
+        self.assertEqual(view["fileHashes"]["holdout"],
+                         {n: sha256_file(Path(view["holdoutDir"]) / n) for n in view["holdoutFiles"]})
+        self.assertEqual(before, {str(p): sha256_file(p) for p in split_root.rglob("*") if p.is_file()})
+        # On a second attempt, ordering and canonical IDs are identical.
+        self.assertEqual(view, evaluation_corpus(self.root, FMT)[1])
+        (split_root / "holdout" / duplicate).write_text("changed after freeze")
+        with self.assertRaisesRegex(RuntimeError, "snapshot changed"):
+            evaluation_corpus(self.root, FMT)
+
+    def recovery_fixture(self):
+        run = self.root / "Refresh" / "runs" / "recoverable"
+        run.mkdir(parents=True)
+        initial, candidate = run / "initial.zip", run / "candidate.zip"
+        initial.write_bytes(b"initial fixture")
+        candidate.write_bytes(b"candidate fixture")
+        config = {"root": str(self.root), "mode": "LIGHT", "device": "cuda", "profile": {"steps": 100},
+                  "codeSha": "original-code", "runtimeVersions": {"python": "fixture"},
+                  "champion": {"checkpoint": str(initial), "sha256": sha256_file(initial)}}
+        atomic_json(run / "config.json", config)
+        for stage in pipeline.STAGES[:-1]:
+            payload = {"state": "completed"}
+            if stage == "rl":
+                payload = pipeline.artifact_result(candidate, state="completed", steps=100,
+                                                    checkpoint=str(candidate), sha256=sha256_file(candidate))
+            atomic_json(run / "phases" / (stage + ".json"), payload)
+        return run, config, candidate
+
+    def test_recovery_validates_and_preserves_original_training_contract(self):
+        run, original, candidate = self.recovery_fixture()
+        before = {str(p): sha256_file(p) for p in run.rglob("*") if p.is_file()}
+        recovered_run, config = pipeline.recovery_config(self.root, run.name, code_sha="fixed-evaluation",
+                                                         versions=original["runtimeVersions"])
+        self.assertEqual(recovered_run, run)
+        self.assertEqual(config["codeSha"], "fixed-evaluation")
+        self.assertEqual(config["evaluationRecovery"]["trainingCodeSha"], "original-code")
+        self.assertEqual(config["evaluationRecovery"]["scope"], ["prepare", "evaluate"])
+        self.assertEqual(before, {str(p): sha256_file(p) for p in run.rglob("*") if p.is_file()})
+        candidate.write_bytes(b"tampered")
+        with self.assertRaises(RuntimeError):
+            pipeline.recovery_config(self.root, run.name, code_sha="fixed", versions=original["runtimeVersions"])
+
+    def test_recovery_rejects_incomplete_training_or_changed_runtime(self):
+        run, original, _ = self.recovery_fixture()
+        with self.assertRaisesRegex(RuntimeError, "runtime cambió"):
+            pipeline.recovery_config(self.root, run.name, code_sha="fixed", versions={"python": "different"})
+        phase = data.read_json(run / "phases" / "rl.json")
+        phase["steps"] = 99
+        atomic_json(run / "phases" / "rl.json", phase)
+        with self.assertRaisesRegex(RuntimeError, "entrenamiento no está completo"):
+            pipeline.recovery_config(self.root, run.name, code_sha="fixed", versions=original["runtimeVersions"])
+
+    def test_recovery_runs_only_prepare_and_evaluate_and_records_failure(self):
+        run, original, _ = self.recovery_fixture()
+        atomic_json(self.root / "Refresh" / "active_run.json", {"runId": run.name})
+        before = {str(p): sha256_file(p) for p in run.rglob("*") if p.is_file()}
+        for fail in (False, True):
+            calls = []
+            def child(stage, selected_run, status, durations, *, worker_config):
+                calls.append(stage)
+                self.assertEqual(selected_run, run)
+                self.assertEqual(data.read_json(worker_config)["codeSha"], "fixed-eval")
+                if fail and stage == "evaluate":
+                    raise RuntimeError("evaluation interrupted")
+            with patch.object(pipeline, "git_sha", return_value="fixed-eval"), \
+                 patch.object(pipeline, "runtime_versions", return_value=original["runtimeVersions"]), \
+                 patch.object(pipeline, "run_child", side_effect=child), \
+                 patch.object(pipeline, "write_report") as report:
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "evaluation interrupted"):
+                        pipeline.recover_evaluation(self.root)
+                    report.assert_not_called()
+                else:
+                    pipeline.recover_evaluation(self.root)
+                    report.assert_called_once()
+            self.assertEqual(calls, ["prepare", "evaluate"])
+            self.assertEqual(data.read_json(run / "status.json")["state"], "failed" if fail else "completed")
+            self.assertEqual(before, {p: sha256_file(Path(p)) for p in before})
+
     def test_human_filter_excludes_both_sides_and_duplicate_logs(self):
         registry = self.root / "partitions.json"
         state = {"seed": 260913, "assignments": {}}
