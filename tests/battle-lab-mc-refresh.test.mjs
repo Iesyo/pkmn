@@ -61,7 +61,22 @@ config = {}
 exec(''.join(nb['cells'][1]['source']), config)
 assert config['RUN_ACTION'] == 'auto' and config['RUN_MODE'] == 'LIGHT'
 assert config['BATTLES_PER_CONTROL'] == 500
+assert config['BC_MIN_TRANSITIONS'] == 9500
 assert config['PKMN_REF'] == 'battle-lab-mc-refresh-001'
 assert ''.join(nb['cells'][-1]['source']).startswith('#@title')
+import sys, tempfile
+calls = []
+config.update(sys=sys, ROOT=Path('/data'), RUNTIME=Path('/runtime'), REPO=Path.cwd(),
+              run=lambda command, cwd: calls.append(command))
+exec(''.join(nb['cells'][5]['source']), config)
+assert calls[-1][-2:] == ['--bc-min-transitions', 9500]
+# Older pinned runs must remain resumable without an unsupported new CLI flag.
+with tempfile.TemporaryDirectory() as folder:
+    checkout = Path(folder)
+    (checkout/'battle_lab').mkdir()
+    (checkout/'battle_lab'/'mc_refresh.py').write_text('# historical runner')
+    config.update(REPO=checkout, RUN_ACTION='resume')
+    exec(''.join(nb['cells'][5]['source']), config)
+    assert '--bc-min-transitions' not in calls[-1]
 `], { cwd: root, encoding: "utf8" });
 });
