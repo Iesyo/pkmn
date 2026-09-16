@@ -68,5 +68,5 @@ def descriptor_for_service(service: Any) -> dict[str, Any]:
         "format": battle_format,
         "checkpoint": checkpoint_text,
         "checkpointSha256": checksum,
-        "policy": "Battle Lab LIGHT M-C",
+        "policy": metadata.get("modelLabel", "Battle Lab LIGHT M-C"),
     }
