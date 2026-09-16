@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ClipboardFallback } from "@/components/clipboard-fallback";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,7 +22,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es" className="dark">
-      <body className="min-h-screen antialiased">{children}</body>
+      <body className="min-h-screen antialiased">
+        <ClipboardFallback />
+        {children}
+      </body>
     </html>
   );
 }
