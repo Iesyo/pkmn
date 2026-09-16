@@ -501,6 +501,9 @@ def fine_tune_bc(
     div_frac: float,
     eval_battles: int,
     team_count: int,
+    initial_checkpoint: Path | None = None,
+    initial_sha256: str | None = None,
+    num_workers: int | None = None,
 ) -> dict[str, Any]:
     """Behavior-clone the public BC policy further on real M-C trajectories."""
 
@@ -546,16 +549,21 @@ def fine_tune_bc(
 
     set_global_seed(seed)
     device = _resolve_device(device)
-    baseline = download_baseline(output_root / "baseline" / "vgc-bench-ma-mb-100.zip")
+    baseline = initial_checkpoint or download_baseline(output_root / "baseline" / "vgc-bench-ma-mb-100.zip")
+    if initial_checkpoint is not None and (
+        not initial_sha256 or sha256_file(baseline) != initial_sha256
+    ):
+        raise RuntimeError("SHA-256 inválido para el checkpoint inicial BC.")
     dataset = MCTrajectoryDataset(data_root / "trajs")
     div_count = max(1, round(1 / div_frac))
     batch_trajectories = max(1, len(dataset) // div_count)
+    loader_workers = max(0, min(4, (os.cpu_count() or 1) if num_workers is None else num_workers))
     dataloader = DataLoader(
         dataset,
         batch_size=batch_trajectories,
         shuffle=True,
-        num_workers=min(4, os.cpu_count() or 1),
-        persistent_workers=(os.cpu_count() or 1) > 1,
+        num_workers=loader_workers,
+        persistent_workers=loader_workers > 0,
         collate_fn=lambda batch: batch,
     )
 
@@ -563,7 +571,25 @@ def fine_tune_bc(
         single_env, server_config, SimpleHeuristicsPlayer, RandomTeamBuilder = _mc_eval_players(
             vgc_bench_checkout, port, seed, team_count
         )
-        model = PPO.load(str(baseline), env=single_env, device=device)
+        checkpoint_dir = output_root / "bc" / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        completed_epoch = 0
+        starting_checkpoint = baseline
+        if initial_checkpoint is not None:
+            for epoch in range(1, epochs + 1):
+                path = checkpoint_dir / f"epoch-{epoch:03d}.zip"
+                digest = path.with_suffix(".sha256")
+                optimizer_path = checkpoint_dir / f"epoch-{epoch:03d}.optimizer.pt"
+                optimizer_digest = optimizer_path.with_suffix(".sha256")
+                if (path.is_file() and digest.is_file() and digest.read_text().strip() == sha256_file(path)
+                    and optimizer_path.is_file() and optimizer_digest.is_file()
+                    and optimizer_digest.read_text().strip() == sha256_file(optimizer_path)):
+                    completed_epoch, starting_checkpoint = epoch, path
+                else:
+                    break
+        model = PPO.load(str(starting_checkpoint), env=single_env, device=device)
+        if hasattr(model.policy, "actor_grad"):
+            model.policy.actor_grad = True
         if not isinstance(model.policy, MaskedActorCriticPolicy):
             raise RuntimeError("El baseline no cargó MaskedActorCriticPolicy.")
         log_dir = output_root / "bc" / "logs"
@@ -583,30 +609,47 @@ def fine_tune_bc(
             server_configuration=server_config,
             battle_format=DEFAULT_FORMAT,
             log_level=40,
-            max_concurrent_battles=min(10, eval_battles),
+            max_concurrent_battles=max(1, min(10, eval_battles)),
             accept_open_team_sheet=True,
             team=RandomTeamBuilder(seed, team_count, "mc"),
-        )
+        ) if eval_battles > 0 else None
         eval_opponent = SimpleHeuristicsPlayer(
             server_configuration=server_config,
             battle_format=DEFAULT_FORMAT,
             log_level=40,
-            max_concurrent_battles=min(10, eval_battles),
+            max_concurrent_battles=max(1, min(10, eval_battles)),
             accept_open_team_sheet=True,
             team=RandomTeamBuilder(seed, team_count, "mc"),
-        )
+        ) if eval_battles > 0 else None
 
         progress = Progress(epochs, "BC M-C")
         history: list[dict[str, Any]] = []
-        for epoch in range(1, epochs + 1):
+        optimizer_path = checkpoint_dir / f"epoch-{completed_epoch:03d}.optimizer.pt"
+        if completed_epoch and optimizer_path.exists():
+            import torch
+            bc.optimizer.load_state_dict(torch.load(optimizer_path, map_location=device, weights_only=True))
+        for epoch in range(completed_epoch + 1, epochs + 1):
+            if initial_checkpoint is not None:
+                import torch
+                torch.manual_seed(seed + epoch)
             for demonstrations in dataloader:
                 bc.set_demonstrations(demonstrations)
                 bc.train(n_epochs=1)
-            win_rates = Callback.compare(eval_agent, eval_opponent, eval_battles)
+            win_rates = Callback.compare(eval_agent, eval_opponent, eval_battles) if eval_battles > 0 else None
             checkpoint = checkpoint_dir / f"epoch-{epoch:03d}.zip"
-            model.save(checkpoint)
+            partial = checkpoint.with_name(checkpoint.stem + ".part.zip")
+            model.save(partial)
+            partial.replace(checkpoint)
+            if initial_checkpoint is not None:
+                optimizer_path = checkpoint_dir / f"epoch-{epoch:03d}.optimizer.pt"
+                partial_optimizer = optimizer_path.with_suffix(".part.pt")
+                torch.save(bc.optimizer.state_dict(), partial_optimizer)
+                partial_optimizer.replace(optimizer_path)
+                optimizer_path.with_suffix(".sha256").write_text(sha256_file(optimizer_path) + "\n")
+            checkpoint.with_suffix(".sha256").write_text(sha256_file(checkpoint) + "\n")
             history.append({"epoch": epoch, "heuristicWinRates": win_rates, "checkpoint": str(checkpoint)})
             progress.update(epoch, f"heuristic={win_rates}", force=True)
+        single_env.close()
 
     final_checkpoint = checkpoint_dir / f"epoch-{epochs:03d}.zip"
     summary = {
