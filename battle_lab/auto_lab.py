@@ -215,13 +215,15 @@ async def run_auto_lab_gauntlet(
                 [opponent],
                 battles_per_opponent=battles_per_opponent,
             )
+            replay_dir = replay_root / candidate.id / opponent.id
+            replay_dir.mkdir(parents=True, exist_ok=True)
             summaries, _wins, _aliases = await battle.run_vgc_bench_battles(
                 runtime=runtime,
                 port=port,
                 battle_format=battle_format,
                 schedule=schedule,
                 timeout=timeout,
-                replay_dir=replay_root / candidate.id / opponent.id,
+                replay_dir=replay_dir,
             )
             all_summaries.extend(summaries)
             completed_battles += len(summaries)
