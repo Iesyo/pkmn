@@ -7,24 +7,54 @@ import { execFileSync } from "node:child_process";
 
 const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const core = path.join(root, "battle_lab", "auto_lab.py");
+const audit = path.join(root, "battle_lab", "auto_lab_audit.py");
 const service = path.join(root, "battle_lab", "auto_lab_service.py");
 const runtime = path.join(root, "battle_lab", "local_runtime.py");
 const nanaRuntime = path.join(root, "battle_lab", "nana_stage2_nursery_lan_runtime.py");
 const proxy = path.join(root, "app", "api", "battle-lab", "[...path]", "route.ts");
 const variants = path.join(root, "lib", "war-room-auto-lab.ts");
 const panel = path.join(root, "components", "vgc", "war-room-auto-lab.tsx");
+const panelV2 = path.join(root, "components", "vgc", "war-room-auto-lab-v2.tsx");
 const warRoom = path.join(root, "components", "vgc", "war-room.tsx");
 const sparring = path.join(root, "components", "vgc", "war-room-sparring.tsx");
 
-test("Auto Lab keeps LIGHT fixed and compares identical opponent/side schedules", () => {
+test("Auto Lab balances sides, samples only candidate Team Preview and audits the same replays", () => {
   const source = fs.readFileSync(core, "utf8");
-  assert.match(source, /LIGHT-vs-LIGHT gauntlet/);
   assert.match(source, /battles_per_opponent % 2/);
   assert.match(source, /battle_index % 2 == 0/);
-  assert.match(source, /run_vgc_bench_battles/);
-  assert.match(source, /compare_with_baseline/);
-  assert.match(source, /not presented as a ladder/);
-  execFileSync("python", ["-m", "py_compile", core, service, nanaRuntime], { cwd: root, encoding: "utf8" });
+  assert.match(source, /auto_lab_preview_sampling/);
+  assert.match(source, /self\.deterministic = False/);
+  assert.match(source, /self\.deterministic = previous/);
+  assert.match(source, /_preview_seed\(opponent_id, index\)/);
+  assert.match(source, /summary\["teamPreview"\]/);
+  assert.match(source, /build_auto_lab_audit/);
+  assert.match(source, /"schemaVersion": 2/);
+  execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
+});
+
+test("Auto Lab replay audit exposes the requested empirical dimensions with cautious wording", () => {
+  const source = fs.readFileSync(audit, "utf8");
+  for (const key of [
+    "goodMatchups",
+    "badMatchups",
+    "problematicOpponents",
+    "leadPerformance",
+    "selectionUsage",
+    "setSignals",
+    "moveSignals",
+    "opponentPokemonPressure",
+    "opponentCorePressure",
+    "archetypePerformance",
+    "recurringLossPatterns",
+  ]) assert.match(source, new RegExp(`\\"${key}\\"`));
+  assert.match(source, /correlaciones de uso, no evidencia causal/);
+  const script = `
+from battle_lab.auto_lab_audit import classify_archetypes
+paste = "Pelipper @ Focus Sash\\nAbility: Drizzle\\n- Tailwind\\n\\nFarigiraf @ Sitrus Berry\\nAbility: Armor Tail\\n- Trick Room"
+tags = classify_archetypes(paste)
+assert "Rain" in tags and "Tailwind" in tags and "Trick Room" in tags, tags
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
 test("Auto Lab strips Nana wrappers instead of benchmarking the adaptive layer", () => {
@@ -50,29 +80,44 @@ test("local and Nana runtimes expose Auto Lab before serving LAN traffic", () =>
   assert.match(route, /Auto Lab no está cargado en el runtime local/);
 });
 
-test("War Room generates attributable one-field variants before battle validation", () => {
+test("War Room generates complete contextual set packages instead of isolated moves", () => {
   const source = fs.readFileSync(variants, "utf8");
   assert.match(source, /MAX_AUTO_LAB_VARIANTS = 4/);
-  assert.match(source, /applySingleChange/);
-  assert.match(source, /change\.key\.startsWith\("move-"\)/);
-  assert.match(source, /statPoints/);
-  assert.doesNotMatch(source, /species:\s*change\.suggested/);
+  assert.match(source, /applySetPackage/);
+  assert.match(source, /suggestion\.proposal\.item/);
+  assert.match(source, /suggestion\.proposal\.ability/);
+  assert.match(source, /suggestion\.proposal\.nature/);
+  assert.match(source, /suggestion\.proposal\.evs/);
+  assert.match(source, /suggestion\.proposal\.moves\.forEach/);
+  assert.doesNotMatch(source, /applySingleChange/);
+  assert.match(source, /"tournament", "scouting-library", "vgcpastes"/);
+  assert.match(source, /selectAutoLabOpponentCandidates/);
 });
 
-test("War Room surfaces Auto Lab under Audit, while Sparring stays manual", () => {
-  const ui = fs.readFileSync(panel, "utf8");
-  assert.match(ui, /Auto Lab · Auditar \+ Optimizar \+ Gauntlet/);
-  assert.match(ui, /\/api\/battle-lab\/auto-lab/);
-  assert.match(ui, /etaSeconds/);
-  assert.match(ui, /deltaPercentagePoints/);
-  assert.match(ui, /Nana no participa/);
+test("War Room surfaces the full empirical audit under Audit while Sparring stays manual", () => {
+  assert.match(fs.readFileSync(panel, "utf8"), /war-room-auto-lab-v2/);
+  const ui = fs.readFileSync(panelV2, "utf8");
+  assert.match(ui, /Auto Lab · auditoría empírica/);
+  assert.match(ui, /Paquete de set completo/);
+  assert.match(ui, /Matchups más favorables/);
+  assert.match(ui, /Matchups más duros/);
+  assert.match(ui, /Ranking de rivales problemáticos/);
+  assert.match(ui, /Leads que mejor funcionan/);
+  assert.match(ui, /Pokémon casi nunca seleccionados/);
+  assert.match(ui, /Pokémon rivales asociados a derrotas/);
+  assert.match(ui, /Cores \/ leads rivales asociados a derrotas/);
+  assert.match(ui, /Moves a revisar/);
+  assert.match(ui, /Patrones recurrentes en derrotas/);
+  assert.match(ui, /Rendimiento por arquetipo/);
+  assert.match(ui, /selectAutoLabOpponentCandidates/);
+  assert.match(ui, /battlesPerOpponent: 4/);
+  assert.match(ui, /battlesPerOpponent: 6/);
+  assert.match(ui, /battlesPerOpponent: 10/);
 
   const room = fs.readFileSync(warRoom, "utf8");
   assert.match(room, /import \{ WarRoomAutoLab \} from "@\/components\/vgc\/war-room-auto-lab"/);
   assert.match(room, /mode === "audit"[\s\S]*<AuditView result=\{audit\} \/>[\s\S]*<WarRoomAutoLab team=\{workingTeam\}/);
-
   const adapter = fs.readFileSync(sparring, "utf8");
   assert.doesNotMatch(adapter, /WarRoomAutoLab/);
-  assert.doesNotMatch(adapter, /Auto Lab · Auditar \+ Optimizar/);
   assert.match(adapter, /LocalWarRoomSparring/);
 });
