@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from battle_lab.mc_census import audit_replay, preview_species, winner_role
 from battle_lab.mc_team_split import team_signature
+from battle_lab.team_corpus import normalize_team_text
 from battle_lab.mc_training import (
     DEFAULT_FORMAT, DEFAULT_FORMAT_BO3, VGCPASTES_CSV_URL, Progress,
     atomic_json, fetch_text, parse_vgcpastes_mc, pokepaste_raw_url,
@@ -77,6 +78,7 @@ def sync_teams(*, output: Path, cache: Path, validate: Callable[[str], Any],
 
     records, errors, hashes = [], [], set()
     def accept(team_id: str, text: str, meta: dict) -> None:
+        text = normalize_team_text(text)
         digest = sha256_text(text)
         if digest in hashes:
             raise ValueError("duplicate_content")
@@ -178,8 +180,10 @@ def snapshot_split(*, teams: Path, output: Path, registry: Path, legacy_split: P
             shutil.rmtree(directory)
         directory.mkdir(parents=True)
     # Persist original holdout even if a paste drops out of the live source.
-    sources = {sha256_file(p): p for p in (legacy_split / "holdout").glob("mc*.txt")}
-    sources.update({sha256_file(p): p for p in teams.glob("mc*.txt")})
+    sources = {}
+    for file in [*sorted((legacy_split / "holdout").glob("mc*.txt")), *sorted(teams.glob("mc*.txt"))]:
+        digest = sha256_text(normalize_team_text(file.read_text(encoding="utf-8")))
+        sources.setdefault(digest, file)
     for digest, file in sorted(sources.items()):
         signature = team_signature(file)
         side = assign_signature(state, signature)
