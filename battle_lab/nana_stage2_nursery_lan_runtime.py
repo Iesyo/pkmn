@@ -16,6 +16,7 @@ import json
 from typing import Any, Sequence
 
 from battle_lab import nana_stage2_shadow_v21_lan_runtime as lan
+from battle_lab.auto_lab_service import install_auto_lab_service
 from battle_lab.nana_nursery import NURSERY_MODEL_VERSION
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_nursery_runtime import (
@@ -352,6 +353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     nana_args, remaining = parse_nana_args(remaining)
     service_class = install_nursery_service(profile_id=nana_args.nana_profile)
     install_nursery_lan_request_guard(service_class)
+    # Install Auto Lab before the LAN/CORS wrappers capture the current service.
+    # local_runtime.main installs it again idempotently, but doing it here makes
+    # the supported Nana entrypoint explicit and prevents route-order regressions.
+    install_auto_lab_service()
 
     from battle_lab import local_runtime
 
@@ -381,6 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if addresses:
         print("IPs privadas detectadas: " + ", ".join(addresses), flush=True)
     print("API :8765 · Showdown :8766 · renderer :8767", flush=True)
+    print("Auto Lab: rutas /auto-lab activas con LIGHT M-C congelado.", flush=True)
     print(
         "Guard activo: un solo envío por prompt; retries/forced-switch/timeouts "
         "sin prompt humano se registran como skips benignos.",
