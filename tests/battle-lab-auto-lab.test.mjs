@@ -72,6 +72,53 @@ assert "Rain" in tags and "Tailwind" in tags and "Trick Room" in tags, tags
   execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("Auto Lab canonicalizes Showdown ids and transient Mega forms to exactly six roster identities", () => {
+  const source = fs.readFileSync(audit, "utf8");
+  assert.match(source, /_canonical_candidate_species/);
+  assert.match(source, /DYNAMIC_FORM_SUFFIXES/);
+  assert.match(source, /identity not in canonical_preview/);
+  const script = `
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from battle_lab.auto_lab_audit import _canonical_candidate_species, build_auto_lab_audit
+
+roster = ["Farigiraf", "Garchomp", "Incineroar", "Mawile", "Milotic", "Rillaboom"]
+assert _canonical_candidate_species("farigiraf", roster) == "Farigiraf"
+assert _canonical_candidate_species("mawilemega", roster) == "Mawile"
+assert _canonical_candidate_species("Mawile-Mega", roster) == "Mawile"
+
+summaries = [
+    {
+        "battleTag": "missing-1",
+        "pairing": {"alphaTeamId": "baseline", "betaTeamId": "opp-1"},
+        "winnerSide": "alpha",
+        "teamPreview": {"alpha": ["farigiraf", "garchomp", "incineroar", "mawilemega"]},
+    },
+    {
+        "battleTag": "missing-2",
+        "pairing": {"alphaTeamId": "baseline", "betaTeamId": "opp-2"},
+        "winnerSide": "alpha",
+        "teamPreview": {"alpha": ["milotic", "rillaboom", "mawile", "farigiraf"]},
+    },
+]
+with TemporaryDirectory() as tmp:
+    result = build_auto_lab_audit(
+        candidate_id="baseline",
+        candidate_roster=roster,
+        summaries=summaries,
+        candidate_report={"scorePercent": 100.0, "byOpponent": {}},
+        opponents={},
+        replay_root=Path(tmp),
+    )
+rows = result["selectionUsage"]
+assert [row["pokemon"] for row in rows] == roster, rows
+assert len(rows) == 6, rows
+counts = {row["pokemon"]: row["selectedGames"] for row in rows}
+assert counts == {"Farigiraf": 2, "Garchomp": 1, "Incineroar": 1, "Mawile": 2, "Milotic": 1, "Rillaboom": 1}, counts
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("Auto Lab strips Nana wrappers instead of benchmarking the adaptive layer", () => {
   const source = fs.readFileSync(service, "utf8");
   assert.match(source, /candidate\.__name__ == "BattleLabPolicyPlayer"/);
