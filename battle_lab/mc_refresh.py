@@ -45,7 +45,7 @@ STAGES = ("prepare", "teams", "replays", "split", "trajectories", "bc", "rl", "e
 LABELS = {"prepare": "Preparar motores fijados", "teams": "Actualizar pastes",
           "replays": "Actualizar partidas humanas", "split": "Aislar entrenamiento y evaluación",
           "trajectories": "Convertir demostraciones humanas", "bc": "Aprender de humanos",
-          "rl": "PPO/self-play", "evaluate": "Comparar con el champion"}
+          "rl": "PPO/self-play", "evaluate": "Evaluar el candidato"}
 
 
 def bc_data_gate(trajectories: int, transitions: int, minimum_transitions: int = 10000) -> dict:
@@ -97,6 +97,26 @@ def ensure_champion(root: Path) -> dict:
     if not registry.exists():
         atomic_json(registry, champion)
     return champion
+
+
+def production_reference(root: Path, checkpoint: str = "", digest: str = "") -> dict:
+    """Keep the documented deployed policy independent of the training champion."""
+    if bool(checkpoint) != bool(digest):
+        raise ValueError("Indica checkpoint y SHA-256 productivos juntos")
+    if checkpoint:
+        spec = {"id": "production-explicit", "checkpoint": str(Path(checkpoint).resolve()),
+                "sha256": digest, "format": DEFAULT_FORMAT, "source": "explicit-production-reference"}
+    else:
+        spec = read_json(root / "Refresh" / "production.json")
+        if spec is None:
+            spec = {"id": "production-LIGHT-MC-196608", "format": DEFAULT_FORMAT,
+                    "checkpoint": str(root / "training" / "rl" / "light" / f"seed{LEGACY_SEED}" / "checkpoints" / "step-000196608.zip"),
+                    "sha256": LIGHT_SHA256, "source": "documented-ROG-LIGHT-reference"}
+    if spec.get("format") != DEFAULT_FORMAT or not re.fullmatch(r"[0-9a-f]{64}", spec.get("sha256", "")):
+        raise RuntimeError("Referencia productiva inválida")
+    if sha256_file(Path(spec["checkpoint"])) != spec["sha256"]:
+        raise RuntimeError("El modelo productivo no coincide con su SHA-256")
+    return {**spec, "liveDeploymentVerified": False}
 
 
 def config_identity(config: dict) -> str:
@@ -253,9 +273,11 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
                                checkpoint=result["finalCheckpoint"], sha256=result["finalCheckpointSha256"],
                                steps=result["finalStep"], runtime=result.get("runtime", {}))
     if stage == "evaluate":
-        from battle_lab.mc_refresh_eval import evaluate
+        from battle_lab.mc_refresh_eval import evaluate, evaluate_direct
         candidate = read_json(run / "phases" / "rl.json")
-        result = evaluate(vgc_root=vgc, showdown=showdown, run=run, champion=config["champion"],
+        direct = config.get("evaluationProtocol") == "direct-v1"
+        reference = {"production": config["production"], "runtime_versions": config["runtimeVersions"]} if direct else {"champion": config["champion"]}
+        result = (evaluate_direct if direct else evaluate)(vgc_root=vgc, showdown=showdown, run=run, **reference,
                            candidate=candidate, battles=config["battles"], seed=config["seed"],
                            port=config["port"], device=config["device"], battle_format=DEFAULT_FORMAT,
                            code_sha=config["codeSha"], showdown_sha=config["showdownSha"])
@@ -264,9 +286,10 @@ def perform_stage(stage: str, config: dict, run: Path) -> dict:
 
 
 def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
-              *, worker_config: Path | None = None) -> None:
-    log_path = run / "logs" / (stage + ".log")
-    log_path.parent.mkdir(exist_ok=True)
+              *, worker_config: Path | None = None, status_root: Path | None = None) -> None:
+    status_root = status_root or run
+    log_path = status_root / "logs" / (stage + ".log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-u", "-m", "battle_lab.mc_refresh", "--worker-stage", stage, "--worker-run", str(run)]
     if worker_config is not None:
         command += ["--worker-config", str(worker_config)]
@@ -301,7 +324,7 @@ def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
                           f"{LABELS[stage]} · {human_seconds(elapsed)} · ETA fase {human_seconds(eta)}", flush=True)
                     status.update(phase=stage, heartbeatAt=utc_now(), phaseElapsedSeconds=round(elapsed, 1),
                                   phaseEtaSeconds=eta, state="running")
-                    atomic_json(run / "status.json", status)
+                    atomic_json(status_root / "status.json", status)
                     last_heartbeat = time.monotonic()
                 if proc.poll() is None and time.monotonic() - last_output > 1800:
                     raise RuntimeError(f"{stage}: 30 minutos sin salida del proceso; se conserva el checkpoint.")
@@ -319,18 +342,24 @@ def run_child(stage: str, run: Path, status: dict, phase_seconds: dict,
     phase_seconds[stage] = round(time.monotonic() - started, 2)
 
 
-def write_report(run: Path, config: dict, status: dict) -> dict:
+def write_report(run: Path, config: dict, status: dict, *, report_root: Path | None = None) -> dict:
+    destination = report_root or run
     phases = {p.stem: read_json(p) for p in (run / "phases").glob("*.json")}
+    if report_root:
+        phases["evaluate"] = read_json(report_root / "phases" / "evaluate.json")
     evaluation = phases.get("evaluate", {})
     comparison = evaluation.get("comparison")
     verdict = {"pass": "MEJORA_OBSERVADA", "mixed": "RESULTADO_MIXTO", "fail": "SIN_MEJORA"}.get(
         (comparison or {}).get("verdict"), "CENSO_COMPLETADO")
     previous = read_json(Path(config["root"]) / "Refresh" / "latest_result.json", {})
+    direct = (comparison or {}).get("protocol") == "direct-v1"
     report = {"schemaVersion": 1, "generatedAt": utc_now(), "runId": run.name,
               "state": status["state"], "verdict": verdict, "config": config, "phases": phases,
               "previousRunId": previous.get("runId"), "championChanged": False,
               "note": "El gate heredado detecta mejora observada. No prueba significancia estadística ni nivel humano. El champion y la ROG no se reemplazan automáticamente."}
-    atomic_json(run / "report.json", report)
+    if direct:
+        report["note"] = "MEJORA_OBSERVADA significa score >50% directamente contra la referencia productiva fijada. Base y Simple Heuristics se informan por separado. Es descriptivo, sin confirmar significancia estadística ni nivel humano. No cambia champion/ROG/Nana. La referencia documentada no verifica el runtime vivo de la ROG."
+    atomic_json(destination / "report.json", report)
     lines = ["Battle Lab M-C — actualización, entrenamiento y evaluación", "",
              f"Ejecución: {run.name}", f"Resultado: {verdict}", f"Modo: {config['mode']}",
              f"Champion: {config['champion']['id']} ({config['champion']['sha256']})",
@@ -352,7 +381,16 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
         lines.append("Runtime PPO medido: " + json.dumps(runtime, ensure_ascii=False))
     if config.get("evaluationRecovery"):
         lines.append("Código del entrenamiento conservado: " + config["evaluationRecovery"]["trainingCodeSha"])
-    if comparison:
+    if comparison and direct:
+        lines += [f"Batallas directas: {evaluation['battles']}",
+                  f"Modelo productivo de referencia: {config['production']['sha256']}",
+                  f"Holdout: {evaluation['holdoutView']['holdoutTeams']} equipos únicos", ""]
+        shutil.copyfile(Path(evaluation["comparisonFile"]).with_suffix(".csv"), destination / "comparison.csv")
+        for opponent, record in comparison["opponents"].items():
+            lines.append(f"Candidato vs {opponent}: {record['wins']} victorias / {record['losses']} derrotas / {record['ties']} empates · score {record['scorePercent']:.2f}%")
+            lines.append("Replays: " + record["replays"])
+        lines += ["", f"Candidato: {phases['rl']['checkpoint']}", f"SHA256 candidato: {phases['rl']['sha256']}"]
+    elif comparison:
         view = evaluation.get("holdoutView", {})
         if view:
             lines.append(f"Holdout evaluado: {view['holdoutTeams']} equipos únicos de {view['sourceHoldoutTeams']} archivos reservados")
@@ -360,7 +398,7 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
                   f"Score global champion: {comparison['publicOverallScorePercent']:.2f}%",
                   f"Score global candidato: {comparison['lightOverallScorePercent']:.2f}%",
                   f"Delta global: {comparison['overallDeltaPercentagePoints']:+.2f} puntos porcentuales", ""]
-        with (run / "comparison.csv").open("w", encoding="utf-8", newline="") as f:
+        with (destination / "comparison.csv").open("w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["control", "champion_score_pct", "candidate_score_pct", "delta_pp"])
             for control, values in comparison["controls"].items():
@@ -371,13 +409,14 @@ def write_report(run: Path, config: dict, status: dict) -> dict:
             score = "sin muestra" if fresh["scorePercent"] is None else f"{fresh['scorePercent']:.2f}%"
             lines.append(f"{name}: {fresh['games']} batallas, {fresh['teamsTested']} equipos, score {score}")
         lines += ["", f"Candidato: {phases['rl']['checkpoint']}", f"SHA256 candidato: {phases['rl']['sha256']}"]
-    lines += ["", report["note"], "", f"Informe completo: {run / 'report.json'}",
+    lines += ["", report["note"], "", f"Informe completo: {destination / 'report.json'}",
               f"Código: {config['codeSha']}", f"Showdown: {config['showdownSha']}"]
     text = "\n".join(lines) + "\n"
-    (run / "report.txt").write_text(text, encoding="utf-8")
+    (destination / "report.txt").write_text(text, encoding="utf-8")
     refresh = Path(config["root"]) / "Refresh"
-    atomic_json(refresh / "latest_result.json", report)
-    (refresh / "latest_run.txt").write_text(text, encoding="utf-8")
+    prefix = "latest_direct" if report_root else "latest"
+    atomic_json(refresh / (prefix + "_result.json"), report)
+    (refresh / (prefix + "_run.txt")).write_text(text, encoding="utf-8")
     print(text, flush=True)
     return report
 
@@ -414,7 +453,9 @@ def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict) -
     return run, config
 
 
-def recover_evaluation(root: Path, run_id: str = "") -> None:
+def recover_evaluation(root: Path, run_id: str = "", *, direct: bool = False,
+                       battles: int = 500, production_checkpoint: str = "",
+                       production_sha256: str = "") -> None:
     run_id = run_id or read_json(root / "Refresh" / "active_run.json", {}).get("runId", "")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("No hay una corrida válida que recuperar.")
@@ -423,9 +464,16 @@ def recover_evaluation(root: Path, run_id: str = "") -> None:
         raise RuntimeError("No existe config.json para la corrida seleccionada.")
     run, config = recovery_config(root, run_id, code_sha=git_sha(PROJECT_ROOT),
                                   versions=runtime_versions(original["device"]))
-    config_path = run / "recovery" / "evaluation_config.json"
+    if direct:
+        if battles < 2 or battles % 2:
+            raise ValueError("Las batallas por rival deben ser pares y al menos 2")
+        config.update(evaluationProtocol="direct-v1", battles=battles,
+                      production=production_reference(root, production_checkpoint, production_sha256))
+        config["evaluationRecovery"]["directOnly"] = True
+    config_path = run / "recovery" / ("direct_config.json" if direct else "evaluation_config.json")
     atomic_json(config_path, config)
-    status = read_json(run / "status.json", {})
+    destination = run / "direct_evaluation" if direct else run
+    status = read_json(destination / "status.json", {})
     status.update(completedStages=list(STAGES[:-1]), totalStages=len(STAGES), runId=run_id,
                   state="running", recovery=config["evaluationRecovery"])
     status.pop("error", None)
@@ -434,21 +482,26 @@ def recover_evaluation(root: Path, run_id: str = "") -> None:
     print("♻️ Recuperación: se conservan datos y checkpoint; solo se prepara el motor y se evalúa.", flush=True)
     try:
         for stage in ("prepare", "evaluate"):
-            run_child(stage, run, status, durations, worker_config=config_path)
+            kwargs = {"status_root": destination} if direct else {}
+            run_child(stage, run, status, durations, worker_config=config_path, **kwargs)
         status.update(state="completed", completedStages=list(STAGES), finishedAt=utc_now())
-        write_report(run, config, status)
-        atomic_json(run / "status.json", status)
+        if direct:
+            write_report(run, config, status, report_root=destination)
+        else:
+            write_report(run, config, status)
+        atomic_json(destination / "status.json", status)
     except BaseException as error:
         status.update(state="failed", error=f"{type(error).__name__}: {error}", failedAt=utc_now())
-        atomic_json(run / "status.json", status)
+        atomic_json(destination / "status.json", status)
         raise
 
 
-def promote(root: Path, run_id: str) -> dict:
+def promote(root: Path, run_id: str, *, direct: bool = False) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("Invalid run ID")
     run = root / "Refresh" / "runs" / run_id
-    report = read_json(run / "report.json")
+    report_path = run / "direct_evaluation" / "report.json" if direct else run / "report.json"
+    report = read_json(report_path)
     if not report or report.get("state") != "completed" or report.get("verdict") != "MEJORA_OBSERVADA":
         raise RuntimeError("Solo puede seleccionarse un candidato con benchmark completo y mejora observada.")
     old = ensure_champion(root)
@@ -460,7 +513,8 @@ def promote(root: Path, run_id: str) -> dict:
     champion = {"id": "MC-" + run_id, "format": DEFAULT_FORMAT, "checkpoint": candidate["checkpoint"],
                 "sha256": candidate["sha256"], "parentSha256": old["sha256"], "sourceRun": run_id,
                 "selectedAt": utc_now(), "selection": "explicit-after-observed-pass"}
-    atomic_json(run / "promotion.json", {"previous": old, "champion": champion})
+    atomic_json(run / "promotion.json", {"previous": old, "champion": champion,
+                                         "benchmarkReport": str(report_path), "benchmarkSha256": sha256_file(report_path)})
     atomic_json(root / "Refresh" / "champion.json", champion)
     print("Champion seleccionado para próximas corridas de este Colab. La ROG/Nana no se modificó.", flush=True)
     return champion
@@ -486,14 +540,19 @@ def main(argv=None) -> int:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--promote-run", default="")
+    parser.add_argument("--promote-direct-run", default="")
     parser.add_argument("--recover-evaluation", action="store_true")
+    parser.add_argument("--direct-evaluation", action="store_true")
+    parser.add_argument("--production-checkpoint", default="")
+    parser.add_argument("--production-sha256", default="")
     parser.add_argument("--worker-stage", choices=STAGES)
     parser.add_argument("--worker-run", type=Path)
     parser.add_argument("--worker-config", type=Path)
     args = parser.parse_args(argv)
     if args.worker_stage:
         if args.worker_config:
-            expected = args.worker_run / "recovery" / "evaluation_config.json"
+            direct = args.worker_config.name == "direct_config.json"
+            expected = args.worker_run / "recovery" / ("direct_config.json" if direct else "evaluation_config.json")
             if args.worker_config.resolve() != expected.resolve() or args.worker_stage not in ("prepare", "evaluate"):
                 raise RuntimeError("La recuperación solo permite preparar y evaluar.")
             config = read_json(expected)
@@ -505,8 +564,11 @@ def main(argv=None) -> int:
             raise RuntimeError("Worker is running a different code snapshot")
         result = perform_stage(args.worker_stage, config, args.worker_run)
         phase_dir = args.worker_run / "phases"
-        if args.worker_config and args.worker_stage == "prepare":
-            phase_dir = args.worker_run / "recovery" / "phases"
+        if args.worker_config:
+            if config["evaluationRecovery"].get("directOnly"):
+                phase_dir = args.worker_run / "direct_evaluation" / "phases"
+            elif args.worker_stage == "prepare":
+                phase_dir = args.worker_run / "recovery" / "phases"
         atomic_json(phase_dir / (args.worker_stage + ".json"), result)
         return 0
     if args.root is None:
@@ -522,8 +584,15 @@ def main(argv=None) -> int:
         if args.promote_run:
             promote(root, args.promote_run)
             return 0
+        if args.promote_direct_run:
+            promote(root, args.promote_direct_run, direct=True)
+            return 0
         if args.recover_evaluation:
             recover_evaluation(root, args.run_id)
+            return 0
+        if args.direct_evaluation:
+            recover_evaluation(root, args.run_id, direct=True, battles=args.battles,
+                               production_checkpoint=args.production_checkpoint, production_sha256=args.production_sha256)
             return 0
         if args.battles < 2 or args.battles % 2 or args.replay_pages < 1 or args.num_envs not in (1, 2, 4):
             parser.error("battles must be even >=2; replay-pages >=1; num-envs one of 1,2,4")
@@ -540,6 +609,8 @@ def main(argv=None) -> int:
                   "vgcBenchSha": VGC_BENCH_COMMIT, "workers": resolve_workers(args.workers),
                   "numEnvs": args.num_envs, "battles": args.battles, "replayPages": args.replay_pages,
                   "bcMinTransitions": args.bc_min_transitions,
+                  "evaluationProtocol": "direct-v1",
+                  "production": production_reference(root, args.production_checkpoint, args.production_sha256),
                   "seed": args.seed, "device": device, "port": args.port}
         run = select_run(root, config, args.run_action, args.run_id)
         stages = STAGES[:5] if args.mode == "CENSUS" else STAGES
