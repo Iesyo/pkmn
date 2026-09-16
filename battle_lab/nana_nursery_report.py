@@ -73,8 +73,12 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
         "automaticPromotion": False,
         "interventions": 0,
     }
-    bridged = sum(
-        (item.get("continuity") or {}).get("kind") == "benign-skip-bridge"
+    prompt_linked = sum(
+        (item.get("continuity") or {}).get("kind") == "next-human-prompt"
+        for item in observations
+    )
+    terminal = sum(
+        (item.get("continuity") or {}).get("kind") == "session-end"
         for item in observations
     )
     return {
@@ -93,7 +97,8 @@ def build_report(runtime_root: Path, profile_id: str) -> dict[str, Any]:
         "recordingErrors": recording_errors,
         "selfExperience": {
             "observations": len(observations),
-            "bridgedObservations": bridged,
+            "promptLinkedObservations": prompt_linked,
+            "terminalObservations": terminal,
             "positive": sum(item.get("label") == "positive" for item in observations),
             "neutral": sum(item.get("label") == "neutral" for item in observations),
             "negative": sum(item.get("label") == "negative" for item in observations),
@@ -134,7 +139,8 @@ def _print(report: dict[str, Any]) -> None:
     experience = report.get("selfExperience") or {}
     print(
         f"Nana real outcomes: n={experience.get('observations', 0)} · "
-        f"bridged={experience.get('bridgedObservations', 0)} · "
+        f"prompt-linked={experience.get('promptLinkedObservations', 0)} · "
+        f"terminal={experience.get('terminalObservations', 0)} · "
         f"+/=/−={experience.get('positive',0)}/{experience.get('neutral',0)}/{experience.get('negative',0)} · "
         f"mean board Δ={_num(experience.get('meanDelta'))}"
     )
