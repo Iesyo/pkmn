@@ -217,3 +217,30 @@ export function selectAutoLabOpponentCandidates(
   }
   return output;
 }
+
+function autoLabDateValue(value: string) {
+  const parsed = Date.parse(value.trim());
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+export function selectAutoLabRecentVgcPastesCandidates(
+  teams: WarRoomCorpusTeam[],
+  limit: number,
+) {
+  if (limit <= 0) return [];
+  return teams
+    .map((team, index) => ({ team, index, sharedAt: autoLabDateValue(team.dateShared) }))
+    .filter(({ team, sharedAt }) =>
+      !team.historical
+      && team.source === "vgcpastes"
+      && Boolean(team.pokepasteUrl)
+      && Number.isFinite(sharedAt),
+    )
+    .sort((left, right) =>
+      right.sharedAt - left.sharedAt
+      || left.index - right.index
+      || left.team.id.localeCompare(right.team.id),
+    )
+    .slice(0, limit)
+    .map(({ team }) => team);
+}
