@@ -52,11 +52,24 @@ def git_sha(root: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 
 
-def runtime_versions() -> dict:
+def runtime_versions(device: str = "cpu") -> dict:
+    # The notebook's structural tests use only the standard library. Import the
+    # actual training stack before spending time collecting data; Colab can have
+    # unrelated preinstalled extras with conflicting pip requirements.
+    for module in ("stable_baselines3", "imitation.algorithms.bc", "supersuit",
+                   "poke_env.environment", "poke_env.ps_client", "nashpy", "huggingface_hub"):
+        importlib.import_module(module)
+    import numpy as np
+    import torch
+    # Exercise the NumPy bridge and the selected CPU/GPU without training.
+    probe = torch.from_numpy(np.ones(1, dtype=np.float32)).to(device)
+    if probe.sum().item() != 1:
+        raise RuntimeError("Falló la comprobación mínima de PyTorch.")
     versions = {"python": sys.version.split()[0],
                 "node": subprocess.check_output(["node", "--version"], text=True).strip()}
     for package in ("torch", "numpy", "stable-baselines3", "imitation", "poke-env", "supersuit"):
         versions[package] = importlib.metadata.version(package)
+    print("✅ Preflight de entrenamiento: imports y PyTorch OK · " + device, flush=True)
     return versions
 
 
@@ -418,7 +431,7 @@ def main(argv=None) -> int:
         config = {"schemaVersion": 1, "root": str(root), "mode": args.mode, "profile": PROFILES[args.mode],
                   "runtimeRoot": str(args.runtime_root.resolve()), "champion": champion,
                   "codeSha": git_sha(PROJECT_ROOT), "showdownSha": read_showdown_commit(),
-                  "runtimeVersions": runtime_versions(),
+                  "runtimeVersions": runtime_versions(device),
                   "vgcBenchSha": VGC_BENCH_COMMIT, "workers": resolve_workers(args.workers),
                   "numEnvs": args.num_envs, "battles": args.battles, "replayPages": args.replay_pages,
                   "seed": args.seed, "device": device, "port": args.port}
