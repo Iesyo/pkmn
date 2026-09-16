@@ -489,6 +489,25 @@ def _mc_eval_players(vgc_bench_checkout: Path, port: int, seed: int, team_count:
     return single_agent_env, config, SimpleHeuristicsPlayer, RandomTeamBuilder
 
 
+def train_bc_block(learner, transitions, max_batch_size: int = 1024) -> dict[str, int]:
+    """Train every transition once, including blocks below imitation's batch size."""
+    count = len(transitions)
+    if count <= 0 or max_batch_size <= 0:
+        raise ValueError("BC necesita transiciones y tamaño de lote positivos.")
+    # Balanced slices avoid a tiny tail when a block barely exceeds the limit.
+    batches = (count + max_batch_size - 1) // max_batch_size
+    size = (count + batches - 1) // batches
+    sizes = []
+    for start in range(0, count, size):
+        batch = transitions[start:start + size]
+        learner.batch_size = learner.minibatch_size = len(batch)
+        learner.set_demonstrations(batch)
+        learner.train(n_epochs=1)
+        sizes.append(len(batch))
+    return {"transitions": count, "batches": len(sizes),
+            "minBatchSize": min(sizes), "maxBatchSize": max(sizes)}
+
+
 def fine_tune_bc(
     *,
     vgc_bench_checkout: Path,
@@ -512,6 +531,7 @@ def fine_tune_bc(
     inject_mc_support(vgc_bench_checkout)
     from imitation.algorithms.bc import BC
     from imitation.data.types import DictObs, Trajectory
+    from imitation.data.rollout import flatten_trajectories
     from imitation.util.logger import configure
     from stable_baselines3 import PPO
     from torch.utils.data import DataLoader, Dataset
@@ -622,7 +642,7 @@ def fine_tune_bc(
             team=RandomTeamBuilder(seed, team_count, "mc"),
         ) if eval_battles > 0 else None
 
-        progress = Progress(epochs, "BC M-C")
+        progress = Progress(epochs * len(dataloader), "BC M-C")
         history: list[dict[str, Any]] = []
         optimizer_path = checkpoint_dir / f"epoch-{completed_epoch:03d}.optimizer.pt"
         if completed_epoch and optimizer_path.exists():
@@ -632,9 +652,13 @@ def fine_tune_bc(
             if initial_checkpoint is not None:
                 import torch
                 torch.manual_seed(seed + epoch)
-            for demonstrations in dataloader:
-                bc.set_demonstrations(demonstrations)
-                bc.train(n_epochs=1)
+            epoch_transitions = epoch_batches = 0
+            for block_index, demonstrations in enumerate(dataloader, 1):
+                stats = train_bc_block(bc, flatten_trajectories(demonstrations))
+                epoch_transitions += stats["transitions"]
+                epoch_batches += stats["batches"]
+                progress.update((epoch - 1) * len(dataloader) + block_index,
+                                f"época {epoch}/{epochs} · {epoch_transitions} transiciones", force=True)
             win_rates = Callback.compare(eval_agent, eval_opponent, eval_battles) if eval_battles > 0 else None
             checkpoint = checkpoint_dir / f"epoch-{epoch:03d}.zip"
             partial = checkpoint.with_name(checkpoint.stem + ".part.zip")
@@ -647,8 +671,9 @@ def fine_tune_bc(
                 partial_optimizer.replace(optimizer_path)
                 optimizer_path.with_suffix(".sha256").write_text(sha256_file(optimizer_path) + "\n")
             checkpoint.with_suffix(".sha256").write_text(sha256_file(checkpoint) + "\n")
-            history.append({"epoch": epoch, "heuristicWinRates": win_rates, "checkpoint": str(checkpoint)})
-            progress.update(epoch, f"heuristic={win_rates}", force=True)
+            history.append({"epoch": epoch, "heuristicWinRates": win_rates, "checkpoint": str(checkpoint),
+                            "transitionsTrained": epoch_transitions, "optimizerBatches": epoch_batches})
+            print(f"💾 BC época {epoch}/{epochs}: {epoch_transitions} transiciones · {checkpoint.name}", flush=True)
         single_env.close()
 
     final_checkpoint = checkpoint_dir / f"epoch-{epochs:03d}.zip"
