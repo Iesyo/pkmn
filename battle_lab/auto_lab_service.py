@@ -276,11 +276,19 @@ def install_auto_lab_service() -> type:
                 )
 
             async def progress(payload: dict[str, Any]) -> None:
+                payload_phase = str(payload.get("phase") or "")
+                if payload_phase in {"running", "finalizing"}:
+                    job.phase = payload_phase
                 job.completed_battles = int(payload.get("completedBattles", job.completed_battles) or 0)
                 job.current_candidate_id = str(payload.get("candidateId") or job.current_candidate_id)
                 job.current_candidate_label = str(payload.get("candidateLabel") or job.current_candidate_label)
-                job.current_opponent_id = str(payload.get("opponentId") or "")
-                if job.current_opponent_id:
+                if "opponentId" in payload:
+                    job.current_opponent_id = str(payload.get("opponentId") or "")
+                if job.phase == "finalizing":
+                    job.append_event(
+                        f"Combates terminados: {job.completed_battles}/{job.total_battles}. Generando informe…"
+                    )
+                elif job.current_opponent_id:
                     job.append_event(
                         f"{job.current_candidate_label}: {job.current_opponent_id} · {job.completed_battles}/{job.total_battles}"
                     )
