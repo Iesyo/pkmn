@@ -468,7 +468,8 @@ async def run_auto_lab_gauntlet(
     return {
         "schemaVersion": 2,
         "benchmark": "light-mc-team-gauntlet",
-        "policy": "LIGHT M-C turns deterministic; candidate Team Preview sampled",
+        "policy": f"{runtime.metadata.get('modelLabel', 'LIGHT M-C')} turns deterministic; candidate Team Preview sampled",
+        "model": {key: runtime.metadata.get(key) for key in ("modelId", "modelLabel", "checkpointSha256")},
         "previewExploration": {
             "candidateOnly": True,
             "turnPolicyDeterministic": True,
@@ -487,7 +488,7 @@ async def run_auto_lab_gauntlet(
         ),
         "audit": audit,
         "caveat": (
-            "El score y la auditoría describen compatibilidad LIGHT-equipo contra este pool; "
+            "El score y la auditoría describen compatibilidad modelo-equipo contra este pool; "
             "no estiman el win rate real del jugador en ladder o torneo."
         ),
     }
