@@ -27,6 +27,14 @@ async function forward(
       signal: AbortSignal.timeout(relativePath === "model-info" ? 300_000 : 30_000),
     });
     const body = await upstream.text();
+    if (upstream.status === 404 && relativePath.startsWith("auto-lab")) {
+      return Response.json(
+        {
+          detail: "Auto Lab no está cargado en el runtime local. Reinicia Nana/Battle Lab desde la rama actual para activar las rutas /auto-lab.",
+        },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
     return new Response(body, {
       status: upstream.status,
       headers: {
