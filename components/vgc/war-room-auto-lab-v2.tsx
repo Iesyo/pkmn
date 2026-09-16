@@ -80,6 +80,9 @@ type AutoLabJob = {
   events: string[];
   result: AutoLabResult | null;
 };
+type AutoLabPreflightVerdict = { id: string; label: string; valid: boolean; error: string };
+type AutoLabPreflightStatus = { checked: number; valid: number; rejected: number; lastRejected: string };
+type LoadedOpponent = { team: WarRoomCorpusTeam; paste: string; label: string };
 
 function seconds(value: number | null) {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -119,6 +122,25 @@ async function loadExactPaste(team: WarRoomCorpusTeam) {
   return paste;
 }
 
+function opponentLabel(team: WarRoomCorpusTeam, deep: boolean, fallback: string) {
+  return [deep ? team.dateShared : "", team.playerName, team.tournament].filter(Boolean).join(" · ") || fallback;
+}
+
+async function validateBattleReadyBatch(teams: Array<{ id: string; label: string; teamPaste: string }>) {
+  const response = await fetch("/api/battle-lab/auto-lab/validate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ teams }),
+  });
+  const payload = await readPayload(response);
+  if (!response.ok) throw new Error(errorText(payload, "No se pudo prevalidar el corpus con Pokémon Showdown."));
+  const results = payload && typeof payload === "object" && "results" in payload
+    && Array.isArray((payload as { results?: unknown }).results)
+    ? (payload as { results: AutoLabPreflightVerdict[] }).results
+    : [];
+  return new Map(results.map((result) => [result.id, result]));
+}
+
 function speciesFromPair(value: string) {
   if (!value || value === "No recuperado") return [];
   return value.split(" + ").map((item) => item.trim()).filter(Boolean);
@@ -142,6 +164,7 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<AutoLabJob | null>(null);
   const [runError, setRunError] = useState("");
+  const [preflight, setPreflight] = useState<AutoLabPreflightStatus | null>(null);
   const pollRef = useRef<number | null>(null);
   const teamKey = useMemo(() => `${team.id}|${team.paste}`, [team.id, team.paste]);
   const baselinePaste = useMemo(() => serializeShowdownPaste(team.pokemon, team.mechanics ?? ["mega"]), [team]);
@@ -162,32 +185,76 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
   async function startAudit() {
     if (!baselineReady.ready) return;
     if (pollRef.current != null) window.clearTimeout(pollRef.current);
-    setStarting(true); setRunError(""); setJob(null);
+    setStarting(true); setRunError(""); setJob(null); setPreflight({ checked: 0, valid: 0, rejected: 0, lastRejected: "" });
     try {
       const spec = PRESETS[preset];
+      const baselineVerdicts = await validateBattleReadyBatch([
+        { id: "baseline-current", label: `${team.name} · Team actual`, teamPaste: baselinePaste },
+      ]);
+      const baselineVerdict = baselineVerdicts.get("baseline-current");
+      if (!baselineVerdict?.valid) {
+        throw new Error(`El Team actual no supera validate-team M-C: ${baselineVerdict?.error || "validación sin respuesta"}`);
+      }
+
       const pool = preset === "deep"
         ? selectAutoLabRecentVgcPastesCandidates(corpusTeams, spec.opponents * 3)
         : selectAutoLabOpponentCandidates(corpusTeams, spec.opponents * 3, teamKey);
-      const loaded: Array<{ team: WarRoomCorpusTeam; paste: string }> = [];
+      const loaded: LoadedOpponent[] = [];
+      let checked = 0;
+      let rejected = 0;
+      let lastRejected = "";
+
       for (let offset = 0; offset < pool.length && loaded.length < spec.opponents; offset += LOAD_BATCH) {
-        const batch = await Promise.all(pool.slice(offset, offset + LOAD_BATCH).map(async (candidate) => {
-          try { const paste = await loadExactPaste(candidate); return inspectBattleReadyPaste(paste).ready ? { team: candidate, paste } : null; }
-          catch { return null; }
+        const candidates = pool.slice(offset, offset + LOAD_BATCH);
+        const fetched = await Promise.all(candidates.map(async (candidate, index) => {
+          const id = `preflight-${offset + index + 1}`;
+          const label = opponentLabel(candidate, preset === "deep", `Rival ${offset + index + 1}`);
+          try {
+            const paste = await loadExactPaste(candidate);
+            const structural = inspectBattleReadyPaste(paste);
+            if (!structural.ready) return { id, team: candidate, label, error: structural.issues[0] || "Paste incompleto." };
+            return { id, team: candidate, label, paste, error: "" };
+          } catch (error) {
+            return { id, team: candidate, label, error: error instanceof Error ? error.message : "No se pudo cargar el paste rival." };
+          }
         }));
-        for (const item of batch) if (item && loaded.length < spec.opponents) loaded.push(item);
+
+        const readyToValidate = fetched.filter((item): item is LoadedOpponent & { id: string; error: string } => "paste" in item && Boolean(item.paste));
+        for (const item of fetched) {
+          if ("paste" in item && item.paste) continue;
+          checked += 1;
+          rejected += 1;
+          lastRejected = `${item.label}: ${item.error}`;
+        }
+
+        if (readyToValidate.length) {
+          const verdicts = await validateBattleReadyBatch(readyToValidate.map((item) => ({ id: item.id, label: item.label, teamPaste: item.paste })));
+          for (const item of readyToValidate) {
+            checked += 1;
+            const verdict = verdicts.get(item.id);
+            if (verdict?.valid) {
+              if (loaded.length < spec.opponents) loaded.push({ team: item.team, paste: item.paste, label: item.label });
+            } else {
+              rejected += 1;
+              lastRejected = `${item.label}: ${verdict?.error || "Showdown rechazó el paste."}`;
+            }
+          }
+        }
+        setPreflight({ checked, valid: loaded.length, rejected, lastRejected });
       }
+
       if (preset === "deep" && loaded.length < spec.opponents) {
-        throw new Error(`Profundo necesita ${spec.opponents} VGCPastes M-C recientes battle-ready; solo encontramos ${loaded.length}.`);
+        throw new Error(`Profundo necesita ${spec.opponents} VGCPastes M-C recientes validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`);
       }
-      if (loaded.length < Math.min(6, spec.opponents)) throw new Error("No hay suficientes rivales battle-ready entre VGCPastes, torneos y Mis pastes.");
+      if (loaded.length < Math.min(6, spec.opponents)) throw new Error("No hay suficientes rivales válidos en Showdown entre VGCPastes, torneos y Mis pastes.");
       const response = await fetch("/api/battle-lab/auto-lab", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           baseline: { id: "baseline-current", label: `${team.name} · Team actual`, teamPaste: baselinePaste },
-          opponents: loaded.map(({ team: opponent, paste }, index) => ({
+          opponents: loaded.map(({ paste, label }, index) => ({
             id: `opponent-${index + 1}`,
-            label: [preset === "deep" ? opponent.dateShared : "", opponent.playerName, opponent.tournament].filter(Boolean).join(" · ") || `Rival ${index + 1}`,
+            label,
             teamPaste: paste,
           })),
           battlesPerOpponent: spec.battlesPerOpponent,
@@ -202,9 +269,9 @@ export function WarRoomAutoLab({ team, corpusTeams }: { team: TeamVersion; corpu
 
   const audit = job?.result?.audit;
   return <section className="rounded-[26px] border border-cyan-300/12 bg-cyan-300/[0.02] p-5">
-    <div className="flex flex-wrap items-start justify-between gap-4"><div className="max-w-3xl"><div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300"><ShieldCheck className="size-3.5" />Auto Lab · auditoría empírica</div><h2 className="mt-1 text-lg font-black text-white">Tortura el Team actual contra un meta mucho más ancho</h2><p className="mt-1 text-[10px] leading-4 text-slate-500">Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</p></div>{job ? <Button type="button" variant="outline" size="sm" onClick={() => { setJob(null); setRunError(""); }} disabled={job.phase === "running" || job.phase === "preparing"} className="gap-2 border-white/10 text-[9px]"><RefreshCw className="size-3.5" />Limpiar informe</Button> : null}</div>
+    <div className="flex flex-wrap items-start justify-between gap-4"><div className="max-w-3xl"><div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300"><ShieldCheck className="size-3.5" />Auto Lab · auditoría empírica</div><h2 className="mt-1 text-lg font-black text-white">Tortura el Team actual contra un meta mucho más ancho</h2><p className="mt-1 text-[10px] leading-4 text-slate-500">Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</p></div>{job ? <Button type="button" variant="outline" size="sm" onClick={() => { setJob(null); setRunError(""); setPreflight(null); }} disabled={job.phase === "running" || job.phase === "preparing"} className="gap-2 border-white/10 text-[9px]"><RefreshCw className="size-3.5" />Limpiar informe</Button> : null}</div>
 
-    <div className="mt-5 rounded-2xl border border-white/7 bg-slate-950/45 p-4"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-500">Cobertura del Gauntlet</p><div className="mt-2 flex flex-wrap gap-2">{(Object.keys(PRESETS) as RunPreset[]).map((value) => <button key={value} type="button" onClick={() => setPreset(value)} disabled={Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className={cn("rounded-xl border px-3 py-2 text-left transition", preset === value ? "border-cyan-300/30 bg-cyan-300/[0.08]" : "border-white/8 bg-slate-950/30 hover:border-white/15")}><span className={cn("block text-[9px] font-black", preset === value ? "text-cyan-100" : "text-slate-300")}>{PRESETS[value].label}</span><span className="mt-0.5 block text-[8px] text-slate-600">{PRESETS[value].opponents} rivales × {PRESETS[value].battlesPerOpponent}</span></button>)}</div><p className="mt-2 text-[9px] text-slate-600">{PRESETS[preset].description}</p></div><Button type="button" onClick={() => void startAudit()} disabled={starting || !baselineReady.ready || Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{starting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{starting ? "Cargando corpus…" : "Auditar Team con LIGHT"}</Button></div>{!baselineReady.ready ? <p className="mt-3 text-[9px] text-rose-300">El Team actual no es battle-ready: {baselineReady.issues[0]}</p> : null}</div>
+    <div className="mt-5 rounded-2xl border border-white/7 bg-slate-950/45 p-4"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-500">Cobertura del Gauntlet</p><div className="mt-2 flex flex-wrap gap-2">{(Object.keys(PRESETS) as RunPreset[]).map((value) => <button key={value} type="button" onClick={() => { setPreset(value); setPreflight(null); }} disabled={Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className={cn("rounded-xl border px-3 py-2 text-left transition", preset === value ? "border-cyan-300/30 bg-cyan-300/[0.08]" : "border-white/8 bg-slate-950/30 hover:border-white/15")}><span className={cn("block text-[9px] font-black", preset === value ? "text-cyan-100" : "text-slate-300")}>{PRESETS[value].label}</span><span className="mt-0.5 block text-[8px] text-slate-600">{PRESETS[value].opponents} rivales × {PRESETS[value].battlesPerOpponent}</span></button>)}</div><p className="mt-2 text-[9px] text-slate-600">{PRESETS[preset].description}</p></div><Button type="button" onClick={() => void startAudit()} disabled={starting || !baselineReady.ready || Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{starting ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{starting ? "Validando meta…" : "Auditar Team con LIGHT"}</Button></div>{!baselineReady.ready ? <p className="mt-3 text-[9px] text-rose-300">El Team actual no es battle-ready: {baselineReady.issues[0]}</p> : null}{preflight ? <div className="mt-3 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.025] px-3 py-2 text-[8px] text-slate-500"><strong className="text-cyan-200">Preflight Showdown M-C:</strong> {preflight.valid}/{PRESETS[preset].opponents} válidos · {preflight.rejected} descartados · {preflight.checked} revisados{preflight.lastRejected ? <div className="mt-1 truncate text-amber-200/70" title={preflight.lastRejected}>Último descarte: {preflight.lastRejected}</div> : null}</div> : null}</div>
 
     {runError ? <div className="mt-4 flex items-start gap-2 rounded-2xl border border-rose-300/15 bg-rose-300/[0.04] p-4 text-xs text-rose-200"><AlertTriangle className="mt-0.5 size-4 shrink-0" />{runError}</div> : null}
     {job && !job.result ? <div className="mt-4 rounded-2xl border border-cyan-300/12 bg-cyan-300/[0.025] p-4"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Swords className="size-4 text-cyan-300" /><strong className="text-xs text-white">{job.currentOpponentId ? `Probando ${job.currentOpponentId}` : job.phase === "preparing" ? "Preparando arena…" : "Gauntlet en curso"}</strong></div><span className="font-mono text-[9px] text-slate-500">{job.completedBattles}/{job.totalBattles}</span></div><Progress value={Math.max(0, Math.min(100, job.progress * 100))} className="mt-3 h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-cyan-300" /><div className="mt-2 flex justify-between text-[8px] text-slate-600"><span>Transcurrido {seconds(job.elapsedSeconds)}</span><span>ETA {seconds(job.etaSeconds)}</span></div>{job.error ? <p className="mt-3 text-[9px] text-rose-300">{job.error}</p> : null}</div> : null}
