@@ -23,7 +23,7 @@ from battle_lab.showdown_smoke import DEFAULT_FORMAT, validate_team
 
 
 MAX_VARIANTS = 6
-MAX_OPPONENTS = 12
+MAX_OPPONENTS = 24
 DEFAULT_BATTLES_PER_OPPONENT = 2
 MAX_BATTLES_PER_OPPONENT = 20
 
@@ -195,9 +195,14 @@ def install_auto_lab_service() -> type:
 
             light_runtime = _frozen_light_runtime(self.runtime)
             job.phase = "running"
-            job.append_event(
-                f"Gauntlet listo: baseline + {len(job.request.variants)} sets candidatos × {len(job.request.opponents)} rivales."
-            )
+            if job.request.variants:
+                job.append_event(
+                    f"Gauntlet listo: baseline + {len(job.request.variants)} sets candidatos × {len(job.request.opponents)} rivales."
+                )
+            else:
+                job.append_event(
+                    f"Auditoría lista: Team actual × {len(job.request.opponents)} rivales."
+                )
 
             async def progress(payload: dict[str, Any]) -> None:
                 job.completed_battles = int(payload.get("completedBattles", job.completed_battles) or 0)
@@ -232,7 +237,7 @@ def install_auto_lab_service() -> type:
             elif job.request.variants:
                 job.append_event("Auditoría terminada · ningún set candidato superó el baseline.")
             else:
-                job.append_event("Auditoría del baseline terminada · no había sets alternativos que comparar.")
+                job.append_event("Auditoría empírica del Team actual terminada.")
         except asyncio.CancelledError:
             job.phase = "cancelled"
             job.append_event("Gauntlet cancelado.")
