@@ -322,9 +322,40 @@ def _opponent_id(summary: Mapping[str, Any], candidate_id: str) -> str:
     )
 
 
-def _replay_path(replay_root: Path, battle_tag: str) -> Path | None:
-    direct = list(replay_root.rglob(f"*{battle_tag}*.html"))
-    return direct[0] if direct else None
+def _index_replay_paths(
+    replay_root: Path,
+    battle_tags: Sequence[str],
+) -> dict[str, Path]:
+    """Scan the replay tree once and map battle tags to files.
+
+    Poke-env normally saves replays as `<battle-tag>.html`; the fallback handles
+    wrappers/prefixes without repeating a filesystem traversal for every battle.
+    """
+
+    wanted = [tag for tag in dict.fromkeys(str(tag) for tag in battle_tags) if tag]
+    if not wanted:
+        return {}
+
+    paths = list(replay_root.rglob("*.html"))
+    by_stem = {path.stem: path for path in paths}
+    index: dict[str, Path] = {}
+    unresolved: list[str] = []
+    for tag in wanted:
+        direct = by_stem.get(tag)
+        if direct is not None:
+            index[tag] = direct
+        else:
+            unresolved.append(tag)
+
+    if unresolved and paths:
+        pattern = re.compile(
+            "|".join(re.escape(tag) for tag in sorted(unresolved, key=len, reverse=True))
+        )
+        for path in paths:
+            match = pattern.search(path.name)
+            if match:
+                index.setdefault(match.group(0), path)
+    return index
 
 
 def _record(rows: Sequence[Mapping[str, Any]], candidate_id: str) -> dict[str, int]:
@@ -354,11 +385,13 @@ def build_auto_lab_audit(
     roster_order = {name: index for index, name in enumerate(roster)}
     canonical = lambda value: _canonical_candidate_species(str(value), roster)
 
+    battle_tags = [str(summary.get("battleTag") or "") for summary in summaries]
+    replay_index = _index_replay_paths(replay_root, battle_tags)
     facts: dict[str, AutoLabReplayFacts] = {}
     replay_errors: list[dict[str, str]] = []
     for summary in summaries:
         tag = str(summary.get("battleTag") or "")
-        path = _replay_path(replay_root, tag) if tag else None
+        path = replay_index.get(tag) if tag else None
         if not path:
             replay_errors.append({"battleTag": tag, "error": "Replay ausente"})
             continue
