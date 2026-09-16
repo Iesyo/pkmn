@@ -12,6 +12,36 @@ test("periodic refresh preserves data partitions, snapshots, champion identity a
     { cwd: root, encoding: "utf8", timeout: 30000 });
 });
 
+test("evaluation recovery loads the fix and routes only to recovery, preserving normal resume", () => {
+  execFileSync("python3", ["-c", String.raw`
+import json, re, sys, tempfile
+from pathlib import Path
+nb = json.loads(Path('colab/Battle_Lab_MC_Refresh.ipynb').read_text())
+bootstrap = ''.join(nb['cells'][2]['source']).split('source_ref = PKMN_REF', 1)[1].split('# El repositorio', 1)[0]
+bootstrap = 'source_ref = PKMN_REF' + bootstrap
+with tempfile.TemporaryDirectory() as temp:
+    refresh = Path(temp)
+    run = refresh/'runs'/'saved-run'
+    run.mkdir(parents=True)
+    (refresh/'active_run.json').write_text(json.dumps({'runId': 'saved-run'}))
+    (run/'config.json').write_text(json.dumps({'codeSha': 'training-sha'}))
+    (run/'status.json').write_text(json.dumps({'state': 'failed'}))
+    for action in ('auto', 'resume', 'recover_evaluation'):
+        for selected in ('', 'saved-run'):
+            scope = dict(json=json, re=re, REFRESH=refresh, RUN_ID=selected,
+                         RUN_ACTION=action, PKMN_REF='fixed-branch')
+            exec(bootstrap, scope)
+            assert scope['source_ref'] == ('fixed-branch' if action == 'recover_evaluation' else 'training-sha')
+    calls = []
+    scope = dict(sys=sys, ROOT=refresh, REPO=refresh, RUN_ID='saved-run',
+                 RUN_ACTION='recover_evaluation', run=lambda command, cwd: calls.append(command))
+    # No training settings are supplied: the recovery must use the frozen run.
+    exec(''.join(nb['cells'][5]['source']), scope)
+    assert calls == [[sys.executable, '-u', '-m', 'battle_lab.mc_refresh', '--root', refresh,
+                      '--recover-evaluation', '--run-id', 'saved-run']]
+`], { cwd: root, encoding: "utf8" });
+});
+
 test("unified Colab has executable Python cells, clean outputs and conservative defaults", () => {
   const notebookPath = path.join(root, "colab/Battle_Lab_MC_Refresh.ipynb");
   const notebook = JSON.parse(fs.readFileSync(notebookPath, "utf8"));
