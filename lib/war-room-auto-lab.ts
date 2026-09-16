@@ -2,8 +2,10 @@ import { updateMove } from "./team-builder";
 import type { PokemonSet } from "./types";
 import type {
   WarRoomAuditResult,
+  WarRoomCorpusTeam,
   WarRoomOptimizationResult,
   WarRoomSetChange,
+  WarRoomSetSuggestion,
 } from "./war-room";
 
 export const MAX_AUTO_LAB_VARIANTS = 4;
@@ -13,9 +15,11 @@ export type AutoLabVariant = {
   label: string;
   species: string;
   setId: string;
-  change: WarRoomSetChange;
+  changes: WarRoomSetChange[];
   pokemon: PokemonSet[];
   rationale: string[];
+  methodology: WarRoomSetSuggestion["methodology"];
+  sourceLabel: string;
 };
 
 export type AutoLabDiagnosis = {
@@ -27,6 +31,10 @@ export type AutoLabDiagnosis = {
   gaps: number;
   priority: string;
 };
+
+const AUTO_LAB_SOURCES = ["tournament", "scouting-library", "vgcpastes"] as const;
+
+type AutoLabSource = (typeof AUTO_LAB_SOURCES)[number];
 
 function clonePokemon(team: PokemonSet[]) {
   return team.map((set) => ({
@@ -47,36 +55,38 @@ function slug(value: string) {
     .slice(0, 48);
 }
 
-function applySingleChange(team: PokemonSet[], change: WarRoomSetChange, setId: string) {
-  const next = clonePokemon(team);
-  const index = next.findIndex((set) => set.id === setId);
-  if (index < 0) return null;
-  const current = next[index];
-
-  if (change.key === "item") {
-    next[index] = { ...current, item: change.suggested };
-  } else if (change.key === "ability") {
-    next[index] = { ...current, ability: change.suggested };
-  } else if (change.key === "nature") {
-    next[index] = { ...current, nature: change.suggested };
-  } else if (change.key === "statPoints") {
-    next[index] = { ...current, evs: change.suggested };
-  } else if (change.key.startsWith("move-")) {
-    const slot = Number(change.key.slice(5));
-    if (!Number.isInteger(slot) || slot < 0 || slot > 3) return null;
-    next[index] = updateMove(current, slot, change.suggested);
-  } else {
-    return null;
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
+  return hash >>> 0;
+}
 
+function applySetPackage(team: PokemonSet[], suggestion: WarRoomSetSuggestion) {
+  const next = clonePokemon(team);
+  const index = next.findIndex((set) => set.id === suggestion.setId);
+  if (index < 0 || suggestion.proposal.moves.length !== 4) return null;
+
+  let replacement: PokemonSet = {
+    ...next[index],
+    item: suggestion.proposal.item,
+    ability: suggestion.proposal.ability,
+    nature: suggestion.proposal.nature,
+    evs: suggestion.proposal.evs,
+  };
+  suggestion.proposal.moves.forEach((move, slot) => {
+    replacement = updateMove(replacement, slot, move);
+  });
+  next[index] = replacement;
   return next;
 }
 
-function changePriority(change: WarRoomSetChange) {
-  if (change.key.startsWith("move-")) return 0;
-  if (change.key === "item" || change.key === "ability") return 1;
-  if (change.key === "nature" || change.key === "statPoints") return 2;
-  return 3;
+function methodologyPriority(value: WarRoomSetSuggestion["methodology"]) {
+  if (value === "observed-paste") return 0;
+  if (value === "observed-paste-patched") return 1;
+  return 2;
 }
 
 export function diagnoseAutoLab(audit: WarRoomAuditResult): AutoLabDiagnosis {
@@ -107,42 +117,103 @@ export function buildAutoLabVariants(
 ): AutoLabVariant[] {
   if (maxVariants < 1) return [];
 
-  const candidates = optimization.sets.flatMap((suggestion, suggestionIndex) =>
-    suggestion.changes.map((change, changeIndex) => ({
-      suggestion,
-      suggestionIndex,
-      change,
-      changeIndex,
-    })),
-  );
+  const candidates = optimization.sets
+    .filter((suggestion) => suggestion.changes.length > 0 && suggestion.proposal.moves.length === 4)
+    .map((suggestion, index) => ({ suggestion, index }));
 
   candidates.sort((left, right) =>
-    changePriority(left.change) - changePriority(right.change)
-    || (right.change.evidence ?? -1) - (left.change.evidence ?? -1)
-    || left.suggestion.structuralDelta - right.suggestion.structuralDelta
-    || left.suggestionIndex - right.suggestionIndex
-    || left.changeIndex - right.changeIndex,
+    methodologyPriority(left.suggestion.methodology) - methodologyPriority(right.suggestion.methodology)
+    || (right.suggestion.source?.contextFit ?? -1) - (left.suggestion.source?.contextFit ?? -1)
+    || right.suggestion.structuralDelta - left.suggestion.structuralDelta
+    || right.suggestion.changes.length - left.suggestion.changes.length
+    || left.index - right.index,
   );
 
   const output: AutoLabVariant[] = [];
   const seen = new Set<string>();
-  for (const candidate of candidates) {
+  for (const { suggestion } of candidates) {
     if (output.length >= maxVariants) break;
-    const key = `${candidate.suggestion.setId}|${candidate.change.key}|${candidate.change.suggested}`;
-    if (seen.has(key)) continue;
-    const pokemon = applySingleChange(team, candidate.change, candidate.suggestion.setId);
+    const packageKey = [
+      suggestion.setId,
+      suggestion.proposal.item,
+      suggestion.proposal.ability,
+      suggestion.proposal.nature,
+      suggestion.proposal.evs,
+      ...suggestion.proposal.moves,
+    ].join("|");
+    if (seen.has(packageKey)) continue;
+    const pokemon = applySetPackage(team, suggestion);
     if (!pokemon) continue;
-    seen.add(key);
-    const field = candidate.change.field || candidate.change.key;
+    seen.add(packageKey);
+    const sourceLabel = suggestion.source?.label
+      ?? (suggestion.methodology === "battle-data-fallback" ? "Battle Data" : "evidencia contextual");
     output.push({
-      id: `variant-${output.length + 1}-${slug(candidate.suggestion.species)}-${slug(String(candidate.change.key))}`,
-      label: `${candidate.suggestion.species}: ${field} → ${candidate.change.suggested}`,
-      species: candidate.suggestion.species,
-      setId: candidate.suggestion.setId,
-      change: candidate.change,
+      id: `variant-${output.length + 1}-${slug(suggestion.species)}-full-set`,
+      label: `${suggestion.species}: paquete de set completo`,
+      species: suggestion.species,
+      setId: suggestion.setId,
+      changes: suggestion.changes,
       pokemon,
-      rationale: candidate.suggestion.reasons.slice(0, 3),
+      rationale: suggestion.reasons.slice(0, 3),
+      methodology: suggestion.methodology,
+      sourceLabel,
     });
+  }
+  return output;
+}
+
+export function autoLabCorpusCandidates(teams: WarRoomCorpusTeam[]) {
+  return teams.filter((team) =>
+    !team.historical
+    && AUTO_LAB_SOURCES.includes(team.source as AutoLabSource)
+    && Boolean(team.savedPasteId || team.pokepasteUrl),
+  );
+}
+
+export function selectAutoLabOpponentCandidates(
+  teams: WarRoomCorpusTeam[],
+  limit: number,
+  seedKey: string,
+) {
+  if (limit <= 0) return [];
+  const buckets = new Map<AutoLabSource, WarRoomCorpusTeam[]>();
+  AUTO_LAB_SOURCES.forEach((source) => buckets.set(source, []));
+  for (const team of autoLabCorpusCandidates(teams)) {
+    const source = team.source as AutoLabSource;
+    buckets.get(source)?.push(team);
+  }
+  for (const source of AUTO_LAB_SOURCES) {
+    buckets.get(source)?.sort((left, right) =>
+      stableHash(`${seedKey}|${left.id}`) - stableHash(`${seedKey}|${right.id}`)
+      || left.id.localeCompare(right.id),
+    );
+  }
+
+  const output: WarRoomCorpusTeam[] = [];
+  const seen = new Set<string>();
+  let cursor = 0;
+  while (output.length < limit) {
+    let added = false;
+    for (const source of AUTO_LAB_SOURCES) {
+      const team = buckets.get(source)?.[cursor];
+      if (!team || seen.has(team.id)) continue;
+      output.push(team);
+      seen.add(team.id);
+      added = true;
+      if (output.length >= limit) break;
+    }
+    if (!added) break;
+    cursor += 1;
+  }
+
+  if (output.length < limit) {
+    const leftovers = autoLabCorpusCandidates(teams)
+      .filter((team) => !seen.has(team.id))
+      .sort((left, right) => stableHash(`${seedKey}|all|${left.id}`) - stableHash(`${seedKey}|all|${right.id}`));
+    for (const team of leftovers) {
+      output.push(team);
+      if (output.length >= limit) break;
+    }
   }
   return output;
 }
