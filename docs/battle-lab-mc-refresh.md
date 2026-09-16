@@ -64,11 +64,35 @@ nueva si la anterior terminó. `new` inicia otro ciclo; `resume` exige uno pendi
 `RUN_ID` permite señalar una ejecución concreta. La libreta carga el commit exacto
 de la ejecución pendiente antes de importar código.
 
+Si PPO ya terminó y falló la evaluación, abrir la libreta actualizada y elegir
+`RUN_ACTION="recover_evaluation"`. Dejar `RUN_ID` vacío recupera la corrida activa;
+también puede indicarse su ID. Ejecutar todo con el mismo tipo de dispositivo.
+Esta acción carga el código corregido, verifica los hashes de datos y modelos y
+repite únicamente preparación del motor y evaluación. Conserva el `config.json`
+original y registra ambos commits en `recovery/evaluation_config.json`.
+Las versiones del runtime deben coincidir con las del entrenamiento guardado.
+
+Los pastes se deduplican con la misma normalización de texto que el benchmark.
+Para snapshots antiguos con copias que solo difieren en espacios o saltos de
+línea, la evaluación genera `evaluation/corpus/` con equipos únicos, manifiesto
+y relación de copias omitidas. El snapshot original permanece intacto; se siguen
+rechazando cambios de archivos y cruces de firmas entre train y holdout.
+
 El contrato incluye champion, código, Showdown, VGC-Bench, versiones de runtime,
 dispositivo, semilla y parámetros. Una configuración distinta exige otro ciclo.
 Los workers de descarga/conversión se recalculan según CPU/memoria (auto90,
 máximo ocho); el coordinador escribe los datos. Usar una sola sesión Colab por
 esta carpeta: el bloqueo de proceso local no coordina distintas máquinas.
+
+PPO usa por defecto dos entornos paralelos de simulación y CUDA cuando está
+disponible. Cada entorno aporta ambas perspectivas de self-play. La evaluación
+actual juega una batalla a la vez. `NUM_ENVS` permite 1, 2 o 4 en un ciclo nuevo;
+auto90 de descarga/conversión no modifica ese parámetro. Más VRAM ocupada no
+implica mayor velocidad: la simulación también depende de CPU y del servidor.
+Las nuevas sesiones PPO registran dispositivo real de la política, parámetros,
+entornos y pico de memoria CUDA asignada/reservada en logs, estado e informe.
+El pico corresponde al proceso actual; no reconstruye el uso de sesiones pasadas
+ni mide el porcentaje de actividad GPU. Al terminar el proceso se libera su VRAM.
 
 Cada fase usa un proceso nuevo y conserva stdout, heartbeat y progreso. El ETA
 de fase se estima con ciclos anteriores del mismo modo/envs/dispositivo; los
