@@ -9,6 +9,7 @@ const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), ".."
 const core = path.join(root, "battle_lab", "auto_lab.py");
 const service = path.join(root, "battle_lab", "auto_lab_service.py");
 const runtime = path.join(root, "battle_lab", "local_runtime.py");
+const nanaRuntime = path.join(root, "battle_lab", "nana_stage2_nursery_lan_runtime.py");
 const proxy = path.join(root, "app", "api", "battle-lab", "[...path]", "route.ts");
 const variants = path.join(root, "lib", "war-room-auto-lab.ts");
 const panel = path.join(root, "components", "vgc", "war-room-auto-lab.tsx");
@@ -23,7 +24,7 @@ test("Auto Lab keeps LIGHT fixed and compares identical opponent/side schedules"
   assert.match(source, /run_vgc_bench_battles/);
   assert.match(source, /compare_with_baseline/);
   assert.match(source, /not presented as a ladder/);
-  execFileSync("python", ["-m", "py_compile", core, service], { cwd: root, encoding: "utf8" });
+  execFileSync("python", ["-m", "py_compile", core, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
 
 test("Auto Lab strips Nana wrappers instead of benchmarking the adaptive layer", () => {
@@ -34,8 +35,13 @@ test("Auto Lab strips Nana wrappers instead of benchmarking the adaptive layer",
   assert.match(source, /Ya existe un Gauntlet Auto Lab activo/);
 });
 
-test("local runtime and loopback proxy expose Auto Lab without changing Sparring routes", () => {
+test("local and Nana runtimes expose Auto Lab before serving LAN traffic", () => {
   assert.match(fs.readFileSync(runtime, "utf8"), /install_auto_lab_service\(\)/);
+  const nana = fs.readFileSync(nanaRuntime, "utf8");
+  assert.match(nana, /from battle_lab\.auto_lab_service import install_auto_lab_service/);
+  assert.match(nana, /install_auto_lab_service\(\)[\s\S]*lan\.install_direct_lan\(local_runtime\)/);
+  assert.match(nana, /Auto Lab: rutas \/auto-lab activas/);
+
   const route = fs.readFileSync(proxy, "utf8");
   assert.match(route, /auto-lab/);
   assert.match(route, /sparring/);
