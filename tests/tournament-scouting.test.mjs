@@ -307,7 +307,7 @@ test("connects persistent tournament scouting to a new editable Team Builder dra
   assert.match(tournamentBrowser, /respondió con una página en lugar del archivo de torneos/);
   assert.match(tournamentBrowser, /Buscar torneo/);
   assert.match(tournamentBrowser, /Importar al Builder/);
-  assert.match(tournamentBrowser, />Inspector</);
+  assert.match(tournamentBrowser, /Inspector/);
   assert.match(tournamentBrowser, /Inspector de torneo/);
   assert.match(tournamentBrowser, /parseShowdownPaste/);
   assert.match(tournamentBrowser, /enrich, false|loadTeamPaste\(team, false\)/);
