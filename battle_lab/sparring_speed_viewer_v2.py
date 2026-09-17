@@ -166,8 +166,29 @@ EXTRA_JS = r'''
 '''
 
 
+def _disable_legacy_speed_panel_updates(html: str) -> str:
+    """Let v2 be the only writer of the Speed Tier panel.
+
+    ``legacy.BRIDGE_HTML`` already contains the v1 Speed Tier poll.  Keeping both
+    writers means that, when a battle completes and ``activeSession`` becomes
+    null, v1 clears/hides the panel every 300 ms while v2 paints the idle
+    diagnostic every 350 ms.  The result is the visible post-battle flicker.
+    Showdown/native-control polling remains untouched; only the two v1 panel
+    writes are neutralized.
+    """
+
+    legacy_idle = "if (!activeSession) { renderSpeedTier(null); return; }"
+    legacy_snapshot = "renderSpeedTier(snapshot && snapshot.battle ? snapshot.battle.speedTier : null);"
+    missing = [token for token in (legacy_idle, legacy_snapshot) if token not in html]
+    if missing:
+        raise RuntimeError("El wrapper legacy cambió y no se pudo aislar Speed Tier v2.")
+    html = html.replace(legacy_idle, "if (!activeSession) return;", 1)
+    html = html.replace(legacy_snapshot, "/* Speed Tier v2 owns panel rendering. */", 1)
+    return html
+
+
 def build_bridge_html() -> str:
-    html = legacy.BRIDGE_HTML
+    html = _disable_legacy_speed_panel_updates(legacy.BRIDGE_HTML)
     if 'data-speed-tier-layout="v2"' in html:
         return html
     html = html.replace('</style>', EXTRA_CSS.strip() + '\n</style>', 1)
