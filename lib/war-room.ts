@@ -42,8 +42,9 @@ export const WAR_ROOM_BATTLE_FORMAT = "champions";
 export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
 export const MAX_WAR_ROOM_HISTORICAL_TEAMS = 5_000;
 export const MAX_WAR_ROOM_TEAM_MEGAS = 2;
-export const MAX_WAR_ROOM_LOCKED_IDENTITIES = 5;
-export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 12;
+export const MAX_WAR_ROOM_LOCKED_IDENTITIES = 6;
+export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT = 4;
+export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 20;
 
 export type WarRoomEvidenceScope = "exact-set" | "team-preview" | "corpus";
 export type WarRoomSeverity = "blocker" | "high" | "medium" | "low";
@@ -2360,15 +2361,7 @@ function memberSuggestions(
       const next = [...teamProfiles.filter((entry) => entry.id !== removed.id), profile];
       return { removed, delta: currentPenalty - teamDefensePenalty(next), next };
     }).sort((left, right) => right.delta - left.delta || left.removed.species.localeCompare(right.removed.species));
-    const best = replacements[0];
-    if (!best) return [];
-    const patchedTypes = POKEMON_TYPES.filter((type) => {
-      const beforeWeak = teamProfiles.filter((entry) => defensiveMultiplier(type, entry) > 1).length;
-      const beforeSafe = teamProfiles.filter((entry) => defensiveMultiplier(type, entry) < 1).length;
-      const afterWeak = best.next.filter((entry) => defensiveMultiplier(type, entry) > 1).length;
-      const afterSafe = best.next.filter((entry) => defensiveMultiplier(type, entry) < 1).length;
-      return afterWeak - afterSafe < beforeWeak - beforeSafe;
-    });
+    if (!replacements.length) return [];
     const evidenceMode = candidate.currentCoreAppearances > 0
       ? "core" as const
       : candidate.historicalCoreAppearances > 0
@@ -2397,57 +2390,77 @@ function memberSuggestions(
         : maxCorpusAppearances);
     const historicalRegulations = [...candidate.regulations];
     const persistence = historicalRegulations.length / 3;
-    const balance = clamp(50 + best.delta * 8) / 100;
-    const score = clamp(round(100 * (evidenceMode === "core"
-      ? 0.41 * synergy + 0.23 * frequency + 0.30 * balance + 0.06 * persistence
-      : evidenceMode === "historical"
-        ? 0.38 * synergy + 0.20 * frequency + 0.32 * balance + 0.10 * persistence
-        : 0.35 * frequency + 0.65 * balance)));
-    const replacementLabel = best.removed.species || `Slot ${best.removed.slot}`;
     const sortedHistoricalRegulations = historicalRegulations.sort((left, right) => ["M-B", "M-A", "SV-I"].indexOf(left) - ["M-B", "M-A", "SV-I"].indexOf(right));
     const evidenceRegulations = evidenceMode === "core"
       ? ["M-C", ...sortedHistoricalRegulations]
       : evidenceMode === "historical"
         ? sortedHistoricalRegulations
         : ["M-C"];
-    return [{
-      species: candidate.species,
-      observedAs: candidate.observedAs,
-      isMega: profile.megaActive,
-      score,
-      appearancesWithCore: candidate.currentCoreAppearances + candidate.historicalCoreAppearances,
-      sampleSize,
-      usageRate: round(appearances / Math.max(1, sampleSize) * 100, 1),
-      replaces: replacementLabel,
-      replacesSetId: best.removed.id,
-      patchedTypes: patchedTypes.slice(0, 4),
-      evidenceMode,
-      evidenceRegulations,
-      currentAppearances: candidate.currentCoreAppearances,
-      historicalAppearances: candidate.historicalCoreAppearances,
-      reasons: [
-        evidenceMode === "core"
-          ? `Aparece junto al core en ${candidate.currentCoreAppearances}/${pool.length} equipos M-C comparables${historicalRegulations.length ? ` y persiste en ${historicalRegulations.join(", ")}` : ""}.`
-          : evidenceMode === "historical"
-            ? `La relación con el core aparece en ${candidate.historicalCoreAppearances}/${historicalPool.length} equipos históricos (${historicalRegulations.join(", ")}); se pondera por antigüedad y solo pasa si la especie es legal en M-C.`
-            : `El lote del core se agotó; aparece en ${candidate.currentCorpusAppearances}/${corpus.length} equipos M-C del corpus ampliado.`,
-        best.delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${replacementLabel}.` : `La mejor prueba estructural es reemplazar a ${replacementLabel}, sin mejora defensiva garantizada.`,
-        patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : evidenceMode === "expanded" ? "Se propone por frecuencia M-C y encaje estructural; no por coaparición directa con el core." : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
-      ],
-    }];
+    return replacements.map(({ removed, delta, next }) => {
+      const patchedTypes = POKEMON_TYPES.filter((type) => {
+        const beforeWeak = teamProfiles.filter((entry) => defensiveMultiplier(type, entry) > 1).length;
+        const beforeSafe = teamProfiles.filter((entry) => defensiveMultiplier(type, entry) < 1).length;
+        const afterWeak = next.filter((entry) => defensiveMultiplier(type, entry) > 1).length;
+        const afterSafe = next.filter((entry) => defensiveMultiplier(type, entry) < 1).length;
+        return afterWeak - afterSafe < beforeWeak - beforeSafe;
+      });
+      const balance = clamp(50 + delta * 8) / 100;
+      const score = clamp(round(100 * (evidenceMode === "core"
+        ? 0.41 * synergy + 0.23 * frequency + 0.30 * balance + 0.06 * persistence
+        : evidenceMode === "historical"
+          ? 0.38 * synergy + 0.20 * frequency + 0.32 * balance + 0.10 * persistence
+          : 0.35 * frequency + 0.65 * balance)));
+      const replacementLabel = removed.species || `Slot ${removed.slot}`;
+      return {
+        species: candidate.species,
+        observedAs: candidate.observedAs,
+        isMega: profile.megaActive,
+        score,
+        appearancesWithCore: candidate.currentCoreAppearances + candidate.historicalCoreAppearances,
+        sampleSize,
+        usageRate: round(appearances / Math.max(1, sampleSize) * 100, 1),
+        replaces: replacementLabel,
+        replacesSetId: removed.id,
+        patchedTypes: patchedTypes.slice(0, 4),
+        evidenceMode,
+        evidenceRegulations,
+        currentAppearances: candidate.currentCoreAppearances,
+        historicalAppearances: candidate.historicalCoreAppearances,
+        reasons: [
+          evidenceMode === "core"
+            ? `Aparece junto al core en ${candidate.currentCoreAppearances}/${pool.length} equipos M-C comparables${historicalRegulations.length ? ` y persiste en ${historicalRegulations.join(", ")}` : ""}.`
+            : evidenceMode === "historical"
+              ? `La relación con el core aparece en ${candidate.historicalCoreAppearances}/${historicalPool.length} equipos históricos (${historicalRegulations.join(", ")}); se pondera por antigüedad y solo pasa si la especie es legal en M-C.`
+              : `El lote del core se agotó; aparece en ${candidate.currentCorpusAppearances}/${corpus.length} equipos M-C del corpus ampliado.`,
+          delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${replacementLabel}.` : `La prueba estructural para este hueco no garantiza una mejora defensiva al reemplazar a ${replacementLabel}.`,
+          patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : evidenceMode === "expanded" ? "Se propone por frecuencia M-C y encaje estructural; no por coaparición directa con el core." : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
+        ],
+      };
+    });
   }).sort((left, right) => (
     (["core", "historical", "expanded"].indexOf(left.evidenceMode) - ["core", "historical", "expanded"].indexOf(right.evidenceMode))
     || right.score - left.score
     || right.appearancesWithCore - left.appearancesWithCore
     || left.species.localeCompare(right.species)
+    || left.replacesSetId.localeCompare(right.replacesSetId)
   ));
   let recommendedMegas = 0;
-  const limitedMembers = members.filter((member) => {
-    if (!member.isMega) return true;
-    if (recommendedMegas >= recommendationSlots) return false;
-    recommendedMegas += 1;
-    return true;
-  }).slice(0, MAX_WAR_ROOM_MEMBER_SUGGESTIONS);
+  const limitedMembers: WarRoomMemberSuggestion[] = [];
+  for (const replacement of replacementPool) {
+    let slotSuggestions = 0;
+    for (const member of members) {
+      if (member.replacesSetId !== replacement.id) continue;
+      if (member.isMega && recommendedMegas >= recommendationSlots) continue;
+      limitedMembers.push(member);
+      slotSuggestions += 1;
+      if (member.isMega) recommendedMegas += 1;
+      if (
+        slotSuggestions >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT
+        || limitedMembers.length >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS
+      ) break;
+    }
+    if (limitedMembers.length >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS) break;
+  }
   return {
     members: limitedMembers,
     sampleSize: pool.length + historicalPool.length,

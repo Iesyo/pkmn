@@ -681,47 +681,60 @@ test("uses historical partner relationships only after the current-regulation le
   const historical = historicalCorpusTeam("old-core", [team[1].species, illegalSpecies, ...legalPartners]);
 
   const result = optimizeTeam(team, [team[1].id], [], snapshot, {}, { historicalCorpus: [historical] });
-  assert.equal(result.members.length, 4, "an illegal candidate must not consume one of the available cards");
+  assert.equal(result.members.length, 20, "four legal candidates should fill every unlocked slot without the illegal species consuming a card");
+  const perSlot = result.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
+  assert.deepEqual([...perSlot.values()], [4, 4, 4, 4, 4]);
   assert.equal(result.members.some((member) => member.species === illegalSpecies), false);
   assert.ok(result.members.every((member) => member.evidenceMode === "historical"));
   assert.ok(result.members.every((member) => member.evidenceRegulations.includes("M-B")));
   assert.ok(result.members.every((member) => isSpeciesAvailable(snapshot, member.species, "champions")));
 });
 
-test("caps identity locks at five even when a caller submits all six", async () => {
+test("allows all six identities to be locked", async () => {
   const snapshot = await readSnapshot();
   const { createWarRoomPokemonLocks, MAX_WAR_ROOM_LOCKED_IDENTITIES, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
   const team = ownTeam();
   const requestedLocks = Object.fromEntries(team.map((pokemon) => [pokemon.id, createWarRoomPokemonLocks(true)]));
   const result = optimizeTeam(team, requestedLocks, corpus(), snapshot);
 
-  assert.equal(MAX_WAR_ROOM_LOCKED_IDENTITIES, 5);
-  assert.deepEqual(result.lockedSpecies, team.slice(0, 5).map((pokemon) => pokemon.species));
-  assert.equal(result.locks[5].fields.some((field) => field.key === "identity"), false);
+  assert.equal(MAX_WAR_ROOM_LOCKED_IDENTITIES, 6);
+  assert.deepEqual(result.lockedSpecies, team.map((pokemon) => pokemon.species));
+  assert.ok(result.locks.every((summary) => summary.fields.some((field) => field.key === "identity")));
+  assert.equal(result.members.length, 0);
 });
 
-test("offers up to twelve partners and can consume the previous recommendation batch", async () => {
+test("offers four partners per unlocked slot up to twenty and can consume the previous batch", async () => {
   const snapshot = await readSnapshot();
-  const { MAX_WAR_ROOM_MEMBER_SUGGESTIONS, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const {
+    MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
+    MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT,
+    optimizeTeam,
+  } = await vite.ssrLoadModule("/lib/war-room.ts");
   const team = ownTeam();
-  const candidates = [
-    "Abomasnow", "Absol", "Aegislash", "Aerodactyl", "Aggron",
-    "Alakazam", "Alcremie", "Altaria", "Ampharos", "Annihilape",
-    "Appletun", "Araquanid", "Arbok", "Arboliva", "Arcanine",
-  ];
-  const partnerCorpus = Array.from({ length: 3 }, (_, index) => corpusTeam(
+  const current = new Set(team.map((pokemon) => pokemon.species.toLowerCase()));
+  const candidates = [...new Set(snapshot.formats.champions
+    .map((id) => snapshot.species[id]?.name)
+    .filter((name) => name && !name.includes("-Mega") && !current.has(name.toLowerCase())))]
+    .slice(0, 36);
+  assert.equal(candidates.length, 36);
+  const partnerCorpus = Array.from({ length: 8 }, (_, index) => corpusTeam(
     `large-${index}`,
     ["Rillaboom", ...candidates.slice(index * 5, index * 5 + 5)],
   ));
   const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
 
-  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS, 12);
-  assert.equal(first.members.length, 12);
-  assert.ok(first.members.every((member) => member.replacesSetId));
+  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT, 4);
+  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS, 20);
+  assert.equal(first.members.length, 20);
+  const firstPerSlot = first.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
+  assert.deepEqual([...firstPerSlot.values()], [4, 4, 4, 4, 4]);
+  assert.equal(firstPerSlot.has(team[1].id), false);
 
-  const previousBatch = first.members.map((member) => member.species);
+  const previousBatch = [...new Set(first.members.map((member) => member.species))];
   const next = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
-  assert.equal(next.members.length, 3);
+  assert.equal(next.members.length, 20);
+  const nextPerSlot = next.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
+  assert.deepEqual([...nextPerSlot.values()], [4, 4, 4, 4, 4]);
   assert.ok(next.members.every((member) => !previousBatch.includes(member.species)));
 });
 
@@ -736,21 +749,21 @@ test("expands beyond an exhausted exact-core sample without repeating earlier ba
     .slice(0, 36);
   assert.equal(candidates.length, 36);
   const partnerCorpus = [
-    corpusTeam("exact-small", ["Rillaboom", ...candidates.slice(0, 5)]),
+    corpusTeam("exact-small", ["Rillaboom", ...candidates.slice(0, 2)]),
     ...Array.from({ length: 5 }, (_, index) => corpusTeam(
       `expanded-${index}`,
-      candidates.slice(5 + index * 6, 11 + index * 6),
+      candidates.slice(2 + index * 6, 8 + index * 6),
     )),
   ];
 
   const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
-  assert.equal(first.members.length, 12);
+  assert.equal(first.members.length, 20);
   assert.ok(first.members.some((member) => member.evidenceMode === "core"));
   assert.ok(first.members.some((member) => member.evidenceMode === "expanded"));
 
-  const previousBatch = first.members.map((member) => member.species);
+  const previousBatch = [...new Set(first.members.map((member) => member.species))];
   const second = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
-  assert.equal(second.members.length, 12);
+  assert.equal(second.members.length, 20);
   assert.ok(second.members.every((member) => member.evidenceMode === "expanded"));
   assert.ok(second.members.every((member) => !previousBatch.includes(member.species)));
 });
@@ -988,6 +1001,8 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /member\.isMega/);
   assert.match(warRoom, /MAX_WAR_ROOM_LOCKED_IDENTITIES/);
   assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS/);
+  assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT/);
+  assert.match(warRoom, /permite proteger los seis miembros del Team/);
   assert.match(warRoom, /Elegir y recalcular/);
   assert.match(warRoom, /buildWarRoomMemberReplacement/);
   assert.match(warRoom, /api\/opponent-meta/);

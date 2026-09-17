@@ -73,8 +73,9 @@ flowchart TD
     conserva los campos protegidos antes de validar Item Clause, habilidad,
     naturaleza, Stat Points y cuatro movimientos legales sin duplicados.
 13. Partner Search opera sobre un borrador desechable: cada integrante elegido
-    conserva el slot, consume el lote visible, recalcula hasta 12 alternativas
-    con el Team resultante y puede deshacerse sin tocar la versión persistida.
+    conserva el slot, consume el lote visible y puede deshacerse sin tocar la
+    versión persistida. Cada ronda reparte hasta cuatro alternativas por slot
+    desbloqueado, con un máximo global de 20, y recalcula con el Team resultante.
 14. Las altas de Partner Search prefieren un preset completo de Battle Data y
     caen a un set legal determinista si la fuente no responde. Cuando la muestra
     exacta/parcial se agota, la ronda se completa con candidatos nuevos del

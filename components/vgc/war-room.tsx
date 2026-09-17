@@ -50,6 +50,7 @@ import {
   WAR_ROOM_FORMAT_ID,
   MAX_WAR_ROOM_LOCKED_IDENTITIES,
   MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
+  MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT,
   auditTeam,
   buildWarRoomMemberReplacement,
   createWarRoomPokemonLocks,
@@ -105,6 +106,7 @@ type MemberReplacementHistory = Record<string, MemberReplacementStep[]>;
 
 type MemberApplyState = {
   species: string;
+  setId: string;
   status: "idle" | "loading" | "ready" | "fallback" | "error";
   message: string;
 };
@@ -155,6 +157,7 @@ const EMPTY_RIVAL_STATE: RivalSetState = {
 
 const EMPTY_MEMBER_APPLY_STATE: MemberApplyState = {
   species: "",
+  setId: "",
   status: "idle",
   message: "",
 };
@@ -647,6 +650,7 @@ function OptimizationView({
       : "sin coincidencia directa";
   const usesExpandedCorpus = result.members.some((member) => member.evidenceMode === "expanded");
   const usesHistoricalCorpus = result.members.some((member) => member.evidenceMode === "historical");
+  const allIdentitiesLocked = team.pokemon.every((set) => optimizationLocks[set.id]?.identity);
   return (
     <div className="space-y-4">
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
@@ -654,7 +658,7 @@ function OptimizationView({
           <div>
             <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Bloqueos por Pokémon</p>
             <h2 className="mt-1 text-lg font-black text-white">Protege solo lo que quieres conservar</h2>
-            <p className="mt-1 max-w-3xl text-[10px] leading-4 text-slate-500">Identidad evita reemplazar al integrante y admite hasta cinco miembros del core. Objeto, habilidad, naturaleza, Stat Points y cada movimiento restringen únicamente las propuestas de set.</p>
+            <p className="mt-1 max-w-3xl text-[10px] leading-4 text-slate-500">Identidad evita reemplazar al integrante y permite proteger los seis miembros del Team. Objeto, habilidad, naturaleza, Stat Points y cada movimiento restringen únicamente las propuestas de set.</p>
           </div>
           <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{identityCount}/{MAX_WAR_ROOM_LOCKED_IDENTITIES} identidades</Badge>
         </div>
@@ -676,9 +680,9 @@ function OptimizationView({
 
       {!identityCount ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Bloquea al menos una identidad para buscar partners</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Los bloqueos de set ya se respetan. Al proteger una identidad, el motor además buscará compañeros observados con ese núcleo sin proponer reemplazarla.</p></section> : (
         <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Orden: coaparición en M-C → relación histórica ponderada → frecuencia general en M-C. Dentro de cada grupo gana el mayor Encaje, que combina evidencia contextual y balance defensivo.</p><p className="mt-1 text-[9px] text-slate-700">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} alternativas por ronda y dos Megas por Team. La legalidad de M-C se valida antes de mostrar cada tarjeta.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {coreSampleLabel}</Badge>{usesHistoricalCorpus ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/5 text-[9px] text-cyan-200">Evidencia histórica</Badge> : null}{usesExpandedCorpus ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/5 text-[9px] text-amber-200">Búsqueda ampliada</Badge> : null}</div></div>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Orden: coaparición en M-C → relación histórica ponderada → frecuencia general en M-C. Dentro de cada grupo gana el mayor Encaje, que combina evidencia contextual y balance defensivo.</p><p className="mt-1 text-[9px] text-slate-700">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT} alternativas por identidad desbloqueada y {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} por ronda; máximo dos Megas por Team. La legalidad de M-C se valida antes de mostrar cada tarjeta.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {coreSampleLabel}</Badge>{usesHistoricalCorpus ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/5 text-[9px] text-cyan-200">Evidencia histórica</Badge> : null}{usesExpandedCorpus ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/5 text-[9px] text-amber-200">Búsqueda ampliada</Badge> : null}</div></div>
           {memberApplyState.message ? <p className={cn("mt-3 rounded-xl border px-3 py-2 text-[10px]", memberApplyState.status === "error" ? "border-rose-300/18 bg-rose-300/7 text-rose-100" : memberApplyState.status === "fallback" ? "border-amber-300/18 bg-amber-300/7 text-amber-100" : "border-emerald-300/15 bg-emerald-300/5 text-emerald-100")}>{memberApplyState.message}</p> : null}
-          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={member.species} member={member} loading={memberApplyState.status === "loading" && memberApplyState.species === member.species} disabled={memberApplyState.status === "loading"} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">Ya agotaste las alternativas compatibles disponibles en el corpus para este estado del Team.</p>}
+          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={`${member.replacesSetId}-${member.species}`} member={member} loading={memberApplyState.status === "loading" && memberApplyState.species === member.species && memberApplyState.setId === member.replacesSetId} disabled={memberApplyState.status === "loading"} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">{allIdentitiesLocked ? "Los seis integrantes están bloqueados. Libera una identidad para buscar sustitutos." : "Ya agotaste las alternativas compatibles disponibles en el corpus para este estado del Team."}</p>}
         </section>
       )}
 
@@ -998,7 +1002,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     pasteEvidenceRequest.current += 1;
     const requestId = memberApplyRequest.current;
     const pasteRequestId = pasteEvidenceRequest.current;
-    setMemberApplyState({ species: member.species, status: "loading", message: "" });
+    setMemberApplyState({ species: member.species, setId: member.replacesSetId, status: "loading", message: "" });
 
     let evidenceTeams = [...activePasteEvidence];
     const targetKey = pasteEvidenceSpeciesKey(member.species);
@@ -1060,7 +1064,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     }
     const nextPokemon = application.pokemon;
     if (nextPokemon === workingTeam.pokemon) {
-      setMemberApplyState({ species: member.species, status: "error", message: `No encontramos cuatro movimientos legales para ${member.species}; el Team no se modificó.` });
+      setMemberApplyState({ species: member.species, setId: member.replacesSetId, status: "error", message: `No encontramos cuatro movimientos legales para ${member.species}; el Team no se modificó.` });
       return;
     }
     const previousLocks = optimizationLocks[member.replacesSetId];
@@ -1107,6 +1111,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
           : `No hubo un paste ni paquete marginal viable para ${member.species}; aplicamos un set legal base y recalculamos alternativas.`;
     setMemberApplyState({
       species: member.species,
+      setId: member.replacesSetId,
       status: application.setSource === "observed-paste" || application.setSource === "observed-paste-patched" ? "ready" : "fallback",
       message,
     });

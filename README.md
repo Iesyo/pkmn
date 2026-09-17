@@ -22,8 +22,9 @@ histórico de equipos de Pokémon VGC.
   core bloqueado. El optimizador permite proteger por integrante la identidad,
   objeto, habilidad, naturaleza, Stat Points y cada slot de movimiento. Teams y
   Team Builder pueden enviar una versión o borrador directamente; se bloquean
-  hasta cinco identidades y Partner Search ofrece hasta 12 alternativas por
-  ronda, con reemplazo reversible y recálculo sobre el borrador actualizado.
+  las seis identidades y Partner Search ofrece hasta cuatro alternativas por
+  integrante desbloqueado, con un máximo de 20 por ronda, reemplazo reversible
+  y recálculo sobre el borrador actualizado.
   Si el lote del core se agota, completa la ronda desde el corpus ampliado sin
   repetir candidatos; cada alta recibe un set completo de Battle Data o un
   respaldo legal determinista, nunca una tarjeta vacía.
