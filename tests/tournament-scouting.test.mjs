@@ -254,13 +254,26 @@ test("downloads only a known tournament PokéPaste for direct import", async () 
     assert.equal(requestedRedirect, "manual");
     assert.equal(fetchCalls, 7);
 
+    const inspectorResponse = await POST(new Request("http://localhost/api/tournament-team-import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamId: "team-6016921c41817086", enrich: false }),
+    }));
+    const inspectorPayload = await inspectorResponse.json();
+    assert.equal(inspectorResponse.status, 200);
+    assert.deepEqual(inspectorPayload.estimates, { nature: 0, statPoints: 0 });
+    assert.equal((inspectorPayload.paste.match(/^EVs:/gm) ?? []).length, 0);
+    assert.equal((inspectorPayload.paste.match(/^Bold Nature$/gm) ?? []).length, 0);
+    assert.equal((inspectorPayload.paste.match(/^Timid Nature$/gm) ?? []).length, 1);
+    assert.equal(fetchCalls, 8, "Inspector should fetch only the raw PokéPaste and skip Battle Data enrichment");
+
     const missingResponse = await POST(new Request("http://localhost/api/tournament-team-import", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ teamId: "team-not-in-snapshot" }),
     }));
     assert.equal(missingResponse.status, 404);
-    assert.equal(fetchCalls, 7);
+    assert.equal(fetchCalls, 8);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -294,6 +307,10 @@ test("connects persistent tournament scouting to a new editable Team Builder dra
   assert.match(tournamentBrowser, /respondió con una página en lugar del archivo de torneos/);
   assert.match(tournamentBrowser, /Buscar torneo/);
   assert.match(tournamentBrowser, /Importar al Builder/);
+  assert.match(tournamentBrowser, />Inspector</);
+  assert.match(tournamentBrowser, /Inspector de torneo/);
+  assert.match(tournamentBrowser, /parseShowdownPaste/);
+  assert.match(tournamentBrowser, /enrich, false|loadTeamPaste\(team, false\)/);
   assert.doesNotMatch(tournamentBrowser, />Ver equipo/);
   assert.match(dashboard, /function importTournamentTeam\(request: TournamentTeamBuilderImport\)/);
   assert.match(dashboard, /setActiveView\("builder"\)/);
