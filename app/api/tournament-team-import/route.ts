@@ -105,9 +105,11 @@ export async function POST(request: Request) {
   }
 
   let teamId = "";
+  let enrich = true;
   try {
-    const payload = (await request.json()) as { teamId?: unknown };
+    const payload = (await request.json()) as { teamId?: unknown; enrich?: unknown };
     teamId = typeof payload.teamId === "string" ? payload.teamId : "";
+    enrich = payload.enrich !== false;
   } catch {
     return errorResponse("La solicitud de importación no es válida.", 400);
   }
@@ -127,7 +129,9 @@ export async function POST(request: Request) {
     if (!upstream.ok) throw new Error(`PokéPaste respondió ${upstream.status}`);
 
     const imported = await readBoundedPaste(upstream);
-    const enriched = await fillMissingMetaData(imported.pokemon);
+    const enriched = enrich
+      ? await fillMissingMetaData(imported.pokemon)
+      : { pokemon: imported.pokemon, estimates: { nature: 0, statPoints: 0 } };
     const estimatedTotal = enriched.estimates.nature + enriched.estimates.statPoints;
     const paste = estimatedTotal > 0
       ? serializeShowdownPaste(enriched.pokemon, [...DEFAULT_BATTLE_MECHANICS])
