@@ -545,7 +545,7 @@ export function VgcDashboard() {
 
         {warRoomMounted ? (
           <TabsContent value="war-room" forceMount className="mt-0 outline-none">
-            <WarRoom key={warRoomTeam ? `team-${warRoomTeam.token}` : "war-room"} groups={storedGroups} initialTeam={warRoomTeam?.team} onOpenBuilder={openWarRoomDraftInBuilder} onBuildDraft={importTournamentTeam} />
+            <WarRoom key={warRoomTeam ? `team-${warRoomTeam.token}` : "war-room"} groups={storedGroups} initialTeam={warRoomTeam?.team} onOpenBuilder={openWarRoomDraftInBuilder} />
           </TabsContent>
         ) : null}
       </main>

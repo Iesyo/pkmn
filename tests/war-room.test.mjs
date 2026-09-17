@@ -844,6 +844,7 @@ test("applies a partner to its recommended slot while preserving slot identity a
 test("preserves individual fields and move slots while building a legal set proposal", async () => {
   const snapshot = await readSnapshot();
   const {
+    applyWarRoomSetSuggestion,
     createWarRoomPokemonLocks,
     optimizeTeam,
     warRoomMetaKey,
@@ -914,6 +915,18 @@ test("preserves individual fields and move slots while building a legal set prop
     suggestion.preservedFields.map((field) => field.key),
     ["identity", "item", "ability", "nature", "statPoints", "move-0", "move-3"],
   );
+
+  const applied = applyWarRoomSetSuggestion(team, suggestion, snapshot);
+  assert.notEqual(applied, team);
+  assert.equal(applied[0].item, team[0].item);
+  assert.equal(applied[0].ability, team[0].ability);
+  assert.equal(applied[0].nature, team[0].nature);
+  assert.equal(applied[0].evs, team[0].evs);
+  assert.equal(applied[0].moves[0].name, team[0].moves[0].name);
+  assert.equal(applied[0].moves[1].name, suggestion.proposal.moves[1]);
+  assert.equal(applied[0].moves[2].name, suggestion.proposal.moves[2]);
+  assert.equal(applied[0].moves[3].name, team[0].moves[3].name);
+  assert.deepEqual(team[0].moves.map((move) => move.name), legalMoves.slice(0, 4));
 });
 
 test("does not emit an empty proposal when every set field is locked", async () => {
@@ -981,7 +994,7 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(dashboard, /<TabsContent value="war-room" forceMount/);
   assert.match(dashboard, /<WarRoom key=\{warRoomTeam/);
   assert.match(dashboard, /groups=\{storedGroups\} initialTeam=\{warRoomTeam\?\.team\}/);
-  assert.match(dashboard, /onBuildDraft=\{importTournamentTeam\}/);
+  assert.doesNotMatch(dashboard, /<WarRoom[^>]+onBuildDraft=/);
   assert.match(dashboard, /function openInWarRoom\(team: TeamVersion\)/);
   assert.match(dashboard, /Enviar a War Room/);
   assert.match(dashboard, /onOpenWarRoom=\{openInWarRoom\}/);
@@ -996,7 +1009,7 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /Bloqueos por Pokémon/);
   assert.match(warRoom, /Movimiento 4/);
   assert.match(warRoom, /Preservado por tus bloqueos/);
-  assert.match(warRoom, /Probar este set en Builder/);
+  assert.match(warRoom, /Aplicar cambios al borrador/);
   assert.match(warRoom, /dos Megas por Team/);
   assert.match(warRoom, /member\.isMega/);
   assert.match(warRoom, /MAX_WAR_ROOM_LOCKED_IDENTITIES/);
@@ -1017,8 +1030,11 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /La legalidad de M-C se valida antes de mostrar cada tarjeta/);
   assert.match(warRoom, /Histórico ·/);
   assert.match(warRoom, /historicalCorpus: resources\.corpus\.historicalTeams/);
-  assert.match(warRoom, /function undoMember\(setId: string\)/);
+  assert.match(warRoom, /applyWarRoomSetSuggestion/);
+  assert.match(warRoom, /kind: "set"/);
+  assert.match(warRoom, /function undoOptimizationChange\(setId: string\)/);
   assert.match(warRoom, /Deshacer cambio de/);
+  assert.match(warRoom, /Deshacer ajustes de/);
   assert.match(warRoom, /excludedMemberSpecies: optimization\.members\.map/);
   assert.match(warRoom, /serializeShowdownPaste/);
 });

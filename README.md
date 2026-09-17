@@ -24,7 +24,9 @@ histórico de equipos de Pokémon VGC.
   Team Builder pueden enviar una versión o borrador directamente; se bloquean
   las seis identidades y Partner Search ofrece hasta cuatro alternativas por
   integrante desbloqueado, con un máximo de 20 por ronda, reemplazo reversible
-  y recálculo sobre el borrador actualizado.
+  y recálculo sobre el borrador actualizado. Set Search aplica sus cambios en
+  ese mismo borrador de bloqueos y permite deshacerlos desde la tarjeta antes
+  de abrir el resultado completo en Team Builder.
   Si el lote del core se agota, completa la ronda desde el corpus ampliado sin
   repetir candidatos; cada alta recibe un set completo de Battle Data o un
   respaldo legal determinista, nunca una tarjeta vacía.

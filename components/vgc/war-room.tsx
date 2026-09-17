@@ -37,7 +37,6 @@ import { parseShowdownPaste } from "@/lib/paste";
 import { getSpriteUrl, toId } from "@/lib/pokemon-data";
 import { formatVersion, serializeShowdownPaste } from "@/lib/team-builder";
 import { hydrateSetFromSnapshot, loadShowdownSnapshot, type ShowdownSnapshot } from "@/lib/showdown-data";
-import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 import type { PokemonSet, TeamGroup, TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
@@ -51,6 +50,7 @@ import {
   MAX_WAR_ROOM_LOCKED_IDENTITIES,
   MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
   MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT,
+  applyWarRoomSetSuggestion,
   auditTeam,
   buildWarRoomMemberReplacement,
   createWarRoomPokemonLocks,
@@ -96,13 +96,15 @@ type PasteEvidenceState = {
   error: string;
 };
 
-type MemberReplacementStep = {
+type OptimizationChangeStep = {
+  kind: "member" | "set";
   previousSet: PokemonSet;
   previousLocks: WarRoomPokemonLocks | null;
   excludedMemberSpecies: string[];
+  changedFields: string[];
 };
 
-type MemberReplacementHistory = Record<string, MemberReplacementStep[]>;
+type OptimizationChangeHistory = Record<string, OptimizationChangeStep[]>;
 
 type MemberApplyState = {
   species: string;
@@ -469,7 +471,8 @@ function PokemonLockCard({
   set,
   locks,
   identityCount,
-  previousSpecies,
+  changeSummary,
+  undoTitle,
   onToggle,
   onToggleWholeSet,
   onUndo,
@@ -477,7 +480,8 @@ function PokemonLockCard({
   set: PokemonSet;
   locks: WarRoomPokemonLocks;
   identityCount: number;
-  previousSpecies?: string;
+  changeSummary?: string;
+  undoTitle?: string;
   onToggle: (field: WarRoomLockField) => void;
   onToggleWholeSet: (locked: boolean) => void;
   onUndo?: () => void;
@@ -504,10 +508,10 @@ function PokemonLockCard({
           : <div className="flex size-12 shrink-0 items-center justify-center rounded-full border border-dashed border-white/10 text-slate-700"><Plus className="size-5" /></div>}
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-xs font-black text-white">{set.species || `Slot ${set.slot} libre`}</h3>
-          <p className={cn("mt-0.5 text-[8px]", onUndo ? "text-violet-200" : "text-slate-600")}>{onUndo ? `Reemplazó a ${previousSpecies || `Slot ${set.slot} libre`}` : lockedCount ? `${lockedCount} ${lockedCount === 1 ? "campo protegido" : "campos protegidos"}` : "Sin restricciones"}</p>
+          <p className={cn("mt-0.5 text-[8px]", onUndo ? "text-violet-200" : "text-slate-600")}>{onUndo ? changeSummary : lockedCount ? `${lockedCount} ${lockedCount === 1 ? "campo protegido" : "campos protegidos"}` : "Sin restricciones"}</p>
         </div>
         <div className="flex items-center gap-1.5">
-          {onUndo ? <button type="button" onClick={onUndo} aria-label={`Deshacer cambio de ${set.species || `Slot ${set.slot}`}`} title={`Volver a ${previousSpecies || `Slot ${set.slot} libre`}`} className="flex size-7 items-center justify-center rounded-lg border border-violet-300/20 bg-violet-300/7 text-violet-200 transition hover:bg-violet-300/15"><X className="size-3.5" /></button> : null}
+          {onUndo ? <button type="button" onClick={onUndo} aria-label={`Deshacer cambio de ${set.species || `Slot ${set.slot}`}`} title={undoTitle || "Deshacer último cambio"} className="flex size-7 items-center justify-center rounded-lg border border-violet-300/20 bg-violet-300/7 text-violet-200 transition hover:bg-violet-300/15"><X className="size-3.5" /></button> : null}
           <button type="button" onClick={() => onToggleWholeSet(!fullyLocked)} className="rounded-lg border border-white/8 px-2 py-1 text-[8px] font-bold text-slate-500 transition hover:border-cyan-300/20 hover:text-cyan-200">
             {fullyLocked ? "Liberar set" : "Bloquear set"}
           </button>
@@ -533,7 +537,7 @@ function PokemonLockCard({
   );
 }
 
-function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSuggestion; onBuild: () => void }) {
+function SetSuggestionCard({ suggestion, onApply }: { suggestion: WarRoomSetSuggestion; onApply: () => void }) {
   const observed = suggestion.methodology !== "battle-data-fallback";
   const badge = suggestion.methodology === "observed-paste"
     ? "Paste observado"
@@ -583,7 +587,7 @@ function SetSuggestionCard({ suggestion, onBuild }: { suggestion: WarRoomSetSugg
         ))}
       </div>
       <p className="mt-3 text-[9px] leading-4 text-slate-600">{suggestion.reasons.join(" ")}</p>
-      <Button type="button" variant="outline" size="sm" onClick={onBuild} className="mt-3 w-full gap-2 border-amber-300/15 bg-amber-300/5 text-[9px] font-black text-amber-100 hover:bg-amber-300/10"><Hammer className="size-3.5" />Probar este set en Builder</Button>
+      <Button type="button" variant="outline" size="sm" onClick={onApply} className="mt-3 w-full gap-2 border-amber-300/15 bg-amber-300/5 text-[9px] font-black text-amber-100 hover:bg-amber-300/10"><CheckCircle2 className="size-3.5" />Aplicar cambios al borrador</Button>
     </article>
   );
 }
@@ -618,14 +622,14 @@ function OptimizationView({
   metaState,
   pasteEvidenceState,
   memberApplyState,
-  replacementHistory,
+  optimizationHistory,
   onToggleLock,
   onToggleWholeSet,
   onLoadMeta,
   onOpenBuilder,
-  onBuildSuggestion,
+  onApplySet,
   onApplyMember,
-  onUndoMember,
+  onUndoChange,
 }: {
   team: TeamVersion;
   result: WarRoomOptimizationResult;
@@ -633,14 +637,14 @@ function OptimizationView({
   metaState: MetaState;
   pasteEvidenceState: PasteEvidenceState;
   memberApplyState: MemberApplyState;
-  replacementHistory: MemberReplacementHistory;
+  optimizationHistory: OptimizationChangeHistory;
   onToggleLock: (id: string, field: WarRoomLockField) => void;
   onToggleWholeSet: (id: string, locked: boolean) => void;
   onLoadMeta: () => void;
   onOpenBuilder: () => void;
-  onBuildSuggestion: (suggestion: WarRoomSetSuggestion) => void;
+  onApplySet: (suggestion: WarRoomSetSuggestion) => void;
   onApplyMember: (member: WarRoomMemberSuggestion) => void;
-  onUndoMember: (setId: string) => void;
+  onUndoChange: (setId: string) => void;
 }) {
   const identityCount = result.lockedSpecies.length;
   const coreSampleLabel = result.coreSample.mode === "exact"
@@ -653,7 +657,7 @@ function OptimizationView({
   const allIdentitiesLocked = team.pokemon.every((set) => optimizationLocks[set.id]?.identity);
   return (
     <div className="space-y-4">
-      <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
+      <section id="war-room-optimization-locks" className="scroll-mt-4 rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Bloqueos por Pokémon</p>
@@ -663,18 +667,27 @@ function OptimizationView({
           <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/7 text-[9px] text-cyan-200">{identityCount}/{MAX_WAR_ROOM_LOCKED_IDENTITIES} identidades</Badge>
         </div>
         <div className="mt-4 grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-          {team.pokemon.map((set) => (
-            <PokemonLockCard
+          {team.pokemon.map((set) => {
+            const lastChange = optimizationHistory[set.id]?.at(-1);
+            const previousSpecies = lastChange?.previousSet.species || `Slot ${set.slot} libre`;
+            const changeSummary = lastChange?.kind === "set"
+              ? `${lastChange.changedFields.length} ${lastChange.changedFields.length === 1 ? "ajuste de set aplicado" : "ajustes de set aplicados"}`
+              : lastChange ? `Reemplazó a ${previousSpecies}` : undefined;
+            const undoTitle = lastChange?.kind === "set"
+              ? `Deshacer ajustes de ${set.species}`
+              : lastChange ? `Volver a ${previousSpecies}` : undefined;
+            return <PokemonLockCard
               key={set.id}
               set={set}
               locks={optimizationLocks[set.id] ?? createWarRoomPokemonLocks()}
               identityCount={identityCount}
-              previousSpecies={replacementHistory[set.id]?.length ? replacementHistory[set.id].at(-1)?.previousSet.species || `Slot ${set.slot} libre` : undefined}
+              changeSummary={changeSummary}
+              undoTitle={undoTitle}
               onToggle={(field) => onToggleLock(set.id, field)}
               onToggleWholeSet={(locked) => onToggleWholeSet(set.id, locked)}
-              onUndo={replacementHistory[set.id]?.length ? () => onUndoMember(set.id) : undefined}
-            />
-          ))}
+              onUndo={lastChange ? () => onUndoChange(set.id) : undefined}
+            />;
+          })}
         </div>
       </section>
 
@@ -692,7 +705,7 @@ function OptimizationView({
         {pasteEvidenceState.status === "ready" ? <p className="mt-3 text-[9px] text-slate-600">{pasteEvidenceState.loaded} pastes completos cargados · {result.pasteEvidence.matchedSets} sets del Team observados · Battle Data usado para {metaState.loaded} integrantes sin propuesta contextual completa.{pasteEvidenceState.failed ? ` ${pasteEvidenceState.failed} referencias no estuvieron disponibles o eran duplicadas.` : ""}</p> : null}
         {result.sets.length ? (
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            {result.sets.map((suggestion) => <SetSuggestionCard key={`${suggestion.species}-${suggestion.presetId}`} suggestion={suggestion} onBuild={() => onBuildSuggestion(suggestion)} />)}
+            {result.sets.map((suggestion) => <SetSuggestionCard key={`${suggestion.species}-${suggestion.presetId}`} suggestion={suggestion} onApply={() => onApplySet(suggestion)} />)}
           </div>
         ) : pasteEvidenceState.status === "ready" || metaState.status === "ready" ? (
           <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs leading-5 text-slate-600">
@@ -710,7 +723,7 @@ function OptimizationView({
   );
 }
 
-export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { groups: TeamGroup[]; initialTeam?: TeamVersion; onOpenBuilder: (version: TeamVersion) => void; onBuildDraft: (request: TournamentTeamBuilderImport) => void }) {
+export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGroup[]; initialTeam?: TeamVersion; onOpenBuilder: (version: TeamVersion) => void }) {
   const versions = useMemo(() => {
     const stored = groups.flatMap((group) => group.versions);
     return initialTeam && !stored.some((version) => version.id === initialTeam.id)
@@ -728,7 +741,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
   const rivalRequest = useRef(0);
   const [optimizationLocks, setOptimizationLocks] = useState<WarRoomOptimizationLocks>({});
   const [optimizationPokemon, setOptimizationPokemon] = useState<PokemonSet[] | null>(null);
-  const [replacementHistory, setReplacementHistory] = useState<MemberReplacementHistory>({});
+  const [optimizationHistory, setOptimizationHistory] = useState<OptimizationChangeHistory>({});
   const [memberApplyState, setMemberApplyState] = useState<MemberApplyState>(EMPTY_MEMBER_APPLY_STATE);
   const memberApplyRequest = useRef(0);
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
@@ -752,8 +765,8 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     [pasteEvidenceState, workingTeamKey],
   );
   const excludedMemberSpecies = useMemo(() => [...new Set(
-    Object.values(replacementHistory).flatMap((steps) => steps.flatMap((step) => step.excludedMemberSpecies)),
-  )], [replacementHistory]);
+    Object.values(optimizationHistory).flatMap((steps) => steps.flatMap((step) => step.excludedMemberSpecies)),
+  )], [optimizationHistory]);
   const selectedRival = resources?.corpus.teams.find((team) => team.id === rivalId) ?? null;
   const pasteCandidateCorpus = useMemo(() => resources
     ? [...resources.corpus.teams, ...resources.corpus.historicalTeams]
@@ -806,7 +819,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     setTeamId(value);
     setOptimizationLocks({});
     setOptimizationPokemon(null);
-    setReplacementHistory({});
+    setOptimizationHistory({});
     setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
     setMetaState(EMPTY_META_STATE);
     setPasteEvidenceState(EMPTY_PASTE_EVIDENCE_STATE);
@@ -976,20 +989,37 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     });
   }
 
-  function buildSuggestion(suggestion: WarRoomSetSuggestion) {
-    if (!workingTeam) return;
-    const pokemon = workingTeam.pokemon.map((set) => set.id === suggestion.setId ? {
-      ...set,
-      item: suggestion.proposal.item,
-      ability: suggestion.proposal.ability,
-      nature: suggestion.proposal.nature,
-      evs: suggestion.proposal.evs,
-      moves: suggestion.proposal.moves.map((name) => ({ name, type: null, damaging: false, usage: 0 })),
-    } : set);
-    onBuildDraft({
-      paste: serializeShowdownPaste(pokemon, workingTeam.mechanics ?? ["mega"]),
-      suggestedName: `${workingTeam.name} · War Room ${suggestion.species}`.slice(0, 80),
-      sourceLabel: `War Room ${suggestion.methodology} · ${suggestion.presetId}`,
+  function applySetSuggestion(suggestion: WarRoomSetSuggestion) {
+    if (!workingTeam || !resources) return;
+    const previousSet = workingTeam.pokemon.find((set) => set.id === suggestion.setId);
+    if (!previousSet) return;
+    const nextPokemon = applyWarRoomSetSuggestion(workingTeam.pokemon, suggestion, resources.snapshot);
+    if (nextPokemon === workingTeam.pokemon) return;
+    memberApplyRequest.current += 1;
+    metaRequest.current += 1;
+    pasteEvidenceRequest.current += 1;
+    const previousLocks = optimizationLocks[suggestion.setId];
+    setOptimizationHistory((current) => ({
+      ...current,
+      [suggestion.setId]: [
+        ...(current[suggestion.setId] ?? []),
+        {
+          kind: "set",
+          previousSet: { ...previousSet, mechanics: { ...previousSet.mechanics }, moves: previousSet.moves.map((move) => ({ ...move })), performance: { ...previousSet.performance } },
+          previousLocks: previousLocks ? { ...previousLocks, moves: [...previousLocks.moves] as WarRoomPokemonLocks["moves"] } : null,
+          excludedMemberSpecies: [],
+          changedFields: suggestion.changes.map((change) => change.field),
+        },
+      ],
+    }));
+    setOptimizationPokemon(nextPokemon);
+    setPasteEvidenceState((current) => current.status === "idle" ? current : {
+      ...current,
+      teamKey: pasteEvidenceTeamKey({ ...workingTeam, pokemon: nextPokemon }),
+    });
+    setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
+    window.requestAnimationFrame(() => {
+      document.getElementById("war-room-optimization-locks")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }
 
@@ -1068,14 +1098,16 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
       return;
     }
     const previousLocks = optimizationLocks[member.replacesSetId];
-    setReplacementHistory((current) => ({
+    setOptimizationHistory((current) => ({
       ...current,
       [member.replacesSetId]: [
         ...(current[member.replacesSetId] ?? []),
         {
+          kind: "member",
           previousSet: { ...previousSet, mechanics: { ...previousSet.mechanics }, moves: previousSet.moves.map((move) => ({ ...move })), performance: { ...previousSet.performance } },
           previousLocks: previousLocks ? { ...previousLocks, moves: [...previousLocks.moves] as WarRoomPokemonLocks["moves"] } : null,
           excludedMemberSpecies: optimization.members.map((suggestion) => suggestion.species),
+          changedFields: [],
         },
       ],
     }));
@@ -1117,21 +1149,23 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
     });
   }
 
-  function undoMember(setId: string) {
-    const steps = replacementHistory[setId] ?? [];
+  function undoOptimizationChange(setId: string) {
+    const steps = optimizationHistory[setId] ?? [];
     const previous = steps.at(-1);
     if (!previous || !workingTeam) return;
     memberApplyRequest.current += 1;
     metaRequest.current += 1;
     pasteEvidenceRequest.current += 1;
     setOptimizationPokemon(workingTeam.pokemon.map((set) => set.id === setId ? previous.previousSet : set));
-    setOptimizationLocks((current) => {
-      const next = { ...current };
-      if (previous.previousLocks) next[setId] = previous.previousLocks;
-      else delete next[setId];
-      return next;
-    });
-    setReplacementHistory((current) => {
+    if (previous.kind === "member") {
+      setOptimizationLocks((current) => {
+        const next = { ...current };
+        if (previous.previousLocks) next[setId] = previous.previousLocks;
+        else delete next[setId];
+        return next;
+      });
+    }
+    setOptimizationHistory((current) => {
       const next = { ...current };
       const remaining = (next[setId] ?? []).slice(0, -1);
       if (remaining.length) next[setId] = remaining;
@@ -1185,7 +1219,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder, onBuildDraft }: { 
 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE} memberApplyState={memberApplyState} replacementHistory={replacementHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onBuildSuggestion={buildSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoMember={undoMember} /> : null}
+      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE} memberApplyState={memberApplyState} optimizationHistory={optimizationHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onApplySet={applySetSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoChange={undoOptimizationChange} /> : null}
 
       {resources && workingTeam && mode === "sparring" ? <WarRoomSparring team={workingTeam} corpusTeams={resources.corpus.teams} /> : null}
     </div>

@@ -67,8 +67,9 @@ flowchart TD
    separado que produce recomendaciones trazables.
 10. War Room nunca interpreta presencia en un Team público como uso en batalla,
     ni presenta frecuencias marginales de Battle Data como sets observados.
-11. Toda propuesta se revisa en Team Builder y se guarda como versión nueva;
-    el motor no reescribe una versión existente.
+11. Toda propuesta se aplica primero a un borrador desechable de War Room, se
+    revisa en Team Builder y se guarda como versión nueva; el motor no reescribe
+    una versión existente.
 12. Los bloqueos del optimizador son restricciones de dominio: cada propuesta
     conserva los campos protegidos antes de validar Item Clause, habilidad,
     naturaleza, Stat Points y cuatro movimientos legales sin duplicados.
@@ -76,7 +77,10 @@ flowchart TD
     conserva el slot, consume el lote visible y puede deshacerse sin tocar la
     versión persistida. Cada ronda reparte hasta cuatro alternativas por slot
     desbloqueado, con un máximo global de 20, y recalcula con el Team resultante.
-14. Las altas de Partner Search prefieren un preset completo de Battle Data y
+14. Set Search comparte el historial reversible del borrador: aplica solamente
+    los campos explícitamente propuestos y la tarjeta del integrante permite
+    deshacer el último ajuste antes de enviar el Team completo al Builder.
+15. Las altas de Partner Search prefieren un preset completo de Battle Data y
     caen a un set legal determinista si la fuente no responde. Cuando la muestra
     exacta/parcial se agota, la ronda se completa con candidatos nuevos del
     corpus global, etiquetados como búsqueda ampliada.

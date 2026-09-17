@@ -836,6 +836,43 @@ export function applyWarRoomMemberSuggestion(
   return buildWarRoomMemberReplacement(team, suggestion, snapshot, presets, pasteEvidence).pokemon;
 }
 
+/** Applies only the fields explicitly proposed by Set Search to the disposable draft. */
+export function applyWarRoomSetSuggestion(
+  team: PokemonSet[],
+  suggestion: WarRoomSetSuggestion,
+  snapshot: ShowdownSnapshot,
+) {
+  const targetIndex = team.findIndex((set) => set.id === suggestion.setId);
+  if (targetIndex < 0 || !suggestion.changes.length) return team;
+  const current = team[targetIndex];
+  const next: PokemonSet = {
+    ...current,
+    mechanics: { ...current.mechanics },
+    moves: current.moves.map((move) => ({ ...move })),
+    performance: { ...current.performance },
+  };
+  for (const change of suggestion.changes) {
+    if (change.key === "item") next.item = suggestion.proposal.item;
+    else if (change.key === "ability") next.ability = suggestion.proposal.ability;
+    else if (change.key === "nature") next.nature = suggestion.proposal.nature;
+    else if (change.key === "statPoints") next.evs = suggestion.proposal.evs;
+    else {
+      if (!change.key.startsWith("move-")) continue;
+      const slot = Number(change.key.slice("move-".length));
+      if (!Number.isInteger(slot) || slot < 0 || slot > 3) continue;
+      while (next.moves.length <= slot) next.moves.push({ name: "", type: null, damaging: false, usage: 0 });
+      next.moves[slot] = {
+        name: suggestion.proposal.moves[slot] ?? "",
+        type: null,
+        damaging: false,
+        usage: 0,
+      };
+    }
+  }
+  const applied = hydrateSetFromSnapshot(snapshot, next, WAR_ROOM_BATTLE_FORMAT);
+  return team.map((set, index) => index === targetIndex ? applied : set);
+}
+
 function rolesForSet(snapshot: ShowdownSnapshot, set: PokemonSet) {
   const moveIds = new Set(set.moves.map((move) => toId(move.name)).filter(Boolean));
   const roles = Object.entries(ROLE_MOVES)
