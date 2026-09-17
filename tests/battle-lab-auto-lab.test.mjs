@@ -48,7 +48,11 @@ test("Audit stays baseline-only while Optimize can compare its captured draft", 
   assert.match(ui, /Optimizar o construir/);
   assert.match(ui, /variants:\s*comparisonMode && comparisonTeam/);
   assert.match(ui, /id:\s*"variant-optimized"/);
-  assert.match(ui, /Iniciar 2,000 batallas/);
+  assert.match(ui, /activePreset: RunPreset = comparisonMode \? "standard" : preset/);
+  assert.match(ui, /Original · 480 batallas/);
+  assert.match(ui, /Optimizado · 480 batallas/);
+  assert.match(ui, /40 rivales · 960 total/);
+  assert.match(ui, /Iniciar 960 batallas/);
   assert.match(ui, /Mejora confirmada/);
   assert.match(room, /Comparar con original/);
   assert.match(room, /comparisonTeam=\{optimizationComparison\.optimized\}/);
@@ -56,6 +60,8 @@ test("Audit stays baseline-only while Optimize can compare its captured draft", 
   assert.match(room, /function SetSuggestionCard/);
   assert.match(room, /Set search/);
   assert.match(room, /result\.sets\.map\([\s\S]*SetSuggestionCard/);
+  assert.match(room, /Valida o continúa con el borrador/);
+  assert.doesNotMatch(room, /<div className="grid gap-2 lg:grid-cols-2">\{result\.notes\.map/);
 });
 
 test("Optimize comparison requires interval-backed evidence before promotion", () => {
@@ -230,8 +236,9 @@ test("Adaptive audit preserves each budget while widening and deduplicating the 
   assert.match(ui, /opponents:\s*18,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*6,\s*additionalBattlesPerDeepDive:\s*12/);
   assert.match(ui, /opponents:\s*40,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*10,\s*additionalBattlesPerDeepDive:\s*16/);
   assert.match(ui, /opponents:\s*100,\s*initialBattlesPerOpponent:\s*6,\s*deepDiveOpponents:\s*20,\s*additionalBattlesPerDeepDive:\s*20/);
-  assert.match(ui, /activePreset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
-  assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C actuales, recientes y validados por Showdown/);
+  assert.match(ui, /useRecentVgcPastesPool = comparisonMode \|\| activePreset === "deep"/);
+  assert.match(ui, /useRecentVgcPastesPool[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
+  assert.match(ui, /necesita \$\{spec\.opponents\} VGCPastes M-C actuales, recientes y validados por Showdown/);
   assert.match(ui, /100 × 6 del meta reciente \+ 20 × 20 de confirmación/);
 });
 

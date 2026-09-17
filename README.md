@@ -28,8 +28,8 @@ histórico de equipos de Pokémon VGC.
   ese mismo borrador de bloqueos y permite deshacerlos desde la tarjeta antes
   de abrir el resultado completo en Team Builder.
   El borrador también puede compararse con la versión original mediante un
-  benchmark profundo A/B: ambos Teams enfrentan los mismos 100 rivales, lados
-  y semillas de Team Preview (1,000 batallas por Team). El informe muestra el
+  benchmark A/B: ambos Teams enfrentan los mismos 40 rivales, lados y semillas
+  de Team Preview (480 batallas por Team; 960 en total). El informe muestra el
   delta con IC95%, matchups y arquetipos ganados o perdidos, y solo confirma una
   mejora cuando el intervalo completo queda sobre cero.
   Si el lote del core se agota, completa la ronda desde el corpus ampliado sin

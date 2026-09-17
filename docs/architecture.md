@@ -86,7 +86,7 @@ flowchart TD
     corpus global, etiquetados como búsqueda ampliada.
 16. La comparación Original vs. Optimizado captura copias inmutables del
     borrador, conserva pool, lados y semillas de Team Preview entre candidatos,
-    y separa el barrido de 100 rivales de la confirmación sobre los 20 matchups
+    y separa el barrido de 40 rivales de la confirmación sobre los 10 matchups
     críticos del original. Un delta favorable solo se promueve como mejora
     confirmada cuando su IC95% queda completamente sobre cero.
 

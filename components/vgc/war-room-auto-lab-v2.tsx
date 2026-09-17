@@ -1001,8 +1001,9 @@ export function WarRoomAutoLab({
   onClose?: () => void;
 }) {
   const comparisonMode = Boolean(comparisonTeam);
-  const [preset, setPreset] = useState<RunPreset>(comparisonMode ? "deep" : "quick");
-  const activePreset: RunPreset = comparisonMode ? "deep" : preset;
+  const [preset, setPreset] = useState<RunPreset>(comparisonMode ? "standard" : "quick");
+  const activePreset: RunPreset = comparisonMode ? "standard" : preset;
+  const useRecentVgcPastesPool = comparisonMode || activePreset === "deep";
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<AutoLabJob | null>(null);
   const [runError, setRunError] = useState("");
@@ -1090,7 +1091,7 @@ export function WarRoomAutoLab({
       }
 
       const pool =
-        activePreset === "deep"
+        useRecentVgcPastesPool
           ? selectAutoLabRecentVgcPastesCandidates(corpusTeams, spec.opponents * 3)
           : selectAutoLabOpponentCandidates(corpusTeams, spec.opponents * 3, teamKey);
       const loaded: LoadedOpponent[] = [];
@@ -1109,7 +1110,7 @@ export function WarRoomAutoLab({
             const id = `preflight-${offset + index + 1}`;
             const label = opponentLabel(
               candidate,
-              activePreset === "deep",
+              useRecentVgcPastesPool,
               `Rival ${offset + index + 1}`,
             );
             try {
@@ -1173,9 +1174,9 @@ export function WarRoomAutoLab({
         setPreflight({ checked, valid: loaded.length, rejected, lastRejected });
       }
 
-      if (activePreset === "deep" && loaded.length < spec.opponents) {
+      if (useRecentVgcPastesPool && loaded.length < spec.opponents) {
         throw new Error(
-          `Profundo necesita ${spec.opponents} VGCPastes M-C actuales, recientes y validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`,
+          `${comparisonMode ? "La comparación" : "Profundo"} necesita ${spec.opponents} VGCPastes M-C actuales, recientes y validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`,
         );
       }
       if (loaded.length < Math.min(6, spec.opponents)) {
@@ -1240,7 +1241,7 @@ export function WarRoomAutoLab({
           </h2>
           <p className="mt-2 text-[12px] leading-5 text-slate-400">
             {comparisonMode
-              ? "Ambos Teams enfrentan los mismos 100 rivales, lados y semillas de Team Preview. El barrido mide el meta completo y la confirmación revisa si el borrador corrigió los matchups críticos del original."
+              ? "Mismo pool, lados y semillas de Team Preview para ambos Teams."
               : <>Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</>}
           </p>
         </div>
@@ -1269,13 +1270,13 @@ export function WarRoomAutoLab({
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
-              {comparisonMode ? "Comparación profunda fija" : "Cobertura del Gauntlet"}
+              {comparisonMode ? "Comparación fija" : "Cobertura del Gauntlet"}
             </p>
             {comparisonMode ? (
               <div className="mt-2 flex flex-wrap gap-2">
-                <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-[10px] text-slate-300">Original · 1,000 batallas</Badge>
-                <Badge variant="outline" className="border-violet-300/18 bg-violet-300/6 text-[10px] text-violet-200">Optimizado · 1,000 batallas</Badge>
-                <Badge variant="outline" className="border-cyan-300/18 bg-cyan-300/6 text-[10px] text-cyan-200">100 rivales · 2,000 total</Badge>
+                <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-[10px] text-slate-300">Original · 480 batallas</Badge>
+                <Badge variant="outline" className="border-violet-300/18 bg-violet-300/6 text-[10px] text-violet-200">Optimizado · 480 batallas</Badge>
+                <Badge variant="outline" className="border-cyan-300/18 bg-cyan-300/6 text-[10px] text-cyan-200">40 rivales · 960 total</Badge>
               </div>
             ) : <div className="mt-2 flex flex-wrap gap-2">
               {(Object.keys(PRESETS) as RunPreset[]).map((value) => (
@@ -1312,7 +1313,7 @@ export function WarRoomAutoLab({
                 </button>
               ))}
             </div>}
-            <p className="mt-2 text-[11px] text-slate-400">{comparisonMode ? "Cada Team juega 100 × 6 de barrido y 20 × 20 adicionales contra las debilidades priorizadas del original." : PRESETS[activePreset].description}</p>
+            {!comparisonMode ? <p className="mt-2 text-[11px] text-slate-400">{PRESETS[activePreset].description}</p> : null}
           </div>
           <Button
             type="button"
@@ -1330,7 +1331,7 @@ export function WarRoomAutoLab({
             ) : (
               <Play className="size-4" />
             )}
-            {starting ? "Validando meta…" : comparisonMode ? "Iniciar 2,000 batallas" : "Auditar Team con LIGHT"}
+            {starting ? "Validando meta…" : comparisonMode ? "Iniciar 960 batallas" : "Auditar Team con LIGHT"}
           </Button>
         </div>
         {!baselineReady.ready ? (
