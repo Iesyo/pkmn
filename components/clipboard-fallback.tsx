@@ -3,16 +3,30 @@
 import { useEffect } from "react";
 
 function legacyWriteText(text: string) {
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const textarea = document.createElement("textarea");
   textarea.value = text;
-  textarea.setAttribute("readonly", "");
   textarea.setAttribute("aria-hidden", "true");
   textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
+  textarea.style.left = "0";
   textarea.style.top = "0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
   textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
   document.body.appendChild(textarea);
-  textarea.focus();
+
+  let copyEventSeen = false;
+  const onCopy = (event: ClipboardEvent) => {
+    copyEventSeen = true;
+    if (!event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", text);
+  };
+
+  document.addEventListener("copy", onCopy, true);
+  textarea.focus({ preventScroll: true });
   textarea.select();
   textarea.setSelectionRange(0, textarea.value.length);
 
@@ -20,12 +34,16 @@ function legacyWriteText(text: string) {
   try {
     copied = document.execCommand("copy");
   } finally {
+    document.removeEventListener("copy", onCopy, true);
     textarea.remove();
+    previousFocus?.focus({ preventScroll: true });
   }
 
-  if (!copied) {
-    window.prompt("Copia manualmente el paste de la variante:", text);
+  if (!copied || !copyEventSeen) {
+    window.prompt("No pude escribir al portapapeles automáticamente. Copia el paste con Ctrl+C:", text);
+    return Promise.reject(new Error("El navegador bloqueó la escritura al portapapeles."));
   }
+
   return Promise.resolve();
 }
 
@@ -46,8 +64,8 @@ export function ClipboardFallback() {
           get: () => fallback,
         });
       } catch {
-        // The browser may lock Navigator. In that rare case existing callers keep
-        // their native behavior instead of failing during app initialization.
+        // Navigator can be locked down by the browser. Existing callers will then
+        // preserve the browser's native behavior instead of breaking app startup.
       }
     }
   }, []);
