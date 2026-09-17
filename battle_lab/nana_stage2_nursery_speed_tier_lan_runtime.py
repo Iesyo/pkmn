@@ -70,11 +70,12 @@ def _start_speed_viewer(
 
     log_path = logs_dir / "showdown-speed-tier-http.log"
     handle = log_path.open("w", encoding="utf-8")
-    viewer_server = Path(__file__).with_name("sparring_speed_viewer_v2.py")
+    project_root = Path(__file__).resolve().parents[1]
     process = subprocess.Popen(
         [
             sys.executable,
-            str(viewer_server),
+            "-m",
+            "battle_lab.sparring_speed_viewer_v2",
             "--port",
             str(port),
             "--bind",
@@ -82,7 +83,7 @@ def _start_speed_viewer(
             "--root",
             str(checkout),
         ],
-        cwd=checkout,
+        cwd=project_root,
         stdout=handle,
         stderr=subprocess.STDOUT,
         text=True,
