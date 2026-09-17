@@ -38,10 +38,17 @@ test("Speed Tier launcher installs LAN first, then Speed Tier viewer, then Nana 
   assert.doesNotMatch(source, /return nursery\.main\(argv\)/);
 });
 
+test("Speed Tier LAN viewer launches as a package module from repo root", () => {
+  const source = readFileSync(launcher, "utf8");
+  assert.match(source, /project_root = Path\(__file__\)\.resolve\(\)\.parents\[1\]/);
+  assert.match(source, /"-m",\s*"battle_lab\.sparring_speed_viewer_v2"/s);
+  assert.match(source, /cwd=project_root/);
+  assert.doesNotMatch(source, /str\(viewer_server\)/);
+});
+
 test("Speed Tier LAN viewer binds on the trusted LAN and requires the v4 marker", () => {
   const source = readFileSync(launcher, "utf8");
   assert.match(source, /battle-lab-native-showdown-controls-v4-speed-tier/);
-  assert.match(source, /sparring_speed_viewer_v2\.py/);
   assert.match(source, /"--bind",\s*"0\.0\.0\.0"/s);
   assert.match(source, /local_runtime\.start_viewer_server = _start_speed_viewer/);
   assert.match(source, /local_runtime\.NATIVE_BRIDGE_MARKER = SPEED_VIEWER_MARKER/);
