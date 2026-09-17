@@ -106,30 +106,72 @@ PANEL_JS = r'''
 '''
 
 
-def build_bridge_html() -> str:
-    html = base.BRIDGE_HTML
-    original_style = "html,body,#showdown{width:100%;height:100%;margin:0;border:0;overflow:hidden;background:#444}\n    #showdown{display:block}"
-    if original_style not in html:
-        raise RuntimeError("El wrapper base de Showdown cambió: no se encontró el bloque de layout esperado.")
-    html = html.replace(original_style, PANEL_CSS.strip(), 1)
+def decorate_bridge_html(html: str) -> str:
+    """Decorate either the stock Battle Lab wrapper or the cropped shell variant."""
+
+    if 'id="speed-tier"' in html:
+        return html
+    if "</style>" not in html or '<iframe id="showdown"' not in html:
+        raise RuntimeError("El wrapper de Showdown cambió y no expone los anclajes del Speed Tier.")
+
+    # Appended rules intentionally override either wrapper layout without touching vendor.
+    html = html.replace("</style>", PANEL_CSS.strip() + "\n  </style>", 1)
     html = html.replace(
         '<iframe id="showdown" title="Pokémon Showdown"></iframe>',
         '<iframe id="showdown" title="Pokémon Showdown"></iframe>\n<aside id="speed-tier" aria-label="Battle Lab Speed Tier"></aside>',
         1,
     )
-    html = html.replace(
-        "var frame = document.getElementById('showdown');",
-        "var frame = document.getElementById('showdown');\n  var speedPanel = document.getElementById('speed-tier');",
-        1,
-    )
-    html = html.replace("\n  function localizeBattleFxUrl(value) {", "\n" + PANEL_JS + "\n  function localizeBattleFxUrl(value) {", 1)
-    html = html.replace("function childRoom() {\n    pinLocalBattleAssets();", "function childRoom() {\n    pinLocalBattleAssets();\n    pinSinglePanel();", 1)
-    html = html.replace("async function poll() {\n    try {\n      pinLocalBattleAssets();", "async function poll() {\n    try {\n      pinLocalBattleAssets();\n      pinSinglePanel();", 1)
-    html = html.replace("if (!activeSession) return;", "if (!activeSession) { renderSpeedTier(null); return; }", 1)
-    html = html.replace("lastSnapshot = snapshot;\n      applyRequest(snapshot, false);", "lastSnapshot = snapshot;\n      renderSpeedTier(snapshot && snapshot.battle ? snapshot.battle.speedTier : null);\n      applyRequest(snapshot, false);\n      setTimeout(fitSpeedTier, 0);", 1)
-    html = html.replace("frame.addEventListener('load', function () {\n    pinLocalBattleAssets();", "frame.addEventListener('load', function () {\n    pinLocalBattleAssets();\n    pinSinglePanel();", 1)
-    html = html.replace("setInterval(function () { void poll(); }, 300);", "window.addEventListener('resize', fitSpeedTier);\n  setInterval(function () { void poll(); }, 300);", 1)
+    if "var speedPanel = document.getElementById('speed-tier');" not in html:
+        html = html.replace(
+            "var frame = document.getElementById('showdown');",
+            "var frame = document.getElementById('showdown');\n  var speedPanel = document.getElementById('speed-tier');",
+            1,
+        )
+    if "function renderSpeedTier(" not in html:
+        html = html.replace("\n  function localizeBattleFxUrl(value) {", "\n" + PANEL_JS + "\n  function localizeBattleFxUrl(value) {", 1)
+
+    if "function childRoom() {\n    pinLocalBattleAssets();\n    pinSinglePanel();" not in html:
+        html = html.replace(
+            "function childRoom() {\n    pinLocalBattleAssets();",
+            "function childRoom() {\n    pinLocalBattleAssets();\n    pinSinglePanel();",
+            1,
+        )
+    if "async function poll() {\n    try {\n      pinLocalBattleAssets();\n      pinSinglePanel();" not in html:
+        html = html.replace(
+            "async function poll() {\n    try {\n      pinLocalBattleAssets();",
+            "async function poll() {\n    try {\n      pinLocalBattleAssets();\n      pinSinglePanel();",
+            1,
+        )
+    if "if (!activeSession) { renderSpeedTier(null); return; }" not in html:
+        html = html.replace("if (!activeSession) return;", "if (!activeSession) { renderSpeedTier(null); return; }", 1)
+    if "renderSpeedTier(snapshot && snapshot.battle ? snapshot.battle.speedTier : null);" not in html:
+        html = html.replace(
+            "lastSnapshot = snapshot;\n      applyRequest(snapshot, false);",
+            "lastSnapshot = snapshot;\n      renderSpeedTier(snapshot && snapshot.battle ? snapshot.battle.speedTier : null);\n      applyRequest(snapshot, false);\n      setTimeout(fitSpeedTier, 0);",
+            1,
+        )
+    if "frame.addEventListener('load', function () {\n    pinLocalBattleAssets();\n    pinSinglePanel();" not in html:
+        html = html.replace(
+            "frame.addEventListener('load', function () {\n    pinLocalBattleAssets();",
+            "frame.addEventListener('load', function () {\n    pinLocalBattleAssets();\n    pinSinglePanel();",
+            1,
+        )
+    if "window.addEventListener('resize', fitSpeedTier);" not in html:
+        html = html.replace(
+            "setInterval(function () { void poll(); }, 300);",
+            "window.addEventListener('resize', fitSpeedTier);\n  setInterval(function () { void poll(); }, 300);",
+            1,
+        )
+
+    required = ["id=\"speed-tier\"", "function renderSpeedTier", "renderSpeedTier(snapshot", "pinSinglePanel"]
+    missing = [token for token in required if token not in html]
+    if missing:
+        raise RuntimeError("No se pudo decorar el wrapper de Showdown: " + ", ".join(missing))
     return html
+
+
+def build_bridge_html() -> str:
+    return decorate_bridge_html(base.BRIDGE_HTML)
 
 
 BRIDGE_HTML = build_bridge_html()
