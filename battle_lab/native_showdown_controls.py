@@ -69,6 +69,44 @@ async def _pin_nana_avatar(player: Any, avatar: str = NANA_AVATAR) -> None:
     await change_avatar(avatar)
 
 
+def _room_tag_for_battle(player: Any, current_battle: Any) -> str:
+    """Return the authoritative Showdown room id for a tracked battle.
+
+    War Room cannot mount the classic renderer until it knows the room hash.
+    Normally poke-env exposes it as ``battle_tag``, but the player's ``battles``
+    mapping is the canonical routing table and gives us a safe fallback if a
+    transient/custom battle object does not surface that public property yet.
+    """
+
+    direct = str(
+        getattr(current_battle, "battle_tag", "")
+        or getattr(current_battle, "_battle_tag", "")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+
+    battles = getattr(player, "battles", None)
+    if isinstance(battles, dict):
+        for room_tag, tracked in battles.items():
+            if tracked is current_battle and room_tag:
+                return str(room_tag).strip()
+    return ""
+
+
+def _snapshot_with_room_tag(session: Any, player: Any, current_battle: Any) -> dict[str, Any]:
+    """Keep the room id stable from room creation through every UI snapshot."""
+
+    snapshot = sparring._battle_snapshot(current_battle)
+    room_tag = _room_tag_for_battle(player, current_battle)
+    if not room_tag:
+        room_tag = str(getattr(session, "room_tag", "") or snapshot.get("tag") or "").strip()
+    if room_tag:
+        session.room_tag = room_tag
+        snapshot["tag"] = room_tag
+    return snapshot
+
+
 def _to_id(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -261,10 +299,20 @@ def install_native_showdown_controls() -> type:
                         self.sparring_session = sparring_session
                         super().__init__(*args, **kwargs)
 
+                    async def _create_battle(self, split_message: list[str]):
+                        current_battle = await super()._create_battle(split_message)
+                        target = self.sparring_session
+                        room_tag = _room_tag_for_battle(self, current_battle)
+                        if room_tag:
+                            target.room_tag = room_tag
+                            if isinstance(getattr(target, "battle_state", None), dict):
+                                target.battle_state["tag"] = room_tag
+                        return current_battle
+
                     async def teampreview(self, current_battle: Any) -> str:
                         target = self.sparring_session
                         target.phase = "team-preview"
-                        target.battle_state = sparring._battle_snapshot(current_battle)
+                        target.battle_state = _snapshot_with_room_tag(target, self, current_battle)
                         target.legal_orders.clear()
                         target.legal_actions.clear()
                         target.native_choices = {}
@@ -323,7 +371,7 @@ def install_native_showdown_controls() -> type:
                                 "El puente nativo de Showdown no pudo representar "
                                 f"{len(missing_native)}/{len(target.legal_actions)} órdenes legales."
                             )
-                        target.battle_state = sparring._battle_snapshot(current_battle)
+                        target.battle_state = _snapshot_with_room_tag(target, self, current_battle)
                         target.phase = "waiting-choice"
                         loop = asyncio.get_running_loop()
                         target.order_future = loop.create_future()
@@ -389,7 +437,7 @@ def install_native_showdown_controls() -> type:
                         f"Se esperaba una batalla y aparecieron {len(new_tags)}."
                     )
                 finished = human.battles[new_tags.pop()]
-                session.battle_state = sparring._battle_snapshot(finished)
+                session.battle_state = _snapshot_with_room_tag(session, human, finished)
                 session.legal_orders.clear()
                 session.legal_actions.clear()
                 self._native_reset(session)
@@ -400,7 +448,7 @@ def install_native_showdown_controls() -> type:
                         else "model" if finished.lost else "tie"
                     ),
                     "turns": int(getattr(finished, "turn", 0) or 0),
-                    "battleTag": str(getattr(finished, "battle_tag", "")),
+                    "battleTag": _room_tag_for_battle(human, finished),
                     "opponent": session.opponent,
                     "modelDisplayName": model_name,
                     "modelAvatar": model_avatar,
@@ -437,6 +485,11 @@ def install_native_showdown_controls() -> type:
 
         def snapshot(self, session: Any) -> dict[str, Any]:
             data = super().snapshot(session)
+            battle = data.get("battle")
+            if isinstance(battle, dict) and not battle.get("tag"):
+                room_tag = str(getattr(session, "room_tag", "") or "").strip()
+                if room_tag:
+                    battle["tag"] = room_tag
             data["generation"] = int(getattr(session, "generation", 0) or 0)
             data["nativeRequest"] = copy.deepcopy(
                 getattr(session, "native_request", None)
