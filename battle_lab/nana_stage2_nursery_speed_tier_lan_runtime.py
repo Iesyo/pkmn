@@ -1,7 +1,7 @@
 """Nana 2.3 Nursery LIVE + Speed Tier, isolated feature launcher.
 
 This keeps the current Nana/Showdown stack intact and layers the advisory Speed
-Tier plus its local viewer on top. Once the ROG smoke is accepted, this small
+Tier plus its LAN viewer on top. Once the ROG smoke is accepted, this small
 bootstrap can be folded into the standard LAN launcher without changing the
 battle protocol or native Showdown controls.
 """
@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from battle_lab import local_runtime
-from battle_lab import nana_stage2_nursery_lan_runtime as nursery
+from battle_lab import nana_stage2_shadow_v21_lan_runtime as lan
+from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
+from battle_lab.nana_stage2_nursery_lan_runtime import install_nursery_lan_request_guard
+from battle_lab.nana_stage2_nursery_runtime import install_nursery_service
 from battle_lab.showdown_smoke import port_is_open, tail
 from battle_lab.sparring_speed_tier import install_speed_tier_snapshot
 
@@ -34,16 +37,32 @@ def _speed_bridge_available(port: int) -> bool:
     try:
         with urllib.request.urlopen(request, timeout=1.5) as response:
             payload = response.read().decode("utf-8", errors="replace").strip()
-            return int(getattr(response, "status", 200)) == 200 and payload == SPEED_VIEWER_MARKER
+            return (
+                int(getattr(response, "status", 200)) == 200
+                and payload == SPEED_VIEWER_MARKER
+            )
     except (OSError, urllib.error.URLError, TimeoutError):
         return False
 
 
-def _start_speed_viewer(*, checkout: Path, logs_dir: Path, port: int) -> tuple[Any, Any]:
+def _start_speed_viewer(
+    *,
+    checkout: Path,
+    logs_dir: Path,
+    port: int,
+) -> tuple[Any, Any]:
+    """Serve the Speed Tier wrapper on the same trusted-LAN boundary as War Room."""
+
     if port_is_open(port):
         if _speed_bridge_available(port):
-            print(f"Speed Tier viewer v2 ya activo en 127.0.0.1:{port}; se reutiliza.", flush=True)
-            return local_runtime.BorrowedNativeViewerProcess(), local_runtime.BorrowedNativeViewerLog()
+            print(
+                f"Speed Tier viewer v2 ya activo en 127.0.0.1:{port}; se reutiliza.",
+                flush=True,
+            )
+            return (
+                local_runtime.BorrowedNativeViewerProcess(),
+                local_runtime.BorrowedNativeViewerLog(),
+            )
         raise RuntimeError(
             f"Speed Tier requiere reemplazar el renderer activo en 127.0.0.1:{port}. "
             "Detén el runtime viejo y vuelve a iniciar este launcher."
@@ -53,7 +72,16 @@ def _start_speed_viewer(*, checkout: Path, logs_dir: Path, port: int) -> tuple[A
     handle = log_path.open("w", encoding="utf-8")
     viewer_server = Path(__file__).with_name("sparring_speed_viewer_v2.py")
     process = subprocess.Popen(
-        [sys.executable, str(viewer_server), "--port", str(port), "--bind", "127.0.0.1", "--root", str(checkout)],
+        [
+            sys.executable,
+            str(viewer_server),
+            "--port",
+            str(port),
+            "--bind",
+            "0.0.0.0",
+            "--root",
+            str(checkout),
+        ],
         cwd=checkout,
         stdout=handle,
         stderr=subprocess.STDOUT,
@@ -64,10 +92,14 @@ def _start_speed_viewer(*, checkout: Path, logs_dir: Path, port: int) -> tuple[A
     while time.monotonic() - started < 20:
         if process.poll() is not None:
             handle.close()
-            raise RuntimeError("El Speed Tier viewer v2 terminó durante el arranque.\n" + tail(log_path))
+            raise RuntimeError(
+                "El Speed Tier viewer v2 terminó durante el arranque.\n"
+                + tail(log_path)
+            )
         if port_is_open(port) and _speed_bridge_available(port):
             return process, handle
         time.sleep(0.1)
+
     process.terminate()
     with suppress(Exception):
         process.wait(timeout=2)
@@ -75,9 +107,20 @@ def _start_speed_viewer(*, checkout: Path, logs_dir: Path, port: int) -> tuple[A
     raise TimeoutError(f"Speed Tier viewer v2 no abrió en 127.0.0.1:{port}.")
 
 
-def _install_speed_layer() -> None:
+def _install_speed_layer_after_lan() -> None:
+    """Install Speed Tier after the LAN transport has installed its own viewer.
+
+    The LAN bootstrap deliberately replaces ``local_runtime.start_viewer_server``.
+    Installing Speed Tier before that bootstrap made the LAN viewer win, while
+    ``NATIVE_BRIDGE_MARKER`` still expected the Speed Tier marker. The stock
+    viewer therefore opened port 8767 with the wrong health marker and the
+    launcher timed out. Order is part of the contract here: LAN first, Speed Tier
+    second, Nana's reusable-viewer wrapper last.
+    """
+
     if getattr(local_runtime, "_battle_lab_speed_tier_bootstrap", False):
         return
+
     original_install = local_runtime.install_native_showdown_controls
 
     def install_native_then_speed() -> type:
@@ -92,15 +135,55 @@ def _install_speed_layer() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    _install_speed_layer()
+    # Reproduce the supported Nursery LAN entrypoint explicitly so the transport
+    # is installed before Speed Tier replaces only the renderer layer.
+    lan_args, remaining = lan.parse_lan_args(argv)
+    nana_args, remaining = parse_nana_args(remaining)
+    service_class = install_nursery_service(profile_id=nana_args.nana_profile)
+    install_nursery_lan_request_guard(service_class)
+
+    lan.install_direct_lan(local_runtime)
+    _install_speed_layer_after_lan()
+    install_reusable_viewer(local_runtime)
+
+    addresses = lan._candidate_lan_addresses()
+    if lan_args.lan_address and lan_args.lan_address not in addresses:
+        addresses.insert(0, lan_args.lan_address)
+
     print("", flush=True)
-    print("=== Battle Lab · Speed Tier v2 ===", flush=True)
-    print("Panel izquierdo reservado: prioridad → Speed efectiva; Trick Room/Tailwind en vivo.", flush=True)
-    print("El panel hace polling independiente y nunca desaparece silenciosamente.", flush=True)
-    print("Showdown conserva controles, reglas y resolución del turno.", flush=True)
-    print("====================================", flush=True)
+    print("=== Battle Lab LAN · Nana 2.3 Nursery LIVE + Speed Tier v2 ===", flush=True)
+    print(
+        "Nana puede ejecutar hasta 1 intervención near-LIGHT por BO1; "
+        "todo lo demás cae a LIGHT.",
+        flush=True,
+    )
+    print(
+        "Speed Tier reserva la columna izquierda y usa polling independiente; "
+        "Showdown conserva controles, reglas y resolución.",
+        flush=True,
+    )
+    print(
+        "La segunda PC solo abre la URL Network de Vite; no ejecutes nada allí.",
+        flush=True,
+    )
+    if addresses:
+        print("IPs privadas detectadas: " + ", ".join(addresses), flush=True)
+    print("API :8765 · Showdown :8766 · renderer Speed Tier :8767", flush=True)
+    print(
+        "Guard activo: un solo envío por prompt; retries/forced-switch/timeouts "
+        "sin prompt humano se registran como skips benignos.",
+        flush=True,
+    )
+    print(
+        "Cada intervención real queda registrada para que Nana aprenda de su "
+        "propia experiencia en partidas posteriores.",
+        flush=True,
+    )
+    print("Fallback absoluto: LIGHT. Promoción de autonomía: NO automática.", flush=True)
+    print("===============================================================", flush=True)
     print("", flush=True)
-    return nursery.main(argv)
+
+    return local_runtime.main(remaining)
 
 
 if __name__ == "__main__":
