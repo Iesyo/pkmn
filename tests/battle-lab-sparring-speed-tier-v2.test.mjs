@@ -30,7 +30,7 @@ test("Speed Tier v2 polls Battle Lab independently and surfaces missing backend 
 test("Speed Tier launcher installs LAN first, then Speed Tier viewer, then Nana reuse wrapper", () => {
   const source = readFileSync(launcher, "utf8");
   const lanIndex = source.indexOf("lan.install_direct_lan(local_runtime)");
-  const speedIndex = source.indexOf("_install_speed_layer_after_lan()");
+  const speedIndex = source.lastIndexOf("_install_speed_layer_after_lan()");
   const reuseIndex = source.indexOf("install_reusable_viewer(local_runtime)");
   assert.ok(lanIndex >= 0, "LAN bootstrap must be installed");
   assert.ok(speedIndex > lanIndex, "Speed Tier must replace the LAN viewer after LAN bootstrap");
