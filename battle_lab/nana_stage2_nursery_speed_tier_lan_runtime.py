@@ -45,8 +45,8 @@ def _start_speed_viewer(*, checkout: Path, logs_dir: Path, port: int) -> tuple[A
             print(f"Speed Tier viewer ya activo en 127.0.0.1:{port}; se reutiliza.", flush=True)
             return local_runtime.BorrowedNativeViewerProcess(), local_runtime.BorrowedNativeViewerLog()
         raise RuntimeError(
-            f"El puerto local {port} ya está ocupado por un renderer anterior. "
-            "Detén el runtime viejo para activar Speed Tier."
+            f"Speed Tier requiere reemplazar el renderer activo en 127.0.0.1:{port}. "
+            "Detén el runtime viejo y vuelve a iniciar este launcher."
         )
 
     log_path = logs_dir / "showdown-speed-tier-http.log"
