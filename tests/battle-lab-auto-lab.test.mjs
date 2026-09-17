@@ -288,7 +288,7 @@ test("Evidence-aware heuristics compare with/without, smooth small samples and e
   assert.match(coreSource, /candidate_team_text=candidate_records\[0\]\.team_text/);
   assert.match(ui, /Semáforo de evidencia/);
   assert.match(ui, /Score al elegirlo/);
-  assert.match(ui, /apariciones del Pokémon/);
+  assert.match(ui, /apariciones del\s+Pokémon/);
   assert.match(ui, /ajustado por arquetipo\+lado/);
 
   const script = `
@@ -444,6 +444,19 @@ async def main():
 asyncio.run(main())
 `;
   execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("Auto Lab keeps results from the previous runtime renderable", () => {
+  const ui = fs.readFileSync(panelV2, "utf8");
+
+  assert.match(ui, /evidenceSummary\?:/);
+  assert.match(ui, /audit\.evidenceSummary \?/);
+  assert.match(ui, /Esta ejecución viene de un runtime anterior/);
+  assert.match(ui, /label: "Resultado previo"/);
+  assert.match(ui, /function isFiniteNumber\(value: unknown\): value is number/);
+  assert.match(ui, /isFiniteNumber\(row\.scoreWhenNotSelected\)/);
+  assert.match(ui, /isFiniteNumber\(row\.smoothedLossRate\)/);
+  assert.match(ui, /isFiniteNumber\(row\.appearanceGames\)/);
 });
 
 test("Audit renders visual evidence while Sparring stays manual", () => {

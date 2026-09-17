@@ -129,7 +129,7 @@ type AutoLabAudit = {
     note: string;
     limitation: string;
   };
-  evidenceSummary: {
+  evidenceSummary?: {
     robust: number;
     directional: number;
     sideSensitive: number;
@@ -146,37 +146,37 @@ type AutoLabAudit = {
     selectedRate: number;
     leadGames: number;
     scoreWhenSelected: number;
-    smoothedScoreWhenSelected: number;
-    scoreWhenNotSelected: number;
-    smoothedScoreWhenNotSelected: number;
-    matchedDeltaPercentagePoints: number;
-    matchedStrata: number;
-    delta95: ConfidenceInterval;
-    sideDeltas: Record<string, number>;
+    smoothedScoreWhenSelected?: number;
+    scoreWhenNotSelected?: number;
+    smoothedScoreWhenNotSelected?: number;
+    matchedDeltaPercentagePoints?: number;
+    matchedStrata?: number;
+    delta95?: ConfidenceInterval;
+    sideDeltas?: Record<string, number>;
     confidence95: ConfidenceInterval;
-    evidence: Evidence;
+    evidence?: Evidence;
     signal: "rarely-selected" | "review" | "ok";
   }>;
   moveSignals: Array<{
     pokemon: string;
     move: string;
-    declared: boolean;
+    declared?: boolean;
     gamesUsed: number;
-    appearanceGames: number;
-    availableButUnusedGames: number;
-    opportunityRate: number;
+    appearanceGames?: number;
+    availableButUnusedGames?: number;
+    opportunityRate?: number;
     totalUses: number;
     wins: number;
     losses: number;
     ties: number;
     scoreWhenUsed: number;
-    smoothedScoreWhenUsed: number;
-    scoreWhenAvailableButUnused: number;
-    matchedDeltaPercentagePoints: number;
-    matchedStrata: number;
-    delta95: ConfidenceInterval;
+    smoothedScoreWhenUsed?: number;
+    scoreWhenAvailableButUnused?: number;
+    matchedDeltaPercentagePoints?: number;
+    matchedStrata?: number;
+    delta95?: ConfidenceInterval;
     confidence95: ConfidenceInterval;
-    evidence: Evidence;
+    evidence?: Evidence;
     signal: "review" | "low-usage" | "observed";
   }>;
   opponentPokemonPressure: Array<{
@@ -185,17 +185,17 @@ type AutoLabAudit = {
     lossGames: number;
     lossShare: number;
     lossRate: number;
-    smoothedLossRate: number;
-    lossRateWithout: number;
+    smoothedLossRate?: number;
+    lossRateWithout?: number;
     lossRateLift: number;
     exposureRate: number;
     uniqueOpponents: number;
     confidence95: ConfidenceInterval;
-    matchedStrata: number;
-    delta95: ConfidenceInterval;
-    sideDeltas: Record<string, number>;
-    evidence: Evidence;
-    comparisonBasis: "archetype-and-side" | "broad-pool-prior";
+    matchedStrata?: number;
+    delta95?: ConfidenceInterval;
+    sideDeltas?: Record<string, number>;
+    evidence?: Evidence;
+    comparisonBasis?: "archetype-and-side" | "broad-pool-prior";
     priorityScore: number;
   }>;
   opponentCorePressure: Array<{
@@ -204,26 +204,26 @@ type AutoLabAudit = {
     lossGames: number;
     lossShare: number;
     lossRate: number;
-    smoothedLossRate: number;
-    lossRateWithout: number;
+    smoothedLossRate?: number;
+    lossRateWithout?: number;
     lossRateLift: number;
     exposureRate: number;
     uniqueOpponents: number;
     confidence95: ConfidenceInterval;
-    matchedStrata: number;
-    delta95: ConfidenceInterval;
-    sideDeltas: Record<string, number>;
-    evidence: Evidence;
-    comparisonBasis: "archetype-and-side" | "broad-pool-prior";
+    matchedStrata?: number;
+    delta95?: ConfidenceInterval;
+    sideDeltas?: Record<string, number>;
+    evidence?: Evidence;
+    comparisonBasis?: "archetype-and-side" | "broad-pool-prior";
     priorityScore: number;
   }>;
   archetypePerformance: Array<
     RecordRow & {
       archetype: string;
-      smoothedScorePercent: number;
+      smoothedScorePercent?: number;
       uniqueOpponents: number;
       confidence95: ConfidenceInterval;
-      evidence: Evidence;
+      evidence?: Evidence;
     }
   >;
   recurringLossPatterns: Array<{
@@ -342,16 +342,27 @@ function signalLabel(level: AutoLabAudit["signal"]["level"]) {
   return "Exploratoria";
 }
 
-function EvidenceBadge({ evidence }: { evidence: Evidence }) {
+const LEGACY_EVIDENCE: Evidence = {
+  level: "insufficient",
+  label: "Resultado previo",
+  note: "Esta auditoría fue generada por un runtime anterior. Reinicia Battle Lab y ejecuta una auditoría nueva para obtener la evidencia comparativa.",
+};
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function EvidenceBadge({ evidence }: { evidence?: Evidence }) {
+  const resolved = evidence ?? LEGACY_EVIDENCE;
   const tone = {
     robust: "border-emerald-300/20 bg-emerald-300/[0.05] text-emerald-200",
     directional: "border-cyan-300/20 bg-cyan-300/[0.05] text-cyan-200",
     "side-sensitive": "border-amber-300/20 bg-amber-300/[0.05] text-amber-200",
     insufficient: "border-white/10 bg-white/[0.02] text-slate-400",
-  }[evidence.level];
+  }[resolved.level];
   return (
-    <Badge variant="outline" title={evidence.note} className={cn("text-[9px]", tone)}>
-      {evidence.label}
+    <Badge variant="outline" title={resolved.note} className={cn("text-[9px]", tone)}>
+      {resolved.label}
     </Badge>
   );
 }
@@ -560,6 +571,12 @@ function MatchupCard({ row, tone }: { row: MatchupRow; tone: "good" | "bad" }) {
 }
 
 function SelectionCard({ row }: { row: AutoLabAudit["selectionUsage"][number] }) {
+  const hasComparison =
+    isFiniteNumber(row.scoreWhenNotSelected) &&
+    isFiniteNumber(row.matchedDeltaPercentagePoints) &&
+    isFiniteNumber(row.matchedStrata) &&
+    isFiniteNumber(row.smoothedScoreWhenSelected);
+
   return (
     <article className="rounded-2xl border border-white/8 bg-slate-950/50 p-4">
       <div className="flex items-center gap-3">
@@ -600,12 +617,26 @@ function SelectionCard({ row }: { row: AutoLabAudit["selectionUsage"][number] })
               {row.selectedRate.toFixed(1)}%
             </span>
           </div>
-          <p className="mt-1.5 text-[11px] leading-4 text-slate-400">
-            {row.selectedGames} selecciones del barrido · {row.leadGames} leads. Score al elegirlo {row.scoreWhenSelected.toFixed(1)}% vs {row.scoreWhenNotSelected.toFixed(1)}% sin elegirlo.
-          </p>
-          <p className="mt-1 text-[10px] leading-4 text-slate-500">
-            Δ ajustado por rival+lado {row.matchedDeltaPercentagePoints >= 0 ? "+" : ""}{row.matchedDeltaPercentagePoints.toFixed(1)} pp · {row.matchedStrata} estratos comparables · suavizado {row.smoothedScoreWhenSelected.toFixed(1)}%.
-          </p>
+          {hasComparison ? (
+            <>
+              <p className="mt-1.5 text-[11px] leading-4 text-slate-400">
+                {row.selectedGames} selecciones del barrido · {row.leadGames} leads. Score al elegirlo{" "}
+                {row.scoreWhenSelected.toFixed(1)}% vs{" "}
+                {row.scoreWhenNotSelected.toFixed(1)}% sin elegirlo.
+              </p>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                Δ ajustado por rival+lado{" "}
+                {row.matchedDeltaPercentagePoints >= 0 ? "+" : ""}
+                {row.matchedDeltaPercentagePoints.toFixed(1)} pp · {row.matchedStrata} estratos
+                comparables · suavizado {row.smoothedScoreWhenSelected.toFixed(1)}%.
+              </p>
+            </>
+          ) : (
+            <p className="mt-1.5 text-[11px] text-slate-400">
+              {row.selectedGames} selecciones · {row.leadGames} leads · score{" "}
+              {row.scoreWhenSelected.toFixed(1)}%
+            </p>
+          )}
         </div>
       </div>
     </article>
@@ -613,6 +644,10 @@ function SelectionCard({ row }: { row: AutoLabAudit["selectionUsage"][number] })
 }
 
 function ArchetypeCard({ row }: { row: AutoLabAudit["archetypePerformance"][number] }) {
+  const displayScore = isFiniteNumber(row.smoothedScorePercent)
+    ? row.smoothedScorePercent
+    : row.scorePercent;
+
   return (
     <article className="rounded-2xl border border-fuchsia-300/12 bg-slate-950/55 p-4">
       <div className="flex items-center justify-between gap-3">
@@ -622,14 +657,16 @@ function ArchetypeCard({ row }: { row: AutoLabAudit["archetypePerformance"][numb
         </div>
         <div className="text-right">
           <span className="block font-mono text-lg font-black text-fuchsia-200">
-            {row.smoothedScorePercent.toFixed(1)}%
+            {displayScore.toFixed(1)}%
           </span>
-          <span className="text-[9px] text-slate-500">suavizado</span>
+          <span className="text-[9px] text-slate-500">
+            {isFiniteNumber(row.smoothedScorePercent) ? "suavizado" : "resultado previo"}
+          </span>
         </div>
       </div>
       <div className="mt-3 flex items-center gap-3">
         <Progress
-        value={row.smoothedScorePercent}
+          value={displayScore}
           className="h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-fuchsia-300"
         />
       </div>
@@ -645,6 +682,12 @@ function OpponentThreatCard({
 }: {
   row: AutoLabAudit["opponentPokemonPressure"][number];
 }) {
+  const displayLossRate = isFiniteNumber(row.smoothedLossRate)
+    ? row.smoothedLossRate
+    : row.lossRate;
+  const hasComparison =
+    isFiniteNumber(row.lossRateWithout) && isFiniteNumber(row.matchedStrata);
+
   return (
     <article className="rounded-2xl border border-white/8 bg-slate-950/55 p-4">
       <div className="flex items-start gap-3">
@@ -660,22 +703,39 @@ function OpponentThreatCard({
           <div className="flex items-center justify-between gap-3">
             <h3 className="truncate text-sm font-black text-white">{row.pokemon}</h3>
             <span className="font-mono text-sm font-black text-amber-200">
-              {row.smoothedLossRate.toFixed(1)}%
+              {displayLossRate.toFixed(1)}%
             </span>
           </div>
           <div className="mt-1"><EvidenceBadge evidence={row.evidence} /></div>
           <div className="mt-2 flex items-center gap-2">
             <Progress
-              value={row.smoothedLossRate}
+              value={displayLossRate}
               className="h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-amber-300"
             />
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-slate-400">
-            {row.lossGames}/{row.observedGames} derrotas cuando apareció · crudo {row.lossRate.toFixed(1)}% vs {row.lossRateWithout.toFixed(1)}% sin verlo · {row.uniqueOpponents} rivales.
-          </p>
-          <p className="mt-1 text-[10px] leading-4 text-slate-500">
-            Δ {row.comparisonBasis === "archetype-and-side" ? "ajustado por arquetipo+lado" : "vs referencia suavizada"} {row.lossRateLift >= 0 ? "+" : ""}{row.lossRateLift.toFixed(1)} pp · {row.matchedStrata} estratos.
-          </p>
+          {hasComparison ? (
+            <>
+              <p className="mt-2 text-[11px] leading-4 text-slate-400">
+                {row.lossGames}/{row.observedGames} derrotas cuando apareció · crudo{" "}
+                {row.lossRate.toFixed(1)}% vs {row.lossRateWithout.toFixed(1)}% sin verlo ·{" "}
+                {row.uniqueOpponents} rivales.
+              </p>
+              <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                Δ{" "}
+                {row.comparisonBasis === "archetype-and-side"
+                  ? "ajustado por arquetipo+lado"
+                  : "vs referencia suavizada"}{" "}
+                {row.lossRateLift >= 0 ? "+" : ""}
+                {row.lossRateLift.toFixed(1)} pp · {row.matchedStrata} estratos.
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-[11px] leading-4 text-slate-400">
+              {row.lossGames}/{row.observedGames} derrotas cuando apareció ·{" "}
+              {row.lossRateLift >= 0 ? "+" : ""}
+              {row.lossRateLift.toFixed(1)} pp vs referencia · {row.uniqueOpponents} rivales.
+            </p>
+          )}
         </div>
       </div>
     </article>
@@ -688,6 +748,12 @@ function OpponentCoreCard({
   row: AutoLabAudit["opponentCorePressure"][number];
 }) {
   const species = speciesFromPair(row.core);
+  const displayLossRate = isFiniteNumber(row.smoothedLossRate)
+    ? row.smoothedLossRate
+    : row.lossRate;
+  const hasComparison =
+    isFiniteNumber(row.lossRateWithout) && isFiniteNumber(row.matchedStrata);
+
   return (
     <article className="rounded-2xl border border-white/8 bg-slate-950/55 p-4">
       <div className="flex flex-wrap gap-2">
@@ -697,20 +763,37 @@ function OpponentCoreCard({
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Progress
-          value={row.smoothedLossRate}
+          value={displayLossRate}
           className="h-2 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300"
         />
         <span className="w-12 text-right font-mono text-[11px] font-black text-violet-200">
-          {row.smoothedLossRate.toFixed(1)}%
+          {displayLossRate.toFixed(1)}%
         </span>
       </div>
       <div className="mt-2"><EvidenceBadge evidence={row.evidence} /></div>
-      <p className="mt-2 text-[11px] leading-4 text-slate-400">
-        {row.lossGames}/{row.observedGames} derrotas al aparecer · crudo {row.lossRate.toFixed(1)}% vs {row.lossRateWithout.toFixed(1)}% sin ese lead · {row.uniqueOpponents} rivales.
-      </p>
-      <p className="mt-1 text-[10px] leading-4 text-slate-500">
-        Δ {row.comparisonBasis === "archetype-and-side" ? "ajustado por arquetipo+lado" : "vs referencia suavizada"} {row.lossRateLift >= 0 ? "+" : ""}{row.lossRateLift.toFixed(1)} pp · {row.matchedStrata} estratos.
-      </p>
+      {hasComparison ? (
+        <>
+          <p className="mt-2 text-[11px] leading-4 text-slate-400">
+            {row.lossGames}/{row.observedGames} derrotas al aparecer · crudo{" "}
+            {row.lossRate.toFixed(1)}% vs {row.lossRateWithout.toFixed(1)}% sin ese lead ·{" "}
+            {row.uniqueOpponents} rivales.
+          </p>
+          <p className="mt-1 text-[10px] leading-4 text-slate-500">
+            Δ{" "}
+            {row.comparisonBasis === "archetype-and-side"
+              ? "ajustado por arquetipo+lado"
+              : "vs referencia suavizada"}{" "}
+            {row.lossRateLift >= 0 ? "+" : ""}
+            {row.lossRateLift.toFixed(1)} pp · {row.matchedStrata} estratos.
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-[11px] leading-4 text-slate-400">
+          {row.lossGames}/{row.observedGames} derrotas al aparecer ·{" "}
+          {row.lossRateLift >= 0 ? "+" : ""}
+          {row.lossRateLift.toFixed(1)} pp vs referencia · {row.uniqueOpponents} rivales.
+        </p>
+      )}
     </article>
   );
 }
@@ -1198,23 +1281,45 @@ export function WarRoomAutoLab({
               </div>
               <div className="mt-3 rounded-xl border border-white/8 bg-slate-950/45 p-3">
                 <strong className="text-[11px] text-white">Semáforo de evidencia</strong>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Badge variant="outline" className="border-emerald-300/20 text-[9px] text-emerald-200">
-                    Robustas {audit.evidenceSummary.robust}
-                  </Badge>
-                  <Badge variant="outline" className="border-cyan-300/20 text-[9px] text-cyan-200">
-                    Direccionales {audit.evidenceSummary.directional}
-                  </Badge>
-                  <Badge variant="outline" className="border-amber-300/20 text-[9px] text-amber-200">
-                    Sensibles {audit.evidenceSummary.sideSensitive}
-                  </Badge>
-                  <Badge variant="outline" className="border-white/10 text-[9px] text-slate-400">
-                    Insuficientes {audit.evidenceSummary.insufficient}
-                  </Badge>
-                </div>
-                <p className="mt-2 text-[10px] leading-4 text-slate-400">
-                  {audit.evidenceSummary.note}
-                </p>
+                {audit.evidenceSummary ? (
+                  <>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className="border-emerald-300/20 text-[9px] text-emerald-200"
+                      >
+                        Robustas {audit.evidenceSummary.robust}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="border-cyan-300/20 text-[9px] text-cyan-200"
+                      >
+                        Direccionales {audit.evidenceSummary.directional}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="border-amber-300/20 text-[9px] text-amber-200"
+                      >
+                        Sensibles {audit.evidenceSummary.sideSensitive}
+                      </Badge>
+                      <Badge
+                        variant="outline"
+                        className="border-white/10 text-[9px] text-slate-400"
+                      >
+                        Insuficientes {audit.evidenceSummary.insufficient}
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-[10px] leading-4 text-slate-400">
+                      {audit.evidenceSummary.note}
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-2 text-[10px] leading-4 text-amber-200">
+                    Esta ejecución viene de un runtime anterior. El resultado sigue visible, pero
+                    necesita reiniciar Battle Lab y repetir la auditoría para calcular el nuevo
+                    semáforo.
+                  </p>
+                )}
               </div>
             </div>
           </section>
@@ -1392,12 +1497,27 @@ export function WarRoomAutoLab({
                       ) : null}
                     </div>
                     <div className="mt-1"><EvidenceBadge evidence={row.evidence} /></div>
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      {row.totalUses} usos en {row.gamesUsed}/{row.appearanceGames} apariciones del Pokémon · score {row.scoreWhenUsed.toFixed(1)}% vs {row.scoreWhenAvailableButUnused.toFixed(1)}% sin usarlo.
-                    </p>
-                    <p className="mt-1 text-[10px] leading-4 text-slate-500">
-                      Δ rival+lado {row.matchedDeltaPercentagePoints >= 0 ? "+" : ""}{row.matchedDeltaPercentagePoints.toFixed(1)} pp · tasa de uso {row.opportunityRate.toFixed(1)}%.
-                    </p>
+                    {isFiniteNumber(row.appearanceGames) &&
+                    isFiniteNumber(row.scoreWhenAvailableButUnused) ? (
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {row.totalUses} usos en {row.gamesUsed}/{row.appearanceGames} apariciones del
+                        Pokémon · score {row.scoreWhenUsed.toFixed(1)}% vs{" "}
+                        {row.scoreWhenAvailableButUnused.toFixed(1)}% sin usarlo.
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {row.totalUses} usos · {row.gamesUsed} partidas · score{" "}
+                        {row.scoreWhenUsed.toFixed(1)}%
+                      </p>
+                    )}
+                    {isFiniteNumber(row.matchedDeltaPercentagePoints) &&
+                    isFiniteNumber(row.opportunityRate) ? (
+                      <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                        Δ rival+lado {row.matchedDeltaPercentagePoints >= 0 ? "+" : ""}
+                        {row.matchedDeltaPercentagePoints.toFixed(1)} pp · tasa de uso{" "}
+                        {row.opportunityRate.toFixed(1)}%.
+                      </p>
+                    ) : null}
                   </div>
                 </article>
               ))}
