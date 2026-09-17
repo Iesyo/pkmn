@@ -27,6 +27,17 @@ test("Speed Tier v2 polls Battle Lab independently and surfaces missing backend 
   assert.match(source, /Speed Tier sin filas/);
 });
 
+test("Speed Tier v2 is the only panel writer after battle completion", () => {
+  const script = String.raw`
+from battle_lab.sparring_speed_viewer_v2 import BRIDGE_HTML
+assert "if (!activeSession) { renderSpeedTier(null); return; }" not in BRIDGE_HTML
+assert "renderSpeedTier(snapshot && snapshot.battle ? snapshot.battle.speedTier : null);" not in BRIDGE_HTML
+assert "if (!activeSession) return;" in BRIDGE_HTML
+assert "Speed Tier v2 owns panel rendering." in BRIDGE_HTML
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("Speed Tier launcher installs LAN first, then Speed Tier viewer, then Nana reuse wrapper", () => {
   const source = readFileSync(launcher, "utf8");
   const lanIndex = source.indexOf("lan.install_direct_lan(local_runtime)");
