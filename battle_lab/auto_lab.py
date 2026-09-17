@@ -320,16 +320,65 @@ def select_deep_dive_opponents(
     return selected
 
 
-def compare_with_baseline(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    baseline_pool = baseline.get("poolEstimate", baseline)
-    candidate_pool = candidate.get("poolEstimate", candidate)
-    delta = round(
-        float(candidate_pool["scorePercent"]) - float(baseline_pool["scorePercent"]),
-        2,
+def _score_delta_confidence95(
+    baseline: Mapping[str, int | float],
+    candidate: Mapping[str, int | float],
+) -> dict[str, float]:
+    """Approximate a 95% interval for two independent match-point means.
+
+    A win is 1 point, a tie is 0.5 and a loss is 0. Showdown's internal RNG is
+    not paired across candidates, so the comparison deliberately does not claim
+    a paired-battle interval even though pool, sides and Preview seeds align.
+    """
+
+    def moments(row: Mapping[str, int | float]) -> tuple[int, float, float]:
+        games = int(row.get("games", 0) or 0)
+        if games < 1:
+            return 0, 0.0, 0.0
+        wins = float(row.get("wins", 0) or 0)
+        ties = float(row.get("ties", 0) or 0)
+        mean = (wins + 0.5 * ties) / games
+        second_moment = (wins + 0.25 * ties) / games
+        population_variance = max(0.0, second_moment - mean * mean)
+        sample_variance = (
+            population_variance * games / (games - 1)
+            if games > 1
+            else 0.0
+        )
+        return games, mean, sample_variance
+
+    baseline_games, baseline_mean, baseline_variance = moments(baseline)
+    candidate_games, candidate_mean, candidate_variance = moments(candidate)
+    delta = candidate_mean - baseline_mean
+    if baseline_games < 2 or candidate_games < 2:
+        return {
+            "low": -100.0,
+            "high": 100.0,
+            "width": 200.0,
+        }
+    standard_error = math.sqrt(
+        baseline_variance / baseline_games
+        + candidate_variance / candidate_games
     )
-    baseline_matchups = baseline.get("screeningByOpponent", baseline.get("byOpponent", {}))
-    candidate_matchups = candidate.get("screeningByOpponent", candidate.get("byOpponent", {}))
+    margin = 1.95996398454 * standard_error
+    low = max(-1.0, delta - margin) * 100
+    high = min(1.0, delta + margin) * 100
+    return {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "width": round(high - low, 2),
+    }
+
+
+def _matchup_directions(
+    baseline_matchups: Mapping[str, Any],
+    candidate_matchups: Mapping[str, Any],
+    *,
+    only: set[str] | None = None,
+) -> dict[str, int]:
     common = sorted(set(baseline_matchups) & set(candidate_matchups))
+    if only is not None:
+        common = [opponent_id for opponent_id in common if opponent_id in only]
     improved = regressed = tied = 0
     for opponent_id in common:
         before = float(baseline_matchups[opponent_id]["scorePercent"])
@@ -340,23 +389,75 @@ def compare_with_baseline(baseline: dict[str, Any], candidate: dict[str, Any]) -
             regressed += 1
         else:
             tied += 1
+    return {
+        "improved": improved,
+        "regressed": regressed,
+        "tied": tied,
+    }
 
-    if delta > 0 and improved >= regressed:
+
+def compare_with_baseline(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    baseline_pool = baseline.get("poolEstimate", baseline)
+    candidate_pool = candidate.get("poolEstimate", candidate)
+    delta = round(
+        float(candidate_pool["scorePercent"]) - float(baseline_pool["scorePercent"]),
+        2,
+    )
+    delta95 = _score_delta_confidence95(baseline_pool, candidate_pool)
+    baseline_matchups = baseline.get("screeningByOpponent", baseline.get("byOpponent", {}))
+    candidate_matchups = candidate.get("screeningByOpponent", candidate.get("byOpponent", {}))
+    directions = _matchup_directions(baseline_matchups, candidate_matchups)
+    improved = directions["improved"]
+    regressed = directions["regressed"]
+    tied = directions["tied"]
+
+    baseline_combined = baseline.get("byOpponent", {})
+    candidate_combined = candidate.get("byOpponent", {})
+    critical_ids = {
+        str(opponent_id)
+        for opponent_id, row in baseline_combined.items()
+        if bool(row.get("deepDive"))
+    }
+    critical = _matchup_directions(
+        baseline_combined,
+        candidate_combined,
+        only=critical_ids,
+    )
+
+    if delta95["low"] > 0 and improved >= regressed:
+        evidence = "confirmed-improvement"
         verdict = "improved"
-    elif delta < 0 and regressed > improved:
+    elif delta > 0 and improved >= regressed:
+        evidence = "directional-improvement"
+        verdict = "improved"
+    elif delta95["high"] < 0 and regressed > improved:
+        evidence = "confirmed-regression"
         verdict = "regressed"
+    elif delta < 0 and regressed > improved:
+        evidence = "directional-regression"
+        verdict = "regressed"
+    elif delta == 0 and improved == regressed:
+        evidence = "inconclusive"
+        verdict = "mixed"
     else:
+        evidence = "mixed"
         verdict = "mixed"
     return {
         "deltaPercentagePoints": delta,
+        "delta95": delta95,
         "opponentsImproved": improved,
         "opponentsRegressed": regressed,
         "opponentsTied": tied,
+        "criticalOpponents": len(critical_ids),
+        "criticalOpponentsImproved": critical["improved"],
+        "criticalOpponentsRegressed": critical["regressed"],
+        "criticalOpponentsTied": critical["tied"],
+        "evidence": evidence,
         "verdict": verdict,
-        "promotion": "candidate" if verdict == "improved" else "hold",
+        "promotion": "candidate" if evidence == "confirmed-improvement" else "hold",
         "caveat": (
             "Benchmark relativo LIGHT-vs-LIGHT. Baseline y variante usan el mismo pool, lados y semillas de Preview; "
-            "el RNG interno de Showdown no queda pareado."
+            "el IC95% del delta trata el RNG interno de Showdown como independiente porque no queda pareado."
         ),
     }
 
@@ -842,11 +943,13 @@ async def run_auto_lab_gauntlet(
         "totalBattles": total_battles,
         "baseline": baseline_report,
         "variants": variant_reports,
-        "bestVariantId": (
-            variant_reports[0]["id"]
-            if variant_reports
-            and variant_reports[0]["comparison"]["verdict"] == "improved"
-            else None
+        "bestVariantId": next(
+            (
+                report["id"]
+                for report in variant_reports
+                if report["comparison"]["promotion"] == "candidate"
+            ),
+            None,
         ),
         "audit": audit,
         "caveat": (

@@ -34,7 +34,7 @@ test("Auto Lab balances sides, samples only candidate Team Preview and audits th
   execFileSync("python", ["-m", "py_compile", core, audit, service, nanaRuntime], { cwd: root, encoding: "utf8" });
 });
 
-test("Audit runs baseline-only while Optimize owns contextual set proposals", () => {
+test("Audit stays baseline-only while Optimize can compare its captured draft", () => {
   const api = fs.readFileSync(service, "utf8");
   const ui = fs.readFileSync(panelV2, "utf8");
   const room = fs.readFileSync(warRoom, "utf8");
@@ -46,10 +46,67 @@ test("Audit runs baseline-only while Optimize owns contextual set proposals", ()
   assert.match(ui, /id:\s*"baseline-current"/);
   assert.match(ui, /teamPaste:\s*baselinePaste/);
   assert.match(ui, /Optimizar o construir/);
-  assert.doesNotMatch(ui, /\bvariants\s*:/);
+  assert.match(ui, /variants:\s*comparisonMode && comparisonTeam/);
+  assert.match(ui, /id:\s*"variant-optimized"/);
+  assert.match(ui, /Iniciar 2,000 batallas/);
+  assert.match(ui, /Mejora confirmada/);
+  assert.match(room, /Comparar con original/);
+  assert.match(room, /comparisonTeam=\{optimizationComparison\.optimized\}/);
+  assert.match(room, /team=\{workingTeam\} corpusTeams=\{resources\.corpus\.teams\}/);
   assert.match(room, /function SetSuggestionCard/);
   assert.match(room, /Set search/);
   assert.match(room, /result\.sets\.map\([\s\S]*SetSuggestionCard/);
+});
+
+test("Optimize comparison requires interval-backed evidence before promotion", () => {
+  const source = fs.readFileSync(core, "utf8");
+  assert.match(source, /def _score_delta_confidence95/);
+  assert.match(source, /confirmed-improvement/);
+  assert.match(source, /criticalOpponentsImproved/);
+  assert.match(source, /evidence == "confirmed-improvement"/);
+
+  const script = `
+from battle_lab.auto_lab import compare_with_baseline
+
+def report(score, wins, losses, screening, combined):
+    return {
+        "poolEstimate": {"scorePercent": score, "games": wins + losses, "wins": wins, "losses": losses, "ties": 0},
+        "screeningByOpponent": screening,
+        "byOpponent": combined,
+    }
+
+baseline = report(
+    40, 40, 60,
+    {"rain": {"scorePercent": 25}, "balance": {"scorePercent": 50}},
+    {"rain": {"scorePercent": 30, "deepDive": True}, "balance": {"scorePercent": 50, "deepDive": False}},
+)
+optimized = report(
+    70, 70, 30,
+    {"rain": {"scorePercent": 75}, "balance": {"scorePercent": 60}},
+    {"rain": {"scorePercent": 70, "deepDive": True}, "balance": {"scorePercent": 60, "deepDive": False}},
+)
+comparison = compare_with_baseline(baseline, optimized)
+assert comparison["evidence"] == "confirmed-improvement", comparison
+assert comparison["deltaPercentagePoints"] == 30, comparison
+assert comparison["delta95"]["low"] > 0, comparison
+assert comparison["criticalOpponentsImproved"] == 1, comparison
+assert comparison["promotion"] == "candidate", comparison
+
+noisy = report(
+    51, 51, 49,
+    {"rain": {"scorePercent": 62.5}, "balance": {"scorePercent": 50}},
+    {"rain": {"scorePercent": 62.5, "deepDive": True}, "balance": {"scorePercent": 50, "deepDive": False}},
+)
+directional = compare_with_baseline(report(
+    50, 50, 50,
+    {"rain": {"scorePercent": 50}, "balance": {"scorePercent": 50}},
+    {"rain": {"scorePercent": 50, "deepDive": True}, "balance": {"scorePercent": 50, "deepDive": False}},
+), noisy)
+assert directional["evidence"] == "directional-improvement", directional
+assert directional["delta95"]["low"] < 0, directional
+assert directional["promotion"] == "hold", directional
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
 test("Auto Lab replay audit exposes the requested empirical dimensions with cautious wording", () => {
@@ -173,7 +230,7 @@ test("Adaptive audit preserves each budget while widening and deduplicating the 
   assert.match(ui, /opponents:\s*18,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*6,\s*additionalBattlesPerDeepDive:\s*12/);
   assert.match(ui, /opponents:\s*40,\s*initialBattlesPerOpponent:\s*8,\s*deepDiveOpponents:\s*10,\s*additionalBattlesPerDeepDive:\s*16/);
   assert.match(ui, /opponents:\s*100,\s*initialBattlesPerOpponent:\s*6,\s*deepDiveOpponents:\s*20,\s*additionalBattlesPerDeepDive:\s*20/);
-  assert.match(ui, /preset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
+  assert.match(ui, /activePreset === "deep"[\s\S]*selectAutoLabRecentVgcPastesCandidates/);
   assert.match(ui, /Profundo necesita \$\{spec\.opponents\} VGCPastes M-C actuales, recientes y validados por Showdown/);
   assert.match(ui, /100 × 6 del meta reciente \+ 20 × 20 de confirmación/);
 });

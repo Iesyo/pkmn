@@ -27,6 +27,11 @@ histórico de equipos de Pokémon VGC.
   y recálculo sobre el borrador actualizado. Set Search aplica sus cambios en
   ese mismo borrador de bloqueos y permite deshacerlos desde la tarjeta antes
   de abrir el resultado completo en Team Builder.
+  El borrador también puede compararse con la versión original mediante un
+  benchmark profundo A/B: ambos Teams enfrentan los mismos 100 rivales, lados
+  y semillas de Team Preview (1,000 batallas por Team). El informe muestra el
+  delta con IC95%, matchups y arquetipos ganados o perdidos, y solo confirma una
+  mejora cuando el intervalo completo queda sobre cero.
   Si el lote del core se agota, completa la ronda desde el corpus ampliado sin
   repetir candidatos; cada alta recibe un set completo de Battle Data o un
   respaldo legal determinista, nunca una tarjeta vacía.

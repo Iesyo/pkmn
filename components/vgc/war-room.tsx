@@ -15,6 +15,7 @@ import {
   Lock,
   Plus,
   RefreshCw,
+  Scale,
   Search,
   Settings2,
   Shield,
@@ -106,6 +107,12 @@ type OptimizationChangeStep = {
 
 type OptimizationChangeHistory = Record<string, OptimizationChangeStep[]>;
 
+type OptimizationComparisonSnapshot = {
+  token: number;
+  original: TeamVersion;
+  optimized: TeamVersion;
+};
+
 type MemberApplyState = {
   species: string;
   setId: string;
@@ -180,6 +187,19 @@ const EMPTY_PASTE_EVIDENCE_STATE: PasteEvidenceState = {
   failed: 0,
   error: "",
 };
+
+function cloneTeamVersion(version: TeamVersion): TeamVersion {
+  return {
+    ...version,
+    mechanics: version.mechanics ? [...version.mechanics] : undefined,
+    pokemon: version.pokemon.map((set) => ({
+      ...set,
+      mechanics: set.mechanics ? { ...set.mechanics } : undefined,
+      moves: set.moves.map((move) => ({ ...move })),
+      performance: { ...set.performance },
+    })),
+  };
+}
 
 function pasteEvidenceTeamKey(team: TeamVersion) {
   return team.pokemon.map((set) => [
@@ -627,6 +647,9 @@ function OptimizationView({
   onToggleWholeSet,
   onLoadMeta,
   onOpenBuilder,
+  onCompare,
+  canCompare,
+  comparisonOpen,
   onApplySet,
   onApplyMember,
   onUndoChange,
@@ -642,6 +665,9 @@ function OptimizationView({
   onToggleWholeSet: (id: string, locked: boolean) => void;
   onLoadMeta: () => void;
   onOpenBuilder: () => void;
+  onCompare: () => void;
+  canCompare: boolean;
+  comparisonOpen: boolean;
   onApplySet: (suggestion: WarRoomSetSuggestion) => void;
   onApplyMember: (member: WarRoomMemberSuggestion) => void;
   onUndoChange: (setId: string) => void;
@@ -716,7 +742,7 @@ function OptimizationView({
         ) : <div className="mt-4 rounded-xl border border-dashed border-white/8 px-4 py-10 text-center text-xs text-slate-600">Ejecuta la búsqueda para comparar los seis sets sin tocar los campos protegidos.</div>}
       </section>
 
-      <section className="flex flex-col gap-3 rounded-[24px] border border-cyan-300/12 bg-cyan-300/[0.035] p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-sm font-black text-white">¿Quieres convertir una hipótesis en versión?</h3><p className="mt-1 text-[10px] text-slate-500">Abre una copia editable del Team; el original permanece inmutable.</p></div><Button type="button" onClick={onOpenBuilder} className="gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-4" />Abrir en Team Builder</Button></section>
+      <section className="flex flex-col gap-3 rounded-[24px] border border-cyan-300/12 bg-cyan-300/[0.035] p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-sm font-black text-white">¿Quieres convertir una hipótesis en versión?</h3><p className="mt-1 text-[10px] text-slate-500">Compara primero el borrador contra el original o abre una copia editable; la versión guardada permanece inmutable.</p></div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={onCompare} disabled={!canCompare || comparisonOpen} title={!canCompare ? "Aplica al menos un cambio antes de comparar" : comparisonOpen ? "La comparación ya está abierta abajo" : "Capturar el borrador y preparar el benchmark profundo"} className="gap-2 border-violet-300/20 bg-violet-300/7 font-black text-violet-100 hover:bg-violet-300/14"><Scale className="size-4" />{comparisonOpen ? "Comparación abierta" : "Comparar con original"}</Button><Button type="button" onClick={onOpenBuilder} className="gap-2 bg-cyan-300 font-black text-slate-950 hover:bg-cyan-200"><Hammer className="size-4" />Abrir en Team Builder</Button></div></section>
 
       <div className="grid gap-2 lg:grid-cols-2">{result.notes.map((note) => <EvidenceNote key={note}>{note}</EvidenceNote>)}</div>
     </div>
@@ -742,6 +768,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGr
   const [optimizationLocks, setOptimizationLocks] = useState<WarRoomOptimizationLocks>({});
   const [optimizationPokemon, setOptimizationPokemon] = useState<PokemonSet[] | null>(null);
   const [optimizationHistory, setOptimizationHistory] = useState<OptimizationChangeHistory>({});
+  const [optimizationComparison, setOptimizationComparison] = useState<OptimizationComparisonSnapshot | null>(null);
   const [memberApplyState, setMemberApplyState] = useState<MemberApplyState>(EMPTY_MEMBER_APPLY_STATE);
   const memberApplyRequest = useRef(0);
   const [metaState, setMetaState] = useState<MetaState>(EMPTY_META_STATE);
@@ -767,6 +794,10 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGr
   const excludedMemberSpecies = useMemo(() => [...new Set(
     Object.values(optimizationHistory).flatMap((steps) => steps.flatMap((step) => step.excludedMemberSpecies)),
   )], [optimizationHistory]);
+  const hasOptimizationChanges = useMemo(
+    () => Object.values(optimizationHistory).some((steps) => steps.length > 0),
+    [optimizationHistory],
+  );
   const selectedRival = resources?.corpus.teams.find((team) => team.id === rivalId) ?? null;
   const pasteCandidateCorpus = useMemo(() => resources
     ? [...resources.corpus.teams, ...resources.corpus.historicalTeams]
@@ -820,6 +851,7 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGr
     setOptimizationLocks({});
     setOptimizationPokemon(null);
     setOptimizationHistory({});
+    setOptimizationComparison(null);
     setMemberApplyState(EMPTY_MEMBER_APPLY_STATE);
     setMetaState(EMPTY_META_STATE);
     setPasteEvidenceState(EMPTY_PASTE_EVIDENCE_STATE);
@@ -1023,6 +1055,18 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGr
     });
   }
 
+  function openOptimizationComparison() {
+    if (!selectedTeam || !workingTeam || !hasOptimizationChanges) return;
+    setOptimizationComparison({
+      token: Date.now(),
+      original: cloneTeamVersion(selectedTeam),
+      optimized: cloneTeamVersion(workingTeam),
+    });
+    window.requestAnimationFrame(() => {
+      document.getElementById("war-room-optimization-comparison")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
   async function applyMember(member: WarRoomMemberSuggestion) {
     if (!workingTeam || !resources || !optimization) return;
     const previousSet = workingTeam.pokemon.find((set) => set.id === member.replacesSetId);
@@ -1219,7 +1263,40 @@ export function WarRoom({ groups, initialTeam, onOpenBuilder }: { groups: TeamGr
 
       {resources && workingTeam && mode === "matchup" ? <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]"><RivalPicker teams={resources.corpus.teams} selected={selectedRival} query={rivalQuery} onQueryChange={setRivalQuery} onSelect={(team) => void selectRival(team)} /><MatchupView result={matchup} rivalState={rivalState} /></div> : null}
 
-      {resources && workingTeam && mode === "optimize" && optimization ? <OptimizationView team={workingTeam} result={optimization} optimizationLocks={optimizationLocks} metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE} pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE} memberApplyState={memberApplyState} optimizationHistory={optimizationHistory} onToggleLock={toggleLock} onToggleWholeSet={toggleWholeSet} onLoadMeta={() => void loadMeta()} onOpenBuilder={() => onOpenBuilder(workingTeam)} onApplySet={applySetSuggestion} onApplyMember={(member) => void applyMember(member)} onUndoChange={undoOptimizationChange} /> : null}
+      {resources && workingTeam && mode === "optimize" && optimization ? (
+        <div className="space-y-4">
+          <OptimizationView
+            team={workingTeam}
+            result={optimization}
+            optimizationLocks={optimizationLocks}
+            metaState={metaState.teamId === workingTeam.id ? metaState : EMPTY_META_STATE}
+            pasteEvidenceState={pasteEvidenceState.teamKey === workingTeamKey ? pasteEvidenceState : EMPTY_PASTE_EVIDENCE_STATE}
+            memberApplyState={memberApplyState}
+            optimizationHistory={optimizationHistory}
+            onToggleLock={toggleLock}
+            onToggleWholeSet={toggleWholeSet}
+            onLoadMeta={() => void loadMeta()}
+            onOpenBuilder={() => onOpenBuilder(workingTeam)}
+            onCompare={openOptimizationComparison}
+            canCompare={hasOptimizationChanges}
+            comparisonOpen={Boolean(optimizationComparison)}
+            onApplySet={applySetSuggestion}
+            onApplyMember={(member) => void applyMember(member)}
+            onUndoChange={undoOptimizationChange}
+          />
+          {optimizationComparison ? (
+            <div id="war-room-optimization-comparison" className="scroll-mt-4">
+              <WarRoomAutoLab
+                key={optimizationComparison.token}
+                team={optimizationComparison.original}
+                comparisonTeam={optimizationComparison.optimized}
+                corpusTeams={resources.corpus.teams}
+                onClose={() => setOptimizationComparison(null)}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {resources && workingTeam && mode === "sparring" ? <WarRoomSparring team={workingTeam} corpusTeams={resources.corpus.teams} /> : null}
     </div>

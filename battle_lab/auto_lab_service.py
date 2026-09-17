@@ -306,8 +306,13 @@ def install_auto_lab_service() -> type:
             light_runtime = _frozen_light_runtime(self.runtime)
             job.phase = "running"
             if job.request.variants:
+                variant_label = (
+                    "borrador optimizado"
+                    if len(job.request.variants) == 1
+                    else "borradores optimizados"
+                )
                 job.append_event(
-                    f"Gauntlet listo: baseline + {len(job.request.variants)} sets candidatos × {len(job.request.opponents)} rivales."
+                    f"Gauntlet listo: original + {len(job.request.variants)} {variant_label} × {len(job.request.opponents)} rivales."
                 )
             else:
                 job.append_event(
@@ -358,9 +363,9 @@ def install_auto_lab_service() -> type:
             job.phase = "completed"
             best = result.get("bestVariantId")
             if best:
-                job.append_event(f"Auditoría terminada · mejor set candidato: {best}.")
+                job.append_event(f"Comparación terminada · mejora confirmada: {best}.")
             elif job.request.variants:
-                job.append_event("Auditoría terminada · ningún set candidato superó el baseline.")
+                job.append_event("Comparación terminada · la mejora no quedó confirmada.")
             else:
                 job.append_event("Auditoría empírica del Team actual terminada.")
         except asyncio.CancelledError:

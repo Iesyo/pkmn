@@ -1,15 +1,19 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Minus,
   Play,
   RefreshCw,
+  Scale,
   ShieldCheck,
   Swords,
+  TrendingDown,
+  TrendingUp,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -264,6 +268,39 @@ type AdaptiveSampling = {
   battlesPerCandidate: number;
 };
 
+type AutoLabComparisonEvidence =
+  | "confirmed-improvement"
+  | "directional-improvement"
+  | "mixed"
+  | "inconclusive"
+  | "directional-regression"
+  | "confirmed-regression";
+
+type AutoLabComparison = {
+  deltaPercentagePoints: number;
+  delta95?: ConfidenceInterval;
+  opponentsImproved: number;
+  opponentsRegressed: number;
+  opponentsTied: number;
+  criticalOpponents: number;
+  criticalOpponentsImproved: number;
+  criticalOpponentsRegressed: number;
+  criticalOpponentsTied: number;
+  evidence?: AutoLabComparisonEvidence;
+  verdict: "improved" | "regressed" | "mixed";
+  promotion: "candidate" | "hold";
+  caveat: string;
+};
+
+type AutoLabCandidateResult = RecordRow & {
+  id: string;
+  label: string;
+  poolEstimate: RecordRow;
+  adaptiveCombined: RecordRow;
+  screeningByOpponent: Record<string, RecordRow>;
+  comparison?: AutoLabComparison;
+};
+
 type AutoLabResult = {
   schemaVersion: 3;
   benchmark: "light-mc-team-gauntlet";
@@ -281,7 +318,10 @@ type AutoLabResult = {
     label: string;
     poolEstimate: RecordRow;
     adaptiveCombined: RecordRow;
+    screeningByOpponent: Record<string, RecordRow>;
   };
+  variants: AutoLabCandidateResult[];
+  bestVariantId: string | null;
   audit: AutoLabAudit;
   caveat: string;
 };
@@ -334,6 +374,157 @@ function seconds(value: number | null) {
   if (value == null || !Number.isFinite(value)) return "—";
   if (value < 60) return `${Math.max(0, Math.round(value))}s`;
   return `${Math.floor(value / 60)}m ${Math.round(value % 60)}s`;
+}
+
+function signedPercentagePoints(value: number) {
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)} pp`;
+}
+
+function OptimizationComparisonResult({ result }: { result: AutoLabResult }) {
+  const optimized = result.variants?.[0];
+  if (!optimized) return null;
+  const comparison = optimized.comparison;
+  if (!comparison?.evidence || !comparison.delta95) {
+    return (
+      <div className="mt-5 flex items-start gap-2 rounded-2xl border border-amber-300/15 bg-amber-300/[0.04] p-4 text-xs leading-5 text-amber-100">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+        Esta respuesta viene de un runtime anterior y no incluye el intervalo comparativo. Reinicia Battle Lab desde la rama actual y repite la corrida.
+      </div>
+    );
+  }
+  const presentation = {
+    "confirmed-improvement": {
+      label: "Mejora confirmada",
+      detail: "El optimizado supera al original y el IC95% del delta queda completamente sobre cero.",
+      tone: "border-emerald-300/25 bg-emerald-300/[0.055] text-emerald-100",
+      icon: TrendingUp,
+    },
+    "directional-improvement": {
+      label: "Mejora direccional",
+      detail: "La señal favorece al optimizado, pero todavía admite ruido de combate.",
+      tone: "border-cyan-300/25 bg-cyan-300/[0.055] text-cyan-100",
+      icon: TrendingUp,
+    },
+    mixed: {
+      label: "Resultado mixto",
+      detail: "El promedio y la distribución por rival no apuntan en la misma dirección.",
+      tone: "border-amber-300/25 bg-amber-300/[0.055] text-amber-100",
+      icon: Scale,
+    },
+    inconclusive: {
+      label: "Sin evidencia suficiente",
+      detail: "La corrida no distingue de forma útil al optimizado del original.",
+      tone: "border-white/12 bg-white/[0.035] text-slate-200",
+      icon: Minus,
+    },
+    "directional-regression": {
+      label: "Regresión direccional",
+      detail: "La señal favorece al original, aunque el intervalo todavía cruza cero.",
+      tone: "border-rose-300/25 bg-rose-300/[0.055] text-rose-100",
+      icon: TrendingDown,
+    },
+    "confirmed-regression": {
+      label: "Regresión confirmada",
+      detail: "El optimizado rinde peor y el IC95% del delta queda completamente bajo cero.",
+      tone: "border-rose-300/30 bg-rose-300/[0.07] text-rose-100",
+      icon: TrendingDown,
+    },
+  } satisfies Record<AutoLabComparisonEvidence, { label: string; detail: string; tone: string; icon: typeof Scale }>;
+  const verdict = presentation[comparison.evidence];
+  const VerdictIcon = verdict.icon;
+  const opponentMeta = new Map(result.opponents.map((opponent) => [opponent.id, opponent]));
+  const matchupDeltas = Object.entries(optimized.screeningByOpponent)
+    .flatMap(([id, row]) => {
+      const baseline = result.baseline.screeningByOpponent[id];
+      if (!baseline) return [];
+      return [{
+        id,
+        label: opponentMeta.get(id)?.label ?? id,
+        archetypes: opponentMeta.get(id)?.archetypes ?? [],
+        delta: row.scorePercent - baseline.scorePercent,
+      }];
+    });
+  const gains = [...matchupDeltas].filter((row) => row.delta > 0).sort((left, right) => right.delta - left.delta).slice(0, 4);
+  const regressions = [...matchupDeltas].filter((row) => row.delta < 0).sort((left, right) => left.delta - right.delta).slice(0, 4);
+  const archetypes = new Map<string, number[]>();
+  for (const row of matchupDeltas) {
+    for (const archetype of row.archetypes.length ? row.archetypes : ["Balance / Other"]) {
+      archetypes.set(archetype, [...(archetypes.get(archetype) ?? []), row.delta]);
+    }
+  }
+  const archetypeDeltas = [...archetypes].map(([archetype, values]) => ({
+    archetype,
+    delta: values.reduce((sum, value) => sum + value, 0) / values.length,
+    opponents: values.length,
+  }));
+  const archetypeGains = archetypeDeltas.filter((row) => row.delta > 0).sort((left, right) => right.delta - left.delta).slice(0, 3);
+  const archetypeRegressions = archetypeDeltas.filter((row) => row.delta < 0).sort((left, right) => left.delta - right.delta).slice(0, 3);
+
+  return (
+    <div className="mt-5 space-y-4">
+      <section className={cn("rounded-[24px] border p-5", verdict.tone)}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl border border-current/20 bg-slate-950/25"><VerdictIcon className="size-5" /></div>
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] opacity-70">Veredicto comparativo</p>
+              <h3 className="mt-1 text-xl font-black">{verdict.label}</h3>
+              <p className="mt-1 max-w-2xl text-[11px] leading-5 opacity-75">{verdict.detail}</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-3xl font-black">{signedPercentagePoints(comparison.deltaPercentagePoints)}</p>
+            <p className="mt-1 text-[10px] opacity-70">IC95% del barrido · {signedPercentagePoints(comparison.delta95.low)} a {signedPercentagePoints(comparison.delta95.high)}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          ["Original · barrido", `${result.baseline.poolEstimate.scorePercent.toFixed(1)}%`, `${result.baseline.poolEstimate.wins}-${result.baseline.poolEstimate.losses}-${result.baseline.poolEstimate.ties} · ${result.baseline.poolEstimate.games} batallas`],
+          ["Optimizado · barrido", `${optimized.poolEstimate.scorePercent.toFixed(1)}%`, `${optimized.poolEstimate.wins}-${optimized.poolEstimate.losses}-${optimized.poolEstimate.ties} · ${optimized.poolEstimate.games} batallas`],
+          ["Rivales mejorados", `${comparison.opponentsImproved}`, `de ${comparison.opponentsImproved + comparison.opponentsRegressed + comparison.opponentsTied}`],
+          ["Rivales empeorados", `${comparison.opponentsRegressed}`, `${comparison.opponentsTied} sin cambio`],
+          ["Críticos mejorados", `${comparison.criticalOpponentsImproved}/${comparison.criticalOpponents}`, `${comparison.criticalOpponentsRegressed} regresiones`],
+        ].map(([label, value, detail]) => (
+          <div key={label} className="rounded-2xl border border-white/8 bg-slate-950/55 p-4">
+            <p className="text-[9px] font-black uppercase tracking-[0.13em] text-slate-500">{label}</p>
+            <p className="mt-1 text-2xl font-black text-white">{value}</p>
+            <p className="mt-1 text-[10px] text-slate-600">{detail}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-[22px] border border-emerald-300/12 bg-emerald-300/[0.025] p-4">
+          <p className="text-[9px] font-black uppercase tracking-[0.14em] text-emerald-300">Mayores ganancias en barrido</p>
+          <div className="mt-3 space-y-2">
+            {gains.length ? gains.map((row) => <div key={row.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/7 bg-slate-950/45 px-3 py-2"><span className="truncate text-[11px] text-slate-300">{row.label}</span><strong className="shrink-0 font-mono text-[11px] text-emerald-200">{signedPercentagePoints(row.delta)}</strong></div>) : <p className="text-[11px] text-slate-600">No hubo rivales con mejora medible.</p>}
+          </div>
+        </div>
+        <div className="rounded-[22px] border border-rose-300/12 bg-rose-300/[0.025] p-4">
+          <p className="text-[9px] font-black uppercase tracking-[0.14em] text-rose-300">Mayores costos en barrido</p>
+          <div className="mt-3 space-y-2">
+            {regressions.length ? regressions.map((row) => <div key={row.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/7 bg-slate-950/45 px-3 py-2"><span className="truncate text-[11px] text-slate-300">{row.label}</span><strong className="shrink-0 font-mono text-[11px] text-rose-200">{signedPercentagePoints(row.delta)}</strong></div>) : <p className="text-[11px] text-slate-600">No hubo rivales con regresión medible.</p>}
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-[22px] border border-white/8 bg-slate-950/45 p-4">
+        <p className="text-[9px] font-black uppercase tracking-[0.14em] text-violet-300">Cambio por arquetipo</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {archetypeGains.map((row) => <Badge key={`gain-${row.archetype}`} variant="outline" className="border-emerald-300/15 bg-emerald-300/5 text-[9px] text-emerald-200">{row.archetype} {signedPercentagePoints(row.delta)} · {row.opponents}</Badge>)}
+          {archetypeRegressions.map((row) => <Badge key={`loss-${row.archetype}`} variant="outline" className="border-rose-300/15 bg-rose-300/5 text-[9px] text-rose-200">{row.archetype} {signedPercentagePoints(row.delta)} · {row.opponents}</Badge>)}
+          {!archetypeGains.length && !archetypeRegressions.length ? <span className="text-[11px] text-slate-600">Sin diferencias por arquetipo.</span> : null}
+        </div>
+      </section>
+
+      <div className="flex items-start gap-2 rounded-2xl border border-white/8 bg-slate-950/45 p-4 text-[11px] leading-5 text-slate-400">
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-cyan-300" />
+        <div><strong className="text-slate-200">Lectura correcta:</strong> {comparison.caveat} {result.caveat}</div>
+      </div>
+    </div>
+  );
 }
 
 function signalLabel(level: AutoLabAudit["signal"]["level"]) {
@@ -800,24 +991,41 @@ function OpponentCoreCard({
 
 export function WarRoomAutoLab({
   team,
+  comparisonTeam,
   corpusTeams,
+  onClose,
 }: {
   team: TeamVersion;
+  comparisonTeam?: TeamVersion;
   corpusTeams: WarRoomCorpusTeam[];
+  onClose?: () => void;
 }) {
-  const [preset, setPreset] = useState<RunPreset>("quick");
+  const comparisonMode = Boolean(comparisonTeam);
+  const [preset, setPreset] = useState<RunPreset>(comparisonMode ? "deep" : "quick");
+  const activePreset: RunPreset = comparisonMode ? "deep" : preset;
   const [starting, setStarting] = useState(false);
   const [job, setJob] = useState<AutoLabJob | null>(null);
   const [runError, setRunError] = useState("");
   const [preflight, setPreflight] = useState<AutoLabPreflightStatus | null>(null);
   const pollRef = useRef<number | null>(null);
   const pollFailuresRef = useRef(0);
-  const teamKey = useMemo(() => `${team.id}|${team.paste}`, [team.id, team.paste]);
+  const teamKey = useMemo(() => `${team.id}|${team.paste}|${comparisonTeam?.paste ?? ""}`, [comparisonTeam?.paste, team.id, team.paste]);
   const baselinePaste = useMemo(
     () => serializeShowdownPaste(team.pokemon, team.mechanics ?? ["mega"]),
     [team],
   );
+  const comparisonPaste = useMemo(
+    () => comparisonTeam
+      ? serializeShowdownPaste(comparisonTeam.pokemon, comparisonTeam.mechanics ?? ["mega"])
+      : "",
+    [comparisonTeam],
+  );
   const baselineReady = inspectBattleReadyPaste(baselinePaste);
+  const comparisonReady = comparisonPaste ? inspectBattleReadyPaste(comparisonPaste) : null;
+
+  useEffect(() => () => {
+    if (pollRef.current != null) window.clearTimeout(pollRef.current);
+  }, []);
 
   async function poll(jobId: string) {
     try {
@@ -847,7 +1055,7 @@ export function WarRoomAutoLab({
   }
 
   async function startAudit() {
-    if (!baselineReady.ready) return;
+    if (!baselineReady.ready || (comparisonMode && !comparisonReady?.ready)) return;
     if (pollRef.current != null) window.clearTimeout(pollRef.current);
     pollFailuresRef.current = 0;
     setStarting(true);
@@ -855,23 +1063,34 @@ export function WarRoomAutoLab({
     setJob(null);
     setPreflight({ checked: 0, valid: 0, rejected: 0, lastRejected: "" });
     try {
-      const spec = PRESETS[preset];
-      const baselineVerdicts = await validateBattleReadyBatch([
+      const spec = PRESETS[activePreset];
+      const participantVerdicts = await validateBattleReadyBatch([
         {
           id: "baseline-current",
-          label: `${team.name} · Team actual`,
+          label: `${team.name} · ${comparisonMode ? "Original" : "Team actual"}`,
           teamPaste: baselinePaste,
         },
+        ...(comparisonMode && comparisonTeam ? [{
+          id: "variant-optimized",
+          label: `${comparisonTeam.name} · Optimizado`,
+          teamPaste: comparisonPaste,
+        }] : []),
       ]);
-      const baselineVerdict = baselineVerdicts.get("baseline-current");
+      const baselineVerdict = participantVerdicts.get("baseline-current");
       if (!baselineVerdict?.valid) {
         throw new Error(
-          `El Team actual no supera validate-team M-C: ${baselineVerdict?.error || "validación sin respuesta"}`,
+          `El Team ${comparisonMode ? "original" : "actual"} no supera validate-team M-C: ${baselineVerdict?.error || "validación sin respuesta"}`,
+        );
+      }
+      const comparisonVerdict = participantVerdicts.get("variant-optimized");
+      if (comparisonMode && !comparisonVerdict?.valid) {
+        throw new Error(
+          `El Team optimizado no supera validate-team M-C: ${comparisonVerdict?.error || "validación sin respuesta"}`,
         );
       }
 
       const pool =
-        preset === "deep"
+        activePreset === "deep"
           ? selectAutoLabRecentVgcPastesCandidates(corpusTeams, spec.opponents * 3)
           : selectAutoLabOpponentCandidates(corpusTeams, spec.opponents * 3, teamKey);
       const loaded: LoadedOpponent[] = [];
@@ -890,7 +1109,7 @@ export function WarRoomAutoLab({
             const id = `preflight-${offset + index + 1}`;
             const label = opponentLabel(
               candidate,
-              preset === "deep",
+              activePreset === "deep",
               `Rival ${offset + index + 1}`,
             );
             try {
@@ -954,7 +1173,7 @@ export function WarRoomAutoLab({
         setPreflight({ checked, valid: loaded.length, rejected, lastRejected });
       }
 
-      if (preset === "deep" && loaded.length < spec.opponents) {
+      if (activePreset === "deep" && loaded.length < spec.opponents) {
         throw new Error(
           `Profundo necesita ${spec.opponents} VGCPastes M-C actuales, recientes y validados por Showdown; solo encontramos ${loaded.length} después de revisar ${checked} y descartar ${rejected}.`,
         );
@@ -971,9 +1190,14 @@ export function WarRoomAutoLab({
         body: JSON.stringify({
           baseline: {
             id: "baseline-current",
-            label: `${team.name} · Team actual`,
+            label: `${team.name} · ${comparisonMode ? "Original" : "Team actual"}`,
             teamPaste: baselinePaste,
           },
+          variants: comparisonMode && comparisonTeam ? [{
+            id: "variant-optimized",
+            label: `${comparisonTeam.name} · Optimizado`,
+            teamPaste: comparisonPaste,
+          }] : [],
           opponents: loaded.map(({ paste, label }, index) => ({
             id: `opponent-${index + 1}`,
             label,
@@ -986,14 +1210,14 @@ export function WarRoomAutoLab({
       });
       const payload = await readPayload(response);
       if (!response.ok) {
-        throw new Error(errorText(payload, "No se pudo iniciar la auditoría empírica."));
+        throw new Error(errorText(payload, comparisonMode ? "No se pudo iniciar la comparación profunda." : "No se pudo iniciar la auditoría empírica."));
       }
       const next = payload as AutoLabJob;
       setJob(next);
       void poll(next.id);
     } catch (error) {
       setRunError(
-        error instanceof Error ? error.message : "No se pudo iniciar la auditoría empírica.",
+        error instanceof Error ? error.message : comparisonMode ? "No se pudo iniciar la comparación profunda." : "No se pudo iniciar la auditoría empírica.",
       );
     } finally {
       setStarting(false);
@@ -1001,26 +1225,28 @@ export function WarRoomAutoLab({
   }
 
   const audit = job?.result?.audit;
+  const jobActive = Boolean(job && !["completed", "error", "cancelled"].includes(job.phase));
 
   return (
-    <section className="rounded-[26px] border border-cyan-300/12 bg-cyan-300/[0.02] p-5">
+    <section className={cn("rounded-[26px] border p-5", comparisonMode ? "border-violet-300/15 bg-violet-300/[0.025]" : "border-cyan-300/12 bg-cyan-300/[0.02]")}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="max-w-3xl">
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-cyan-300">
-            <ShieldCheck className="size-3.5" />
-            Auto Lab · auditoría empírica
+          <div className={cn("flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em]", comparisonMode ? "text-violet-300" : "text-cyan-300")}>
+            {comparisonMode ? <Scale className="size-3.5" /> : <ShieldCheck className="size-3.5" />}
+            {comparisonMode ? "Auto Lab · benchmark A/B" : "Auto Lab · auditoría empírica"}
           </div>
           <h2 className="mt-1 text-xl font-black text-white">
-            Tortura el Team actual contra un meta mucho más ancho
+            {comparisonMode ? "Original contra optimizado, bajo la misma prueba" : "Tortura el Team actual contra un meta mucho más ancho"}
           </h2>
           <p className="mt-2 text-[12px] leading-5 text-slate-400">
-            Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview,
-            mantiene los turnos deterministas y convierte los replays en diagnóstico. Los
-            paquetes de set se quedaron en{" "}
-            <strong className="text-violet-200">Optimizar o construir</strong>.
+            {comparisonMode
+              ? "Ambos Teams enfrentan los mismos 100 rivales, lados y semillas de Team Preview. El barrido mide el meta completo y la confirmación revisa si el borrador corrigió los matchups críticos del original."
+              : <>Audit usa todo el presupuesto en este Team: LIGHT explora Team Preview, mantiene los turnos deterministas y convierte los replays en diagnóstico. Los paquetes de set se quedaron en <strong className="text-violet-200">Optimizar o construir</strong>.</>}
           </p>
         </div>
-        {job ? (
+        {onClose ? (
+          <Button type="button" variant="outline" size="sm" onClick={onClose} disabled={jobActive} className="border-white/10 text-[11px]">Cerrar comparación</Button>
+        ) : job ? (
           <Button
             type="button"
             variant="outline"
@@ -1030,11 +1256,7 @@ export function WarRoomAutoLab({
               setRunError("");
               setPreflight(null);
             }}
-            disabled={
-              job.phase === "running" ||
-              job.phase === "preparing" ||
-              job.phase === "finalizing"
-            }
+            disabled={jobActive}
             className="gap-2 border-white/10 text-[11px]"
           >
             <RefreshCw className="size-3.5" />
@@ -1047,9 +1269,15 @@ export function WarRoomAutoLab({
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">
-              Cobertura del Gauntlet
+              {comparisonMode ? "Comparación profunda fija" : "Cobertura del Gauntlet"}
             </p>
-            <div className="mt-2 flex flex-wrap gap-2">
+            {comparisonMode ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Badge variant="outline" className="border-white/10 bg-white/[0.03] text-[10px] text-slate-300">Original · 1,000 batallas</Badge>
+                <Badge variant="outline" className="border-violet-300/18 bg-violet-300/6 text-[10px] text-violet-200">Optimizado · 1,000 batallas</Badge>
+                <Badge variant="outline" className="border-cyan-300/18 bg-cyan-300/6 text-[10px] text-cyan-200">100 rivales · 2,000 total</Badge>
+              </div>
+            ) : <div className="mt-2 flex flex-wrap gap-2">
               {(Object.keys(PRESETS) as RunPreset[]).map((value) => (
                 <button
                   key={value}
@@ -1083,8 +1311,8 @@ export function WarRoomAutoLab({
                   </span>
                 </button>
               ))}
-            </div>
-            <p className="mt-2 text-[11px] text-slate-400">{PRESETS[preset].description}</p>
+            </div>}
+            <p className="mt-2 text-[11px] text-slate-400">{comparisonMode ? "Cada Team juega 100 × 6 de barrido y 20 × 20 adicionales contra las debilidades priorizadas del original." : PRESETS[activePreset].description}</p>
           </div>
           <Button
             type="button"
@@ -1092,27 +1320,29 @@ export function WarRoomAutoLab({
             disabled={
               starting ||
               !baselineReady.ready ||
-              Boolean(job && !["completed", "error", "cancelled"].includes(job.phase))
+              (comparisonMode && !comparisonReady?.ready) ||
+              jobActive
             }
-            className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+            className={cn("gap-2 text-slate-950", comparisonMode ? "bg-violet-300 hover:bg-violet-200" : "bg-cyan-300 hover:bg-cyan-200")}
           >
             {starting ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Play className="size-4" />
             )}
-            {starting ? "Validando meta…" : "Auditar Team con LIGHT"}
+            {starting ? "Validando meta…" : comparisonMode ? "Iniciar 2,000 batallas" : "Auditar Team con LIGHT"}
           </Button>
         </div>
         {!baselineReady.ready ? (
           <p className="mt-3 text-[11px] text-rose-300">
-            El Team actual no es battle-ready: {baselineReady.issues[0]}
+            El Team {comparisonMode ? "original" : "actual"} no es battle-ready: {baselineReady.issues[0]}
           </p>
         ) : null}
+        {comparisonMode && comparisonReady && !comparisonReady.ready ? <p className="mt-3 text-[11px] text-rose-300">El Team optimizado no es battle-ready: {comparisonReady.issues[0]}</p> : null}
         {preflight ? (
           <div className="mt-3 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.025] px-3 py-2 text-[11px] text-slate-400">
             <strong className="text-cyan-200">Preflight Showdown M-C:</strong>{" "}
-            {preflight.valid}/{PRESETS[preset].opponents} válidos · {preflight.rejected}{" "}
+            {preflight.valid}/{PRESETS[activePreset].opponents} válidos · {preflight.rejected}{" "}
             descartados · {preflight.checked} revisados
             {preflight.lastRejected ? (
               <div
@@ -1142,7 +1372,7 @@ export function WarRoomAutoLab({
                 {job.phase === "finalizing"
                   ? "Generando informe de combate…"
                   : job.currentOpponentId
-                    ? `${job.samplingStage === "deepening" ? "Confirmando" : "Mapeando"} ${job.currentOpponentId}`
+                    ? `${job.currentCandidateLabel ? `${job.currentCandidateLabel} · ` : ""}${job.samplingStage === "deepening" ? "confirmando" : "mapeando"} ${job.currentOpponentId}`
                     : job.phase === "preparing"
                       ? "Preparando arena…"
                       : "Gauntlet en curso"}
@@ -1166,7 +1396,9 @@ export function WarRoomAutoLab({
         </div>
       ) : null}
 
-      {job?.result && audit ? (
+      {job?.result && comparisonMode ? <OptimizationComparisonResult result={job.result} /> : null}
+
+      {job?.result && audit && !comparisonMode ? (
         <div className="mt-5 space-y-5">
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {[
