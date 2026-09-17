@@ -206,10 +206,11 @@ def _champions_raw_speed(mon: Any, entry: dict[str, Any] | None) -> int | None:
         raw = getattr(mon, "stats", {}).get("spe")
     except Exception:
         raw = None
-    if isinstance(raw, (int, float)) and raw > 0:
+    transformed = bool(entry) and _to_id(getattr(mon, "species", "")) != _to_id(entry.get("species", ""))
+    if isinstance(raw, (int, float)) and raw > 0 and not transformed:
         return int(raw)
     if not entry:
-        return None
+        return int(raw) if isinstance(raw, (int, float)) and raw > 0 else None
     try:
         base = int(getattr(mon, "base_stats", {}).get("spe"))
     except Exception:
@@ -419,11 +420,18 @@ def _priority_moves(
         known_moves = list(getattr(mon, "moves", {}).values())
     except Exception:
         known_moves = []
-    if not known_moves:
-        known_moves = _fallback_moves(entry, gen)
+    seen = {_to_id(getattr(move, "id", "")) for move in known_moves}
+    for move in _fallback_moves(entry, gen):
+        if _to_id(getattr(move, "id", "")) not in seen:
+            known_moves.append(move)
+            seen.add(_to_id(getattr(move, "id", "")))
 
-    ability = _to_id(getattr(mon, "ability", "") or (entry or {}).get("ability", ""))
-    item = _to_id(getattr(mon, "item", "") or (entry or {}).get("item", ""))
+    ability = _to_id(getattr(mon, "ability", ""))
+    if ability in {"", "unknownability"} and entry:
+        ability = _to_id(entry.get("ability", ""))
+    item = _to_id(getattr(mon, "item", ""))
+    if item in {"", "unknownitem"} and entry:
+        item = _to_id(entry.get("item", ""))
     ability_on = _ability_active(ability, item, fields)
     hp_fraction = float(getattr(mon, "current_hp_fraction", 0.0) or 0.0)
     result: list[dict[str, Any]] = []
