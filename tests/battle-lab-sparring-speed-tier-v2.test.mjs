@@ -27,11 +27,24 @@ test("Speed Tier v2 polls Battle Lab independently and surfaces missing backend 
   assert.match(source, /Speed Tier sin filas/);
 });
 
-test("Speed Tier launcher requires the v4 viewer marker and v2 server", () => {
+test("Speed Tier launcher installs LAN first, then Speed Tier viewer, then Nana reuse wrapper", () => {
+  const source = readFileSync(launcher, "utf8");
+  const lanIndex = source.indexOf("lan.install_direct_lan(local_runtime)");
+  const speedIndex = source.indexOf("_install_speed_layer_after_lan()");
+  const reuseIndex = source.indexOf("install_reusable_viewer(local_runtime)");
+  assert.ok(lanIndex >= 0, "LAN bootstrap must be installed");
+  assert.ok(speedIndex > lanIndex, "Speed Tier must replace the LAN viewer after LAN bootstrap");
+  assert.ok(reuseIndex > speedIndex, "Nana reuse wrapper must wrap the final Speed Tier viewer");
+  assert.doesNotMatch(source, /return nursery\.main\(argv\)/);
+});
+
+test("Speed Tier LAN viewer binds on the trusted LAN and requires the v4 marker", () => {
   const source = readFileSync(launcher, "utf8");
   assert.match(source, /battle-lab-native-showdown-controls-v4-speed-tier/);
   assert.match(source, /sparring_speed_viewer_v2\.py/);
-  assert.match(source, /polling independiente/);
+  assert.match(source, /"--bind",\s*"0\.0\.0\.0"/s);
+  assert.match(source, /local_runtime\.start_viewer_server = _start_speed_viewer/);
+  assert.match(source, /local_runtime\.NATIVE_BRIDGE_MARKER = SPEED_VIEWER_MARKER/);
 });
 
 test("Speed Tier v2 modules compile", () => {
