@@ -2,11 +2,13 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, Hammer, Loader2, RefreshCw, Trophy, Users } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Eye, Hammer, Loader2, RefreshCw, Trophy, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { parseShowdownPaste } from "@/lib/paste";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import {
   isTournamentScoutingResponse,
@@ -15,6 +17,7 @@ import {
   type TournamentScoutingTeam,
   type TournamentTeamBuilderImport,
 } from "@/lib/tournament-scouting";
+import type { PokemonSet } from "@/lib/types";
 
 function displayDate(value: string) {
   if (!value || Number.isNaN(Date.parse(value))) return "Fecha no disponible";
@@ -61,11 +64,13 @@ function TournamentTeamCard({
   team,
   importing,
   importDisabled,
+  onInspect,
   onImport,
 }: {
   team: TournamentScoutingTeam;
   importing: boolean;
   importDisabled: boolean;
+  onInspect: () => void;
   onImport: () => void;
 }) {
   return (
@@ -78,10 +83,15 @@ function TournamentTeamCard({
           </div>
           <p className="mt-1 text-[10px] font-semibold text-slate-500">{team.record ? `Récord ${team.record}` : "Récord no publicado"}</p>
         </div>
-        <Button type="button" variant="outline" size="sm" disabled={importDisabled} onClick={onImport} className="shrink-0 gap-1.5 border-white/10 bg-white/3 text-[10px] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/8 hover:text-cyan-200">
-          {importing ? <Loader2 className="size-3 animate-spin" /> : <Hammer className="size-3" />}
-          {importing ? "Importando" : "Importar al Builder"}
-        </Button>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <Button type="button" variant="outline" size="sm" onClick={onInspect} className="gap-1.5 border-cyan-300/15 bg-cyan-300/5 text-[10px] text-cyan-200 hover:bg-cyan-300/10">
+            <Eye className="size-3" />Inspector
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={importDisabled} onClick={onImport} className="gap-1.5 border-white/10 bg-white/3 text-[10px] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/8 hover:text-cyan-200">
+            {importing ? <Loader2 className="size-3 animate-spin" /> : <Hammer className="size-3" />}
+            {importing ? "Importando" : "Importar al Builder"}
+          </Button>
+        </div>
       </div>
 
       <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -91,6 +101,37 @@ function TournamentTeamCard({
             <p className="mt-1 truncate text-[8px] font-semibold text-slate-500" title={species}>{species}</p>
           </div>
         ))}
+      </div>
+    </article>
+  );
+}
+
+function TournamentInspectorSetCard({ set }: { set: PokemonSet }) {
+  return (
+    <article className="rounded-2xl border border-white/8 bg-slate-950/70 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex size-16 shrink-0 items-center justify-center rounded-xl border border-white/7 bg-white/[0.025]">
+          <Image src={getSpriteUrl(set.species)} alt={set.species} width={60} height={60} unoptimized className="size-14 object-contain" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-base font-black text-white">{set.species}</h3>
+            {set.teraType ? <Badge variant="outline" className="border-violet-300/15 bg-violet-300/7 text-[9px] text-violet-200">Tera {set.teraType}</Badge> : null}
+          </div>
+          <p className="mt-1 text-[10px] font-semibold text-cyan-200">{set.item || "Sin objeto explícito"}</p>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[9px] sm:grid-cols-3">
+        <div className="rounded-lg border border-white/6 bg-white/[0.02] px-2.5 py-2"><span className="block uppercase tracking-wide text-slate-600">Habilidad</span><strong className="mt-0.5 block text-slate-300">{set.ability || "—"}</strong></div>
+        <div className="rounded-lg border border-white/6 bg-white/[0.02] px-2.5 py-2"><span className="block uppercase tracking-wide text-slate-600">Naturaleza</span><strong className="mt-0.5 block text-slate-300">{set.nature || "—"}</strong></div>
+        <div className="rounded-lg border border-white/6 bg-white/[0.02] px-2.5 py-2"><span className="block uppercase tracking-wide text-slate-600">Nivel</span><strong className="mt-0.5 block text-slate-300">{set.level}</strong></div>
+      </div>
+      <div className="mt-2 rounded-lg border border-white/6 bg-white/[0.02] px-2.5 py-2 text-[9px]">
+        <span className="uppercase tracking-wide text-slate-600">EVs / Stats explícitos</span>
+        <p className="mt-1 font-mono text-slate-300">{set.evs || "No incluidos en el paste"}</p>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-1.5">
+        {set.moves.map((move, index) => <div key={`${set.id}-${move.name}-${index}`} className="truncate rounded-lg border border-white/6 bg-white/[0.025] px-2.5 py-2 text-[9px] font-semibold text-slate-300" title={move.name}>{move.name}</div>)}
       </div>
     </article>
   );
@@ -119,6 +160,10 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
   const [refreshError, setRefreshError] = useState("");
   const [importingTeamId, setImportingTeamId] = useState("");
   const [importError, setImportError] = useState("");
+  const [inspectorTeam, setInspectorTeam] = useState<TournamentScoutingTeam | null>(null);
+  const [inspectorSets, setInspectorSets] = useState<PokemonSet[]>([]);
+  const [inspectorLoading, setInspectorLoading] = useState(false);
+  const [inspectorError, setInspectorError] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -178,23 +223,50 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
     }
   }
 
+  async function loadTeamPaste(team: TournamentScoutingTeam, enrich = true) {
+    const response = await fetch("/api/tournament-team-import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamId: team.id, enrich }),
+    });
+    const payload = await readApiPayload(response);
+    if (!response.ok) throw new Error(upstreamError(payload));
+    if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
+      throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
+    }
+    return payload as { paste: string; estimates?: Record<string, unknown> };
+  }
+
+  async function inspectTeam(team: TournamentScoutingTeam) {
+    setInspectorTeam(team);
+    setInspectorSets([]);
+    setInspectorError("");
+    setInspectorLoading(true);
+    try {
+      const payload = await loadTeamPaste(team, false);
+      setInspectorSets(parseShowdownPaste(payload.paste));
+    } catch (caught) {
+      setInspectorError(caught instanceof Error ? caught.message : "No pudimos inspeccionar ese equipo.");
+    } finally {
+      setInspectorLoading(false);
+    }
+  }
+
+  function closeInspector() {
+    setInspectorTeam(null);
+    setInspectorSets([]);
+    setInspectorError("");
+    setInspectorLoading(false);
+  }
+
   async function importTeam(team: TournamentScoutingTeam) {
     if (!selectedTournament || importingTeamId) return;
     setImportingTeamId(team.id);
     setImportError("");
     try {
-      const response = await fetch("/api/tournament-team-import", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ teamId: team.id }),
-      });
-      const payload = await readApiPayload(response);
-      if (!response.ok) throw new Error(upstreamError(payload));
-      if (!payload || typeof payload !== "object" || !("paste" in payload) || typeof payload.paste !== "string") {
-        throw new Error("PokéPaste devolvió un equipo en un formato inesperado.");
-      }
-      const estimates = "estimates" in payload && payload.estimates && typeof payload.estimates === "object"
-        ? payload.estimates as Record<string, unknown>
+      const payload = await loadTeamPaste(team, true);
+      const estimates = payload.estimates && typeof payload.estimates === "object"
+        ? payload.estimates
         : null;
       const suggestedName = `${team.playerName} · ${selectedTournament.name}`.slice(0, 80);
       onImportTeam({
@@ -284,9 +356,24 @@ export function TournamentScoutingBrowser({ onImportTeam }: { onImportTeam: (req
           <span className="shrink-0 font-mono text-[10px] text-slate-600">Ordenados por puesto</span>
         </div>
         <div className="grid gap-3 xl:grid-cols-2">
-          {selectedTournament?.teams.map((team) => <TournamentTeamCard key={team.id} team={team} importing={importingTeamId === team.id} importDisabled={Boolean(importingTeamId)} onImport={() => void importTeam(team)} />)}
+          {selectedTournament?.teams.map((team) => <TournamentTeamCard key={team.id} team={team} importing={importingTeamId === team.id} importDisabled={Boolean(importingTeamId)} onInspect={() => void inspectTeam(team)} onImport={() => void importTeam(team)} />)}
         </div>
       </section>
+
+      <Dialog open={Boolean(inspectorTeam)} onOpenChange={(open) => { if (!open) closeInspector(); }}>
+        <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto border-white/10 bg-slate-950 text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Inspector de torneo · {inspectorTeam?.playerName}</DialogTitle>
+            <DialogDescription>
+              PokéPaste original del equipo publicado. Los datos faltantes no se estiman dentro del Inspector.
+            </DialogDescription>
+          </DialogHeader>
+          {inspectorLoading ? <div className="flex items-center justify-center gap-2 py-12 text-sm text-cyan-200"><Loader2 className="size-4 animate-spin" />Cargando PokéPaste…</div> : null}
+          {inspectorError ? <div role="alert" className="rounded-xl border border-rose-300/15 bg-rose-300/7 px-4 py-3 text-xs text-rose-200">{inspectorError}</div> : null}
+          {!inspectorLoading && !inspectorError && inspectorSets.length ? <div className="grid gap-3 md:grid-cols-2">{inspectorSets.map((set) => <TournamentInspectorSetCard key={set.id} set={set} />)}</div> : null}
+          {!inspectorLoading && !inspectorError && inspectorTeam ? <div className="flex justify-end border-t border-white/7 pt-4"><Button type="button" variant="outline" disabled={Boolean(importingTeamId)} onClick={() => void importTeam(inspectorTeam)} className="gap-2 border-cyan-300/20 bg-cyan-300/7 text-cyan-200"><Hammer className="size-4" />Importar al Builder</Button></div> : null}
+        </DialogContent>
+      </Dialog>
 
       <footer className="rounded-2xl border border-white/7 bg-slate-950/45 px-4 py-3 text-[10px] leading-5 text-slate-600">
         Datos de <a href={data.source.url} target="_blank" rel="noreferrer" className="font-semibold text-cyan-300 hover:text-cyan-200">{data.source.label}</a>, servidos desde el snapshot público de <a href={data.snapshotSource.url} target="_blank" rel="noreferrer" className="font-semibold text-cyan-300 hover:text-cyan-200">{data.snapshotSource.label}</a>. La lista incluye equipos con PokéPaste disponibles en el snapshot; no representa necesariamente todos los participantes del torneo.
