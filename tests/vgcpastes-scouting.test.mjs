@@ -102,12 +102,12 @@ test("uses the verified sheet ids and a deterministic A:AS public CSV query", as
   assert.match(buildVgcPastesSheetUrl(VGCPASTES_FORMATS[0]), /gid=2001945654#gid=2001945654$/);
 });
 
-test("normalizes at most three unique Pokemon filters", async () => {
+test("normalizes at most six unique Pokemon filters", async () => {
   const { MAX_VGCPASTES_POKEMON_FILTERS, normalizeVgcPastesPokemonFilters } = await vite.ssrLoadModule("/lib/vgcpastes-scouting.ts");
-  assert.equal(MAX_VGCPASTES_POKEMON_FILTERS, 3);
+  assert.equal(MAX_VGCPASTES_POKEMON_FILTERS, 6);
   assert.deepEqual(
-    normalizeVgcPastesPokemonFilters([" Sneasler ", "sneasler", "Indeedee-F", "Rillaboom", "Gholdengo"]),
-    ["Sneasler", "Indeedee-F", "Rillaboom"],
+    normalizeVgcPastesPokemonFilters([" Sneasler ", "sneasler", "Indeedee-F", "Rillaboom", "Gholdengo", "Incineroar", "Salamence-Mega", "Farigiraf"]),
+    ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo", "Incineroar", "Salamence-Mega"],
   );
 });
 
@@ -136,12 +136,14 @@ test("filters by a Pokemon core with AND semantics and paginates before sending 
   assert.equal(filtered.pagination.totalPages, 2);
   assert.ok(filtered.teams.every((team) => team.pokemon.includes("Sneasler") && team.pokemon.includes("Indeedee-F")));
 
-  const threePokemonCore = buildVgcPastesScoutingResponse(format, teams, { pokemon: ["Sneasler", "Indeedee-F", "Rillaboom"], page: 1, pageSize: 24 });
-  assert.equal(threePokemonCore.pagination.totalItems, 15);
-  assert.ok(threePokemonCore.teams.every((team) => ["Sneasler", "Indeedee-F", "Rillaboom"].every((species) => team.pokemon.includes(species))));
+  const sixPokemonCore = ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo", "Incineroar", "Salamence-Mega"];
+  const fullCore = buildVgcPastesScoutingResponse(format, teams, { pokemon: sixPokemonCore, page: 1, pageSize: 24 });
+  assert.equal(fullCore.pagination.totalItems, 15);
+  assert.deepEqual(fullCore.query.pokemon, sixPokemonCore);
+  assert.ok(fullCore.teams.every((team) => sixPokemonCore.every((species) => team.pokemon.includes(species))));
 
   const invalid = structuredClone(pageTwo);
-  invalid.query.pokemon = ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo"];
+  invalid.query.pokemon = ["Sneasler", "Indeedee-F", "Rillaboom", "Gholdengo", "Incineroar", "Salamence-Mega", "Farigiraf"];
   assert.equal(isVgcPastesScoutingResponse(invalid), false);
 });
 
