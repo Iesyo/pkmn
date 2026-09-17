@@ -820,6 +820,7 @@ async def run_auto_lab_gauntlet(
         build_auto_lab_audit,
         candidate_id=baseline.id,
         candidate_roster=list(candidate_records[0].roster),
+        candidate_team_text=candidate_records[0].team_text,
         summaries=summaries_by_candidate[baseline.id],
         candidate_report=baseline_report,
         opponents=opponent_meta,

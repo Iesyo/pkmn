@@ -13,7 +13,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 LOG_PATTERN = re.compile(
@@ -330,6 +330,247 @@ def _confidence95(row: Mapping[str, Any], *, positive_key: str = "wins") -> dict
     }
 
 
+def _rate_percent(row: Mapping[str, Any], *, positive_key: str = "wins") -> float:
+    games = int(row.get("games", 0) or 0)
+    if not games:
+        return 0.0
+    points = float(row.get(positive_key, 0) or 0)
+    if positive_key == "wins":
+        points += 0.5 * float(row.get("ties", 0) or 0)
+    return round(100 * points / games, 2)
+
+
+def _smoothed_rate_percent(
+    row: Mapping[str, Any],
+    *,
+    prior_percent: float,
+    positive_key: str = "wins",
+    prior_weight: float = 6.0,
+) -> float:
+    """Shrink small samples toward the broad-pool rate instead of showing 0/100."""
+
+    games = int(row.get("games", 0) or 0)
+    points = float(row.get(positive_key, 0) or 0)
+    if positive_key == "wins":
+        points += 0.5 * float(row.get("ties", 0) or 0)
+    prior = max(0.0, min(100.0, float(prior_percent))) / 100
+    posterior = (points + prior * prior_weight) / (games + prior_weight)
+    return round(100 * posterior, 2)
+
+
+def _empty_record() -> dict[str, int]:
+    return {"games": 0, "wins": 0, "losses": 0, "ties": 0}
+
+
+def _add_outcome(record: dict[str, int], outcome: str) -> None:
+    record["games"] += 1
+    record[outcome] += 1
+
+
+def _evidence_label(
+    *,
+    with_record: Mapping[str, Any],
+    without_record: Mapping[str, Any],
+    matched_strata: int,
+    matched_delta: float,
+    delta_interval: Mapping[str, float],
+    side_deltas: Mapping[str, float],
+) -> dict[str, str]:
+    minimum_group = min(
+        int(with_record.get("games", 0) or 0),
+        int(without_record.get("games", 0) or 0),
+    )
+    if minimum_group < 6 or matched_strata < 2:
+        return {
+            "level": "insufficient",
+            "label": "Evidencia insuficiente",
+            "note": "Faltan observaciones comparables con y sin la señal.",
+        }
+
+    alpha = side_deltas.get("alpha")
+    beta = side_deltas.get("beta")
+    if alpha is not None and beta is not None:
+        opposite = alpha * beta < 0 and max(abs(alpha), abs(beta)) >= 10
+        if opposite or abs(alpha - beta) >= 25:
+            return {
+                "level": "side-sensitive",
+                "label": "Sensible a ejecución",
+                "note": "La dirección cambia o se abre demasiado entre lados; no se atribuye al Team todavía.",
+            }
+
+    excludes_zero = (
+        float(delta_interval.get("low", 0)) > 0 and matched_delta > 0
+    ) or (
+        float(delta_interval.get("high", 0)) < 0 and matched_delta < 0
+    )
+    if minimum_group >= 12 and matched_strata >= 3 and excludes_zero:
+        return {
+            "level": "robust",
+            "label": "Señal robusta",
+            "note": "La diferencia se repite en varios estratos y su intervalo no cruza cero.",
+        }
+    if abs(matched_delta) >= 5:
+        return {
+            "level": "directional",
+            "label": "Señal direccional",
+            "note": "Hay una dirección útil, pero todavía admite explicaciones alternativas.",
+        }
+    return {
+        "level": "insufficient",
+        "label": "Evidencia insuficiente",
+        "note": "La diferencia es pequeña frente a la incertidumbre disponible.",
+    }
+
+
+def _compare_presence(
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    present: Callable[[Mapping[str, Any]], bool],
+    stratum: Callable[[Mapping[str, Any]], str],
+    prior_percent: float,
+    positive_key: str = "wins",
+) -> dict[str, Any]:
+    """Compare a signal with/without it while matching on a coarse battle stratum."""
+
+    with_record = _empty_record()
+    without_record = _empty_record()
+    strata: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: {"with": _empty_record(), "without": _empty_record()}
+    )
+    side_rows: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: {"with": _empty_record(), "without": _empty_record()}
+    )
+
+    for observation in observations:
+        outcome = str(observation.get("outcome") or "ties")
+        bucket = "with" if present(observation) else "without"
+        _add_outcome(with_record if bucket == "with" else without_record, outcome)
+        _add_outcome(strata[stratum(observation)][bucket], outcome)
+        _add_outcome(side_rows[str(observation.get("side") or "unknown")][bucket], outcome)
+
+    weighted_delta = 0.0
+    total_weight = 0.0
+    matched_strata = 0
+    for pair in strata.values():
+        with_games = pair["with"]["games"]
+        without_games = pair["without"]["games"]
+        if not with_games or not without_games:
+            continue
+        matched_strata += 1
+        weight = with_games * without_games / (with_games + without_games)
+        delta = _rate_percent(
+            pair["with"], positive_key=positive_key
+        ) - _rate_percent(pair["without"], positive_key=positive_key)
+        weighted_delta += weight * delta
+        total_weight += weight
+    matched_delta = round(weighted_delta / total_weight, 2) if total_weight else 0.0
+
+    with_interval = _confidence95(with_record, positive_key=positive_key)
+    without_interval = _confidence95(without_record, positive_key=positive_key)
+    delta_low = max(-100.0, with_interval["low"] - without_interval["high"])
+    delta_high = min(100.0, with_interval["high"] - without_interval["low"])
+    delta_interval = {
+        "low": round(delta_low, 2),
+        "high": round(delta_high, 2),
+        "width": round(delta_high - delta_low, 2),
+    }
+
+    side_deltas: dict[str, float] = {}
+    for side, pair in side_rows.items():
+        if min(pair["with"]["games"], pair["without"]["games"]) < 4:
+            continue
+        side_deltas[side] = round(
+            _rate_percent(pair["with"], positive_key=positive_key)
+            - _rate_percent(pair["without"], positive_key=positive_key),
+            2,
+        )
+
+    evidence = _evidence_label(
+        with_record=with_record,
+        without_record=without_record,
+        matched_strata=matched_strata,
+        matched_delta=matched_delta,
+        delta_interval=delta_interval,
+        side_deltas=side_deltas,
+    )
+    return {
+        "with": {
+            **with_record,
+            "ratePercent": _rate_percent(with_record, positive_key=positive_key),
+            "smoothedRatePercent": _smoothed_rate_percent(
+                with_record,
+                prior_percent=prior_percent,
+                positive_key=positive_key,
+            ),
+            "confidence95": with_interval,
+        },
+        "without": {
+            **without_record,
+            "ratePercent": _rate_percent(without_record, positive_key=positive_key),
+            "smoothedRatePercent": _smoothed_rate_percent(
+                without_record,
+                prior_percent=prior_percent,
+                positive_key=positive_key,
+            ),
+            "confidence95": without_interval,
+        },
+        "matchedDeltaPercentagePoints": matched_delta,
+        "delta95": delta_interval,
+        "matchedStrata": matched_strata,
+        "sideDeltas": side_deltas,
+        "evidence": evidence,
+    }
+
+
+def extract_candidate_moves(
+    team_text: str,
+    candidate_roster: Sequence[str],
+) -> dict[str, list[str]]:
+    """Recover the four declared moves per roster identity from a Showdown paste."""
+
+    result = {str(species): [] for species in candidate_roster}
+    roster_by_key = {
+        _species_key(str(species)): str(species) for species in candidate_roster
+    }
+    for block in re.split(r"\n\s*\n", team_text.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        header = lines[0].split(" @ ", 1)[0]
+        parenthesized = [
+            value
+            for value in re.findall(r"\(([^)]+)\)", header)
+            if value.lower() not in {"m", "f"}
+        ]
+        identity = next(
+            (
+                roster_by_key[key]
+                for key in reversed([_species_key(value) for value in parenthesized])
+                if key in roster_by_key
+            ),
+            None,
+        )
+        header_key = _species_key(header)
+        if identity is None:
+            identity = roster_by_key.get(header_key)
+        if identity is None:
+            candidates = [
+                (key, species)
+                for key, species in roster_by_key.items()
+                if key and key in header_key
+            ]
+            if candidates:
+                identity = max(candidates, key=lambda item: len(item[0]))[1]
+        if identity is None:
+            continue
+        for line in lines[1:]:
+            if line.startswith("- "):
+                move = line[2:].strip()
+                if move and move not in result[identity]:
+                    result[identity].append(move)
+    return result
+
+
 def _outcome(summary: Mapping[str, Any], candidate_id: str) -> str:
     pairing = summary.get("pairing", {})
     side = "alpha" if pairing.get("alphaTeamId") == candidate_id else "beta"
@@ -402,6 +643,7 @@ def build_auto_lab_audit(
     candidate_report: Mapping[str, Any],
     opponents: Mapping[str, Mapping[str, Any]],
     replay_root: Path,
+    candidate_team_text: str = "",
     sampling: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     total = len(summaries)
@@ -411,6 +653,7 @@ def build_auto_lab_audit(
     roster_set = set(roster)
     roster_order = {name: index for index, name in enumerate(roster)}
     canonical = lambda value: _canonical_candidate_species(str(value), roster)
+    declared_moves = extract_candidate_moves(candidate_team_text, roster)
 
     battle_tags = [str(summary.get("battleTag") or "") for summary in summaries]
     replay_index = _index_replay_paths(replay_root, battle_tags)
@@ -451,23 +694,6 @@ def build_auto_lab_audit(
     lead_rows: dict[str, dict[str, int]] = defaultdict(
         lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
     )
-    selection_rows: dict[str, dict[str, int]] = {
-        name: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "leadGames": 0}
-        for name in roster
-    }
-    move_rows: dict[tuple[str, str], dict[str, int]] = defaultdict(
-        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0, "uses": 0}
-    )
-    opponent_pokemon_rows: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
-    )
-    opponent_core_rows: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
-    )
-    opponent_pokemon_ids: dict[str, set[str]] = defaultdict(set)
-    opponent_core_ids: dict[str, set[str]] = defaultdict(set)
-    opponent_pokemon_screening_games: Counter[str] = Counter()
-    opponent_core_screening_games: Counter[str] = Counter()
     archetype_rows: dict[str, dict[str, int]] = defaultdict(
         lambda: {"games": 0, "wins": 0, "losses": 0, "ties": 0}
     )
@@ -478,6 +704,7 @@ def build_auto_lab_audit(
     pattern_counts: Counter[str] = Counter()
     preview_signatures: set[tuple[str, ...]] = set()
     candidate_side_counts: Counter[str] = Counter()
+    screening_observations: list[dict[str, Any]] = []
 
     for summary in summaries:
         outcome = _outcome(summary, candidate_id)
@@ -492,47 +719,29 @@ def build_auto_lab_audit(
             identity = canonical(species)
             if identity in roster_set and identity not in canonical_preview:
                 canonical_preview.append(identity)
-        for identity in canonical_preview:
-            row = selection_rows[identity]
-            row["games"] += 1
-            row[outcome] += 1
         if canonical_preview:
             preview_signatures.add(tuple(sorted(canonical_preview)))
 
         replay = facts.get(str(summary.get("battleTag") or ""))
+        opponent_id = _opponent_id(summary, candidate_id)
+        archetype_tags = [
+            str(tag)
+            for tag in opponents.get(opponent_id, {}).get(
+                "archetypes", ["Balance / Other"]
+            )
+        ] or ["Balance / Other"]
+        opponent_core = ""
+        canonical_leads: list[str] = []
         if replay:
             canonical_leads = [canonical(species) for species in replay.leads]
             lead_key = " + ".join(canonical_leads) if canonical_leads else "No recuperado"
             lead = lead_rows[lead_key]
             lead["games"] += 1
             lead[outcome] += 1
-            for identity in canonical_leads:
-                if identity in roster_set:
-                    selection_rows[identity]["leadGames"] += 1
-            for species, moves in replay.move_counts.items():
-                identity = canonical(species)
-                for move, uses in moves.items():
-                    row = move_rows[(identity, move)]
-                    row["games"] += 1
-                    row[outcome] += 1
-                    row["uses"] += uses
-            opponent_id = _opponent_id(summary, candidate_id)
-            for species in set(replay.opponent_observed_pokemon):
-                pressure = opponent_pokemon_rows[species]
-                pressure["games"] += 1
-                pressure[outcome] += 1
-                opponent_pokemon_ids[species].add(opponent_id)
-                if summary.get("samplingStage") != "deepening":
-                    opponent_pokemon_screening_games[species] += 1
             core = replay.opponent_leads or replay.opponent_observed_pokemon[:2]
             if len(core) >= 2:
                 core_key = " + ".join(sorted(core[:2]))
-                pressure = opponent_core_rows[core_key]
-                pressure["games"] += 1
-                pressure[outcome] += 1
-                opponent_core_ids[core_key].add(opponent_id)
-                if summary.get("samplingStage") != "deepening":
-                    opponent_core_screening_games[core_key] += 1
+                opponent_core = core_key
             if outcome == "losses":
                 if replay.turns <= 5:
                     pattern_counts["Derrota en 5 turnos o menos"] += 1
@@ -543,10 +752,42 @@ def build_auto_lab_audit(
                         f"{event['type']}: {event.get('move', '—')}"
                     ] += 1
 
-        opponent_id = _opponent_id(summary, candidate_id)
-        for tag in opponents.get(opponent_id, {}).get(
-            "archetypes", ["Balance / Other"]
-        ):
+        if summary.get("samplingStage") != "deepening":
+            replay_moves: dict[str, dict[str, int]] = defaultdict(dict)
+            candidate_observed: set[str] = set()
+            if replay:
+                candidate_observed = {
+                    canonical(species) for species in replay.observed_pokemon
+                } & roster_set
+                for species, moves in replay.move_counts.items():
+                    identity = canonical(species)
+                    for move, uses in moves.items():
+                        replay_moves[identity][move] = (
+                            int(replay_moves[identity].get(move, 0)) + int(uses)
+                        )
+            screening_observations.append(
+                {
+                    "outcome": outcome,
+                    "side": candidate_side,
+                    "opponentId": opponent_id,
+                    "archetypes": archetype_tags,
+                    "matchupStratum": f"{opponent_id}|{candidate_side}",
+                    "archetypeStratum": (
+                        f"{archetype_tags[0]}|{candidate_side}"
+                    ),
+                    "candidatePreview": set(canonical_preview),
+                    "candidateLeads": set(canonical_leads),
+                    "candidateObserved": candidate_observed,
+                    "candidateMoves": replay_moves,
+                    "opponentObserved": (
+                        set(replay.opponent_observed_pokemon) if replay else set()
+                    ),
+                    "opponentCore": opponent_core,
+                    "replayParsed": replay is not None,
+                }
+            )
+
+        for tag in archetype_tags:
             row = archetype_rows[str(tag)]
             row["games"] += 1
             row[outcome] += 1
@@ -569,17 +810,33 @@ def build_auto_lab_audit(
         key=lambda row: (-row["games"], -row["scorePercent"], row["lead"])
     )
 
+    preview_observations = [
+        observation
+        for observation in screening_observations
+        if observation["candidatePreview"]
+    ]
     selection_usage = []
-    for species, row in selection_rows.items():
-        games = row["games"]
-        selected_rate = round(100 * games / total, 2) if total else 0.0
-        score = _score(row)
-        interval = _confidence95(row)
+    for species in roster:
+        comparison = _compare_presence(
+            preview_observations,
+            present=lambda observation, species=species: species
+            in observation["candidatePreview"],
+            stratum=lambda observation: str(observation["matchupStratum"]),
+            prior_percent=overall_score,
+        )
+        games = int(comparison["with"]["games"])
+        selected_rate = (
+            round(100 * games / len(preview_observations), 2)
+            if preview_observations
+            else 0.0
+        )
+        evidence_level = comparison["evidence"]["level"]
         signal = (
             "rarely-selected"
-            if total >= 12 and selected_rate <= 20
+            if len(preview_observations) >= 12 and selected_rate <= 20
             else "review"
-            if games >= 6 and interval["high"] + 5 < overall_score
+            if evidence_level in {"robust", "directional"}
+            and comparison["matchedDeltaPercentagePoints"] <= -10
             else "ok"
         )
         selection_usage.append(
@@ -587,9 +844,27 @@ def build_auto_lab_audit(
                 "pokemon": species,
                 "selectedGames": games,
                 "selectedRate": selected_rate,
-                "leadGames": row["leadGames"],
-                "scoreWhenSelected": score,
-                "confidence95": interval,
+                "leadGames": sum(
+                    1
+                    for observation in preview_observations
+                    if species in observation["candidateLeads"]
+                ),
+                "scoreWhenSelected": comparison["with"]["ratePercent"],
+                "smoothedScoreWhenSelected": comparison["with"][
+                    "smoothedRatePercent"
+                ],
+                "scoreWhenNotSelected": comparison["without"]["ratePercent"],
+                "smoothedScoreWhenNotSelected": comparison["without"][
+                    "smoothedRatePercent"
+                ],
+                "matchedDeltaPercentagePoints": comparison[
+                    "matchedDeltaPercentagePoints"
+                ],
+                "matchedStrata": comparison["matchedStrata"],
+                "delta95": comparison["delta95"],
+                "sideDeltas": comparison["sideDeltas"],
+                "confidence95": comparison["with"]["confidence95"],
+                "evidence": comparison["evidence"],
                 "signal": signal,
             }
         )
@@ -597,33 +872,95 @@ def build_auto_lab_audit(
         key=lambda row: roster_order.get(row["pokemon"], len(roster_order))
     )
 
+    replay_screening_observations = [
+        observation
+        for observation in screening_observations
+        if observation["replayParsed"]
+    ]
+    declared_move_pairs = {
+        (species, move)
+        for species, moves in declared_moves.items()
+        for move in moves
+    }
+    observed_move_pairs = {
+        (species, move)
+        for observation in replay_screening_observations
+        for species, moves in observation["candidateMoves"].items()
+        for move in moves
+        if species in roster_set
+    }
     move_signals = []
-    for (species, move), row in move_rows.items():
-        score = _score(row)
-        interval = _confidence95(row)
+    for species, move in sorted(declared_move_pairs | observed_move_pairs):
+        opportunities = [
+            observation
+            for observation in replay_screening_observations
+            if species in observation["candidateObserved"]
+        ]
+        comparison = _compare_presence(
+            opportunities,
+            present=lambda observation, species=species, move=move: move
+            in observation["candidateMoves"].get(species, {}),
+            stratum=lambda observation: str(observation["matchupStratum"]),
+            prior_percent=overall_score,
+        )
+        games_used = int(comparison["with"]["games"])
+        opportunity_games = len(opportunities)
+        opportunity_rate = (
+            round(100 * games_used / opportunity_games, 2)
+            if opportunity_games
+            else 0.0
+        )
+        total_uses = sum(
+            int(observation["candidateMoves"].get(species, {}).get(move, 0))
+            for observation in opportunities
+        )
+        evidence_level = comparison["evidence"]["level"]
         signal = (
             "review"
-            if row["games"] >= 6 and interval["high"] + 5 < overall_score
+            if evidence_level in {"robust", "directional"}
+            and comparison["matchedDeltaPercentagePoints"] <= -10
+            else "low-usage"
+            if opportunity_games >= 8 and opportunity_rate <= 15
             else "observed"
         )
         move_signals.append(
             {
                 "pokemon": species,
                 "move": move,
-                "gamesUsed": row["games"],
-                "totalUses": row["uses"],
-                "wins": row["wins"],
-                "losses": row["losses"],
-                "ties": row["ties"],
-                "scoreWhenUsed": score,
-                "confidence95": interval,
+                "declared": (species, move) in declared_move_pairs,
+                "gamesUsed": games_used,
+                "appearanceGames": opportunity_games,
+                "availableButUnusedGames": int(comparison["without"]["games"]),
+                "opportunityRate": opportunity_rate,
+                "totalUses": total_uses,
+                "wins": comparison["with"]["wins"],
+                "losses": comparison["with"]["losses"],
+                "ties": comparison["with"]["ties"],
+                "scoreWhenUsed": comparison["with"]["ratePercent"],
+                "smoothedScoreWhenUsed": comparison["with"][
+                    "smoothedRatePercent"
+                ],
+                "scoreWhenAvailableButUnused": comparison["without"][
+                    "ratePercent"
+                ],
+                "matchedDeltaPercentagePoints": comparison[
+                    "matchedDeltaPercentagePoints"
+                ],
+                "matchedStrata": comparison["matchedStrata"],
+                "delta95": comparison["delta95"],
+                "confidence95": comparison["with"]["confidence95"],
+                "evidence": comparison["evidence"],
                 "signal": signal,
             }
         )
     move_signals.sort(
         key=lambda row: (
-            0 if row["signal"] == "review" else 1,
-            -row["gamesUsed"],
+            0
+            if row["signal"] == "review"
+            else 1
+            if row["signal"] == "low-usage"
+            else 2,
+            -row["appearanceGames"],
             row["pokemon"],
             row["move"],
         )
@@ -632,13 +969,42 @@ def build_auto_lab_audit(
     archetypes = []
     for label, combined_row in archetype_rows.items():
         screening_row = archetype_screening_rows.get(label, combined_row)
+        interval = _confidence95(screening_row)
+        unique_archetype_opponents = len(archetype_opponents[label])
+        if (
+            screening_row["games"] >= 24
+            and unique_archetype_opponents >= 5
+            and interval["width"] <= 40
+        ):
+            evidence = {
+                "level": "robust",
+                "label": "Señal robusta",
+                "note": "Volumen, rivales distintos e intervalo sostienen la lectura del arquetipo.",
+            }
+        elif screening_row["games"] >= 12 and unique_archetype_opponents >= 3:
+            evidence = {
+                "level": "directional",
+                "label": "Señal direccional",
+                "note": "El patrón es útil, aunque todavía puede moverse con más rivales.",
+            }
+        else:
+            evidence = {
+                "level": "insufficient",
+                "label": "Evidencia insuficiente",
+                "note": "Hay pocas partidas o pocos rivales distintos para este arquetipo.",
+            }
         archetypes.append(
             {
                 "archetype": label,
                 **screening_row,
                 "scorePercent": _score(screening_row),
-                "confidence95": _confidence95(screening_row),
-                "uniqueOpponents": len(archetype_opponents[label]),
+                "smoothedScorePercent": _smoothed_rate_percent(
+                    screening_row,
+                    prior_percent=overall_score,
+                ),
+                "confidence95": interval,
+                "uniqueOpponents": unique_archetype_opponents,
+                "evidence": evidence,
                 "adaptiveCombined": {
                     **combined_row,
                     "scorePercent": _score(combined_row),
@@ -647,7 +1013,11 @@ def build_auto_lab_audit(
             }
         )
     archetypes.sort(
-        key=lambda row: (row["scorePercent"], -row["games"], row["archetype"])
+        key=lambda row: (
+            row["smoothedScorePercent"],
+            -row["games"],
+            row["archetype"],
+        )
     )
     losses = sum(
         1 for summary in summaries if _outcome(summary, candidate_id) == "losses"
@@ -673,39 +1043,96 @@ def build_auto_lab_audit(
         if parsed_summaries
         else 0.0
     )
+    screening_losses = sum(
+        1
+        for observation in replay_screening_observations
+        if observation["outcome"] == "losses"
+    )
 
     pokemon_pressure: list[dict[str, Any]] = []
-    for species, row in opponent_pokemon_rows.items():
-        games = row["games"]
-        loss_rate = 100 * row["losses"] / games if games else 0.0
-        screening_games = opponent_pokemon_screening_games[species]
+    screening_opponent_species = sorted(
+        {
+            species
+            for observation in replay_screening_observations
+            for species in observation["opponentObserved"]
+        }
+    )
+    evidence_weight = {
+        "robust": 1.0,
+        "directional": 0.75,
+        "side-sensitive": 0.35,
+        "insufficient": 0.2,
+    }
+    for species in screening_opponent_species:
+        comparison = _compare_presence(
+            replay_screening_observations,
+            present=lambda observation, species=species: species
+            in observation["opponentObserved"],
+            stratum=lambda observation: str(observation["archetypeStratum"]),
+            prior_percent=reference_loss_rate,
+            positive_key="losses",
+        )
+        observed = comparison["with"]
+        games = int(observed["games"])
+        loss_rate = float(observed["ratePercent"])
+        smoothed_loss_rate = float(observed["smoothedRatePercent"])
+        screening_games = games
         exposure_rate = (
             100 * screening_games / len(parsed_screening_summaries)
             if parsed_screening_summaries
             else 0.0
         )
-        interval = _confidence95(row, positive_key="losses")
+        interval = observed["confidence95"]
         confidence = max(0.0, 1 - interval["width"] / 100)
-        lift = loss_rate - reference_loss_rate
+        lift = (
+            float(comparison["matchedDeltaPercentagePoints"])
+            if comparison["matchedStrata"]
+            else smoothed_loss_rate - reference_loss_rate
+        )
+        level = str(comparison["evidence"]["level"])
         priority = (
             exposure_rate
             / 100
-            * (0.55 * max(0.0, lift) / 100 + 0.45 * loss_rate / 100)
+            * (
+                0.55 * max(0.0, lift) / 100
+                + 0.45 * smoothed_loss_rate / 100
+            )
             * confidence
+            * evidence_weight.get(level, 0.2)
         )
+        unique_species_opponents = {
+            str(observation["opponentId"])
+            for observation in replay_screening_observations
+            if species in observation["opponentObserved"]
+        }
         pokemon_pressure.append(
             {
                 "pokemon": species,
                 "observedGames": games,
                 "screeningObservedGames": screening_games,
-                "lossGames": row["losses"],
+                "lossGames": observed["losses"],
                 "lossRate": round(loss_rate, 2),
+                "smoothedLossRate": round(smoothed_loss_rate, 2),
+                "lossRateWithout": comparison["without"]["ratePercent"],
                 "lossRateLift": round(lift, 2),
                 "exposureRate": round(exposure_rate, 2),
-                "uniqueOpponents": len(opponent_pokemon_ids[species]),
+                "uniqueOpponents": len(unique_species_opponents),
                 "confidence95": interval,
+                "matchedStrata": comparison["matchedStrata"],
+                "delta95": comparison["delta95"],
+                "sideDeltas": comparison["sideDeltas"],
+                "evidence": comparison["evidence"],
+                "comparisonBasis": (
+                    "archetype-and-side"
+                    if comparison["matchedStrata"]
+                    else "broad-pool-prior"
+                ),
                 "priorityScore": round(priority * 100, 2),
-                "lossShare": round(100 * row["losses"] / losses, 2) if losses else 0.0,
+                "lossShare": (
+                    round(100 * observed["losses"] / screening_losses, 2)
+                    if screening_losses
+                    else 0.0
+                ),
             }
         )
     pokemon_pressure.sort(
@@ -717,37 +1144,83 @@ def build_auto_lab_audit(
     )
 
     core_pressure: list[dict[str, Any]] = []
-    for core, row in opponent_core_rows.items():
-        games = row["games"]
-        loss_rate = 100 * row["losses"] / games if games else 0.0
-        screening_games = opponent_core_screening_games[core]
+    screening_opponent_cores = sorted(
+        {
+            str(observation["opponentCore"])
+            for observation in replay_screening_observations
+            if observation["opponentCore"]
+        }
+    )
+    for core in screening_opponent_cores:
+        comparison = _compare_presence(
+            replay_screening_observations,
+            present=lambda observation, core=core: observation["opponentCore"]
+            == core,
+            stratum=lambda observation: str(observation["archetypeStratum"]),
+            prior_percent=reference_loss_rate,
+            positive_key="losses",
+        )
+        observed = comparison["with"]
+        games = int(observed["games"])
+        loss_rate = float(observed["ratePercent"])
+        smoothed_loss_rate = float(observed["smoothedRatePercent"])
+        screening_games = games
         exposure_rate = (
             100 * screening_games / len(parsed_screening_summaries)
             if parsed_screening_summaries
             else 0.0
         )
-        interval = _confidence95(row, positive_key="losses")
+        interval = observed["confidence95"]
         confidence = max(0.0, 1 - interval["width"] / 100)
-        lift = loss_rate - reference_loss_rate
+        lift = (
+            float(comparison["matchedDeltaPercentagePoints"])
+            if comparison["matchedStrata"]
+            else smoothed_loss_rate - reference_loss_rate
+        )
+        level = str(comparison["evidence"]["level"])
         priority = (
             exposure_rate
             / 100
-            * (0.55 * max(0.0, lift) / 100 + 0.45 * loss_rate / 100)
+            * (
+                0.55 * max(0.0, lift) / 100
+                + 0.45 * smoothed_loss_rate / 100
+            )
             * confidence
+            * evidence_weight.get(level, 0.2)
         )
+        unique_core_opponents = {
+            str(observation["opponentId"])
+            for observation in replay_screening_observations
+            if observation["opponentCore"] == core
+        }
         core_pressure.append(
             {
                 "core": core,
                 "observedGames": games,
                 "screeningObservedGames": screening_games,
-                "lossGames": row["losses"],
+                "lossGames": observed["losses"],
                 "lossRate": round(loss_rate, 2),
+                "smoothedLossRate": round(smoothed_loss_rate, 2),
+                "lossRateWithout": comparison["without"]["ratePercent"],
                 "lossRateLift": round(lift, 2),
                 "exposureRate": round(exposure_rate, 2),
-                "uniqueOpponents": len(opponent_core_ids[core]),
+                "uniqueOpponents": len(unique_core_opponents),
                 "confidence95": interval,
+                "matchedStrata": comparison["matchedStrata"],
+                "delta95": comparison["delta95"],
+                "sideDeltas": comparison["sideDeltas"],
+                "evidence": comparison["evidence"],
+                "comparisonBasis": (
+                    "archetype-and-side"
+                    if comparison["matchedStrata"]
+                    else "broad-pool-prior"
+                ),
                 "priorityScore": round(priority * 100, 2),
-                "lossShare": round(100 * row["losses"] / losses, 2) if losses else 0.0,
+                "lossShare": (
+                    round(100 * observed["losses"] / screening_losses, 2)
+                    if screening_losses
+                    else 0.0
+                ),
             }
         )
     core_pressure.sort(
@@ -794,6 +1267,17 @@ def build_auto_lab_audit(
     else:
         policy_status = "stable"
 
+    evidence_counts: Counter[str] = Counter()
+    for row in [
+        *selection_usage,
+        *move_signals,
+        *pokemon_pressure,
+        *core_pressure,
+        *archetypes,
+    ]:
+        evidence = row.get("evidence", {})
+        evidence_counts[str(evidence.get("level") or "insufficient")] += 1
+
     return {
         "signal": {
             "games": total,
@@ -837,6 +1321,17 @@ def build_auto_lab_audit(
             ),
             "limitation": "Es un control de sensibilidad por lado, no una confirmación con un segundo piloto o política.",
         },
+        "evidenceSummary": {
+            "robust": evidence_counts["robust"],
+            "directional": evidence_counts["directional"],
+            "sideSensitive": evidence_counts["side-sensitive"],
+            "insufficient": evidence_counts["insufficient"],
+            "note": (
+                "Las comparaciones con/sin usan solo el barrido amplio. Se emparejan por rival+lado "
+                "para decisiones propias y por arquetipo+lado para presión rival; las muestras pequeñas "
+                "se suavizan hacia la referencia del pool."
+            ),
+        },
         "heuristic": {
             "deepDive": (
                 "prevalence × severity × repeatability × confidence; la selección también reserva peso "
@@ -844,8 +1339,16 @@ def build_auto_lab_audit(
             ),
             "matchups": "Score con intervalo Wilson 95%; screening y confirmación se etiquetan por separado.",
             "pressure": (
-                "Prioridad por exposición × tasa de derrota sobre la referencia × confianza; "
+                "Prioridad por exposición × diferencia con/sin ajustada × confianza × nivel de evidencia; "
                 "no por conteo bruto de derrotas."
+            ),
+            "smallSamples": (
+                "Tasas suavizadas hacia la referencia del pool con peso previo de 6 partidas; "
+                "los intervalos y conteos crudos permanecen visibles."
+            ),
+            "moveOpportunity": (
+                "Una oportunidad significa que el Pokémon entró al campo; no afirma que el move "
+                "fuera tácticamente correcto en cada turno."
             ),
         },
         "goodMatchups": list(reversed(matchup_rows[-5:])),
@@ -875,6 +1378,8 @@ def build_auto_lab_audit(
             "Mide compatibilidad entre LIGHT M-C y el Team dentro de este pool; no la calidad objetiva del Team ni tu win rate.",
             "Auto Lab muestrea solo Team Preview del candidato; las decisiones por turno permanecen deterministas.",
             "Los scores por move/set son correlaciones de uso, no evidencia causal de que ese recurso sea malo.",
+            "Con/sin usa solo la ronda de barrido para no contaminar la estimación con rivales elegidos para profundización.",
+            "En moves, 'oportunidad' significa que el Pokémon apareció; el replay no demuestra que cada move fuera correcto o legalmente útil en ese estado.",
             "La sensibilidad de política se aproxima por lado; para separarla del Team hace falta un segundo piloto o política.",
             "Los arquetipos son etiquetas observables y pueden solaparse (por ejemplo Rain + Tailwind).",
             "El RNG de daño/efectos de Showdown no se empareja entre baseline y variantes.",

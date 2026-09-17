@@ -273,6 +273,91 @@ assert result["dataQuality"]["deepeningGames"] == 2, result["dataQuality"]
   execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("Evidence-aware heuristics compare with/without, smooth small samples and expose move opportunities", () => {
+  const source = fs.readFileSync(audit, "utf8");
+  const coreSource = fs.readFileSync(core, "utf8");
+  const ui = fs.readFileSync(panelV2, "utf8");
+  assert.match(source, /def _compare_presence/);
+  assert.match(source, /def _smoothed_rate_percent/);
+  assert.match(source, /candidate_team_text/);
+  assert.match(source, /extract_candidate_moves/);
+  assert.match(source, /matchedDeltaPercentagePoints/);
+  assert.match(source, /appearanceGames/);
+  assert.match(source, /archetypeStratum/);
+  assert.match(source, /"evidenceSummary"/);
+  assert.match(coreSource, /candidate_team_text=candidate_records\[0\]\.team_text/);
+  assert.match(ui, /Semáforo de evidencia/);
+  assert.match(ui, /Score al elegirlo/);
+  assert.match(ui, /apariciones del Pokémon/);
+  assert.match(ui, /ajustado por arquetipo\+lado/);
+
+  const script = `
+from battle_lab.auto_lab_audit import (
+    _compare_presence,
+    _smoothed_rate_percent,
+    extract_candidate_moves,
+)
+
+observations = []
+for opponent in ("rain-a", "rain-b", "trick-room"):
+    for side in ("alpha", "beta"):
+        for present in (True, False):
+            for _ in range(6):
+                observations.append({
+                    "outcome": "losses" if present else "wins",
+                    "side": side,
+                    "stratum": f"{opponent}|{side}",
+                    "present": present,
+                })
+comparison = _compare_presence(
+    observations,
+    present=lambda row: row["present"],
+    stratum=lambda row: row["stratum"],
+    prior_percent=50,
+)
+assert comparison["matchedDeltaPercentagePoints"] == -100, comparison
+assert comparison["matchedStrata"] == 6, comparison
+assert comparison["evidence"]["level"] == "robust", comparison
+
+side_sensitive = []
+for side in ("alpha", "beta"):
+    for present in (True, False):
+        for _ in range(6):
+            favorable = (side == "alpha" and present) or (side == "beta" and not present)
+            side_sensitive.append({
+                "outcome": "wins" if favorable else "losses",
+                "side": side,
+                "stratum": side,
+                "present": present,
+            })
+side_comparison = _compare_presence(
+    side_sensitive,
+    present=lambda row: row["present"],
+    stratum=lambda row: row["stratum"],
+    prior_percent=50,
+)
+assert side_comparison["evidence"]["level"] == "side-sensitive", side_comparison
+assert _smoothed_rate_percent(
+    {"games": 1, "wins": 1, "losses": 0, "ties": 0},
+    prior_percent=50,
+) == 57.14
+
+paste = """Ace (Mawile) @ Mawilite
+Ability: Intimidate
+- Protect
+- Play Rough
+
+Farigiraf @ Sitrus Berry
+Ability: Armor Tail
+- Trick Room"""
+assert extract_candidate_moves(paste, ["Mawile", "Farigiraf"]) == {
+    "Mawile": ["Protect", "Play Rough"],
+    "Farigiraf": ["Trick Room"],
+}
+`;
+  execFileSync("python", ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("Opponent selection spends early slots on distinct rosters before duplicate builds", () => {
   const script = `
 import assert from "node:assert/strict";
