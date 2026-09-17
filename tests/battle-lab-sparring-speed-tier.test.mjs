@@ -205,6 +205,72 @@ assert any("quickclaw" in note for note in snapshot["order"][0]["uncertainty"])
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("opponent exact paste keeps unrevealed priority threats", () => {
+  const script = String.raw`
+import battle_lab.sparring_speed_tier as speed
+
+class EnumValue:
+    def __init__(self, name): self.name = name
+
+class FakeMove:
+    def __init__(self, ident, name, priority):
+        self.id = ident
+        self.priority = priority
+        self.entry = {"name": name, "priority": priority, "category": "Physical", "type": "Normal", "flags": {}}
+        self.category = EnumValue("PHYSICAL")
+        self.type = EnumValue("NORMAL")
+        self.heal = 0
+        self.drain = 0
+        self.flags = set()
+
+speed._fallback_moves = lambda entry, gen: [FakeMove("fakeout", "Fake Out", 3)]
+
+class RevealedMove(FakeMove):
+    def __init__(self): super().__init__("woodhammer", "Wood Hammer", 0)
+
+class Mon:
+    species = "rillaboom"
+    base_species = "rillaboom"
+    name = "Rillaboom"
+    stats = {"spe": None}
+    base_stats = {"spe": 85}
+    level = 50
+    boosts = {"spe": 0}
+    status = None
+    item = "unknown_item"
+    ability = None
+    moves = {"woodhammer": RevealedMove()}
+    effects = {}
+    current_hp_fraction = 1.0
+    fainted = False
+
+class Battle:
+    gen = 9
+    turn = 1
+    fields = {}
+    weather = {}
+    side_conditions = {}
+    opponent_side_conditions = {}
+    active_pokemon = []
+    opponent_active_pokemon = [Mon()]
+
+paste = """Rillaboom @ Assault Vest
+Ability: Grassy Surge
+Level: 50
+EVs: 32 Spe
+Adamant Nature
+- Fake Out
+- Grassy Glide
+- Wood Hammer
+- U-turn
+"""
+snapshot = speed.build_speed_tier_snapshot(Battle(), opponent_paste=paste)
+labels = {entry["label"]: entry["priority"] for entry in snapshot["priority"]}
+assert labels["Fake Out"] == 3
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("feature launcher layers Speed Tier after native Showdown controls", () => {
   const source = readFileSync(launcher, "utf8");
   assert.match(source, /from battle_lab\.sparring_speed_tier import install_speed_tier_snapshot/);
