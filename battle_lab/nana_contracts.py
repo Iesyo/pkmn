@@ -1,8 +1,8 @@
 """Canonical, model-agnostic identity contracts for Nana.
 
-These helpers deliberately know nothing about VGC-Bench or poke-env. They are
-used to make persistent keys survive model swaps without depending on native
-model action indices or incidental JSON formatting.
+This module intentionally has no VGC-Bench, poke-env or Nursery imports. Live
+runtimes must inject their actual decision parameters so persistent identity
+cannot silently depend on duplicated constants.
 """
 
 from __future__ import annotations
@@ -31,8 +31,6 @@ def canonical_json(value: Any) -> str:
 
 
 def fingerprint_payload(value: Any) -> str:
-    """SHA-256 of the canonical JSON representation of ``value``."""
-
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
@@ -48,8 +46,6 @@ def _canonical_id(value: Any) -> str:
 
 
 def canonical_action_half(half: Any) -> dict[str, Any]:
-    """Normalize one structured action half without model-native indices."""
-
     half = half if isinstance(half, dict) else {}
     flags = sorted(
         {
@@ -76,47 +72,51 @@ def canonical_order_payload(action: Any) -> dict[str, Any]:
 
 
 def order_key(action: Any) -> str:
-    """Stable key for a structured doubles order across model catalogs."""
-
     digest = fingerprint_payload(canonical_order_payload(action))
     return f"order:v{ORDER_KEY_SPEC_VERSION}:{digest}"
 
 
-def current_nana_policy_contract() -> dict[str, Any]:
-    """Describe the current Nana decision contract without changing behavior.
-
-    M0/M1 only makes this identity explicit. Nursery remains the active policy;
-    future scorer/governor work must bump this contract when decision semantics
-    change so old promotion evidence is never reused silently.
-    """
+def build_nana_policy_contract(
+    *,
+    decision_mode: str,
+    scorer_contract: str,
+    score_spaces: dict[str, str],
+    lambda_cap: float,
+    max_interventions_per_battle: int,
+    legal_order_contract: str,
+) -> dict[str, Any]:
+    """Build identity from the live policy values supplied by the runtime."""
 
     return {
         "fingerprintSpecVersion": FINGERPRINT_SPEC_VERSION,
         "nanaPolicyContractVersion": NANA_POLICY_CONTRACT_VERSION,
         "orderKeySpecVersion": ORDER_KEY_SPEC_VERSION,
-        "decisionMode": "nana2.3-nursery-live-v1",
-        "scorerContract": "light-regret-plus-response-utility-v1",
-        "scoreSpaces": {
-            "teacherPrior": "teacher-log-regret-v1",
-            "counter": "response-utility-v1",
+        "decisionMode": str(decision_mode),
+        "scorerContract": str(scorer_contract),
+        "scoreSpaces": dict(score_spaces),
+        "governor": {
+            "lambdaCap": float(lambda_cap),
+            "maxInterventionsPerBattle": int(max_interventions_per_battle),
         },
-        "governorContract": "lambda-cap-0.15-max-1-v1",
-        "legalOrderContract": "vgc-bench-indexed-order-v1",
+        "legalOrderContract": str(legal_order_contract),
     }
 
 
-def nana_policy_key(contract: dict[str, Any] | None = None) -> str:
-    payload = contract or current_nana_policy_contract()
+def nana_policy_key(contract: dict[str, Any]) -> str:
+    if not isinstance(contract, dict) or not contract:
+        return ""
     return (
         f"nana-policy:v{NANA_POLICY_CONTRACT_VERSION}:"
-        f"{fingerprint_payload(payload)}"
+        f"{fingerprint_payload(contract)}"
     )
 
 
 def execution_key(*, teacher_behavior_key: str, nana_policy_key_value: str) -> str:
+    if not teacher_behavior_key or not nana_policy_key_value:
+        return ""
     payload = {
         "fingerprintSpecVersion": FINGERPRINT_SPEC_VERSION,
-        "teacherBehaviorKey": str(teacher_behavior_key or "unknown"),
-        "nanaPolicyKey": str(nana_policy_key_value or "unknown"),
+        "teacherBehaviorKey": str(teacher_behavior_key),
+        "nanaPolicyKey": str(nana_policy_key_value),
     }
     return f"nana-execution:v1:{fingerprint_payload(payload)}"
