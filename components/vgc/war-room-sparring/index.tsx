@@ -1010,6 +1010,10 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
       {startError ? <p className="mt-2 flex items-start gap-2 rounded-xl border border-rose-300/12 bg-rose-300/[0.04] px-3 py-2 text-[10px] leading-4 text-rose-100"><CircleAlert className="mt-0.5 size-3.5 shrink-0" />{startError}</p> : null}
     </section>
 
+    {!session || session.phase === "starting" || session.phase === "team-preview"
+      ? <div className="max-w-md"><CoachMemoryPanel /></div>
+      : null}
+
     {session?.phase === "team-preview" ? <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
       <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-300">Team Preview · Open Team Sheet</p>
       <h2 className="mt-1 text-lg font-black text-white">Elige tus cuatro viendo ambos equipos</h2>
