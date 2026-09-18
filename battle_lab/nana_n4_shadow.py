@@ -179,9 +179,10 @@ def build_n4_shadow_plan(
             CandidateEvidence(
                 key=candidate.key,
                 terms=tuple(terms),
-                # No mapped teacherPrior exists yet, so representability alone
-                # does not count as common-space teacher evidence.
-                teacher_represented=False,
+                # Only the canonical LIGHT order is an evidenced fallback
+                # reference before regret->delta calibration exists. Other
+                # teacher-representable orders receive no common-space credit.
+                teacher_represented=candidate.key == reference_key,
                 context_evidence=any(source != "reference" for source in sources),
             )
         )
