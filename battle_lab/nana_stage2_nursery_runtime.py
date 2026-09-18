@@ -34,6 +34,7 @@ from battle_lab.nana_stage2_shadow_v22_runtime import (
     install_light_critic_service,
 )
 from battle_lab.nana_teacher import descriptor_for_service, latest_teacher_from_events
+from battle_lab.nana_transition import build_transition, write_transition_act
 
 
 LIVE_INFLUENCE = 1.0
@@ -103,6 +104,7 @@ def install_nursery_service(*, profile_id: str) -> type:
         original_init(self, *args, **kwargs)
         history = list(self.nana.iter_events())
         latest_teacher = latest_teacher_from_events(history)
+        self._nana_previous_teacher = copy.deepcopy(latest_teacher)
         self._nana_previous_teacher_key = str(latest_teacher.get("key") or "")
         self._nana_teacher = descriptor_for_service(self)
         self._nana_allow_legacy_teacher_fallback = (
@@ -434,6 +436,35 @@ def install_nursery_service(*, profile_id: str) -> type:
         self._nana_nursery_interventions[session.id] = 0
         self._nana_nursery_model_generation[session.id] = 0
         self._nana_teacher = descriptor_for_service(self)
+        try:
+            transition = build_transition(
+                getattr(self, "_nana_previous_teacher", {}),
+                self._nana_teacher,
+            )
+            if transition.get("record") is True:
+                act_path = write_transition_act(self.nana.profile_root, transition)
+                self.nana.append_event(
+                    session.id,
+                    "nana_teacher_change",
+                    {
+                        **transition,
+                        "actPath": str(act_path.relative_to(self.nana.profile_root)),
+                    },
+                )
+        except Exception as error:
+            try:
+                self.nana.append_event(
+                    session.id,
+                    "nana_transition_error",
+                    {
+                        "error": f"{type(error).__name__}: {error}",
+                        "liveBehaviorChanged": False,
+                    },
+                )
+            except Exception:
+                pass
+        finally:
+            self._nana_previous_teacher = copy.deepcopy(self._nana_teacher)
         _apply_nursery_metadata(self)
         self.nana.append_event(
             session.id,
