@@ -1,9 +1,8 @@
-"""Stable teacher identity for Nana's adaptive layers.
+"""Stable teacher and Nana decision identities for adaptive layers.
 
-M0 introduces two identities without changing Nursery behavior yet:
-``key`` remains the historical weights key so existing N2 evidence keeps its
-current semantics; ``behaviorKey`` is the stricter teacher identity that future
-calibration/autonomy gates must use once the transition migration is enabled.
+``key`` remains the historical weights key while Nursery N2 is behavior-
+preserving. Stricter behavior/policy/execution keys are exposed separately and
+are marked unresolved rather than hashing sentinel values.
 """
 
 from __future__ import annotations
@@ -13,11 +12,7 @@ from typing import Any, Iterable
 
 from battle_lab import local_sparring_service as sparring
 from battle_lab.mc_training import sha256_file
-from battle_lab.nana_contracts import (
-    current_nana_policy_contract,
-    execution_key,
-    nana_policy_key,
-)
+from battle_lab.nana_contracts import execution_key, nana_policy_key
 from battle_lab.nana_teacher_adapter import (
     CAPABILITIES,
     TEACHER_FAMILY,
@@ -41,7 +36,12 @@ def weights_teacher_key(*, checkpoint_sha256: str, battle_format: str) -> str:
 
 
 def latest_teacher_from_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Return the chronologically latest persisted teacher descriptor."""
+    """Return the chronologically latest persisted teacher descriptor.
+
+    Recorder session filenames contain random ids, so iterator/file order is not
+    recency. Persisted ISO-8601 event timestamps are the source of truth; stream
+    position is only a deterministic tie-breaker.
+    """
 
     latest: dict[str, Any] = {}
     latest_marker: tuple[str, int] = ("", -1)
@@ -57,6 +57,29 @@ def latest_teacher_from_events(events: Iterable[dict[str, Any]]) -> dict[str, An
             latest_marker = marker
             latest = teacher
     return latest
+
+
+def compact_teacher_descriptor(teacher: dict[str, Any] | None) -> dict[str, Any]:
+    """Small reference safe to repeat in per-turn events."""
+
+    teacher = teacher if isinstance(teacher, dict) else {}
+    keys = (
+        "schemaVersion",
+        "key",
+        "weightsKey",
+        "behaviorKey",
+        "behaviorKeyResolved",
+        "nanaPolicyKey",
+        "nanaPolicyKeyResolved",
+        "executionKey",
+        "executionKeyResolved",
+        "legacyKey",
+        "family",
+        "format",
+        "checkpointSha256",
+        "adapterContractVersion",
+    )
+    return {key: teacher.get(key) for key in keys if key in teacher}
 
 
 def descriptor_for_service(service: Any) -> dict[str, Any]:
@@ -81,22 +104,33 @@ def descriptor_for_service(service: Any) -> dict[str, Any]:
         checkpoint_sha256=checksum,
     )
     behavior_key = teacher_behavior_key(behavior_contract)
-    nana_contract = current_nana_policy_contract()
+    behavior_resolved = bool(behavior_key)
+
+    nana_contract = getattr(service, "_nana_policy_contract", None)
+    if not isinstance(nana_contract, dict):
+        nana_contract = {}
     policy_key = nana_policy_key(nana_contract)
+    policy_resolved = bool(policy_key)
+
+    combined_key = execution_key(
+        teacher_behavior_key=behavior_key,
+        nana_policy_key_value=policy_key,
+    )
+    execution_resolved = bool(combined_key)
 
     return {
         "schemaVersion": TEACHER_SCHEMA_VERSION,
-        # Compatibility alias: M0/M1 does not change the live N2 trust key yet.
+        # Compatibility alias: live N2 trust still uses the historical weights key.
         "key": weights_key,
         "weightsKey": weights_key,
         "behaviorKey": behavior_key,
+        "behaviorKeyResolved": behavior_resolved,
         "behaviorContract": behavior_contract,
         "nanaPolicyKey": policy_key,
+        "nanaPolicyKeyResolved": policy_resolved,
         "nanaPolicyContract": nana_contract,
-        "executionKey": execution_key(
-            teacher_behavior_key=behavior_key,
-            nana_policy_key_value=policy_key,
-        ),
+        "executionKey": combined_key,
+        "executionKeyResolved": execution_resolved,
         "legacyKey": legacy_teacher_key(
             checkpoint=checkpoint_text,
             battle_format=battle_format,
@@ -105,8 +139,8 @@ def descriptor_for_service(service: Any) -> dict[str, Any]:
         "format": battle_format,
         "checkpoint": checkpoint_text,
         "checkpointSha256": checksum,
-        "actionSpaceId": behavior_contract["actionSpaceId"],
-        "featureSchemaId": behavior_contract["featureSchemaId"],
+        "actionSpaceId": behavior_contract.get("actionSpaceId") or "",
+        "featureSchemaId": behavior_contract.get("featureSchemaId") or "",
         "adapterContractVersion": behavior_contract["adapterContractVersion"],
         "selectionRule": behavior_contract["selectionRule"],
         "inferenceParams": behavior_contract["inferenceParams"],
