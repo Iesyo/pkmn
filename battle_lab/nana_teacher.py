@@ -1,8 +1,9 @@
 """Stable teacher identity for Nana's adaptive layers.
 
-The user-facing concept is simple: Nana may keep learning the player across
-LIGHT upgrades, but evidence about how trustworthy one LIGHT checkpoint was
-must not silently leak into a different checkpoint/regulation.
+M0 introduces two identities without changing Nursery behavior yet:
+``key`` remains the historical weights key so existing N2 evidence keeps its
+current semantics; ``behaviorKey`` is the stricter teacher identity that future
+calibration/autonomy gates must use once the transition migration is enabled.
 """
 
 from __future__ import annotations
@@ -12,23 +13,35 @@ from typing import Any, Iterable
 
 from battle_lab import local_sparring_service as sparring
 from battle_lab.mc_training import sha256_file
+from battle_lab.nana_contracts import (
+    current_nana_policy_contract,
+    execution_key,
+    nana_policy_key,
+)
+from battle_lab.nana_teacher_adapter import (
+    CAPABILITIES,
+    TEACHER_FAMILY,
+    teacher_behavior_contract,
+    teacher_behavior_key,
+)
 
 
-TEACHER_SCHEMA_VERSION = 1
+TEACHER_SCHEMA_VERSION = 2
 
 
 def legacy_teacher_key(*, checkpoint: str, battle_format: str) -> str:
     return f"legacy|format={battle_format}|checkpoint={checkpoint}"
 
 
-def latest_teacher_from_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Return the chronologically latest persisted teacher descriptor.
+def weights_teacher_key(*, checkpoint_sha256: str, battle_format: str) -> str:
+    return (
+        f"format={battle_format}|"
+        f"checkpointSha256={checkpoint_sha256 or 'unknown'}"
+    )
 
-    NanaRecorder.iter_events() walks session files by filename, and session ids are
-    random. Never infer recency from iterator order. Recorder timestamps are
-    ISO-8601 UTC strings, so lexical ordering is chronological for our persisted
-    format. The original stream position is only a deterministic tie-breaker.
-    """
+
+def latest_teacher_from_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Return the chronologically latest persisted teacher descriptor."""
 
     latest: dict[str, Any] = {}
     latest_marker: tuple[str, int] = ("", -1)
@@ -37,7 +50,7 @@ def latest_teacher_from_events(events: Iterable[dict[str, Any]]) -> dict[str, An
             continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         teacher = payload.get("teacher") if isinstance(payload.get("teacher"), dict) else {}
-        if not teacher.get("key"):
+        if not (teacher.get("key") or teacher.get("weightsKey") or teacher.get("behaviorKey")):
             continue
         marker = (str(event.get("timestamp") or ""), index)
         if marker >= latest_marker:
@@ -57,16 +70,46 @@ def descriptor_for_service(service: Any) -> dict[str, Any]:
     if not checksum and checkpoint.is_file():
         checksum = sha256_file(checkpoint)
     checkpoint_text = str(checkpoint)
-    key = f"format={battle_format}|checkpointSha256={checksum or 'unknown'}"
+
+    weights_key = weights_teacher_key(
+        checkpoint_sha256=checksum,
+        battle_format=battle_format,
+    )
+    behavior_contract = teacher_behavior_contract(
+        service=service,
+        battle_format=battle_format,
+        checkpoint_sha256=checksum,
+    )
+    behavior_key = teacher_behavior_key(behavior_contract)
+    nana_contract = current_nana_policy_contract()
+    policy_key = nana_policy_key(nana_contract)
+
     return {
         "schemaVersion": TEACHER_SCHEMA_VERSION,
-        "key": key,
+        # Compatibility alias: M0/M1 does not change the live N2 trust key yet.
+        "key": weights_key,
+        "weightsKey": weights_key,
+        "behaviorKey": behavior_key,
+        "behaviorContract": behavior_contract,
+        "nanaPolicyKey": policy_key,
+        "nanaPolicyContract": nana_contract,
+        "executionKey": execution_key(
+            teacher_behavior_key=behavior_key,
+            nana_policy_key_value=policy_key,
+        ),
         "legacyKey": legacy_teacher_key(
             checkpoint=checkpoint_text,
             battle_format=battle_format,
         ),
+        "family": TEACHER_FAMILY,
         "format": battle_format,
         "checkpoint": checkpoint_text,
         "checkpointSha256": checksum,
+        "actionSpaceId": behavior_contract["actionSpaceId"],
+        "featureSchemaId": behavior_contract["featureSchemaId"],
+        "adapterContractVersion": behavior_contract["adapterContractVersion"],
+        "selectionRule": behavior_contract["selectionRule"],
+        "inferenceParams": behavior_contract["inferenceParams"],
+        "capabilities": list(CAPABILITIES),
         "policy": "Battle Lab LIGHT M-C",
     }
