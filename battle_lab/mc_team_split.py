@@ -50,9 +50,10 @@ def species_from_header(header: str) -> str:
     return head
 
 
-def team_signature(path: Path) -> tuple[str, ...]:
-    text = path.read_text(encoding="utf-8").strip()
-    blocks = [block for block in re.split(r"\n\s*\n", text) if block.strip()]
+def team_signature_text(text: str, *, source: str = "team") -> tuple[str, ...]:
+    """Return the canonical six-species roster signature from Showdown text."""
+
+    blocks = [block for block in re.split(r"\n\s*\n", str(text or "").strip()) if block.strip()]
     species: list[str] = []
     for block in blocks:
         first = next((line.strip() for line in block.splitlines() if line.strip()), "")
@@ -62,8 +63,17 @@ def team_signature(path: Path) -> tuple[str, ...]:
         if normalized:
             species.append(normalized)
     if len(species) != 6:
-        raise RuntimeError(f"{path.name}: se esperaban 6 Pokémon y se detectaron {len(species)}")
+        raise RuntimeError(
+            f"{source}: se esperaban 6 Pokémon y se detectaron {len(species)}"
+        )
     return tuple(sorted(species))
+
+
+def team_signature(path: Path) -> tuple[str, ...]:
+    return team_signature_text(
+        path.read_text(encoding="utf-8"),
+        source=path.name,
+    )
 
 
 def deterministic_split(
