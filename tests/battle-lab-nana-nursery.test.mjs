@@ -355,6 +355,12 @@ test("Nursery runtime records actual actor and keeps one-intervention wheels", (
   assert.match(source, /build_n4_shadow_plan/);
   assert.match(source, /n4Shadow/);
   assert.match(source, /rebuild_counter_calibration/);
+  assert.match(source, /def _authorize_n4_selection/);
+  assert.match(source, /SafetyGate\(legal_set\)\.authorize_key/);
+  assert.match(source, /full_amiibo_live/);
+  assert.match(source, /if full_amiibo_live:/);
+  assert.match(source, /executed_order = authorized\.order/);
+  assert.match(source, /executed_action = copy\.deepcopy\(authorized\.action\)/);
 });
 
 test("Nursery preview and commit boundary cannot silently relabel a LIGHT fallback as Nana", () => {
