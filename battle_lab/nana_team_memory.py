@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -22,7 +23,7 @@ from battle_lab.nana_team_identity import (
 
 
 TEAM_MEMORY_SCHEMA_VERSION = 1
-TEAM_MEMORY_MODEL_VERSION = "nana-team-memory-v1"
+TEAM_MEMORY_MODEL_VERSION = "nana-team-memory-v2"
 TEAM_MEMORY_MIN_SCOPE_SAMPLES = 3
 TEAM_MEMORY_MAX_BLEND = 0.35
 TEAM_MEMORY_PRIOR_TRUST = 0.50
@@ -44,6 +45,7 @@ def team_memory_contract() -> dict[str, Any]:
         "scopeOrder": ["global", "archetype", "roster", "exactTeam"],
         "minScopeSamples": TEAM_MEMORY_MIN_SCOPE_SAMPLES,
         "maxBlend": TEAM_MEMORY_MAX_BLEND,
+        "blendMode": "n2-caution-only-v1",
         "priorTrust": TEAM_MEMORY_PRIOR_TRUST,
         "priorWeight": TEAM_MEMORY_PRIOR_WEIGHT,
         "recencyHalfLife": TEAM_MEMORY_RECENCY_HALF_LIFE,
@@ -208,11 +210,19 @@ def build_team_memory(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def write_team_memory(profile_root: Path, summary: dict[str, Any]) -> Path:
     destination = Path(profile_root) / "team_memory.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    rendered = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with tempfile.NamedTemporaryFile(
+        "w",
         encoding="utf-8",
-    )
+        dir=destination.parent,
+        prefix=destination.name + ".",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(rendered)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary, destination)
     return destination
 
@@ -316,12 +326,24 @@ def blend_self_with_team(
     base_confidence = max(0.0, min(1.0, _safe_float(base.get("confidence"))))
     team_value = max(0.0, min(1.0, _safe_float(team_trust.get("trust"), TEAM_MEMORY_PRIOR_TRUST)))
     team_confidence = max(0.0, min(1.0, _safe_float(team_trust.get("confidence"))))
-    blend = min(TEAM_MEMORY_MAX_BLEND, TEAM_MEMORY_MAX_BLEND * team_confidence)
 
+    # N2 TeamMemory is monotonic-caution only. Positive TeamMemory may be useful
+    # to a future common scorer, but while self_trust only powers a low-trust
+    # veto it must never raise trust and thereby remove Nana's own safety signal.
+    if team_value >= base_trust:
+        return {
+            **base,
+            "teamMemory": team_trust,
+            "teamMemoryBlend": 0.0,
+            "teamMemoryEffect": "no-relaxation",
+        }
+
+    blend = min(TEAM_MEMORY_MAX_BLEND, TEAM_MEMORY_MAX_BLEND * team_confidence)
     return {
         **base,
         "trust": (1.0 - blend) * base_trust + blend * team_value,
         "confidence": max(base_confidence, blend * team_confidence),
         "teamMemory": team_trust,
         "teamMemoryBlend": blend,
+        "teamMemoryEffect": "added-caution",
     }
