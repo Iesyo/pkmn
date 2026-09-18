@@ -51,6 +51,7 @@ from battle_lab.nana_counter_calibration import (
 from battle_lab.nana_legal_orders import LegalOrderSource, SafetyGate
 from battle_lab.nana_n4_shadow import build_n4_shadow_plan
 from battle_lab.nana_policy import inspect_light_decision
+from battle_lab.nana_scorer import assert_common_scorer_ready_for_level
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_shadow_v22_runtime import (
     STAGE2_MODEL_VERSION,
@@ -176,6 +177,7 @@ def install_nursery_service(
 ) -> type:
     if full_amiibo_live:
         assert_level_activation_ready("N4")
+        assert_common_scorer_ready_for_level("N4")
     else:
         assert_live_nursery_matches_n2(
             lambda_cap=NURSERY_LAMBDA_CAP,
@@ -212,7 +214,7 @@ def install_nursery_service(
         if full_amiibo_live:
             return build_nana_policy_contract(
                 decision_mode="nana-full-amiibo-n4-v1",
-                scorer_contract="nana-scorer-v4-evidence-shrunk-common-space",
+                scorer_contract="nana-scorer-v5-evidence-floor-common-space",
                 score_spaces={
                     "experience": "board-delta-v1",
                     "counter": "board-delta-v1",
@@ -290,11 +292,27 @@ def install_nursery_service(
         }
 
     def _apply_nursery_metadata(self: Any) -> None:
+        if full_amiibo_live:
+            self.runtime_metadata.setdefault("nana", {}).update(
+                {
+                    "stage": 4,
+                    "mode": "full-amiibo-live-v1",
+                    "influence": LIVE_INFLUENCE,
+                    "autonomyLevel": "N4",
+                    "lambdaCap": None,
+                    "maxInterventionsPerBattle": None,
+                    "autonomy": full_amiibo_contract(),
+                    "teacher": _teacher_ref(self._nana_teacher),
+                    "teacherRole": "advisor-fallback",
+                }
+            )
+            return
         self.runtime_metadata.setdefault("nana", {}).update(
             {
                 "stage": 2.3,
                 "mode": "nursery-live-v1",
                 "influence": LIVE_INFLUENCE,
+                "autonomyLevel": "N2",
                 "nurseryModel": NURSERY_MODEL_VERSION,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
@@ -661,10 +679,21 @@ def install_nursery_service(
                     session.nana_telemetry = {
                         "turn": turn,
                         "generation": generation,
-                        "reason": str(selection.get("reason") or "unknown"),
+                        "reason": (
+                            f"n4:{n4_shadow.get('reason') or 'unknown'}"
+                            if full_amiibo_live
+                            else str(selection.get("reason") or "unknown")
+                        ),
                         "intervened": intervened,
-                        "lambdaCap": selection.get("lambdaCap", NURSERY_LAMBDA_CAP),
-                        "effectiveLambda": selection.get("effectiveLambda"),
+                        "autonomyLevel": "N4" if full_amiibo_live else "N2",
+                        "lambdaCap": (
+                            None
+                            if full_amiibo_live
+                            else selection.get("lambdaCap", NURSERY_LAMBDA_CAP)
+                        ),
+                        "effectiveLambda": (
+                            None if full_amiibo_live else selection.get("effectiveLambda")
+                        ),
                         "requiredLambdaCap": selection.get("requiredLambdaCap"),
                         "lambdaGap": selection.get("lambdaGap"),
                         "predictionConfidence": selection.get(
@@ -714,8 +743,16 @@ def install_nursery_service(
                             else None,
                         },
                         "teamMemoryAtDecision": copy.deepcopy(team_memory_from_self),
-                        "interventionsUsed": used + (1 if intervened else 0),
-                        "interventionBudget": MAX_INTERVENTIONS_PER_BATTLE,
+                        "interventionsUsed": (
+                            None
+                            if full_amiibo_live
+                            else used + (1 if intervened else 0)
+                        ),
+                        "interventionBudget": (
+                            None
+                            if full_amiibo_live
+                            else MAX_INTERVENTIONS_PER_BATTLE
+                        ),
                     }
 
                     canonical = light.get("canonicalAction") or {}
@@ -838,7 +875,12 @@ def install_nursery_service(
                         session.id,
                         "nana_nursery_decision",
                         {
-                            "modelVersion": NURSERY_MODEL_VERSION,
+                            "modelVersion": (
+                                "nana-full-amiibo-n4-v1"
+                                if full_amiibo_live
+                                else NURSERY_MODEL_VERSION
+                            ),
+                            "autonomyLevel": "N4" if full_amiibo_live else "N2",
                             "shadowModel": STAGE2_MODEL_VERSION,
                             "generation": generation,
                             "turn": turn,
@@ -901,12 +943,15 @@ def install_nursery_service(
             "generation": 0,
             "reason": "waiting-first-decision",
             "intervened": False,
-            "lambdaCap": NURSERY_LAMBDA_CAP,
+            "lambdaCap": None if full_amiibo_live else NURSERY_LAMBDA_CAP,
             "requiredLambdaCap": None,
             "lambdaGap": None,
             "candidateCountEvaluated": 0,
-            "interventionsUsed": 0,
-            "interventionBudget": MAX_INTERVENTIONS_PER_BATTLE,
+            "interventionsUsed": None if full_amiibo_live else 0,
+            "interventionBudget": (
+                None if full_amiibo_live else MAX_INTERVENTIONS_PER_BATTLE
+            ),
+            "autonomyLevel": "N4" if full_amiibo_live else "N2",
         }
         self._nana_policy_contract = _live_policy_contract()
         self._nana_teacher = descriptor_for_service(self)
@@ -915,13 +960,23 @@ def install_nursery_service(
         # VGC-Bench action/feature contracts. Start keeps compatibility metadata.
         self.nana.append_event(
             session.id,
-            "nana_nursery_start",
+            "nana_full_amiibo_start" if full_amiibo_live else "nana_nursery_start",
             {
-                "modelVersion": NURSERY_MODEL_VERSION,
+                "modelVersion": (
+                    "nana-full-amiibo-n4-v1"
+                    if full_amiibo_live
+                    else NURSERY_MODEL_VERSION
+                ),
                 "teacher": _teacher_ref(self._nana_teacher),
+                "teacherRole": (
+                    "advisor-fallback" if full_amiibo_live else "teacher-fallback"
+                ),
+                "autonomyLevel": "N4" if full_amiibo_live else "N2",
                 "live": True,
-                "lambdaCap": NURSERY_LAMBDA_CAP,
-                "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
+                "lambdaCap": None if full_amiibo_live else NURSERY_LAMBDA_CAP,
+                "maxInterventionsPerBattle": (
+                    None if full_amiibo_live else MAX_INTERVENTIONS_PER_BATTLE
+                ),
                 "fallback": "LIGHT",
                 "automaticPromotion": False,
             },
@@ -1026,16 +1081,36 @@ def install_nursery_service(
         }
         data.setdefault("nana", {}).update(
             {
-                "stage": 2.3,
-                "mode": "nursery-live-v1",
+                "stage": 4 if full_amiibo_live else 2.3,
+                "mode": (
+                    "full-amiibo-live-v1"
+                    if full_amiibo_live
+                    else "nursery-live-v1"
+                ),
+                "autonomyLevel": "N4" if full_amiibo_live else "N2",
                 "influence": LIVE_INFLUENCE,
                 "nursery": {
-                    "modelVersion": NURSERY_MODEL_VERSION,
+                    "modelVersion": (
+                        "nana-full-amiibo-n4-v1"
+                        if full_amiibo_live
+                        else NURSERY_MODEL_VERSION
+                    ),
                     "teacher": _teacher_ref(self._nana_teacher),
-                    "lambdaCap": NURSERY_LAMBDA_CAP,
-                    "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
-                    "autonomy": _live_autonomy_contract(),
-                    "interventionsUsed": used,
+                    "teacherRole": (
+                        "advisor-fallback"
+                        if full_amiibo_live
+                        else "teacher-fallback"
+                    ),
+                    "lambdaCap": None if full_amiibo_live else NURSERY_LAMBDA_CAP,
+                    "maxInterventionsPerBattle": (
+                        None if full_amiibo_live else MAX_INTERVENTIONS_PER_BATTLE
+                    ),
+                    "autonomy": (
+                        full_amiibo_contract()
+                        if full_amiibo_live
+                        else _live_autonomy_contract()
+                    ),
+                    "interventionsUsed": None if full_amiibo_live else used,
                     "fallback": "LIGHT",
                     "automaticPromotion": False,
                 },
