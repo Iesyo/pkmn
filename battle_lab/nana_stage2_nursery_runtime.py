@@ -52,6 +52,12 @@ from battle_lab.nana_teacher import (
     descriptor_for_service,
     latest_teacher_from_events,
 )
+from battle_lab.nana_team_memory import (
+    blend_self_with_team,
+    rebuild_team_memory_for_recorder,
+    team_memory_contract,
+    team_trust_for,
+)
 from battle_lab.nana_transition import build_transition, write_transition_act
 
 
@@ -156,6 +162,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "counter": "response-utility-v1",
             },
             governor_contract=_live_autonomy_contract(),
+            memory_contract=team_memory_contract(),
             legal_order_contract="vgc-bench-indexed-order-v1",
         )
 
@@ -190,6 +197,14 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "prior": {"trust": SELF_PRIOR_TRUST, "weight": 6.0},
                 "buckets": {},
                 "teachers": {},
+            }
+        try:
+            self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
+        except Exception:
+            self.nana_team_memory = {
+                "modelVersion": "nana-team-memory-v1",
+                "observations": 0,
+                "buckets": {},
             }
 
     def _teacher_query_args(self: Any) -> dict[str, Any]:
@@ -402,6 +417,16 @@ def install_nursery_service(*, profile_id: str) -> type:
                             light,
                             **teacher_args,
                         )
+                        team_context = (
+                            service._nana_session_team_context.get(session.id, {})
+                            if hasattr(service, "_nana_session_team_context")
+                            else {}
+                        )
+                        team_trust = team_trust_for(
+                            service.nana_team_memory,
+                            team_context,
+                        )
+                        self_trust = blend_self_with_team(self_trust, team_trust)
                     selection = choose_candidate(
                         plan,
                         light_trust=light_trust,
@@ -520,6 +545,11 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "executedAction": copy.deepcopy(executed_action),
                             "lightTrust": copy.deepcopy(light_trust),
                             "selfTrust": copy.deepcopy(self_trust),
+                            "teamMemory": copy.deepcopy(
+                                (self_trust.get("teamMemory") or {})
+                                if isinstance(self_trust, dict)
+                                else {}
+                            ),
                             "selection": copy.deepcopy(selection),
                         },
                     )
@@ -662,6 +692,7 @@ def install_nursery_service(*, profile_id: str) -> type:
         try:
             before = int(self.nana_self_summary.get("observations") or 0)
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
+            self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
             after = int(self.nana_self_summary.get("observations") or 0)
             promotion = promotion_status(
                 self.nana.iter_events(),
@@ -675,6 +706,9 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "teacher": _teacher_ref(self._nana_teacher),
                     "selfObservationsBefore": before,
                     "selfObservationsAfter": after,
+                    "teamMemoryObservations": int(
+                        self.nana_team_memory.get("observations") or 0
+                    ),
                     "promotion": promotion,
                 },
             )
