@@ -645,10 +645,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "teacher": _teacher_ref(self._nana_teacher),
                     "lambdaCap": NURSERY_LAMBDA_CAP,
                     "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
-                    "autonomy": live_nursery_contract(
-                        lambda_cap=NURSERY_LAMBDA_CAP,
-                        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
-                    ),
+                    "autonomy": _live_autonomy_contract(),
                     "interventionsUsed": used,
                     "fallback": "LIGHT",
                     "automaticPromotion": False,
