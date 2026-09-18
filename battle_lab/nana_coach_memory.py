@@ -36,12 +36,11 @@ _ID_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _species_id(value: Any) -> str:
-    rendered = _ID_RE.sub("", str(value or "").strip().lower())
-    for suffix in ("megax", "megay", "megaz", "mega"):
-        if rendered.endswith(suffix) and len(rendered) > len(suffix):
-            rendered = rendered[: -len(suffix)]
-            break
-    return rendered
+    # Scope matches the currently active species exactly after Showdown-style
+    # normalization. Do not heuristically strip "mega": Yanmega is a base species,
+    # and after a Pokémon has already Mega Evolved the "Mega is legal" condition
+    # should naturally become false anyway.
+    return _ID_RE.sub("", str(value or "").strip().lower())
 
 
 def _safe_float(value: Any, default: float) -> float:
