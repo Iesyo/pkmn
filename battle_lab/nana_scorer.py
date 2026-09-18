@@ -75,8 +75,9 @@ def scorer_contract() -> dict[str, Any]:
                 "requiresMapper": True,
             },
             "coach": {
-                "sourceSpace": "coach-advice-v1",
-                "requiresMapper": True,
+                "sourceSpace": COMMON_SCORE_SPACE,
+                "requiresMapper": False,
+                "contract": "bounded-user-advice-board-delta-v1",
             },
             "heuristicFloor": {
                 "sourceSpace": COMMON_SCORE_SPACE,
