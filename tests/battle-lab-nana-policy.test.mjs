@@ -10,7 +10,7 @@ const facade = path.join(root, "battle_lab", "nana_policy.py");
 const adapter = path.join(root, "battle_lab", "nana_teacher_adapter.py");
 const contracts = path.join(root, "battle_lab", "nana_contracts.py");
 const teacher = path.join(root, "battle_lab", "nana_teacher.py");
-const python = process.env.PYTHON ?? "python3";
+const python = process.env.PYTHON ?? "python";
 
 test("Nana policy is a compatibility facade and model-aware code is isolated in TeacherAdapter", () => {
   const facadeSource = readFileSync(facade, "utf8");
@@ -28,6 +28,7 @@ test("Nana policy is a compatibility facade and model-aware code is isolated in 
   assert.match(adapterSource, /branch2ConditionedOnFirst/);
   assert.match(adapterSource, /SELECTION_RULE = "sequential-greedy"/);
   assert.match(adapterSource, /selectedByLight/);
+  assert.match(adapterSource, /Deliberately lazy/);
   assert.doesNotMatch(adapterSource, /load_state_dict/);
   assert.doesNotMatch(adapterSource, /optimizer/);
 
@@ -41,7 +42,7 @@ test("Nana policy is a compatibility facade and model-aware code is isolated in 
 
 test("canonical orderKey ignores formatting noise but keeps semantic action changes", () => {
   const script = String.raw`
-from battle_lab.nana_contracts import order_key, current_nana_policy_contract, nana_policy_key, execution_key
+from battle_lab.nana_contracts import order_key, build_nana_policy_contract, nana_policy_key, execution_key
 
 a={'first':{'kind':'Move','value':'Earthquake','target':1,'flags':['Mega','Tera']},'second':{'kind':'switch','value':'Incineroar','target':0,'flags':[]}}
 b={'first':{'kind':' move ','value':'earthquake','target':'1','flags':['Tera','Mega']},'second':{'kind':'SWITCH','value':'incineroar','target':None,'flags':[]}}
@@ -51,25 +52,38 @@ e={'first':{'kind':'move','value':'protect','target':None,'flags':[]},'second':{
 assert order_key(a) == order_key(b)
 assert order_key(a) != order_key(c)
 assert order_key(d) == order_key(e)
-policy_key=nana_policy_key(current_nana_policy_contract())
+
+base=build_nana_policy_contract(
+    decision_mode='nana2.3-nursery-live-v1',
+    scorer_contract='light-regret-plus-response-utility-v1',
+    score_spaces={'teacherPrior':'teacher-log-regret-v1','counter':'response-utility-v1'},
+    lambda_cap=0.15,
+    max_interventions_per_battle=1,
+    legal_order_contract='vgc-bench-indexed-order-v1',
+)
+policy_key=nana_policy_key(base)
 assert policy_key.startswith('nana-policy:v1:')
+assert nana_policy_key({**base,'governor':{'lambdaCap':0.20,'maxInterventionsPerBattle':1}}) != policy_key
+assert nana_policy_key({**base,'governor':{'lambdaCap':0.15,'maxInterventionsPerBattle':3}}) != policy_key
 assert execution_key(teacher_behavior_key='teacher-A', nana_policy_key_value=policy_key) != execution_key(teacher_behavior_key='teacher-B', nana_policy_key_value=policy_key)
+assert execution_key(teacher_behavior_key='', nana_policy_key_value=policy_key) == ''
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
-test("teacher behavior identity and Nana policy identity are distinct contracts", () => {
+test("teacher behavior identity refuses unresolved fingerprints", () => {
   const teacherSource = readFileSync(teacher, "utf8");
   assert.match(teacherSource, /"key": weights_key/);
-  assert.match(teacherSource, /"behaviorKey": behavior_key/);
-  assert.match(teacherSource, /"nanaPolicyKey": policy_key/);
-  assert.match(teacherSource, /"executionKey": execution_key/);
+  assert.match(teacherSource, /"behaviorKeyResolved": behavior_resolved/);
+  assert.match(teacherSource, /"nanaPolicyKeyResolved": policy_resolved/);
+  assert.match(teacherSource, /"executionKeyResolved": execution_resolved/);
 
   const script = String.raw`
 from battle_lab.nana_teacher_adapter import teacher_behavior_key
 
 base={
  'fingerprintSpecVersion':1,
+ 'resolved':True,
  'family':'vgc-bench-masked-actor-critic',
  'format':'fmt',
  'checkpointSha256':'same-weights',
@@ -81,6 +95,7 @@ base={
 }
 changed={**base,'adapterContractVersion':2}
 assert teacher_behavior_key(base) != teacher_behavior_key(changed)
+assert teacher_behavior_key({**base,'resolved':False}) == ''
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
