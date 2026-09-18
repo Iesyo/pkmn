@@ -71,6 +71,70 @@ else:
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("LegalOrderSource keeps legal orders when transport round-trip is unavailable", () => {
+  const script = String.raw`
+import numpy as np
+from types import SimpleNamespace
+from poke_env.environment import DoublesEnv
+from poke_env.player.battle_order import SingleBattleOrder
+from battle_lab.nana_legal_orders import LegalOrderSource
+
+first=[SingleBattleOrder("/choose move a")]
+second=[SingleBattleOrder("/choose move b")]
+battle=SimpleNamespace(valid_orders=[first,second],battle_tag="x",turn=1,_wait=False,teampreview=False)
+old_o2a=DoublesEnv.order_to_action
+try:
+    DoublesEnv.order_to_action=staticmethod(lambda order,battle,fake=False,strict=True: (_ for _ in ()).throw(ValueError("not indexable")))
+    result=LegalOrderSource().enumerate(battle)
+finally:
+    DoublesEnv.order_to_action=old_o2a
+assert result.resolved is True
+assert len(result.candidates) == 1
+assert result.candidates[0].representable is False
+assert result.candidates[0].action_indices is None
+assert "ValueError" in result.candidates[0].representation_error
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("LegalOrderSource defines empty-compatible product as fail-closed state", () => {
+  const script = String.raw`
+from types import SimpleNamespace
+from poke_env.player.battle_order import PassBattleOrder
+from battle_lab.nana_legal_orders import LegalOrderSource
+battle=SimpleNamespace(
+    valid_orders=[[PassBattleOrder()],[PassBattleOrder()]],
+    battle_tag="empty",turn=2,_wait=False,teampreview=False,
+)
+result=LegalOrderSource().enumerate(battle)
+assert result.resolved is False
+assert result.reason == "no-compatible-orders"
+assert result.candidates == ()
+assert result.joined_count == 0
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
+test("join_orders semantics cover forced-pass, double gimmick and same-switch incompatibility", () => {
+  const script = String.raw`
+from poke_env.battle.pokemon import Pokemon
+from poke_env.player.battle_order import SingleBattleOrder, PassBattleOrder, DoubleBattleOrder
+
+move=SingleBattleOrder("/choose move a")
+assert len(DoubleBattleOrder.join_orders([PassBattleOrder()],[move])) == 1
+
+tera1=SingleBattleOrder("/choose move a",terastallize=True)
+tera2=SingleBattleOrder("/choose move b",terastallize=True)
+assert DoubleBattleOrder.join_orders([tera1],[tera2]) == []
+
+same=object.__new__(Pokemon)
+switch1=SingleBattleOrder(same)
+switch2=SingleBattleOrder(same)
+assert DoubleBattleOrder.join_orders([switch1],[switch2]) == []
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("LegalOrderSource fails closed on round-trip divergence", () => {
   const script = String.raw`
 import numpy as np
