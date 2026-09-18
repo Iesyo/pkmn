@@ -284,14 +284,16 @@ def start_viewer_server(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-root", type=Path, default=DEFAULT_RUNTIME_ROOT)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
     parser.add_argument("--showdown-port", type=int, default=DEFAULT_SHOWDOWN_PORT)
     parser.add_argument("--viewer-port", type=int, default=DEFAULT_VIEWER_PORT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.checkpoint = args.checkpoint or args.runtime_root / "models" / DEFAULT_CHECKPOINT.name
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
