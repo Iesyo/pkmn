@@ -131,6 +131,10 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
     legal_coverages: list[float] = []
     legal_missing: list[int] = []
     legal_totals: list[int] = []
+    n4_eligible = 0
+    n4_would_change = 0
+    n4_common_scores: list[int] = []
+    n4_counter_ready = 0
     interventions = 0
     decisions_total = 0
     instrumented_decisions = 0
@@ -166,6 +170,20 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
                 legal_coverages.append(coverage)
                 legal_missing.append(int(legal.get("missingFromTeacher") or 0))
                 legal_totals.append(int(legal.get("totalLegal") or 0))
+
+            n4 = payload.get("n4Shadow") if isinstance(payload.get("n4Shadow"), dict) else {}
+            if n4.get("eligible") is True:
+                n4_eligible += 1
+                if n4.get("wouldChange") is True:
+                    n4_would_change += 1
+                n4_common_scores.append(int(n4.get("commonScoreAvailable") or 0))
+                calibration = (
+                    n4.get("counterCalibration")
+                    if isinstance(n4.get("counterCalibration"), dict)
+                    else {}
+                )
+                if calibration.get("resolved") is True:
+                    n4_counter_ready += 1
 
             required = _safe_float(selection.get("requiredLambdaCap"))
             gap = _safe_float(selection.get("lambdaGap"))
@@ -245,6 +263,16 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
             "missingMax": max(legal_missing) if legal_missing else None,
             "legalTotalMedian": statistics.median(legal_totals) if legal_totals else None,
         },
+        "n4Shadow": {
+            "eligible": n4_eligible,
+            "wouldChange": n4_would_change,
+            "counterReady": n4_counter_ready,
+            "commonScoreMedian": (
+                statistics.median(n4_common_scores)
+                if n4_common_scores
+                else None
+            ),
+        },
         "teamMemory": team_memory,
         "perSession": per_session,
     }
@@ -299,6 +327,12 @@ def print_report(report: dict[str, Any]) -> None:
         f"n={legal['samples']} · min={_fmt(legal['coverageMin'])} · "
         f"median={_fmt(legal['coverageMedian'])} · max={_fmt(legal['coverageMax'])} · "
         f"missingMax={legal['missingMax']} · legales medianos={legal['legalTotalMedian']}"
+    )
+    n4 = report["n4Shadow"]
+    print(
+        "N4 shadow: "
+        f"eligible={n4['eligible']} · wouldChange={n4['wouldChange']} · "
+        f"counterReady={n4['counterReady']} · commonScoreMedian={n4['commonScoreMedian']}"
     )
     print()
     print(f"TeamMemory: {report['teamMemory']}")
