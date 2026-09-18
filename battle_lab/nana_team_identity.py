@@ -246,9 +246,4 @@ def team_scope_keys(
         rendered.append(str(roster_signature))
     if exact_team_signature:
         rendered.append(str(exact_team_signature))
-    if exact_team_signature and archetype:
-        digest = str(exact_team_signature).rsplit(":", 1)[-1]
-        rendered.append(
-            f"team+archetype:v{EXACT_TEAM_SIGNATURE_SPEC_VERSION}:{digest}|{archetype}"
-        )
     return rendered
