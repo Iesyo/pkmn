@@ -60,6 +60,8 @@ def coach_memory_contract() -> dict[str, Any]:
         "provenance": "user",
         "defaultMode": "soft",
         "supportedMechanics": list(SUPPORTED_MECHANICS),
+        "conditionSpecVersion": 1,
+        "effectSpecVersion": 1,
         "maxStrengthBoardDelta": COACH_MAX_STRENGTH,
         "legalBoundary": "LegalOrderSource+SafetyGate",
         "teacherIndependent": True,
@@ -215,10 +217,12 @@ class CoachMemory:
                 "species": species_id,
             },
             "condition": {
+                "specVersion": 1,
                 "kind": "mechanic-legal-for-active-species",
                 "mechanic": mechanic,
             },
             "effect": {
+                "specVersion": 1,
                 "kind": "prefer",
                 "target": {
                     "slotSpecies": species_id,
