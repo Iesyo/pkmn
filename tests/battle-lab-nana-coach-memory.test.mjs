@@ -80,6 +80,10 @@ assert terms==[] and ids==[]
 ctx=coach_context({'advices':[advice]},model_state={'ownActive':[{'species':'Salamence'}]},legal_actions=[mega])
 assert ctx['applicable']==[]
 assert [a['adviceId'] for a in ctx['conditionFalse']]==['tip1']
+
+yanmega={**advice,'adviceId':'yan','scope':{'level':'species','species':'yanmega'}}
+ctx=coach_context({'advices':[yanmega]},model_state={'ownActive':[{'species':'Yanmega'}]},legal_actions=[mega])
+assert [a['adviceId'] for a in ctx['applicable']]==['yan']
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
