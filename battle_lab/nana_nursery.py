@@ -30,6 +30,8 @@ SELF_PRIOR_WEIGHT = 6.0
 SELF_LOW_TRUST_VETO = 0.35
 SELF_LOW_TRUST_CONFIDENCE = 0.25
 PROMOTION_INTERVENTION_WINDOW = 20
+ALLOW_UNREPRESENTED_ORDERS = False
+AUTOMATIC_PROMOTION = False
 _EPS = 1e-12
 
 
@@ -303,7 +305,7 @@ def promotion_status(
         "orphanObservedOutcomes": orphan_observations,
         "meanLightRegretLog": mean_regret,
         "candidateForMoreAutonomy": candidate,
-        "automaticPromotion": False,
+        "automaticPromotion": AUTOMATIC_PROMOTION,
         "whyNotAutomatic": (
             "Observed outcomes are still not counterfactual proof that Nana beat LIGHT."
         ),
