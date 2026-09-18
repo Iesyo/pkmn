@@ -192,6 +192,10 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.ok(panelStart >= 0 && panelEnd > panelStart);
   assert.doesNotMatch(panel, /text-\[(?:7|8|9|10)px\]/);
   assert.match(panel, /rounded-\[22px\]/);
+  assert.doesNotMatch(panel, /selectedAction/);
+  assert.doesNotMatch(panel, /describeAction\(/);
+  assert.doesNotMatch(panel, /Acción Nana/);
+  assert.match(panel, /Las acciones concretas de Nana se ocultan durante la batalla/);
   assert.doesNotMatch(source, /Battle log/);
 });
 
