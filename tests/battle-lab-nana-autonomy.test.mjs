@@ -129,6 +129,15 @@ test("live Nursery exposes complete N2 contract without changing choose_candidat
     assert.match(source, new RegExp(token));
   }
   assert.match(source, /governor_contract=_live_autonomy_contract\(\)/);
+  assert.equal(
+    (source.match(/live_nursery_contract\(/g) || []).length,
+    1,
+    "all runtime consumers must use the complete _live_autonomy_contract helper",
+  );
+  assert.ok(
+    (source.match(/"autonomy": _live_autonomy_contract\(\)/g) || []).length >= 2,
+    "metadata and snapshot must use the complete autonomy helper",
+  );
 });
 
 test("M3 modules compile", () => {
