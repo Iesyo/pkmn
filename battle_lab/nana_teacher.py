@@ -145,5 +145,5 @@ def descriptor_for_service(service: Any) -> dict[str, Any]:
         "selectionRule": behavior_contract["selectionRule"],
         "inferenceParams": behavior_contract["inferenceParams"],
         "capabilities": list(CAPABILITIES),
-        "policy": "Battle Lab LIGHT M-C",
+        "policy": metadata.get("modelLabel", "Battle Lab LIGHT M-C"),
     }
