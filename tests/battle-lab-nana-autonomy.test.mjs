@@ -60,13 +60,13 @@ for key, changed in (
     else:
         raise AssertionError(f'ungated N2 drift must fail: {key}')
 assert_level_activation_ready('N2')
-for future in ('N3','N4'):
-    try:
-        assert_level_activation_ready(future)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError(f'{future} must remain non-activatable')
+assert_level_activation_ready('N4')
+try:
+    assert_level_activation_ready('N3')
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('N3 must remain non-activatable')
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
@@ -102,13 +102,13 @@ except ValueError:
     pass
 else:
     raise AssertionError('NaN must be rejected')
-for level in ('N3','N4'):
-    try:
-        assert_common_scorer_ready_for_level(level)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError(f'{level} must be blocked until live scorer migration')
+assert_common_scorer_ready_for_level('N4')
+try:
+    assert_common_scorer_ready_for_level('N3')
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('N3 must remain on the legacy path')
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
