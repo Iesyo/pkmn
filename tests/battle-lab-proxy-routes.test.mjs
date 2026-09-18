@@ -28,6 +28,8 @@ test("Battle Lab proxy allows the explicit Auto Lab preflight without opening ar
     "auto-lab",
     "auto-lab/validate",
     "auto-lab/0123456789abcdef",
+    "nana/advice",
+    "nana/advice/0123456789abcdef/revoke",
   ]) {
     assert.equal(allowed.test(value), true, `${value} debería estar permitido`);
   }
@@ -36,6 +38,9 @@ test("Battle Lab proxy allows the explicit Auto Lab preflight without opening ar
     "auto-lab/not-a-job",
     "auto-lab/validate/extra",
     "auto-lab/0123456789abcdef/extra",
+    "nana/advice/not-a-valid-id/revoke",
+    "nana/advice/0123456789abcdef/delete",
+    "nana/advice/0123456789abcdef/revoke/extra",
     "admin",
   ]) {
     assert.equal(allowed.test(value), false, `${value} no debería estar permitido`);
