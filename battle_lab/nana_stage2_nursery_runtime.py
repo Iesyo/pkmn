@@ -44,6 +44,7 @@ from battle_lab.nana_nursery import (
     rebuild_self_for_recorder,
 )
 from battle_lab.nana_contracts import build_nana_policy_contract, order_key
+from battle_lab.nana_coach_memory import CoachMemory
 from battle_lab.nana_counter_calibration import (
     fit_counter_calibration,
     rebuild_counter_calibration,
@@ -280,6 +281,8 @@ def install_nursery_service(
             self.nana_counter_calibration = rebuild_counter_calibration(self.nana)
         except Exception:
             self.nana_counter_calibration = fit_counter_calibration([])
+        self.nana_coach_memory = CoachMemory(self.nana)
+        self._nana_coach_recorded: set[str] = set()
 
     def _teacher_query_args(self: Any) -> dict[str, Any]:
         return {
@@ -547,6 +550,7 @@ def install_nursery_service(
                                 model_state=model_state,
                                 self_summary=service.nana_self_summary,
                                 counter_calibration=service.nana_counter_calibration,
+                                coach_memory=service.nana_coach_memory.list(),
                             )
                             if legal_set is not None and legal_set.resolved
                             else {
@@ -600,6 +604,54 @@ def install_nursery_service(
                                 ) * 1000.0,
                             }
                     n4_shadow["safetyGate"] = copy.deepcopy(safety_gate_diag)
+
+                    if full_amiibo_live:
+                        coach_trace = (
+                            n4_shadow.get("coach")
+                            if isinstance(n4_shadow.get("coach"), dict)
+                            else {}
+                        )
+                        for advice_id in coach_trace.get("conditionFalse") or []:
+                            key = f"{session.id}:{turn}:{advice_id}:condition-false"
+                            if key not in service._nana_coach_recorded:
+                                service.nana.append_event(
+                                    session.id,
+                                    "coach_advice_skipped",
+                                    {
+                                        "adviceId": advice_id,
+                                        "turn": turn,
+                                        "reason": "condition-false",
+                                    },
+                                )
+                                service._nana_coach_recorded.add(key)
+                        for advice_id in coach_trace.get("skipped") or []:
+                            key = f"{session.id}:{turn}:{advice_id}:scorer"
+                            if key not in service._nana_coach_recorded:
+                                service.nana.append_event(
+                                    session.id,
+                                    "coach_advice_skipped",
+                                    {
+                                        "adviceId": advice_id,
+                                        "turn": turn,
+                                        "reason": "scorer-preferred-other",
+                                        "selectedKey": n4_shadow.get("selectedKey"),
+                                    },
+                                )
+                                service._nana_coach_recorded.add(key)
+                        for advice_id in coach_trace.get("matchedSelected") or []:
+                            key = f"{session.id}:{turn}:{advice_id}:applied"
+                            if key not in service._nana_coach_recorded:
+                                service.nana.append_event(
+                                    session.id,
+                                    "coach_advice_applied",
+                                    {
+                                        "adviceId": advice_id,
+                                        "turn": turn,
+                                        "selectedKey": n4_shadow.get("selectedKey"),
+                                    },
+                                )
+                                service._nana_coach_recorded.add(key)
+                        service.nana_coach_memory.rebuild()
 
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
