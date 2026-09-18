@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createServer } from "vite";
+import { createServer, transformWithEsbuild } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const vite = await createServer({
@@ -203,6 +203,16 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.match(panel, /text-2xl/);
   assert.match(panel, /Qué está pensando Nana/);
   assert.doesNotMatch(source, /Battle log/);
+});
+
+test("War Room Sparring TSX parses through Vite after N4 telemetry changes", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+  await transformWithEsbuild(source, sourcePath, {
+    loader: "tsx",
+    jsx: "automatic",
+    sourcemap: false,
+  });
 });
 
 test("sparring move target picker survives identical polling snapshots", async () => {
