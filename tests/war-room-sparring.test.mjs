@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createServer, transformWithEsbuild } from "vite";
+import ts from "typescript";
+import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const vite = await createServer({
@@ -205,14 +206,26 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.doesNotMatch(source, /Battle log/);
 });
 
-test("War Room Sparring TSX parses through Vite after N4 telemetry changes", async () => {
+test("War Room Sparring TSX has no TypeScript/JSX parse diagnostics", async () => {
   const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
-  await transformWithEsbuild(source, sourcePath, {
-    loader: "tsx",
-    jsx: "automatic",
-    sourcemap: false,
+  const result = ts.transpileModule(source, {
+    fileName: sourcePath,
+    reportDiagnostics: true,
+    compilerOptions: {
+      jsx: ts.JsxEmit.ReactJSX,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    },
   });
+  const diagnostics = (result.diagnostics ?? []).filter(
+    (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+  assert.equal(
+    diagnostics.length,
+    0,
+    diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")).join("\n"),
+  );
 });
 
 test("sparring move target picker survives identical polling snapshots", async () => {
