@@ -18,6 +18,11 @@ from typing import Any
 
 from battle_lab import nana_light_critic as critic
 from battle_lab.nana_contracts import order_key
+from battle_lab.nana_coach_memory import (
+    coach_context,
+    coach_terms_for_action,
+    coach_trace_for_selection,
+)
 from battle_lab.nana_counter_calibration import CounterCalibration
 from battle_lab.nana_legal_orders import LegalOrderSet
 from battle_lab.nana_scorer import (
@@ -90,6 +95,7 @@ def build_n4_shadow_plan(
     model_state: dict[str, Any],
     self_summary: dict[str, Any],
     counter_calibration: CounterCalibration,
+    coach_memory: dict[str, Any] | None = None,
     top_n: int = 5,
 ) -> dict[str, Any]:
     if legal_orders.resolved is not True:
@@ -112,6 +118,11 @@ def build_n4_shadow_plan(
         [item for item in prediction.get("candidates") or [] if isinstance(item, dict)]
         if isinstance(prediction, dict)
         else []
+    )
+    coach = coach_context(
+        coach_memory,
+        model_state=model_state,
+        legal_actions=[candidate.action for candidate in legal_orders.candidates],
     )
     prediction_confidence = max(
         0.0,
@@ -161,6 +172,15 @@ def build_n4_shadow_plan(
             )
             sources.append("counter")
 
+        coach_terms, coach_ids = coach_terms_for_action(
+            coach,
+            model_state=model_state,
+            action=candidate.action,
+        )
+        if coach_terms:
+            terms.extend(coach_terms)
+            sources.append("coach")
+
         # LIGHT is a fallback reference, not a filter. A tiny neutral floor keeps
         # the canonical order rankable when all common-space terms are absent.
         if candidate.key == reference_key:
@@ -192,6 +212,7 @@ def build_n4_shadow_plan(
             "sources": sources,
             "counterRaw": _safe_float(counter.get("score")),
             "counterRelevantProbability": relevant_probability,
+            "coachAdviceIds": coach_ids,
         }
 
     scorer = NanaScorer()
@@ -219,6 +240,14 @@ def build_n4_shadow_plan(
         if selected_key
         else None
     )
+    coach_trace = coach_trace_for_selection(
+        coach,
+        model_state=model_state,
+        selected_action=(
+            selected_candidate.action if selected_candidate is not None else None
+        ),
+    )
+
     return {
         "version": N4_SHADOW_VERSION,
         "eligible": True,
@@ -234,5 +263,6 @@ def build_n4_shadow_plan(
         ),
         "counterCalibration": counter_calibration.public(),
         "predictionConfidence": prediction_confidence,
+        "coach": coach_trace,
         "top": top,
     }
