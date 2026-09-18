@@ -137,6 +137,24 @@ def _live_autonomy_contract() -> dict[str, Any]:
     )
 
 
+def _authorize_n4_selection(
+    legal_set: Any,
+    n4_plan: dict[str, Any],
+):
+    """Resolve one N4 selectedKey through the current-turn SafetyGate."""
+
+    if legal_set is None or getattr(legal_set, "resolved", False) is not True:
+        raise RuntimeError("N4 no tiene un conjunto legal resuelto.")
+    if n4_plan.get("eligible") is not True:
+        raise RuntimeError(
+            f"N4 plan no elegible: {n4_plan.get('reason') or 'unknown'}"
+        )
+    selected_key = str(n4_plan.get("selectedKey") or "")
+    if not selected_key:
+        raise RuntimeError("N4 plan no produjo selectedKey.")
+    return SafetyGate(legal_set).authorize_key(selected_key)
+
+
 def _compact_telemetry_candidate(candidate: Any) -> dict[str, Any] | None:
     if not isinstance(candidate, dict):
         return None
@@ -538,14 +556,13 @@ def install_nursery_service(
                         "elapsedMs": 0.0,
                     }
                     selected_key = str(n4_shadow.get("selectedKey") or "")
-                    if (
-                        selected_key
-                        and legal_set is not None
-                        and legal_set.resolved is True
-                    ):
+                    if selected_key:
                         gate_started = time.perf_counter()
                         try:
-                            authorized = SafetyGate(legal_set).authorize_key(selected_key)
+                            authorized = _authorize_n4_selection(
+                                legal_set,
+                                n4_shadow,
+                            )
                             safety_gate_diag = {
                                 "authorized": True,
                                 "reason": "ok",
@@ -711,7 +728,10 @@ def install_nursery_service(
                             and n4_shadow.get("eligible") is True
                             and selected_key
                         ):
-                            authorized = SafetyGate(legal_set).authorize_key(selected_key)
+                            authorized = _authorize_n4_selection(
+                                legal_set,
+                                n4_shadow,
+                            )
                             executed_order = authorized.order
                             executed_action = copy.deepcopy(authorized.action)
                             actor = "nana"
