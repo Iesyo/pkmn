@@ -117,6 +117,28 @@ type NanaTelemetry = {
   predictionConfidence?: number | null;
   confidenceScale?: number | null;
   candidateCountEvaluated?: number;
+  n4Shadow?: {
+    version?: string;
+    eligible?: boolean;
+    reason?: string;
+    legalTotal?: number;
+    referenceKey?: string | null;
+    selectedKey?: string | null;
+    referenceAction?: { first?: SingleAction; second?: SingleAction } | null;
+    selectedAction?: { first?: SingleAction; second?: SingleAction } | null;
+    wouldChange?: boolean;
+    commonScoreAvailable?: number;
+    predictionConfidence?: number;
+    counterCalibration?: {
+      resolved?: boolean;
+      reason?: string;
+      samples?: number;
+      slope?: number;
+      r2?: number;
+      confidence?: number;
+      mapper_id?: string;
+    } | null;
+  } | null;
   legalOrders?: {
     resolved?: boolean;
     reason?: string;
@@ -593,6 +615,8 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const reason = telemetryReason(telemetry?.reason);
   const legalOrders = telemetry?.legalOrders;
   const legalCoverage = telemetryNumber(legalOrders?.teacherCoverage);
+  const n4Shadow = telemetry?.n4Shadow;
+  const n4Action = n4Shadow?.selectedAction;
 
   return <aside className="rounded-[26px] border border-violet-300/20 bg-gradient-to-b from-violet-300/[0.08] via-slate-900/85 to-slate-950/90 p-5 shadow-2xl shadow-black/20 xl:sticky xl:top-4">
     <div className="flex items-start justify-between gap-4">
@@ -689,6 +713,37 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
           : (legalOrders?.missingFromTeacher ?? 0) > 0
             ? `${legalOrders?.missingFromTeacher} órdenes legales no están en el catálogo diagnóstico del teacher.`
             : "La enumeración legal está resuelta; N4 podrá usarla sin branch-filter."}
+      </p>
+    </section>
+
+    <section className="mt-4 rounded-2xl border border-fuchsia-300/15 bg-fuchsia-300/[0.025] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.08em] text-fuchsia-100">Full Amiibo N4 · shadow</p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">Qué elegiría el scorer común sobre todas las órdenes legales.</p>
+        </div>
+        <Badge variant="outline" className={cn(
+          "border-white/12 px-2.5 py-1 text-[11px]",
+          n4Shadow?.wouldChange ? "text-fuchsia-100" : "text-slate-300",
+        )}>
+          {n4Shadow?.eligible === false ? "BLOQUEADO" : n4Shadow?.wouldChange ? "CAMBIARÍA" : "MISMA JUGADA"}
+        </Badge>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <TelemetryMiniStat label="Legales" value={String(n4Shadow?.legalTotal ?? 0)} />
+        <TelemetryMiniStat label="Con score" value={String(n4Shadow?.commonScoreAvailable ?? 0)} />
+        <TelemetryMiniStat label="Mapper counter" value={n4Shadow?.counterCalibration?.resolved ? "READY" : "NO"} />
+      </div>
+      {n4Action?.first || n4Action?.second ? <div className="mt-3 rounded-xl border border-white/8 bg-slate-950/45 px-3 py-3 text-sm leading-5 text-slate-100">
+        {n4Action.first ? <p><span className="mr-2 font-mono text-fuchsia-300">1</span>{describeAction(n4Action.first, session.battle)}</p> : null}
+        {n4Action.second ? <p><span className="mr-2 font-mono text-fuchsia-300">2</span>{describeAction(n4Action.second, session.battle)}</p> : null}
+      </div> : null}
+      <p className="mt-3 text-[11px] leading-5 text-slate-400">
+        {n4Shadow?.eligible === false
+          ? (n4Shadow?.reason || "N4 todavía no puede formar un plan.")
+          : n4Shadow?.counterCalibration?.resolved
+            ? `Counter calibrado con ${n4Shadow.counterCalibration.samples ?? 0} muestras · R² ${telemetryNumber(n4Shadow.counterCalibration.r2)?.toFixed(2) ?? "—"}.`
+            : `Counter mapper aún sin resolver: ${n4Shadow?.counterCalibration?.reason || "sin evidencia suficiente"}.`}
       </p>
     </section>
 
