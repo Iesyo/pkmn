@@ -73,7 +73,8 @@ assert abs(weak_score.effective_weight - 0.00551) < 1e-9
 assert weak_score.score < 0.002
 r=scorer.select([reference,weak],reference_key='teacher')
 assert r['selected']['orderKey'] == 'teacher'
-assert r['reason'] == 'common-margin-not-met'
+assert r['reason'] == 'evidence-floor-not-met'
+assert r['requiredEffectiveWeight'] == 0.10
 
 strong=CandidateEvidence(
     key='strong-counter',
