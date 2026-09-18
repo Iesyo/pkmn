@@ -50,6 +50,40 @@ assert scorer.score(mapped).score == 0.4
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("teacher reference only breaks close common-score ties and never filters candidates", () => {
+  const script = String.raw`
+from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
+
+scorer=NanaScorer(min_improvement_margin=0.05)
+reference=CandidateEvidence(
+    key='teacher',
+    terms=(board_delta_term(name='experience',value=0.20,confidence=1.0),),
+    teacher_represented=True,
+    context_evidence=True,
+)
+close=CandidateEvidence(
+    key='other-close',
+    terms=(board_delta_term(name='experience',value=0.23,confidence=1.0),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+r=scorer.select([reference,close],reference_key='teacher')
+assert r['selected']['orderKey'] == 'teacher'
+assert r['reason'] == 'common-margin-not-met'
+
+clear=CandidateEvidence(
+    key='other-clear',
+    terms=(board_delta_term(name='experience',value=0.40,confidence=1.0),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+r=scorer.select([reference,clear],reference_key='teacher')
+assert r['selected']['orderKey'] == 'other-clear'
+assert r['reason'] == 'best-common-score'
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("blind picks need explicit margin over an evidenced reference", () => {
   const script = String.raw`
 from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
