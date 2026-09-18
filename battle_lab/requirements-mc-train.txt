@@ -1,5 +1,8 @@
 # Battle Lab M-C training extras. PyTorch is intentionally not pinned here so
 # Colab can reuse its GPU-enabled runtime instead of downloading another CUDA stack.
+# Colab's optional transformers/gradio/diffusers/google-adk packages can report
+# conflicts with this validated stack. The pinned poke-env fork requires
+# websockets==16.0; do not downgrade it to satisfy unused Google ADK extras.
 stable-baselines3==2.8.0
 imitation @ git+https://github.com/cameronangliss/imitation.git@56eb3b295da5d52b8f7277c6ba206913b19ab110
 supersuit==3.11.0
