@@ -813,7 +813,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       </p> : null}
     </section>
 
-    <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+    {!isN4 ? <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
       <div className="flex items-center gap-2">
         <ShieldCheck className="size-5 text-emerald-300" />
         <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-300">{telemetry?.intervened ? "Acción Nana" : candidate ? "Mejor near-miss" : "Mejor descartado"}</p>
