@@ -19,6 +19,11 @@ from typing import Any, Sequence
 from battle_lab import local_sparring_service as sparring
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_recorder import NanaRecorder
+from battle_lab.nana_team_identity import (
+    persist_team_identity,
+    session_team_context,
+    team_identity,
+)
 
 
 DEFAULT_NANA_PROFILE = "default"
@@ -202,6 +207,17 @@ def install_nana_service(*, profile_id: str) -> type:
         async def start(self, request: Any):
             session = await super().start(request)
             self._nana_pending[session.id] = {}
+            team_context: dict[str, Any] = {"resolved": False}
+            team_identity_error = ""
+            try:
+                identity = team_identity(session.own_team)
+                persist_team_identity(self.nana.profile_root, identity)
+                team_context = {
+                    "resolved": True,
+                    **session_team_context(identity),
+                }
+            except Exception as error:
+                team_identity_error = f"{type(error).__name__}: {error}"
             self.nana.start_session(
                 session.id,
                 opponent=session.opponent,
@@ -209,8 +225,19 @@ def install_nana_service(*, profile_id: str) -> type:
                     "format": sparring.DEFAULT_FORMAT,
                     "checkpoint": str(self.checkpoint),
                     "mode": "Nana 0 observational",
+                    "teamIdentity": team_context,
                 },
             )
+            if team_identity_error:
+                self.nana.append_event(
+                    session.id,
+                    "nana_team_identity_error",
+                    {
+                        "error": team_identity_error,
+                        "fallback": "L1-only",
+                        "liveBehaviorChanged": False,
+                    },
+                )
             if session.task is not None:
                 session.task.add_done_callback(
                     lambda _task, active=session: self._nana_finish(active)
