@@ -67,7 +67,7 @@ def session(sid, exact, start_index):
       {'timestamp':f'2026-01-01T00:00:{start_index:02d}Z','sessionId':sid,'type':'session_start','payload':{'context':{'teamIdentity':{'resolved':True,'rosterSignature':roster,'exactTeamSignature':exact}}}},
       {'timestamp':f'2026-01-01T00:00:{start_index+1:02d}Z','sessionId':sid,'type':'nana_teacher_version','payload':{'teacher':teacher}},
       {'timestamp':f'2026-01-01T00:00:{start_index+2:02d}Z','sessionId':sid,'type':'turn_choice','payload':{'turn':1,'generation':1,'state':state(1),'modelAction':action,'modelActor':'nana','teacher':teacher,'light':light}},
-      {'timestamp':f'2026-01-01T00:00:{start_index+3:02d}Z','sessionId':sid,'type':'human_choice_observed','payload':{'turn':2,'generation':2,'state':state(2,100,50)}},
+      {'timestamp':f'2026-01-01T00:00:{start_index+3:02d}Z','sessionId':sid,'type':'human_choice_observed','payload':{'turn':2,'generation':2,'state':state(2,50,100)}},
     ]
 
 events=[]
