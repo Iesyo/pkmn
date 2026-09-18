@@ -249,6 +249,16 @@ def shadow_rerank_v2(
     ]
     min_branch_regret = math.log(MIN_BRANCH_PROBABILITY_RATIO)
     pool: list[dict[str, Any]] = []
+    diagnostics = {
+        "jointTotal": len(joint),
+        "jointStructured": 0,
+        "regretMapped": 0,
+        "branchRegretRejected": 0,
+        "branchRegretPassed": 0,
+        "humanPredictionCandidates": len(human_candidates),
+    }
+    closest_branch_reject: dict[str, Any] | None = None
+    closest_branch_reject_score = -math.inf
     for candidate in joint:
         action = candidate.get("action")
         indices = candidate.get("indices")
@@ -259,15 +269,32 @@ def shadow_rerank_v2(
             and all(isinstance(value, int) for value in indices)
         ):
             continue
+        diagnostics["jointStructured"] += 1
         key = (int(indices[0]), int(indices[1]))
         regret = regrets.get(key)
         if not isinstance(regret, dict):
             continue
+        diagnostics["regretMapped"] += 1
         if candidate.get("selectedByLight") is not True and (
             regret["firstRegretLog"] < min_branch_regret
             or regret["secondRegretLog"] < min_branch_regret
         ):
+            diagnostics["branchRegretRejected"] += 1
+            branch_floor = min(
+                _safe_float(regret.get("firstRegretLog")),
+                _safe_float(regret.get("secondRegretLog")),
+            )
+            if branch_floor > closest_branch_reject_score:
+                closest_branch_reject_score = branch_floor
+                closest_branch_reject = {
+                    "indices": copy.deepcopy(indices),
+                    "labels": copy.deepcopy(candidate.get("labels")),
+                    "probability": _safe_float(candidate.get("probability")),
+                    "action": copy.deepcopy(action),
+                    **regret,
+                }
             continue
+        diagnostics["branchRegretPassed"] += 1
         counter = _expected_response_stats(action, human_candidates)
         pool.append(
             {
@@ -319,6 +346,18 @@ def shadow_rerank_v2(
             }
         )
 
+    diagnostics["poolSize"] = len(pool)
+    diagnostics["alternativePoolSize"] = sum(
+        1 for item in pool if item.get("selectedByLight") is not True
+    )
+    diagnostics["counterRelevantAlternatives"] = sum(
+        1
+        for item in pool
+        if item.get("selectedByLight") is not True
+        and _safe_float(item.get("expectedRelevantProbability")) > 0
+    )
+    diagnostics["closestBranchReject"] = closest_branch_reject
+
     return {
         "eligible": True,
         "reason": "shadow-only",
@@ -328,6 +367,7 @@ def shadow_rerank_v2(
         "confidence": confidence,
         "confidenceScale": confidence_scale,
         "jointCoverage": copy.deepcopy(light.get("jointCoverage") or {}),
+        "diagnostics": diagnostics,
         "canonical": copy.deepcopy(canonical_pool),
         "candidatePool": pool,
         "sweeps": sweeps,
