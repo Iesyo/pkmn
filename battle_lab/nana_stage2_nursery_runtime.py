@@ -651,8 +651,6 @@ def install_nursery_service(
                                     },
                                 )
                                 service._nana_coach_recorded.add(key)
-                        service.nana_coach_memory.rebuild()
-
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
                         service.light_critic_summary,
@@ -1191,6 +1189,7 @@ def install_nursery_service(
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
             self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
             self.nana_counter_calibration = rebuild_counter_calibration(self.nana)
+            self.nana_coach_memory.rebuild()
             after = int(self.nana_self_summary.get("observations") or 0)
             promotion = promotion_status(
                 self.nana.iter_events(),
