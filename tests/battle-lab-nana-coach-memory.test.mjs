@@ -29,14 +29,27 @@ with TemporaryDirectory() as tmp:
     assert advice['effect']['mode']=='soft'
     assert len(store.active())==1
 
+    # Battle session id sorts before coach-memory, so rebuild must use timestamps
+    # rather than file-name order or this evidence would be lost.
+    recorder.append_event(
+        '0000000000000000',
+        'coach_advice_applied',
+        {'adviceId':advice['adviceId'],'turn':1},
+    )
     rebuilt=CoachMemory(recorder)
     assert rebuilt.active()[0]['adviceId']==advice['adviceId']
     assert rebuilt.active()[0]['text']==advice['text']
+    assert rebuilt.active()[0]['evidence']['applied']==1
 
     rebuilt.revoke(advice['adviceId'])
     assert rebuilt.active()==[]
-    events=[e for e in recorder.iter_events() if e['type'].startswith('coach_advice_')]
-    assert [e['type'] for e in events]==['coach_advice_created','coach_advice_revoked']
+    events=sorted(
+        [e for e in recorder.iter_events() if e['type'].startswith('coach_advice_')],
+        key=lambda e:e['timestamp'],
+    )
+    assert [e['type'] for e in events]==[
+        'coach_advice_created','coach_advice_applied','coach_advice_revoked'
+    ]
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
