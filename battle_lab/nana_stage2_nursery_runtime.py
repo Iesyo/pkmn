@@ -489,6 +489,20 @@ def install_nursery_service(*, profile_id: str) -> type:
                         "candidateCountEvaluated": int(
                             selection.get("candidateCountEvaluated") or 0
                         ),
+                        "candidateFunnel": copy.deepcopy(
+                            selection.get("candidateFunnel") or {}
+                        ),
+                        "discarded": {
+                            "branchRegret": _compact_telemetry_candidate(
+                                selection.get("closestBranchReject")
+                            ),
+                            "nurseryRegret": _compact_telemetry_candidate(
+                                selection.get("closestNurseryRegretReject")
+                            ),
+                            "counterMiss": _compact_telemetry_candidate(
+                                selection.get("closestCounterMiss")
+                            ),
+                        },
                         "expectedCounterDelta": selection.get("expectedCounterDelta"),
                         "margin": selection.get("margin"),
                         "candidate": _compact_telemetry_candidate(telemetry_candidate),
