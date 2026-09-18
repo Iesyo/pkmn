@@ -58,12 +58,14 @@ base=build_nana_policy_contract(
     scorer_contract='legacy-n2-light-regret-plus-response-utility-v1',
     score_spaces={'teacherPrior':'teacher-log-regret-v1','counter':'response-utility-v1'},
     governor_contract={'level':'N2','lambdaCap':0.15,'maxInterventionsPerBattle':1,'minAllowedLightRegretLog':-0.08},
+    memory_contract={'modelVersion':'nana-team-memory-v1','minScopeSamples':3,'maxBlend':0.35},
     legal_order_contract='vgc-bench-indexed-order-v1',
 )
 policy_key=nana_policy_key(base)
 assert policy_key.startswith('nana-policy:v2:')
 assert nana_policy_key({**base,'governor':{**base['governor'],'lambdaCap':0.20}}) != policy_key
 assert nana_policy_key({**base,'governor':{**base['governor'],'minAllowedLightRegretLog':-0.20}}) != policy_key
+assert nana_policy_key({**base,'memory':{**base['memory'],'minScopeSamples':4}}) != policy_key
 assert execution_key(teacher_behavior_key='teacher-A', nana_policy_key_value=policy_key) != execution_key(teacher_behavior_key='teacher-B', nana_policy_key_value=policy_key)
 assert execution_key(teacher_behavior_key='', nana_policy_key_value=policy_key) == ''
 `;
