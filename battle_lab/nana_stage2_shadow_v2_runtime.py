@@ -12,7 +12,9 @@ import math
 from typing import Any, Callable, Sequence
 
 from battle_lab import local_sparring_service as sparring
+from battle_lab.nana_contracts import order_key
 from battle_lab.nana_policy import inspect_light_decision
+from battle_lab.nana_teacher_adapter import structured_action
 from battle_lab.nana_predictor import action_signature
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage1_calibrated_runtime import (
@@ -54,14 +56,9 @@ def _safe_after_light(
 
 
 def _structured_action(battle: Any, indices: list[int]) -> dict[str, Any]:
-    import numpy as np
-    from poke_env.environment import DoublesEnv
+    """Compatibility wrapper around the model-aware TeacherAdapter boundary."""
 
-    order = DoublesEnv.action_to_order(np.asarray(indices, dtype=np.int64), battle)
-    return {
-        "first": sparring._single_order_payload(order.first_order),
-        "second": sparring._single_order_payload(order.second_order),
-    }
+    return structured_action(battle, indices)
 
 
 def _enrich_joint_scores_strict(battle: Any, light: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +77,7 @@ def _enrich_joint_scores_strict(battle: Any, light: dict[str, Any]) -> dict[str,
             continue
         item = copy.deepcopy(candidate)
         item["action"] = _structured_action(battle, [int(indices[0]), int(indices[1])])
+        item["orderKey"] = order_key(item["action"])
         rendered.append(item)
         key = str(int(indices[0]))
         first_coverage[key] = first_coverage.get(key, 0) + 1
