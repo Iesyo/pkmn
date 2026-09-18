@@ -205,6 +205,48 @@ assert any("quickclaw" in note for note in snapshot["order"][0]["uncertainty"])
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("opponent Speed uses the maximum legal Champions stat instead of a hidden floor", () => {
+  const script = String.raw`
+from battle_lab.sparring_speed_tier import build_speed_tier_snapshot
+
+class Mon:
+    def __init__(self, species, speed, item=""):
+        self.species = species
+        self.base_species = species
+        self.name = species
+        self.stats = {"spe": speed}
+        self.base_stats = {"spe": 85}
+        self.level = 50
+        self.boosts = {"spe": 0}
+        self.status = None
+        self.item = item
+        self.ability = ""
+        self.moves = {}
+        self.effects = {}
+        self.current_hp_fraction = 1.0
+        self.fainted = False
+
+class Battle:
+    gen = 9
+    turn = 1
+    fields = {}
+    weather = {}
+    side_conditions = {}
+    opponent_side_conditions = {}
+    active_pokemon = [Mon("Rillaboom", 90)]
+    opponent_active_pokemon = [Mon("Rillaboom", 70, "choicescarf")]
+
+snapshot = build_speed_tier_snapshot(Battle())
+own = next(row for row in snapshot["order"] if row["side"] == "own")
+opponent = next(row for row in snapshot["order"] if row["side"] == "opponent")
+assert own["rawSpeed"] == 90
+assert opponent["rawSpeed"] == 150
+assert opponent["effectiveSpeed"] == 225
+assert "Rival: Speed máxima posible" in opponent["modifiers"]
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("opponent exact paste keeps unrevealed priority threats", () => {
   const script = String.raw`
 import battle_lab.sparring_speed_tier as speed
