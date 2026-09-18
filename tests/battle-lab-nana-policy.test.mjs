@@ -62,7 +62,7 @@ base=build_nana_policy_contract(
     legal_order_contract='vgc-bench-indexed-order-v1',
 )
 policy_key=nana_policy_key(base)
-assert policy_key.startswith('nana-policy:v2:')
+assert policy_key.startswith('nana-policy:v3:')
 assert nana_policy_key({**base,'governor':{**base['governor'],'lambdaCap':0.20}}) != policy_key
 assert nana_policy_key({**base,'governor':{**base['governor'],'minAllowedLightRegretLog':-0.20}}) != policy_key
 assert nana_policy_key({**base,'memory':{**base['memory'],'minScopeSamples':4}}) != policy_key
