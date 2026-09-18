@@ -60,7 +60,8 @@ LEVELS: dict[str, AutonomyEnvelope] = {
         20,
         False, False, True,
     ),
-    # N3/N4 are architectural targets, not active policy constants yet.
+    # N3 remains architectural. N4 is explicitly promoted after the ROG
+    # readiness smoke + COL-99 review; it has no Nursery λ/budget.
     "N3": AutonomyEnvelope(
         "N3", "apprentice",
         None, None,
@@ -71,7 +72,7 @@ LEVELS: dict[str, AutonomyEnvelope] = {
         "N4", "full-amiibo",
         None, None,
         None, None, None, None, None, None, None,
-        True, False, False,
+        True, False, True,
     ),
 }
 
