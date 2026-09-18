@@ -19,7 +19,9 @@ from poke_env.environment import DoublesEnv
 from battle_lab import local_sparring_service as sparring
 from battle_lab import nana_stage2_shadow_v2_runtime as stage2_v2
 from battle_lab.nana_autonomy import (
+    assert_level_activation_ready,
     assert_live_nursery_matches_n2,
+    full_amiibo_contract,
     live_nursery_contract,
 )
 from battle_lab.nana_light_critic import trust_for
@@ -149,22 +151,36 @@ def _compact_telemetry_candidate(candidate: Any) -> dict[str, Any] | None:
     }
 
 
-def install_nursery_service(*, profile_id: str) -> type:
-    assert_live_nursery_matches_n2(
-        lambda_cap=NURSERY_LAMBDA_CAP,
-        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
-        min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
-        min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
-        high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
-        high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
-        self_low_trust_veto=SELF_LOW_TRUST_VETO,
-        self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
-        promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
-        allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
-        automatic_promotion=AUTOMATIC_PROMOTION,
-    )
+def install_nursery_service(
+    *,
+    profile_id: str,
+    full_amiibo_live: bool = False,
+) -> type:
+    if full_amiibo_live:
+        assert_level_activation_ready("N4")
+    else:
+        assert_live_nursery_matches_n2(
+            lambda_cap=NURSERY_LAMBDA_CAP,
+            max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+            min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
+            min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
+            high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
+            high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
+            self_low_trust_veto=SELF_LOW_TRUST_VETO,
+            self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
+            promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
+            allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
+            automatic_promotion=AUTOMATIC_PROMOTION,
+        )
     service_class = install_light_critic_service(profile_id=profile_id)
     if getattr(service_class, "_nana_nursery_live_v1", False):
+        installed_mode = bool(
+            getattr(service_class, "_nana_full_amiibo_live", False)
+        )
+        if installed_mode != bool(full_amiibo_live):
+            raise RuntimeError(
+                "Nana service ya fue instalado en otro modo de autonomía."
+            )
         service_class.nana_profile_id = profile_id
         return service_class
 
@@ -175,6 +191,19 @@ def install_nursery_service(*, profile_id: str) -> type:
     original_finish = service_class._nana_finish
 
     def _live_policy_contract() -> dict[str, Any]:
+        if full_amiibo_live:
+            return build_nana_policy_contract(
+                decision_mode="nana-full-amiibo-n4-v1",
+                scorer_contract="nana-scorer-v4-evidence-shrunk-common-space",
+                score_spaces={
+                    "experience": "board-delta-v1",
+                    "counter": "board-delta-v1",
+                    "teacherPrior": "reference-only-unmapped",
+                },
+                governor_contract=full_amiibo_contract(),
+                memory_contract=team_memory_contract(),
+                legal_order_contract=LegalOrderSource.contract_id,
+            )
         return build_nana_policy_contract(
             decision_mode=NURSERY_MODEL_VERSION,
             scorer_contract="legacy-n2-light-regret-plus-response-utility-v1",
@@ -1015,6 +1044,7 @@ def install_nursery_service(*, profile_id: str) -> type:
     service_class.snapshot = snapshot
     service_class._nana_finish = _nana_finish
     service_class._nana_nursery_live_v1 = True
+    service_class._nana_full_amiibo_live = bool(full_amiibo_live)
     service_class.nana_profile_id = profile_id
     return service_class
 
