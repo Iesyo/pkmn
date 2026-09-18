@@ -88,6 +88,45 @@ assert r['reason'] == 'best-common-score'
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("large raw values cannot buy their way past the independent evidence floor", () => {
+  const script = String.raw`
+from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
+
+scorer=NanaScorer(
+    min_improvement_margin=0.05,
+    min_displacement_effective_weight=0.10,
+)
+reference=CandidateEvidence(
+    key='teacher',
+    terms=(board_delta_term(name='heuristicFloor',value=0.0,confidence=0.10,weight=0.25),),
+    teacher_represented=True,
+    context_evidence=False,
+)
+huge_but_thin=CandidateEvidence(
+    key='thin',
+    terms=(board_delta_term(name='experience',value=5.0,confidence=0.048),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+r=scorer.select([reference,huge_but_thin],reference_key='teacher')
+assert r['selected']['orderKey'] == 'teacher'
+assert r['reason'] == 'evidence-floor-not-met'
+assert abs(r['effectiveWeight'] - 0.048) < 1e-9
+assert r['requiredEffectiveWeight'] == 0.10
+
+supported=CandidateEvidence(
+    key='supported',
+    terms=(board_delta_term(name='experience',value=1.0,confidence=0.20),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+r=scorer.select([reference,supported],reference_key='teacher')
+assert r['selected']['orderKey'] == 'supported'
+assert r['reason'] == 'best-common-score'
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("teacher reference only breaks close common-score ties and never filters candidates", () => {
   const script = String.raw`
 from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
