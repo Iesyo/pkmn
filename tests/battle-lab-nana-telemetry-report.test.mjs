@@ -19,6 +19,7 @@ with TemporaryDirectory() as tmp:
     sessions=profile/'sessions'
     sessions.mkdir()
     for i,(bottleneck,required,intervened) in enumerate([
+        ('legacy',None,False),
         ('branch',None,False),
         ('counter',None,False),
         ('cap',0.18,False),
@@ -32,7 +33,9 @@ with TemporaryDirectory() as tmp:
             funnel.update(nurseryRegretPassed=3,counterImproved=0,insideCap=0)
         elif bottleneck=='cap':
             funnel.update(counterImproved=2,insideCap=0)
-        selection={'reason':'nursery-live-near-light' if intervened else 'no-live-candidate-inside-nursery-cap','candidateFunnel':funnel,'requiredLambdaCap':required,'lambdaGap':None if required is None else max(0,required-0.15)}
+        selection={'reason':'nursery-live-near-light' if intervened else 'no-live-candidate-inside-nursery-cap','requiredLambdaCap':required,'lambdaGap':None if required is None else max(0,required-0.15)}
+        if bottleneck != 'legacy':
+            selection['candidateFunnel']=funnel
         events=[
             {'timestamp':f'2026-01-0{i+1}T00:00:00Z','sessionId':sid,'type':'session_start','payload':{'context':{'teamIdentity':{'exactTeamSignature':'team:v2:x'}}}},
             {'timestamp':f'2026-01-0{i+1}T00:00:01Z','sessionId':sid,'type':'nana_nursery_decision','payload':{'intervened':intervened,'selection':selection}},
@@ -40,9 +43,12 @@ with TemporaryDirectory() as tmp:
         ]
         (sessions/f'{sid}.jsonl').write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
     r=build_report(profile,last=10)
-    assert r['sessions']==4
-    assert r['decisions']==4
+    assert r['sessions']==5
+    assert r['decisions']==5
     assert r['interventions']==1
+    assert r['instrumentedDecisions']==4
+    assert r['legacyDecisions']==1
+    assert r['bottlenecks']['telemetry-missing']==1
     assert r['bottlenecks']['branch-filter']==1
     assert r['bottlenecks']['counter-proxy']==1
     assert r['bottlenecks']['lambda-cap']==1
