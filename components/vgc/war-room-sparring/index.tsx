@@ -117,6 +117,19 @@ type NanaTelemetry = {
   predictionConfidence?: number | null;
   confidenceScale?: number | null;
   candidateCountEvaluated?: number;
+  legalOrders?: {
+    resolved?: boolean;
+    reason?: string;
+    contractId?: string;
+    totalLegal?: number;
+    teacherJointTotal?: number;
+    coveredByTeacher?: number;
+    teacherCoverage?: number;
+    missingFromTeacher?: number | null;
+    extraTeacher?: number | null;
+    individualCounts?: number[];
+    joinedCount?: number;
+  } | null;
   candidateFunnel?: {
     jointTotal?: number;
     jointStructured?: number;
@@ -578,6 +591,8 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const candidateAction = diagnosticCandidate?.action;
   const insideCap = required !== null && required <= lambdaCap;
   const reason = telemetryReason(telemetry?.reason);
+  const legalOrders = telemetry?.legalOrders;
+  const legalCoverage = telemetryNumber(legalOrders?.teacherCoverage);
 
   return <aside className="rounded-[26px] border border-violet-300/20 bg-gradient-to-b from-violet-300/[0.08] via-slate-900/85 to-slate-950/90 p-5 shadow-2xl shadow-black/20 xl:sticky xl:top-4">
     <div className="flex items-start justify-between gap-4">
@@ -655,6 +670,26 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         <FunnelRow label="Dentro de λ actual" value={insideCapCount} total={Math.max(1, lightAlternatives)} active={bottleneck === "cap"} />
       </div>
       <p className="mt-4 rounded-xl border border-white/8 bg-slate-950/45 px-3 py-2.5 text-xs font-semibold leading-5 text-slate-200">{bottleneckText}</p>
+    </section>
+
+    <section className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-300/[0.025] p-4">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="size-5 text-emerald-300" />
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-emerald-100">Fuente legal N4</p>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-slate-400">Órdenes legales desde poke-env, independientes del ranking de LIGHT.</p>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <TelemetryMiniStat label="Legales" value={String(legalOrders?.totalLegal ?? 0)} />
+        <TelemetryMiniStat label="Teacher ve" value={String(legalOrders?.coveredByTeacher ?? 0)} />
+        <TelemetryMiniStat label="Cobertura" value={telemetryPercent(legalCoverage)} />
+      </div>
+      <p className="mt-3 text-[11px] leading-5 text-slate-400">
+        {legalOrders?.resolved === false
+          ? `No resuelto: ${legalOrders?.reason || "sin detalle"}`
+          : (legalOrders?.missingFromTeacher ?? 0) > 0
+            ? `${legalOrders?.missingFromTeacher} órdenes legales no están en el catálogo diagnóstico del teacher.`
+            : "La enumeración legal está resuelta; N4 podrá usarla sin branch-filter."}
+      </p>
     </section>
 
     <div className="mt-4 grid grid-cols-2 gap-3">
