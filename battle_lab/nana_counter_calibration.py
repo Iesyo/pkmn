@@ -13,6 +13,7 @@ confidence.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -251,3 +252,33 @@ def rebuild_counter_calibration(recorder: Any) -> CounterCalibration:
     calibration = fit_counter_calibration(recorder.iter_events())
     write_counter_calibration(recorder.profile_root, calibration)
     return calibration
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--nana-profile", default="default")
+    parser.add_argument("--runtime-root", type=Path, default=None)
+    return parser.parse_args()
+
+
+def main() -> int:
+    from battle_lab.local_sparring_service import DEFAULT_RUNTIME_ROOT
+    from battle_lab.nana_recorder import NanaRecorder, safe_profile_id
+
+    args = parse_args()
+    runtime_root = (
+        Path(args.runtime_root).expanduser().resolve()
+        if args.runtime_root is not None
+        else DEFAULT_RUNTIME_ROOT
+    )
+    recorder = NanaRecorder(
+        runtime_root / "nana",
+        profile_id=safe_profile_id(args.nana_profile),
+    )
+    calibration = rebuild_counter_calibration(recorder)
+    print(json.dumps(calibration.public(), ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
