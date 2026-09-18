@@ -49,6 +49,14 @@ test("Speed Tier launcher installs LAN first, then Speed Tier viewer, then Nana 
   assert.doesNotMatch(source, /return nursery\.main\(argv\)/);
 });
 
+test("existing Speed Tier launcher promotes Nana directly to Full Amiibo N4", () => {
+  const source = readFileSync(launcher, "utf8");
+  assert.match(source, /full_amiibo_live=True/);
+  assert.match(source, /Nana Full Amiibo N4 LIVE \+ Speed Tier/);
+  assert.match(source, /sin λ cap y sin presupuesto de intervenciones/);
+  assert.match(source, /LIGHT es advisor\/fallback/);
+});
+
 test("Speed Tier LAN viewer launches as a package module from repo root", () => {
   const source = readFileSync(launcher, "utf8");
   assert.match(source, /project_root = Path\(__file__\)\.resolve\(\)\.parents\[1\]/);
