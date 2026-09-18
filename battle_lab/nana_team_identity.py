@@ -40,8 +40,8 @@ def _to_id(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
-def _allocations(value: str) -> dict[str, int]:
-    rendered = {key: 0 for key in _STAT_KEYS}
+def _allocations(value: str, *, default: int) -> dict[str, int]:
+    rendered = {key: int(default) for key in _STAT_KEYS}
     for chunk in str(value or "").split("/"):
         match = re.match(
             r"^\s*(\d+)\s+(HP|Atk|Def|SpA|SpD|Spe)\s*$",
@@ -93,11 +93,9 @@ def _canonical_mon(block: str) -> dict[str, Any]:
         elif lower.startswith("tera type:"):
             mon["teraType"] = _to_id(line.split(":", 1)[1])
         elif lower.startswith("evs:"):
-            mon["evs"] = _allocations(line.split(":", 1)[1])
+            mon["evs"] = _allocations(line.split(":", 1)[1], default=0)
         elif lower.startswith("ivs:"):
-            ivs = {key: 31 for key in _STAT_KEYS}
-            ivs.update(_allocations(line.split(":", 1)[1]))
-            mon["ivs"] = ivs
+            mon["ivs"] = _allocations(line.split(":", 1)[1], default=31)
         elif lower.endswith(" nature"):
             mon["nature"] = _to_id(line[:-7])
         elif line.startswith("- "):
@@ -168,11 +166,15 @@ def persist_team_identity(profile_root: Path, identity: dict[str, Any]) -> Path:
         "canonicalTeam": identity["canonicalTeam"],
         "paste": identity["normalizedPaste"],
     }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if destination.is_file():
+        try:
+            if destination.read_text(encoding="utf-8") == rendered:
+                return destination
+        except OSError:
+            pass
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    temporary.write_text(rendered, encoding="utf-8")
     os.replace(temporary, destination)
     return destination
 
