@@ -1,6 +1,6 @@
 # Battle Lab — Sparring local
 
-`War Room > Sparring` conecta la interfaz de LikeNoOneEverWas con un runtime local. Pokémon Showdown resuelve el combate, el checkpoint LIGHT M-C controla al rival y el **cliente clásico oficial de Pokémon Showdown** renderiza el room real como espectador: campo, sprites, animaciones y battle log.
+`War Room > Sparring` conecta la interfaz de LikeNoOneEverWas con un runtime local. Pokémon Showdown resuelve el combate, el checkpoint M-C activo controla al rival y el **cliente clásico oficial de Pokémon Showdown** renderiza el room real como espectador: campo, sprites, animaciones y battle log.
 
 ## Restricción del pool
 
@@ -39,25 +39,62 @@ Ese checkout conserva su licencia **AGPLv3** y se sirve sin modificar desde loop
 
 El cliente clásico entra al room como **espectador**. Por eso el campo animado y el battle log son los reales de Showdown, mientras los botones que envían la jugada siguen siendo controles propios de War Room construidos únicamente a partir de órdenes legales. Esto evita tener dos clientes intentando controlar el mismo jugador y mantiene una sola autoridad de decisión.
 
-## Checkpoint canónico
+## Modelo promovido y actualización
 
-Modelo: `step-000196608.zip`
+El modelo promovido es **M-C BC+PPO 2026-09-16**, de la corrida
+`20260916T200255271236Z`. El manifiesto `battle_lab/model_release.json` fija su
+identidad, tamaño, SHA-256 y resultado del benchmark directo: 58% contra LIGHT
+productivo, 62.2% contra el base y 64.6% contra Simple Heuristics (500 partidas/rival).
 
-Drive: https://drive.google.com/file/d/1hmKrYaLg5u0aUpzuxtA3ZwWUpz-w9c6_/view
+[Descargar mc-20260916-bc-ppo.zip](https://drive.google.com/file/d/1B8-CutEs9Eb2CO-hMnXKx0KVXH6q3e5G/view).
+Guárdalo sin descomprimir en **`models/` dentro del proyecto**, por ejemplo
+`C:\workspace\pkmn\models\mc-20260916-bc-ppo.zip`. Esa carpeta se incluye con sus
+instrucciones; los pesos locales quedan excluidos de Git.
+SHA-256: `5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2`.
 
-SHA-256 esperado:
+Detén únicamente el runtime Python de Battle Lab con Ctrl+C y, desde la raíz del
+repositorio actualizado, ejecuta en PowerShell:
 
-```text
-fa8687d08feeb169f4eb4f4a078b65971346e2ef5b0ca0ff899e811721075759
+```powershell
+.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release install --runtime-root .\.battle-lab-runtime
 ```
 
-Ruta original en el entrenamiento de Colab:
+Busca el ZIP correcto en la carpeta `models/` del proyecto por tamaño y hash.
+Acepta también el nombre original `step-000196608.zip` y sufijos de descarga;
+con varios modelos, selecciona el que coincide con el manifiesto de la versión
+promovida. Para otro archivo añade `--source "C:\ruta\mc-20260916-bc-ppo.zip"`,
+o usa `--models-dir "C:\otra\carpeta"` para cambiar la carpeta de búsqueda.
+Verifica tamaño, SHA y estructura SB3 antes de reemplazar nada. Conserva el modelo
+anterior en `.battle-lab-runtime/models/backups/<sha>.zip`, reemplaza atómicamente
+`.battle-lab-runtime/models/step-000196608.zip` y registra
+`.battle-lab-runtime/models/active-model.json`. La ruta existente
+permanece compatible con tus comandos de arranque. No toca equipos ni memoria Nana.
 
-```text
-/content/drive/MyDrive/Colabs/LikeNoOneEverWas/BattleLab/MC-Training/training/rl/light/seed260913/checkpoints/step-000196608.zip
+Reinicia **el mismo comando de runtime que ya usabas** (incluido Nana/LAN). Desde
+otra terminal confirma el hash cargado:
+
+```powershell
+.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release verify --runtime-root .\.battle-lab-runtime
 ```
 
-No se versiona el checkpoint en Git.
+`verify` consulta `/model-info`, compara hash y regulación, y guarda
+`.battle-lab-runtime/models/activation.json`. Instalar el archivo y seleccionar el champion de Colab
+son pasos distintos de comprobar que el runtime vivo lo cargó. Sparring y Auto Lab
+(Auditar y evaluación de variantes) comparten esa política. Nana identifica el
+nuevo teacher por SHA y separa su confianza previa; conserva el historial personal.
+Las funciones de cálculo, legalidad y consulta de datos que no consumen el modelo
+no requieren cambiar pesos.
+
+Para volver al modelo anterior, detén el runtime, ejecuta lo siguiente y reinicia
+el mismo comando habitual:
+
+```powershell
+.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release rollback --runtime-root .\.battle-lab-runtime
+```
+
+El LIGHT anterior también permanece en su
+[archivo original de Drive](https://drive.google.com/file/d/1hmKrYaLg5u0aUpzuxtA3ZwWUpz-w9c6_/view),
+SHA `fa8687d08feeb169f4eb4f4a078b65971346e2ef5b0ca0ff899e811721075759`.
 
 ## Preparación local
 
@@ -76,10 +113,10 @@ Si PowerShell bloquea `Activate.ps1`, se puede usar directamente:
 .\.venv-battle-lab\Scripts\python.exe
 ```
 
-Crea la carpeta local de modelos y copia ahí el checkpoint descargado desde Drive:
+Instala el checkpoint descargado con el mismo instalador verificado:
 
 ```powershell
-New-Item -ItemType Directory -Force .battle-lab-runtime\models
+.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release install --runtime-root .\.battle-lab-runtime
 ```
 
 El runtime completo vive en `.battle-lab-runtime/`, que está ignorado por Git. La primera ejecución prepara los checkouts fijados de Pokémon Showdown, VGC-Bench y Pokémon Showdown Client; las ejecuciones posteriores los reutilizan.
