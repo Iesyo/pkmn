@@ -76,6 +76,10 @@ zero = [s for s in plan["sweeps"] if abs(s["lambdaCap"]) < 1e-12][0]
 assert zero["changed"] is False
 assert zero["recommended"]["selectedByLight"] is True
 assert abs(plan["canonical"]["lightRegretLog"]) < 1e-12
+assert plan["diagnostics"]["jointTotal"] == 2
+assert plan["diagnostics"]["jointStructured"] == 2
+assert plan["diagnostics"]["branchRegretPassed"] >= 1
+assert plan["diagnostics"]["poolSize"] >= 1
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
