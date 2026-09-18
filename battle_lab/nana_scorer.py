@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 
-SCORER_CONTRACT_VERSION = 4
+SCORER_CONTRACT_VERSION = 5
 COMMON_SCORE_SPACE = "board-delta-v1"
 LIVE_NURSERY_USES_COMMON_SCORER = False
 _COMMON_TERM_PROOF = object()
@@ -44,6 +44,7 @@ def scorer_contract() -> dict[str, Any]:
         "evidenceShrink": {
             "rule": "score = rawScore * min(1, effectiveWeight)",
             "neutralReference": 0.0,
+            "minimumDisplacementEffectiveWeight": 0.10,
         },
         "referenceFallback": {
             "teacherMayBreakCommonScoreTies": True,
@@ -220,6 +221,7 @@ class NanaScorer:
         blind_uncertainty_penalty: float = 0.15,
         blind_margin: float = 0.25,
         min_improvement_margin: float = 0.05,
+        min_displacement_effective_weight: float = 0.10,
     ) -> None:
         self.blind_uncertainty_penalty = max(
             0.0,
@@ -237,6 +239,13 @@ class NanaScorer:
             _finite(
                 min_improvement_margin,
                 field_name="min_improvement_margin",
+            ),
+        )
+        self.min_displacement_effective_weight = max(
+            0.0,
+            _finite(
+                min_displacement_effective_weight,
+                field_name="min_displacement_effective_weight",
             ),
         )
 
@@ -304,6 +313,16 @@ class NanaScorer:
         )
 
         if reference is not None and best.key != reference.key:
+            if best.effective_weight < self.min_displacement_effective_weight:
+                return {
+                    "selected": reference.public(),
+                    "reason": "evidence-floor-not-met",
+                    "challenger": best.public(),
+                    "effectiveWeight": best.effective_weight,
+                    "requiredEffectiveWeight": self.min_displacement_effective_weight,
+                    "ranked": [item.public() for item in ranked],
+                }
+
             margin = float(best.score) - float(reference.score)
             required = max(
                 self.min_improvement_margin,
