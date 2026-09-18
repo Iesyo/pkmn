@@ -605,52 +605,6 @@ def install_nursery_service(
                             }
                     n4_shadow["safetyGate"] = copy.deepcopy(safety_gate_diag)
 
-                    if full_amiibo_live:
-                        coach_trace = (
-                            n4_shadow.get("coach")
-                            if isinstance(n4_shadow.get("coach"), dict)
-                            else {}
-                        )
-                        for advice_id in coach_trace.get("conditionFalse") or []:
-                            key = f"{session.id}:{turn}:{advice_id}:condition-false"
-                            if key not in service._nana_coach_recorded:
-                                service.nana.append_event(
-                                    session.id,
-                                    "coach_advice_skipped",
-                                    {
-                                        "adviceId": advice_id,
-                                        "turn": turn,
-                                        "reason": "condition-false",
-                                    },
-                                )
-                                service._nana_coach_recorded.add(key)
-                        for advice_id in coach_trace.get("skipped") or []:
-                            key = f"{session.id}:{turn}:{advice_id}:scorer"
-                            if key not in service._nana_coach_recorded:
-                                service.nana.append_event(
-                                    session.id,
-                                    "coach_advice_skipped",
-                                    {
-                                        "adviceId": advice_id,
-                                        "turn": turn,
-                                        "reason": "scorer-preferred-other",
-                                        "selectedKey": n4_shadow.get("selectedKey"),
-                                    },
-                                )
-                                service._nana_coach_recorded.add(key)
-                        for advice_id in coach_trace.get("matchedSelected") or []:
-                            key = f"{session.id}:{turn}:{advice_id}:applied"
-                            if key not in service._nana_coach_recorded:
-                                service.nana.append_event(
-                                    session.id,
-                                    "coach_advice_applied",
-                                    {
-                                        "adviceId": advice_id,
-                                        "turn": turn,
-                                        "selectedKey": n4_shadow.get("selectedKey"),
-                                    },
-                                )
-                                service._nana_coach_recorded.add(key)
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
                         service.light_critic_summary,
@@ -908,6 +862,61 @@ def install_nursery_service(
                     service._nana_nursery_interventions[session.id] = used + 1
 
                 recording_errors: list[str] = []
+                if full_amiibo_live:
+                    try:
+                        coach_trace = (
+                            n4_shadow.get("coach")
+                            if isinstance(n4_shadow.get("coach"), dict)
+                            else {}
+                        )
+                        for advice_id in coach_trace.get("conditionFalse") or []:
+                            key = f"{session.id}:{turn}:{advice_id}:condition-false"
+                            if key not in service._nana_coach_recorded:
+                                service.nana.append_event(
+                                    session.id,
+                                    "coach_advice_skipped",
+                                    {
+                                        "adviceId": advice_id,
+                                        "turn": turn,
+                                        "reason": "condition-false",
+                                        "executedActor": actor,
+                                    },
+                                )
+                                service._nana_coach_recorded.add(key)
+                        for advice_id in coach_trace.get("skipped") or []:
+                            key = f"{session.id}:{turn}:{advice_id}:scorer"
+                            if key not in service._nana_coach_recorded:
+                                service.nana.append_event(
+                                    session.id,
+                                    "coach_advice_skipped",
+                                    {
+                                        "adviceId": advice_id,
+                                        "turn": turn,
+                                        "reason": "scorer-preferred-other",
+                                        "selectedKey": n4_shadow.get("selectedKey"),
+                                        "executedActor": actor,
+                                    },
+                                )
+                                service._nana_coach_recorded.add(key)
+                        if actor == "nana":
+                            for advice_id in coach_trace.get("matchedSelected") or []:
+                                key = f"{session.id}:{turn}:{advice_id}:applied"
+                                if key not in service._nana_coach_recorded:
+                                    service.nana.append_event(
+                                        session.id,
+                                        "coach_advice_applied",
+                                        {
+                                            "adviceId": advice_id,
+                                            "turn": turn,
+                                            "selectedKey": n4_shadow.get("selectedKey"),
+                                            "executedActor": actor,
+                                        },
+                                    )
+                                    service._nana_coach_recorded.add(key)
+                    except Exception as error:
+                        recording_errors.append(
+                            f"coach-record:{type(error).__name__}: {error}"
+                        )
                 try:
                     service._nana_stage2_v2_note_light(session.id, turn, light)
                 except Exception as error:
