@@ -820,6 +820,16 @@ def install_nursery_service(
                             [int(canonical_indices[0]), int(canonical_indices[1])],
                         )
                         actor = "light"
+
+                    if full_amiibo_live:
+                        session.nana_telemetry["intervened"] = intervened
+                        session.nana_telemetry["reason"] = (
+                            f"n4:{n4_shadow.get('reason') or 'unknown'}"
+                        )
+                        session.nana_telemetry["executedActor"] = actor
+                        session.nana_telemetry["executedAction"] = copy.deepcopy(
+                            executed_action
+                        )
                 except Exception as error:
                     try:
                         service.nana.append_event(
