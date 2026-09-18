@@ -50,6 +50,44 @@ assert scorer.score(mapped).score == 0.4
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("low-confidence evidence is shrunk and cannot displace the reference", () => {
+  const script = String.raw`
+from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
+
+scorer=NanaScorer(min_improvement_margin=0.05)
+reference=CandidateEvidence(
+    key='teacher',
+    terms=(board_delta_term(name='heuristicFloor',value=0.0,confidence=0.10,weight=0.25),),
+    teacher_represented=True,
+    context_evidence=False,
+)
+weak=CandidateEvidence(
+    key='weak-counter',
+    terms=(board_delta_term(name='counter',value=0.26706,confidence=0.00551),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+weak_score=scorer.score(weak)
+assert abs(weak_score.raw_score - 0.26706) < 1e-9
+assert abs(weak_score.effective_weight - 0.00551) < 1e-9
+assert weak_score.score < 0.002
+r=scorer.select([reference,weak],reference_key='teacher')
+assert r['selected']['orderKey'] == 'teacher'
+assert r['reason'] == 'common-margin-not-met'
+
+strong=CandidateEvidence(
+    key='strong-counter',
+    terms=(board_delta_term(name='counter',value=0.26706,confidence=1.0),),
+    teacher_represented=False,
+    context_evidence=True,
+)
+r=scorer.select([reference,strong],reference_key='teacher')
+assert r['selected']['orderKey'] == 'strong-counter'
+assert r['reason'] == 'best-common-score'
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("teacher reference only breaks close common-score ties and never filters candidates", () => {
   const script = String.raw`
 from battle_lab.nana_scorer import CandidateEvidence, NanaScorer, board_delta_term
