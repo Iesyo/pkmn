@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable
 SCORER_CONTRACT_VERSION = 5
 COMMON_SCORE_SPACE = "board-delta-v1"
 LIVE_NURSERY_USES_COMMON_SCORER = False
+N4_COMMON_SCORER_READY = True
 _COMMON_TERM_PROOF = object()
 
 
@@ -40,6 +41,7 @@ def scorer_contract() -> dict[str, Any]:
         "contractVersion": SCORER_CONTRACT_VERSION,
         "commonScoreSpace": COMMON_SCORE_SPACE,
         "liveNurseryUsesCommonScorer": LIVE_NURSERY_USES_COMMON_SCORER,
+        "n4CommonScorerReady": N4_COMMON_SCORER_READY,
         "candidateRanking": "evidence-shrunk-common-space-v2",
         "evidenceShrink": {
             "rule": "score = rawScore * min(1, effectiveWeight)",
@@ -379,8 +381,12 @@ class NanaScorer:
 
 
 def assert_common_scorer_ready_for_level(level: str) -> None:
-    if str(level).upper() in {"N3", "N4"} and not LIVE_NURSERY_USES_COMMON_SCORER:
+    target = str(level).upper()
+    if target == "N4":
+        if not N4_COMMON_SCORER_READY:
+            raise RuntimeError("N4 bloqueado: NanaScorer común no está listo.")
+        return
+    if target == "N3" and not LIVE_NURSERY_USES_COMMON_SCORER:
         raise RuntimeError(
-            "N3/N4 bloqueado: choose_candidate todavía usa el scorer legacy N2 "
-            "y debe migrarse a términos mapeados antes de aumentar autonomía."
+            "N3 bloqueado: choose_candidate sigue usando el scorer legacy N2."
         )
