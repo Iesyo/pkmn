@@ -146,6 +146,24 @@ def assert_live_nursery_matches_n2(**live_values: Any) -> None:
         )
 
 
+def full_amiibo_contract() -> dict[str, Any]:
+    """Return the explicit N4 live governor contract."""
+
+    target = envelope("N4")
+    return {
+        "contractVersion": AUTONOMY_CONTRACT_VERSION,
+        "level": target.level,
+        "name": target.name,
+        "lambdaCap": None,
+        "maxInterventionsPerBattle": None,
+        "allowUnrepresentedOrders": True,
+        "automaticPromotion": False,
+        "safetyGateRequired": True,
+        "teacherRole": "advisor-fallback",
+        "activationReady": target.activation_ready,
+    }
+
+
 def assert_level_activation_ready(level: str) -> None:
     target = envelope(level)
     if not target.activation_ready:
