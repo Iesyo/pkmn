@@ -27,13 +27,10 @@ def _identity(teacher: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "weightsKey": str(teacher.get("weightsKey") or teacher.get("key") or ""),
         "behaviorKey": behavior_key,
-        "behaviorKeyResolved": bool(
-            teacher.get("behaviorKeyResolved", bool(behavior_key))
-        ),
+        # Missing marker means pre-hardening identity: treat it as unresolved.
+        "behaviorKeyResolved": teacher.get("behaviorKeyResolved") is True,
         "nanaPolicyKey": policy_key,
-        "nanaPolicyKeyResolved": bool(
-            teacher.get("nanaPolicyKeyResolved", bool(policy_key))
-        ),
+        "nanaPolicyKeyResolved": teacher.get("nanaPolicyKeyResolved") is True,
         "executionKey": str(teacher.get("executionKey") or ""),
     }
 
