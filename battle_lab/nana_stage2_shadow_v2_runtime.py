@@ -12,7 +12,6 @@ import math
 from typing import Any, Callable, Sequence
 
 from battle_lab import local_sparring_service as sparring
-from battle_lab.nana_contracts import order_key
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_teacher_adapter import structured_action
 from battle_lab.nana_predictor import action_signature
@@ -77,7 +76,6 @@ def _enrich_joint_scores_strict(battle: Any, light: dict[str, Any]) -> dict[str,
             continue
         item = copy.deepcopy(candidate)
         item["action"] = _structured_action(battle, [int(indices[0]), int(indices[1])])
-        item["orderKey"] = order_key(item["action"])
         rendered.append(item)
         key = str(int(indices[0]))
         first_coverage[key] = first_coverage.get(key, 0) + 1
