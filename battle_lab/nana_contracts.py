@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 
@@ -42,20 +43,24 @@ def _safe_target(value: Any) -> int:
         return 0
 
 
+def _canonical_id(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
 def canonical_action_half(half: Any) -> dict[str, Any]:
     """Normalize one structured action half without model-native indices."""
 
     half = half if isinstance(half, dict) else {}
     flags = sorted(
         {
-            str(flag).strip().lower()
+            _canonical_id(flag)
             for flag in half.get("flags") or []
-            if str(flag).strip()
+            if _canonical_id(flag)
         }
     )
     return {
-        "kind": str(half.get("kind") or "").strip().lower(),
-        "value": str(half.get("value") or "").strip().lower(),
+        "kind": _canonical_id(half.get("kind")),
+        "value": _canonical_id(half.get("value")),
         "target": _safe_target(half.get("target")),
         "flags": flags,
     }
