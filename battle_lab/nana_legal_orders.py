@@ -91,8 +91,10 @@ class NormalizedCandidate:
     key: str
     action: dict[str, Any]
     message: str
-    action_indices: tuple[int, int]
+    action_indices: tuple[int, int] | None
     order: Any = field(repr=False, compare=False)
+    representable: bool = True
+    representation_error: str = ""
 
     def public(self) -> dict[str, Any]:
         return {
@@ -100,7 +102,13 @@ class NormalizedCandidate:
             "action": self.action,
             "message": self.message,
             # Transport indices belong to poke-env, not to any teacher.
-            "pokeEnvAction": list(self.action_indices),
+            "pokeEnvAction": (
+                list(self.action_indices)
+                if self.action_indices is not None
+                else None
+            ),
+            "representable": self.representable,
+            "representationError": self.representation_error or None,
         }
 
 
@@ -131,6 +139,8 @@ class LegalOrderSet:
             "joinedCount": self.joined_count,
             "deduplicatedCount": self.deduplicated_count,
             "total": len(self.candidates),
+            "representable": sum(candidate.representable for candidate in self.candidates),
+            "unrepresentable": sum(not candidate.representable for candidate in self.candidates),
             "candidates": [candidate.public() for candidate in self.candidates],
         }
 
@@ -181,8 +191,15 @@ class LegalOrderSource:
         second_orders = list(valid_orders[1] or [])
         joined = list(DoubleBattleOrder.join_orders(first_orders, second_orders))
         if not joined:
-            raise LegalOrderSourceError(
-                "battle.valid_orders no produjo ninguna orden doble compatible."
+            return LegalOrderSet(
+                resolved=False,
+                reason="no-compatible-orders",
+                battle_tag=battle_tag,
+                turn=turn,
+                candidates=(),
+                individual_counts=(len(first_orders), len(second_orders)),
+                joined_count=0,
+                deduplicated_count=0,
             )
 
         by_key: dict[str, NormalizedCandidate] = {}
@@ -193,6 +210,9 @@ class LegalOrderSource:
             key = order_key(payload)
             message = str(order)
 
+            action_indices: tuple[int, int] | None = None
+            representable = True
+            representation_error = ""
             try:
                 action = DoublesEnv.order_to_action(
                     order,
@@ -202,7 +222,7 @@ class LegalOrderSource:
                 )
                 action = np.asarray(action, dtype=np.int64)
                 if action.shape != (2,):
-                    raise LegalOrderSourceError(
+                    raise ValueError(
                         f"poke-env devolvió action shape inesperada: {action.shape}."
                     )
                 roundtrip = DoublesEnv.action_to_order(
@@ -211,19 +231,23 @@ class LegalOrderSource:
                     fake=False,
                     strict=True,
                 )
+                if str(roundtrip) != message:
+                    # A successful transport mapping that reconstructs a different
+                    # legal order is an integrity divergence, not mere lack of
+                    # teacher representability. Fail closed.
+                    raise LegalOrderSourceError(
+                        "Round-trip poke-env divergió: "
+                        f"original={message!r}, reconstruida={str(roundtrip)!r}."
+                    )
+                action_indices = (int(action[0]), int(action[1]))
             except LegalOrderSourceError:
                 raise
             except Exception as error:
-                raise LegalOrderSourceError(
-                    f"Round-trip estricto falló para {message}: "
-                    f"{type(error).__name__}: {error}"
-                ) from error
-
-            if str(roundtrip) != message:
-                raise LegalOrderSourceError(
-                    "Round-trip poke-env divergió: "
-                    f"original={message!r}, reconstruida={str(roundtrip)!r}."
-                )
+                # A legal order may be absent from poke-env's transport index view
+                # (e.g. unusual revealed moves). It remains legal and rankable by
+                # N4, but cannot receive teacher-index evidence.
+                representable = False
+                representation_error = f"{type(error).__name__}: {error}"
 
             previous_message = messages_by_key.get(key)
             if previous_message is not None and previous_message != message:
@@ -239,8 +263,10 @@ class LegalOrderSource:
                 key=key,
                 action=payload,
                 message=message,
-                action_indices=(int(action[0]), int(action[1])),
+                action_indices=action_indices,
                 order=order,
+                representable=representable,
+                representation_error=representation_error,
             )
 
         candidates = tuple(
