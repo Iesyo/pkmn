@@ -363,6 +363,20 @@ test("Nursery runtime records actual actor and keeps one-intervention wheels", (
   assert.match(source, /executed_action = copy\.deepcopy\(authorized\.action\)/);
 });
 
+test("Full Amiibo N4 live bypasses Nursery wheels and executes only SafetyGate-authorized orders", () => {
+  const source = readFileSync(runtime, "utf8");
+  assert.match(source, /full_amiibo_live: bool = False/);
+  assert.match(source, /assert_level_activation_ready\("N4"\)/);
+  assert.match(source, /assert_common_scorer_ready_for_level\("N4"\)/);
+  assert.match(source, /if full_amiibo_live:[\s\S]*authorized = _authorize_n4_selection\(/);
+  assert.match(source, /executed_order = authorized\.order/);
+  assert.match(source, /executed_action = copy\.deepcopy\(authorized\.action\)/);
+  assert.match(source, /if intervened and not full_amiibo_live:/);
+  assert.match(source, /"lambdaCap": None if full_amiibo_live else NURSERY_LAMBDA_CAP/);
+  assert.match(source, /"maxInterventionsPerBattle": \([\s\S]*None if full_amiibo_live/);
+  assert.match(source, /"teacherRole": \([\s\S]*"advisor-fallback"/);
+});
+
 test("Nursery preview and commit boundary cannot silently relabel a LIGHT fallback as Nana", () => {
   const source = readFileSync(runtime, "utf8");
   const preview = source.indexOf('getattr(current, "teampreview", False)');
