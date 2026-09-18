@@ -46,8 +46,11 @@ from battle_lab.nana_contracts import order_key, current_nana_policy_contract, n
 a={'first':{'kind':'Move','value':'Earthquake','target':1,'flags':['Mega','Tera']},'second':{'kind':'switch','value':'Incineroar','target':0,'flags':[]}}
 b={'first':{'kind':' move ','value':'earthquake','target':'1','flags':['Tera','Mega']},'second':{'kind':'SWITCH','value':'incineroar','target':None,'flags':[]}}
 c={'first':{'kind':'move','value':'Earthquake','target':1,'flags':['Mega']},'second':{'kind':'switch','value':'Incineroar','target':0,'flags':[]}}
+d={'first':{'kind':'Move','value':'Protect','target':0,'flags':[]},'second':{'kind':'switch','value':'Flutter Mane','target':0,'flags':['Z-Move']}}
+e={'first':{'kind':'move','value':'protect','target':None,'flags':[]},'second':{'kind':'SWITCH','value':'flutter-mane','target':0,'flags':['z move']}}
 assert order_key(a) == order_key(b)
 assert order_key(a) != order_key(c)
+assert order_key(d) == order_key(e)
 policy_key=nana_policy_key(current_nana_policy_contract())
 assert policy_key.startswith('nana-policy:v1:')
 assert execution_key(teacher_behavior_key='teacher-A', nana_policy_key_value=policy_key) != execution_key(teacher_behavior_key='teacher-B', nana_policy_key_value=policy_key)
