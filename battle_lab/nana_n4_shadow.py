@@ -29,7 +29,7 @@ from battle_lab.nana_scorer import (
 from battle_lab.nana_stage2_shadow_v2_runtime import _expected_response_stats
 
 
-N4_SHADOW_VERSION = "n4-shadow-common-score-v1"
+N4_SHADOW_VERSION = "n4-shadow-common-score-v2-evidence-shrunk"
 EXPERIENCE_MIN_SAMPLES = 3
 EXPERIENCE_LEVEL_ORDER = ("exact", "matchup", "coarse", "global")
 REFERENCE_CONFIDENCE = 0.10
