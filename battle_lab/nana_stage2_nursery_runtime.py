@@ -613,16 +613,22 @@ def install_nursery_service(
                     )
 
                     used = service._nana_nursery_interventions.get(session.id, 0)
-                    intervened = (
-                        selection.get("intervene") is True
-                        and used < MAX_INTERVENTIONS_PER_BATTLE
-                    )
-                    if selection.get("intervene") is True and not intervened:
-                        selection = {
-                            **selection,
-                            "intervene": False,
-                            "reason": "nursery-per-battle-budget-exhausted",
-                        }
+                    if full_amiibo_live:
+                        # N4 has no λ cap and no per-battle intervention budget.
+                        # Whether it differs from LIGHT is determined only after
+                        # the SafetyGate-authorized N4 selection below.
+                        intervened = False
+                    else:
+                        intervened = (
+                            selection.get("intervene") is True
+                            and used < MAX_INTERVENTIONS_PER_BATTLE
+                        )
+                        if selection.get("intervene") is True and not intervened:
+                            selection = {
+                                **selection,
+                                "intervene": False,
+                                "reason": "nursery-per-battle-budget-exhausted",
+                            }
 
                     telemetry_candidate = (
                         selection.get("candidate")
@@ -697,7 +703,39 @@ def install_nursery_service(
 
                     canonical = light.get("canonicalAction") or {}
                     canonical_indices = canonical.get("indices") or []
-                    if intervened:
+                    if full_amiibo_live:
+                        selected_key = str(n4_shadow.get("selectedKey") or "")
+                        if (
+                            legal_set is not None
+                            and legal_set.resolved is True
+                            and n4_shadow.get("eligible") is True
+                            and selected_key
+                        ):
+                            authorized = SafetyGate(legal_set).authorize_key(selected_key)
+                            executed_order = authorized.order
+                            executed_action = copy.deepcopy(authorized.action)
+                            actor = "nana"
+                            intervened = bool(n4_shadow.get("wouldChange"))
+                        else:
+                            if not (
+                                isinstance(canonical_indices, list)
+                                and len(canonical_indices) == 2
+                                and all(isinstance(value, int) for value in canonical_indices)
+                            ):
+                                raise RuntimeError(
+                                    "N4 fallback perdió LIGHT canonicalAction."
+                                )
+                            executed_order = self._raw_light_choose(current)
+                            executed_action = stage2_v2._structured_action(
+                                current,
+                                [
+                                    int(canonical_indices[0]),
+                                    int(canonical_indices[1]),
+                                ],
+                            )
+                            actor = "light"
+                            intervened = False
+                    elif intervened:
                         candidate = selection.get("candidate") or {}
                         indices = candidate.get("indices") or []
                         if not (
@@ -749,7 +787,7 @@ def install_nursery_service(
                 # will return. Recording failures must NEVER switch the executed
                 # action back to LIGHT, otherwise history could claim Nana played
                 # a move that was not actually sent to Showdown.
-                if intervened:
+                if intervened and not full_amiibo_live:
                     service._nana_nursery_interventions[session.id] = used + 1
 
                 recording_errors: list[str] = []
