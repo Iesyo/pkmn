@@ -55,6 +55,10 @@ assert abs(r['requiredLambdaCap'] - 0.20) < 1e-9
 assert abs(r['lambdaGap'] - 0.05) < 1e-9
 assert r['candidateCountEvaluated'] == 1
 assert r['nearestCandidate']['indices'] == [2,2]
+assert r['candidateFunnel']['poolAlternatives'] == 1
+assert r['candidateFunnel']['nurseryRegretPassed'] == 1
+assert r['candidateFunnel']['counterImproved'] == 1
+assert r['candidateFunnel']['insideCap'] == 0
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
