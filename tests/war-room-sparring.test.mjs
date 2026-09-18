@@ -185,7 +185,11 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.match(source, /Fuente legal N4/);
   assert.match(source, /teacherCoverage/);
   assert.match(source, /missingFromTeacher/);
-  assert.match(source, /Full Amiibo N4 · shadow/);
+  assert.match(source, /Full Amiibo N4/);
+  assert.match(source, /Rueditas/);
+  assert.match(source, /N4 ACTIVO/);
+  assert.match(source, /SafetyGate/);
+  assert.match(source, /no existe λ cap ni presupuesto de intervenciones/);
   assert.match(source, /commonScoreAvailable/);
   assert.match(source, /counterCalibration/);
   assert.match(source, /Self-trust y TeamMemory se reconstruyen con outcomes al cerrar el BO1/);
