@@ -40,7 +40,8 @@ from battle_lab.nana_nursery import (
     promotion_status,
     rebuild_self_for_recorder,
 )
-from battle_lab.nana_contracts import build_nana_policy_contract
+from battle_lab.nana_contracts import build_nana_policy_contract, order_key
+from battle_lab.nana_legal_orders import LegalOrderSource
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_shadow_v22_runtime import (
@@ -387,6 +388,51 @@ def install_nursery_service(*, profile_id: str) -> type:
                         return self._raw_light_choose(current)
                     light = stage2_v2._enrich_joint_scores_strict(current, light)
 
+                    # N4 migration telemetry: enumerate legal orders directly from
+                    # poke-env and compare them with the teacher's diagnostic joint
+                    # catalog. This does not affect N2 decisions.
+                    legal_order_diag: dict[str, Any]
+                    try:
+                        legal_set = LegalOrderSource().enumerate(current)
+                        teacher_keys = {
+                            order_key(item.get("action"))
+                            for item in (light.get("jointScores") or [])
+                            if isinstance(item, dict)
+                            and isinstance(item.get("action"), dict)
+                        }
+                        legal_keys = set(legal_set.keys)
+                        covered = legal_keys & teacher_keys
+                        missing_from_teacher = legal_keys - teacher_keys
+                        extra_teacher = teacher_keys - legal_keys
+                        legal_order_diag = {
+                            "resolved": legal_set.resolved,
+                            "reason": legal_set.reason,
+                            "contractId": LegalOrderSource.contract_id,
+                            "totalLegal": len(legal_keys),
+                            "teacherJointTotal": len(teacher_keys),
+                            "coveredByTeacher": len(covered),
+                            "teacherCoverage": (
+                                len(covered) / len(legal_keys)
+                                if legal_keys else 0.0
+                            ),
+                            "missingFromTeacher": len(missing_from_teacher),
+                            "extraTeacher": len(extra_teacher),
+                            "individualCounts": list(legal_set.individual_counts),
+                            "joinedCount": legal_set.joined_count,
+                        }
+                    except Exception as error:
+                        legal_order_diag = {
+                            "resolved": False,
+                            "reason": f"{type(error).__name__}: {error}",
+                            "contractId": LegalOrderSource.contract_id,
+                            "totalLegal": 0,
+                            "teacherJointTotal": len(light.get("jointScores") or []),
+                            "coveredByTeacher": 0,
+                            "teacherCoverage": 0.0,
+                            "missingFromTeacher": None,
+                            "extraTeacher": None,
+                        }
+
                     state_turn = int((session.battle_state or {}).get("turn", 0) or 0)
                     turn_matched = (
                         cached is not None
@@ -492,6 +538,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                         "candidateFunnel": copy.deepcopy(
                             selection.get("candidateFunnel") or {}
                         ),
+                        "legalOrders": copy.deepcopy(legal_order_diag),
                         "discarded": {
                             "branchRegret": _compact_telemetry_candidate(
                                 selection.get("closestBranchReject")
