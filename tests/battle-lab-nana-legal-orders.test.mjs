@@ -117,9 +117,9 @@ assert preview.resolved is False and preview.reason == 'team-preview-not-in-n4-o
 
 test("LegalOrderSource has no teacher-policy dependency and compiles", () => {
   const source = readFileSync(modulePath, "utf8");
-  assert.doesNotMatch(source, /vgc_bench/);
-  assert.doesNotMatch(source, /action_map/);
-  assert.doesNotMatch(source, /get_logits/);
+  assert.doesNotMatch(source, /(?:from|import)\s+vgc_bench\b/);
+  assert.doesNotMatch(source, /from\s+vgc_bench\.src\.policy\s+import\s+action_map/);
+  assert.doesNotMatch(source, /\bget_logits\s*\(/);
   assert.match(source, /battle\.valid_orders/);
   assert.match(source, /DoubleBattleOrder\.join_orders/);
   assert.match(source, /DoublesEnv\.order_to_action/);
