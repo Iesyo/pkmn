@@ -23,9 +23,14 @@ changed=team.replace("EVs: 4 HP / 252 Atk / 252 Spe", "EVs: 12 HP / 244 Atk / 25
 c=team_identity(changed)
 renamed=team.replace("Garchomp @ Garchompite", "Chompy (Garchomp) @ Garchompite", 1)
 d=team_identity(renamed)
-assert a['rosterSignature'] == b['rosterSignature'] == c['rosterSignature'] == d['rosterSignature']
-assert a['exactTeamSignature'] == b['exactTeamSignature'] == d['exactTeamSignature']
+reordered_team="\n\n".join(reversed(team.strip().split("\n\n"))) + "\n"
+e=team_identity(reordered_team)
+cosmetic=team.replace("Ability: Rough Skin", "Ability: Rough Skin\nShiny: Yes\nHappiness: 255\n# note from exporter", 1)
+f=team_identity(cosmetic)
+assert a['rosterSignature'] == b['rosterSignature'] == c['rosterSignature'] == d['rosterSignature'] == e['rosterSignature'] == f['rosterSignature']
+assert a['exactTeamSignature'] == b['exactTeamSignature'] == d['exactTeamSignature'] == e['exactTeamSignature'] == f['exactTeamSignature']
 assert a['exactTeamSignature'] != c['exactTeamSignature']
+assert f['diagnostics'] and f['diagnostics'][0]['unknownLines']
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
@@ -43,15 +48,18 @@ with TemporaryDirectory() as tmp:
     assert first == second and first.is_file()
     data=first.read_text(encoding='utf-8')
     assert 'Garchomp' in data
+    assert '"exactTeamSignatureSpecVersion": 2' in data
 context=session_team_context(identity)
 assert 'normalizedPaste' not in context and 'canonicalTeam' not in context
 assert context['rosterSignature'].startswith('roster:v1:')
-assert context['exactTeamSignature'].startswith('team:v1:')
+assert context['exactTeamSignature'].startswith('team:v2:')
 keys=team_scope_keys(roster_signature=context['rosterSignature'],exact_team_signature=context['exactTeamSignature'],opponent_archetype='balance')
 assert keys[0] == 'global'
 assert any(value.startswith('archetype:') for value in keys)
-assert any(value.startswith('roster:') for value in keys)
-assert any(value.startswith('team:') for value in keys)
+assert context['rosterSignature'] in keys
+assert context['exactTeamSignature'] in keys
+assert not any(value.startswith('roster:roster:') for value in keys)
+assert not any(value.startswith('team:team:') for value in keys)
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
