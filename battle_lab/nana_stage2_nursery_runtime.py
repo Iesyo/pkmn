@@ -44,7 +44,7 @@ from battle_lab.nana_nursery import (
     rebuild_self_for_recorder,
 )
 from battle_lab.nana_contracts import build_nana_policy_contract, order_key
-from battle_lab.nana_coach_memory import CoachMemory
+from battle_lab.nana_coach_memory import CoachMemory, coach_memory_contract
 from battle_lab.nana_counter_calibration import (
     fit_counter_calibration,
     rebuild_counter_calibration,
@@ -219,10 +219,14 @@ def install_nursery_service(
                 score_spaces={
                     "experience": "board-delta-v1",
                     "counter": "board-delta-v1",
+                    "coach": "board-delta-v1",
                     "teacherPrior": "reference-only-unmapped",
                 },
                 governor_contract=full_amiibo_contract(),
-                memory_contract=team_memory_contract(),
+                memory_contract={
+                    "teamMemory": team_memory_contract(),
+                    "coachMemory": coach_memory_contract(),
+                },
                 legal_order_contract=LegalOrderSource.contract_id,
             )
         return build_nana_policy_contract(
