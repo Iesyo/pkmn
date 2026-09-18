@@ -60,7 +60,7 @@ terms, ids=coach_terms_for_action(ctx,model_state=state,action=mega)
 assert ids==['tip1'] and len(terms)==1
 assert terms[0].name=='coach:tip1'
 assert abs(terms[0].value-0.20)<1e-9
-assert terms[0].score_space=='board-delta-v1'
+assert terms[0].source_space=='board-delta-v1'
 terms, ids=coach_terms_for_action(ctx,model_state=state,action=normal)
 assert terms==[] and ids==[]
 
