@@ -150,6 +150,7 @@ def install_nana_service(*, profile_id: str) -> type:
             )
             self._nana_pending: dict[str, dict[int, dict[str, Any]]] = {}
             self._nana_finished: set[str] = set()
+            self._nana_session_team_context: dict[str, dict[str, Any]] = {}
             self._nana_player_wrapped = False
 
         async def ensure_ready(self) -> None:
@@ -228,6 +229,7 @@ def install_nana_service(*, profile_id: str) -> type:
                     "teamIdentity": team_context,
                 },
             )
+            self._nana_session_team_context[session.id] = copy.deepcopy(team_context)
             if team_identity_error:
                 self.nana.append_event(
                     session.id,
@@ -362,6 +364,7 @@ def install_nana_service(*, profile_id: str) -> type:
                     },
                 )
                 self.nana.rebuild_habits()
+            self._nana_session_team_context.pop(session.id, None)
 
     sparring.BattleLabLocalService = NanaBattleLabLocalService
     return NanaBattleLabLocalService
