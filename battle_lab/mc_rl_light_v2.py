@@ -112,10 +112,13 @@ def run_light(
     total_steps: int,
     num_envs: int,
     checkpoint_every: int,
+    initial_checkpoint: Path | None = None,
+    initial_sha256: str | None = None,
+    actor_unfreeze_step: int = ACTOR_UNFREEZE_STEP,
 ) -> dict[str, Any]:
-    if total_steps <= ACTOR_UNFREEZE_STEP:
+    if actor_unfreeze_step < 0 or total_steps <= actor_unfreeze_step:
         raise ValueError(
-            f"LIGHT requiere >{ACTOR_UNFREEZE_STEP:,} pasos para que el actor BC también aprenda."
+            f"LIGHT requiere >{actor_unfreeze_step:,} pasos para que el actor también aprenda."
         )
     if checkpoint_every <= 0:
         raise ValueError("checkpoint_every debe ser > 0.")
@@ -172,14 +175,32 @@ def run_light(
         }
         atomic_json(status_path, payload)
 
-    baseline = download_baseline(output_root / "baseline" / "vgc-bench-ma-mb-100.zip")
+    baseline = initial_checkpoint or download_baseline(output_root / "baseline" / "vgc-bench-ma-mb-100.zip")
+    if initial_checkpoint is not None:
+        if not initial_sha256 or sha256_file(baseline) != initial_sha256:
+            raise RuntimeError("SHA-256 inválido para el checkpoint inicial explícito.")
+        identity = {"initialSha256": initial_sha256, "totalSteps": total_steps,
+                    "seed": seed, "numEnvs": num_envs, "actorUnfreezeStep": actor_unfreeze_step,
+                    "teams": {p.name: sha256_file(p) for p in sorted(team_dir.glob("mc*.txt"))}}
+        identity_path = run_root / "resume_identity.json"
+        if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
+            raise RuntimeError("El contrato PPO cambió: usa otra ejecución para estos parámetros/datos.")
+        atomic_json(identity_path, identity)
     resume = latest_checkpoint(checkpoint_dir)
+    if resume and initial_checkpoint is not None:
+        complete = [
+            (checkpoint_step(p), p) for p in checkpoint_dir.glob("step-*.zip")
+            if checkpoint_step(p) is not None and p.with_suffix(".sha256").is_file()
+            and p.with_suffix(".sha256").read_text().strip() == sha256_file(p)
+        ]
+        resume = max(complete, default=None, key=lambda item: item[0])
     start_step = resume[0] if resume else 0
     resume_path = resume[1] if resume else baseline
 
     print(
         "Fase 3/4 · "
-        + (f"reanudando desde checkpoint {start_step:,}" if resume else "cargando baseline BC M-A/M-B"),
+        + (f"reanudando desde checkpoint {start_step:,}" if resume else
+           "cargando checkpoint inicial verificado" if initial_checkpoint else "cargando baseline BC M-A/M-B"),
         flush=True,
     )
     print(f"Dispositivo: {device} · envs: {num_envs} · objetivo: {total_steps:,}", flush=True)
@@ -241,6 +262,25 @@ def run_light(
                 write_status(**result)
                 return result
 
+            import torch
+            policy_device = next(ppo.policy.parameters()).device
+            parameter_count = sum(p.numel() for p in ppo.policy.parameters())
+            if policy_device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(policy_device)
+
+            def runtime_stats() -> dict[str, Any]:
+                stats = {"policyDevice": str(policy_device), "policyParameters": parameter_count,
+                         "simulationEnvs": num_envs, "vectorEnvs": int(env.num_envs),
+                         "sessionStartStep": start_step, "memoryScope": "current_training_process"}
+                if policy_device.type == "cuda":
+                    stats.update(gpuName=torch.cuda.get_device_name(policy_device),
+                                 cudaAllocatedMiB=round(torch.cuda.memory_allocated(policy_device) / 2**20, 1),
+                                 cudaPeakAllocatedMiB=round(torch.cuda.max_memory_allocated(policy_device) / 2**20, 1),
+                                 cudaPeakReservedMiB=round(torch.cuda.max_memory_reserved(policy_device) / 2**20, 1))
+                return stats
+
+            print("Runtime PPO: " + json.dumps(runtime_stats(), ensure_ascii=False), flush=True)
+
             class VisibleLightCallback(BaseCallback):
                 def __init__(self) -> None:
                     super().__init__()
@@ -266,29 +306,34 @@ def run_light(
                         etaSeconds=None,
                         checkpoint=str(self.last_checkpoint) if self.last_checkpoint else str(baseline),
                         device=device,
+                        runtime=runtime_stats(),
                     )
 
                 def _on_rollout_start(self) -> None:
                     current = int(self.model.num_timesteps)
+                    # This hook follows the preceding PPO update. Saving inside
+                    # _on_step would discard that rollout's pending update on resume.
+                    while current >= self.next_checkpoint and self.next_checkpoint < total_steps:
+                        self._save_checkpoint(current)
+                        self.next_checkpoint += checkpoint_every
                     progress = min(current / total_steps, 1.0)
                     self.model.ent_coef = max(0.02, 0.05 * (0.001 / 0.05) ** progress)
                     self.model.logger.record("train/ent_coef", self.model.ent_coef)
                     if hasattr(self.model.policy, "actor_grad"):
-                        self.model.policy.actor_grad = current >= ACTOR_UNFREEZE_STEP
+                        self.model.policy.actor_grad = current >= actor_unfreeze_step
 
                 def _save_checkpoint(self, current: int) -> Path:
                     path = checkpoint_dir / f"step-{current:09d}.zip"
-                    self.model.save(path)
+                    partial = path.with_name(path.stem + ".part.zip")
+                    self.model.save(partial)
+                    partial.replace(path)
+                    path.with_suffix(".sha256").write_text(sha256_file(path) + "\n")
                     self.last_checkpoint = path
                     print(f"💾 checkpoint {current:,}: {path.name}", flush=True)
                     return path
 
                 def _on_step(self) -> bool:
                     current = int(self.model.num_timesteps)
-                    while current >= self.next_checkpoint and self.next_checkpoint < total_steps:
-                        self._save_checkpoint(current)
-                        self.next_checkpoint += checkpoint_every
-
                     bucket_size = max(1, total_steps // 100)
                     bucket = current // bucket_size
                     if bucket != self.last_bucket or current >= total_steps:
@@ -300,7 +345,7 @@ def run_light(
                         ratio = min(max(current / total_steps, 0.0), 1.0)
                         filled = round(28 * ratio)
                         bar = "█" * filled + "░" * (28 - filled)
-                        actor = "activo" if current >= ACTOR_UNFREEZE_STEP else "congelado"
+                        actor = "activo" if current >= actor_unfreeze_step else "congelado"
                         print(
                             f"RL M-C [{bar}] {current:,}/{total_steps:,} ({ratio:6.1%}) "
                             f"· {human_seconds(elapsed)} · ETA {human_seconds(eta)} · actor {actor}",
@@ -312,9 +357,10 @@ def run_light(
                             progress=ratio,
                             elapsedSeconds=round(elapsed, 3),
                             etaSeconds=round(eta, 3) if eta is not None and math.isfinite(eta) else None,
-                            actorGrad=current >= ACTOR_UNFREEZE_STEP,
+                            actorGrad=current >= actor_unfreeze_step,
                             checkpoint=str(self.last_checkpoint) if self.last_checkpoint else str(baseline),
                             device=device,
+                            runtime=runtime_stats(),
                         )
                     return True
 
@@ -357,7 +403,9 @@ def run_light(
                 "finalCheckpoint": str(final),
                 "finalCheckpointSha256": sha256_file(final),
                 "seconds": round(elapsed, 3),
+                "runtime": runtime_stats(),
             }
+            print("Runtime PPO final: " + json.dumps(result["runtime"], ensure_ascii=False), flush=True)
             atomic_json(summary_path, result)
             write_status(**result)
             latest_text.write_text(
@@ -408,6 +456,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--total-steps", type=int, default=DEFAULT_TOTAL_STEPS)
     parser.add_argument("--num-envs", type=int, default=2)
     parser.add_argument("--checkpoint-every", type=int, default=DEFAULT_CHECKPOINT_EVERY)
+    parser.add_argument("--initial-checkpoint", type=Path)
+    parser.add_argument("--initial-sha256")
+    parser.add_argument("--actor-unfreeze-step", type=int, default=ACTOR_UNFREEZE_STEP)
     return parser
 
 
@@ -423,6 +474,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         total_steps=args.total_steps,
         num_envs=args.num_envs,
         checkpoint_every=args.checkpoint_every,
+        initial_checkpoint=args.initial_checkpoint,
+        initial_sha256=args.initial_sha256,
+        actor_unfreeze_step=args.actor_unfreeze_step,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     return 0
