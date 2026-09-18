@@ -680,6 +680,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                                 if isinstance(self_trust, dict)
                                 else {}
                             ),
+                            "legalOrders": copy.deepcopy(legal_order_diag),
                             "selection": copy.deepcopy(selection),
                         },
                     )
