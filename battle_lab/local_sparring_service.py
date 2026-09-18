@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from battle_lab import vgc_bench_battle as battle
 from battle_lab.mc_rl_light_v3 import alias_mc_runtime_catalogs
 from battle_lab.mc_training import sha256_file
+from battle_lab.model_release import checkpoint_identity
 from battle_lab.showdown_smoke import (
     DEFAULT_FORMAT,
     DEFAULT_SHOWDOWN_REPOSITORY,
@@ -264,6 +265,10 @@ class BattleLabLocalService:
                     f"No existe el checkpoint M-C: {self.checkpoint}. "
                     "Configura --checkpoint con step-000196608.zip."
                 )
+            checkpoint_sha = await asyncio.to_thread(sha256_file, self.checkpoint)
+            identity = checkpoint_identity(self.checkpoint, checkpoint_sha)
+            if self.runtime is not None and self.runtime_metadata.get("checkpointSha256") != checkpoint_sha:
+                raise RuntimeError("El checkpoint cambió: reinicia Battle Lab para cargar el modelo instalado.")
             self.logs_root.mkdir(parents=True, exist_ok=True)
             self.replays_root.mkdir(parents=True, exist_ok=True)
             showdown_commit = read_showdown_commit()
@@ -290,11 +295,14 @@ class BattleLabLocalService:
                     requested_device=self.device,
                     seed=self.seed,
                 )
+                if await asyncio.to_thread(sha256_file, self.checkpoint) != checkpoint_sha:
+                    raise RuntimeError("El checkpoint cambió mientras se cargaba; reinicia el runtime.")
+                runtime.metadata.update({**identity, "checkpoint": str(self.checkpoint)})
                 self.runtime = runtime
                 self.runtime_metadata = {
                     **runtime.metadata,
                     "checkpoint": str(self.checkpoint),
-                    "checkpointSha256": await asyncio.to_thread(sha256_file, self.checkpoint),
+                    **identity,
                     "format": DEFAULT_FORMAT,
                     "aliases": aliases,
                 }
@@ -555,7 +563,7 @@ def build_app(service: BattleLabLocalService) -> FastAPI:
             raise HTTPException(status_code=503, detail=str(error)) from error
         return {
             "ready": True,
-            "model": "Battle Lab LIGHT M-C",
+            "model": service.runtime_metadata.get("modelLabel", "Battle Lab M-C"),
             **service.runtime_metadata,
         }
 
@@ -586,13 +594,15 @@ def build_app(service: BattleLabLocalService) -> FastAPI:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-root", type=Path, default=DEFAULT_RUNTIME_ROOT)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
     parser.add_argument("--showdown-port", type=int, default=DEFAULT_SHOWDOWN_PORT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.checkpoint = args.checkpoint or args.runtime_root / "models" / DEFAULT_CHECKPOINT.name
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
