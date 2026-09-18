@@ -250,8 +250,6 @@ def team_trust_for(
     )
     buckets = summary.get("buckets") if isinstance(summary.get("buckets"), dict) else {}
     components: list[dict[str, Any]] = []
-    numerator = 0.0
-    denominator = 0.0
 
     for level, key in keys:
         bucket = buckets.get(f"{level}:{key}")
@@ -259,15 +257,10 @@ def team_trust_for(
             continue
         samples = int(bucket.get("samples") or 0)
         confidence = max(0.0, min(1.0, _safe_float(bucket.get("confidence"))))
-        evidence_gate = min(1.0, samples / TEAM_MEMORY_MIN_SCOPE_SAMPLES)
-        effective_confidence = confidence * evidence_gate
-        level_weight = _SCOPE_WEIGHTS[level] * effective_confidence
         trust = max(
             0.0,
             min(1.0, _safe_float(bucket.get("trust"), TEAM_MEMORY_PRIOR_TRUST)),
         )
-        numerator += level_weight * trust
-        denominator += level_weight
         components.append(
             {
                 "level": level,
@@ -275,32 +268,32 @@ def team_trust_for(
                 "samples": samples,
                 "trust": trust,
                 "confidence": confidence,
-                "effectiveConfidence": effective_confidence,
+                "ready": samples >= TEAM_MEMORY_MIN_SCOPE_SAMPLES,
             }
         )
 
-    if denominator <= 0:
+    ready = [item for item in components if item["ready"]]
+    if not ready:
         return {
             "trust": TEAM_MEMORY_PRIOR_TRUST,
             "confidence": 0.0,
             "eligible": False,
             "reason": "team-memory-cold-start",
+            "selectedScope": None,
             "components": components,
         }
 
-    eligible_components = [
-        item for item in components
-        if item["samples"] >= TEAM_MEMORY_MIN_SCOPE_SAMPLES
-    ]
-    confidence = max(
-        (item["effectiveConfidence"] for item in eligible_components),
-        default=0.0,
-    )
+    # Keys arrive least→most specific. True backoff selects exactly one scope,
+    # preventing the same observations from being counted again at every level.
+    selected = ready[-1]
     return {
-        "trust": numerator / denominator,
-        "confidence": confidence,
-        "eligible": bool(eligible_components),
-        "reason": "team-memory-ready" if eligible_components else "team-memory-low-sample",
+        "trust": selected["trust"],
+        "confidence": selected["confidence"],
+        "eligible": True,
+        "reason": "team-memory-ready",
+        "selectedScope": selected["level"],
+        "selectedKey": selected["key"],
+        "samples": selected["samples"],
         "components": components,
     }
 
