@@ -38,7 +38,7 @@ with TemporaryDirectory() as tmp:
             selection['candidateFunnel']=funnel
         events=[
             {'timestamp':f'2026-01-0{i+1}T00:00:00Z','sessionId':sid,'type':'session_start','payload':{'context':{'teamIdentity':{'exactTeamSignature':'team:v2:x'}}}},
-            {'timestamp':f'2026-01-0{i+1}T00:00:01Z','sessionId':sid,'type':'nana_nursery_decision','payload':{'intervened':intervened,'selection':selection,'legalOrders':{'resolved':True,'teacherCoverage':1.0,'missingFromTeacher':0,'totalLegal':42}}},
+            {'timestamp':f'2026-01-0{i+1}T00:00:01Z','sessionId':sid,'type':'nana_nursery_decision','payload':{'intervened':intervened,'selection':selection,'legalOrders':{'resolved':True,'teacherCoverage':1.0,'missingFromTeacher':0,'totalLegal':42},'n4Shadow':{'eligible':True,'wouldChange':intervened,'commonScoreAvailable':3,'counterCalibration':{'resolved':True}}}},
             {'timestamp':f'2026-01-0{i+1}T00:00:02Z','sessionId':sid,'type':'session_end','payload':{'result':{'winner':'human'}}},
         ]
         (sessions/f'{sid}.jsonl').write_text('\n'.join(json.dumps(e) for e in events)+'\n',encoding='utf-8')
@@ -59,6 +59,10 @@ with TemporaryDirectory() as tmp:
     assert r['legalOrders']['coverageMedian']==1.0
     assert r['legalOrders']['missingMax']==0
     assert r['legalOrders']['legalTotalMedian']==42
+    assert r['n4Shadow']['eligible']==5
+    assert r['n4Shadow']['wouldChange']==1
+    assert r['n4Shadow']['counterReady']==5
+    assert r['n4Shadow']['commonScoreMedian']==3
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
