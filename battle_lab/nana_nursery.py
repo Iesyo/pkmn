@@ -114,20 +114,39 @@ def choose_candidate(
     canonical_counter = _safe_float(canonical.get("expectedCounter"))
     canonical_score = effective_lambda * canonical_counter
 
-    # Build the legal near-LIGHT frontier once. This is observability only: the
-    # actual intervention ranking below remains the same margin/delta/probability
-    # ordering Nursery used before telemetry existed.
+    # Build the near-LIGHT funnel once. This is observability only: the actual
+    # intervention ranking below remains the same margin/delta/probability order.
     ranked: list[tuple[float, dict[str, Any], float, float]] = []
     frontier: list[tuple[float, float, float, dict[str, Any]]] = []
+    alternatives_total = 0
+    regret_passed = 0
+    counter_improved = 0
+    inside_cap = 0
+    best_regret_reject: dict[str, Any] | None = None
+    best_regret_reject_value = -math.inf
+    best_counter_miss: dict[str, Any] | None = None
+    best_counter_delta = -math.inf
+
     for candidate in plan.get("candidatePool") or []:
         if not isinstance(candidate, dict) or candidate.get("selectedByLight") is True:
             continue
+        alternatives_total += 1
         regret = _safe_float(candidate.get("lightRegretLog"))
         if regret < MIN_ALLOWED_LIGHT_REGRET_LOG:
+            if regret > best_regret_reject_value:
+                best_regret_reject_value = regret
+                best_regret_reject = candidate
             continue
+        regret_passed += 1
+
         delta_counter = _safe_float(candidate.get("expectedCounter")) - canonical_counter
         if delta_counter <= _EPS:
+            if delta_counter > best_counter_delta:
+                best_counter_delta = delta_counter
+                best_counter_miss = candidate
             continue
+        counter_improved += 1
+
         required_effective = max(0.0, -regret / delta_counter)
         required_cap = (
             required_effective / confidence_scale
@@ -142,6 +161,7 @@ def choose_candidate(
         )
         margin = candidate_score - canonical_score
         if margin > _EPS:
+            inside_cap += 1
             ranked.append((margin, candidate, delta_counter, required_cap))
 
     nearest_candidate: dict[str, Any] | None = None
@@ -161,6 +181,11 @@ def choose_candidate(
         if finite_nearest_required is not None
         else None
     )
+    shadow_diagnostics = (
+        plan.get("diagnostics")
+        if isinstance(plan.get("diagnostics"), dict)
+        else {}
+    )
     telemetry = {
         "confidence": confidence,
         "confidenceScale": confidence_scale,
@@ -170,6 +195,26 @@ def choose_candidate(
         "lambdaGap": lambda_gap,
         "nearestCandidate": nearest_candidate,
         "candidateCountEvaluated": len(frontier),
+        "candidateFunnel": {
+            "jointTotal": int(shadow_diagnostics.get("jointTotal") or 0),
+            "jointStructured": int(shadow_diagnostics.get("jointStructured") or 0),
+            "regretMapped": int(shadow_diagnostics.get("regretMapped") or 0),
+            "branchRegretPassed": int(shadow_diagnostics.get("branchRegretPassed") or 0),
+            "branchRegretRejected": int(shadow_diagnostics.get("branchRegretRejected") or 0),
+            "poolAlternatives": alternatives_total,
+            "nurseryRegretPassed": regret_passed,
+            "counterImproved": counter_improved,
+            "insideCap": inside_cap,
+            "counterRelevantAlternatives": int(
+                shadow_diagnostics.get("counterRelevantAlternatives") or 0
+            ),
+            "humanPredictionCandidates": int(
+                shadow_diagnostics.get("humanPredictionCandidates") or 0
+            ),
+        },
+        "closestBranchReject": shadow_diagnostics.get("closestBranchReject"),
+        "closestNurseryRegretReject": best_regret_reject,
+        "closestCounterMiss": best_counter_miss,
     }
 
     if confidence < MIN_PREDICTION_CONFIDENCE:
