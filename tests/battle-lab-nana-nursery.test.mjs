@@ -37,6 +37,28 @@ assert result['requiredLambdaCap'] <= 0.15
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
+test("Nursery exposes required lambda for a legal near-miss outside the current cap", () => {
+  const script = String.raw`
+from battle_lab.nana_nursery import choose_candidate
+plan={
+ 'eligible':True,'confidence':0.50,'confidenceScale':1.0,
+ 'canonical':{'expectedCounter':0.0},
+ 'candidatePool':[
+   {'selectedByLight':True,'expectedCounter':0.0,'lightRegretLog':0.0,'indices':[1,1]},
+   {'selectedByLight':False,'expectedCounter':0.4,'lightRegretLog':-0.08,'probability':0.3,'indices':[2,2],
+    'action':{'first':{'kind':'move','value':'earthquake','target':1,'flags':[]},'second':{'kind':'move','value':'protect','target':0,'flags':[]}}},
+ ]}
+r=choose_candidate(plan, light_trust={'trust':0.8,'confidence':0.1}, self_trust={'trust':0.5,'confidence':0.0})
+assert r['intervene'] is False
+assert r['reason'] == 'no-live-candidate-inside-nursery-cap'
+assert abs(r['requiredLambdaCap'] - 0.20) < 1e-9
+assert abs(r['lambdaGap'] - 0.05) < 1e-9
+assert r['candidateCountEvaluated'] == 1
+assert r['nearestCandidate']['indices'] == [2,2]
+`;
+  execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
+});
+
 test("high-confidence LIGHT trust can veto Nana", () => {
   const script = String.raw`
 from battle_lab.nana_nursery import choose_candidate
@@ -319,6 +341,10 @@ test("Nursery runtime records actual actor and keeps one-intervention wheels", (
   assert.match(source, /fallback.*LIGHT/s);
   assert.match(source, /automaticPromotion.*False/s);
   assert.match(source, /DoublesEnv\.action_to_order/);
+  assert.match(source, /session\.nana_telemetry/);
+  assert.match(source, /requiredLambdaCap/);
+  assert.match(source, /lambdaGap/);
+  assert.match(source, /teamMemorySummary/);
 });
 
 test("Nursery preview and commit boundary cannot silently relabel a LIGHT fallback as Nana", () => {
