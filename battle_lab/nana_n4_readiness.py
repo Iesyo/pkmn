@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from battle_lab.local_sparring_service import DEFAULT_RUNTIME_ROOT
+from battle_lab.nana_autonomy import envelope
 from battle_lab.nana_counter_calibration import fit_counter_calibration
 from battle_lab.nana_n4_shadow import N4_SHADOW_VERSION
 from battle_lab.nana_recorder import NanaRecorder, safe_profile_id
+from battle_lab.nana_scorer import N4_COMMON_SCORER_READY
 
 
 def build_readiness(recorder: NanaRecorder) -> dict[str, Any]:
@@ -95,6 +97,13 @@ def build_readiness(recorder: NanaRecorder) -> dict[str, Any]:
     elif safety_failures > 0:
         blockers.append(f"safety-gate:{safety_failures}-authorization-failures")
 
+    runtime_ready = len(blockers) == 0
+    activation_ready = (
+        runtime_ready
+        and envelope("N4").activation_ready
+        and N4_COMMON_SCORER_READY
+    )
+
     return {
         "counterCalibration": counter.public(),
         "legalOrderSource": {
@@ -125,11 +134,11 @@ def build_readiness(recorder: NanaRecorder) -> dict[str, Any]:
                 ),
             },
         },
-        "runtimeReady": len(blockers) == 0,
-        "activationReady": False,
+        "runtimeReady": runtime_ready,
+        "activationReady": activation_ready,
         "activationNote": (
-            "Runtime evidence may be ready, but N4 live activation remains manual "
-            "until COL-99/review and explicit promotion."
+            "N4 live is promoted when runtime evidence is current and both "
+            "autonomy/scorer gates are enabled."
         ),
         "blockers": blockers,
     }
@@ -190,7 +199,7 @@ def main() -> int:
         f"totalMax={timing['totalMax']} · totalMedian={timing['totalMedian']}"
     )
     print(f"Runtime ready: {report['runtimeReady']}")
-    print(f"Activation ready: {report['activationReady']} (manual gate)")
+    print(f"Activation ready: {report['activationReady']}")
     if report["blockers"]:
         print("Blockers:")
         for blocker in report["blockers"]:
