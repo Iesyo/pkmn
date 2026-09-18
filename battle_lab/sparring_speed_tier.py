@@ -2,9 +2,9 @@
 
 The panel is intentionally advisory: Showdown remains the authority that resolves
 the turn.  We project the same-priority speed order from the live poke-env
-battle, enrich opponent raw Speed from the exact Open Team Sheet paste, and
-surface priority/fractional-order threats instead of pretending uncertain order
-is deterministic.
+battle, treat the rival as the fastest legal Champions version of its current
+species, and surface priority/fractional-order threats instead of pretending
+uncertain order is deterministic.
 """
 
 from __future__ import annotations
@@ -228,6 +228,28 @@ def _champions_raw_speed(mon: Any, entry: dict[str, Any] | None) -> int | None:
     if nature in _SPEED_MINUS_NATURES:
         return math.floor(neutral * 0.9)
     return neutral
+
+
+def _champions_max_raw_speed(mon: Any, entry: dict[str, Any] | None) -> int | None:
+    """Return the maximum legal raw Speed for the rival's current species.
+
+    Rival request stats are not authoritative for this advisory panel.  To avoid
+    underestimating an unseen spread, assume 31 IVs, the Champions per-stat
+    maximum of 32 Stat Points, and a Speed-boosting nature.  Known item/ability,
+    live stages, Tailwind, status and field modifiers are applied later.
+    """
+
+    try:
+        base = int(getattr(mon, "base_stats", {}).get("spe"))
+    except Exception:
+        return None
+    try:
+        level = int(getattr(mon, "level", 0) or (entry or {}).get("level", 50) or 50)
+    except (TypeError, ValueError):
+        return None
+    contribution = max(2 * 32 - 1, 0)
+    neutral = math.floor((2 * base + 31 + contribution) * level / 100) + 5
+    return math.floor(neutral * 1.1)
 
 
 def _boosted_speed(raw: int, stage: int) -> int:
@@ -529,7 +551,14 @@ def build_speed_tier_snapshot(
             if mon is None or bool(getattr(mon, "fainted", False)):
                 continue
             entry = _find_paste_entry(mon, roster)
-            raw_speed = _champions_raw_speed(mon, entry)
+            rival_max_assumed = False
+            if side == "opponent":
+                raw_speed = _champions_max_raw_speed(mon, entry)
+                rival_max_assumed = raw_speed is not None
+                if raw_speed is None:
+                    raw_speed = _champions_raw_speed(mon, entry)
+            else:
+                raw_speed = _champions_raw_speed(mon, entry)
             effective_speed, modifiers, uncertainty = _effective_speed(
                 mon,
                 entry=entry,
@@ -539,6 +568,8 @@ def build_speed_tier_snapshot(
                 weather=weather,
                 fields=fields,
             )
+            if rival_max_assumed:
+                modifiers.insert(0, "Rival: Speed máxima posible")
             if (
                 human_orientation
                 and side == "own"
