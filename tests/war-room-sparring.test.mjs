@@ -199,6 +199,22 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.doesNotMatch(source, /Battle log/);
 });
 
+test("sparring UI supports same-rival rematch and BO1/BO3 series tracking", async () => {
+  const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /type MatchFormat = "bo1" \| "bo3"/);
+  assert.match(source, /aria-label="Formato de serie"/);
+  assert.match(source, /aria-pressed=\{matchFormat === format\}/);
+  assert.match(source, /async function startRematch\(\)/);
+  assert.match(source, /await launchBattle\(opponent\)/);
+  assert.match(source, />Rematch<\/Button>/);
+  assert.match(source, /BO3 · Tú \{seriesScore\.human\}-\{seriesScore\.model\} Nana/);
+  assert.match(source, /scoredSessionIds\.current\.has\(session\.id\)/);
+  assert.match(source, /seriesScore\.human >= seriesTarget \|\| seriesScore\.model >= seriesTarget/);
+  assert.match(source, /disabled=\{starting \|\| battleActive \|\| !ownReport\.ready \|\| !candidates\.length\}/);
+});
+
 test("War Room Sparring TSX has no TypeScript/JSX parse diagnostics", async () => {
   const sourcePath = fileURLToPath(new URL("../components/vgc/war-room-sparring/index.tsx", import.meta.url));
   const source = await readFile(sourcePath, "utf8");

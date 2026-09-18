@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowRightLeft,
@@ -238,6 +238,26 @@ type LoadedOpponent = {
   team: WarRoomCorpusTeam;
   paste: string;
 };
+
+type MatchFormat = "bo1" | "bo3";
+
+type SeriesScore = {
+  human: number;
+  model: number;
+  ties: number;
+  games: number;
+};
+
+const EMPTY_SERIES_SCORE: SeriesScore = {
+  human: 0,
+  model: 0,
+  ties: 0,
+  games: 0,
+};
+
+function terminalSparringPhase(phase: SparringSession["phase"] | undefined) {
+  return phase === "completed" || phase === "error" || phase === "cancelled";
+}
 
 async function readPayload(response: Response) {
   const text = await response.text();
@@ -858,6 +878,9 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
   const [secondMechanic, setSecondMechanic] = useState("Normal");
   const [submitting, setSubmitting] = useState(false);
   const [viewerLoaded, setViewerLoaded] = useState(false);
+  const [matchFormat, setMatchFormat] = useState<MatchFormat>("bo1");
+  const [seriesScore, setSeriesScore] = useState<SeriesScore>(EMPTY_SERIES_SCORE);
+  const scoredSessionIds = useRef(new Set<string>());
 
   const ownReport = useMemo(() => inspectBattleReadyPaste(team.paste), [team.paste]);
   const candidates = useMemo(() => sparringCorpusCandidates(corpusTeams), [corpusTeams]);
@@ -865,6 +888,10 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     if (!opponent?.paste) return [] as PokemonSet[];
     try { return parseShowdownPaste(opponent.paste); } catch { return [] as PokemonSet[]; }
   }, [opponent?.paste]);
+  const battleActive = Boolean(session && !terminalSparringPhase(session.phase));
+  const canRematch = Boolean(opponent && session && terminalSparringPhase(session.phase));
+  const seriesTarget = matchFormat === "bo3" ? 2 : 1;
+  const seriesComplete = seriesScore.human >= seriesTarget || seriesScore.model >= seriesTarget;
 
   async function checkHealth() {
     try {
@@ -898,6 +925,16 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     setSecondMechanic("Normal");
   }, [session?.actions?.[0]?.id]);
   useEffect(() => setViewerLoaded(false), [session?.battle.tag]);
+  useEffect(() => {
+    if (session?.phase !== "completed" || !session.result || scoredSessionIds.current.has(session.id)) return;
+    scoredSessionIds.current.add(session.id);
+    setSeriesScore((current) => ({
+      human: current.human + (session.result?.winner === "human" ? 1 : 0),
+      model: current.model + (session.result?.winner === "model" ? 1 : 0),
+      ties: current.ties + (session.result?.winner === "tie" ? 1 : 0),
+      games: current.games + 1,
+    }));
+  }, [session?.id, session?.phase, session?.result?.winner]);
 
   async function pickBattleReadyOpponent() {
     let skipped = 0;
@@ -913,6 +950,34 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     throw new Error("No encontramos un rival con paste completo en VGCPastes o Mis pastes.");
   }
 
+  async function launchBattle(picked: LoadedOpponent) {
+    setOpponent(picked);
+    const response = await fetch(`${LOCAL_SERVICE}/sparring`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        teamPaste: team.paste,
+        opponentPaste: picked.paste,
+        opponent: { id: picked.team.id, label: picked.team.playerName || picked.team.id, source: picked.team.source },
+      }),
+    });
+    const payload = await readPayload(response);
+    if (!response.ok) throw new Error(errorText(payload, "Battle Lab rechazó la partida."));
+    setSession(payload as SparringSession);
+    await checkHealth();
+  }
+
+  function resetSeriesScore() {
+    setSeriesScore({ ...EMPTY_SERIES_SCORE });
+  }
+
+  function changeMatchFormat(next: MatchFormat) {
+    if (battleActive || starting || next === matchFormat) return;
+    setMatchFormat(next);
+    resetSeriesScore();
+    setStartError("");
+  }
+
   async function startBattle() {
     if (!ownReport.ready) {
       setStartError(`Tu Team todavía no es battle-ready: ${ownReport.issues.slice(0, 3).join(" ")}`);
@@ -923,24 +988,26 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     setSession(null);
     setPreviewOrder([]);
     setOpponent(null);
+    resetSeriesScore();
     try {
       const picked = await pickBattleReadyOpponent();
-      setOpponent(picked);
-      const response = await fetch(`${LOCAL_SERVICE}/sparring`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          teamPaste: team.paste,
-          opponentPaste: picked.paste,
-          opponent: { id: picked.team.id, label: picked.team.playerName || picked.team.id, source: picked.team.source },
-        }),
-      });
-      const payload = await readPayload(response);
-      if (!response.ok) throw new Error(errorText(payload, "Battle Lab rechazó la partida."));
-      setSession(payload as SparringSession);
-      await checkHealth();
+      await launchBattle(picked);
     } catch (error) {
       setStartError(error instanceof Error ? error.message : "No pudimos iniciar el Sparring.");
+    } finally { setStarting(false); }
+  }
+
+  async function startRematch() {
+    if (!ownReport.ready || !opponent || !session || !terminalSparringPhase(session.phase)) return;
+    setStarting(true);
+    setStartError("");
+    setSession(null);
+    setPreviewOrder([]);
+    if (matchFormat === "bo1" || seriesComplete) resetSeriesScore();
+    try {
+      await launchBattle(opponent);
+    } catch (error) {
+      setStartError(error instanceof Error ? error.message : "No pudimos iniciar el Rematch.");
     } finally { setStarting(false); }
   }
 
@@ -1003,9 +1070,16 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
           <h2 className="mt-2 text-xl font-black text-white">Tú contra LIGHT M-C</h2>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">La batalla visual y el log los renderiza el cliente clásico oficial de Pokémon Showdown; War Room conserva la selección de rival y tus decisiones legales.</p>
         </div>
-        <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={() => void checkHealth()} className="gap-2 border-white/10 bg-slate-950/45"><RefreshCw className="size-4" />Revisar servicio</Button><Button type="button" onClick={() => void startBattle()} disabled={starting || !ownReport.ready || !candidates.length} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{starting ? <Loader2 className="size-4 animate-spin" /> : <Swords className="size-4" />}{session ? "Nuevo rival" : "Buscar rival y pelear"}</Button></div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="inline-flex items-center rounded-xl border border-white/10 bg-slate-950/45 p-1" aria-label="Formato de serie">
+            {(["bo1", "bo3"] as MatchFormat[]).map((format) => <button key={format} type="button" aria-pressed={matchFormat === format} disabled={battleActive || starting} onClick={() => changeMatchFormat(format)} className={cn("rounded-lg px-3 py-1.5 text-[10px] font-black transition", matchFormat === format ? "bg-white text-slate-950" : "text-slate-500 hover:text-slate-200", (battleActive || starting) && "cursor-not-allowed opacity-50")}>{format.toUpperCase()}</button>)}
+          </div>
+          <Button type="button" variant="outline" onClick={() => void checkHealth()} className="gap-2 border-white/10 bg-slate-950/45"><RefreshCw className="size-4" />Revisar servicio</Button>
+          <Button type="button" variant="outline" onClick={() => void startRematch()} disabled={starting || !canRematch} className="gap-2 border-violet-300/15 bg-violet-300/[0.045] text-violet-100 hover:bg-violet-300/[0.08]"><RefreshCw className="size-4" />Rematch</Button>
+          <Button type="button" onClick={() => void startBattle()} disabled={starting || battleActive || !ownReport.ready || !candidates.length} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{starting ? <Loader2 className="size-4 animate-spin" /> : <Swords className="size-4" />}{session ? "Nuevo rival" : "Buscar rival y pelear"}</Button>
+        </div>
       </div>
-      <div className="mt-4 flex flex-wrap gap-2 text-[9px]"><Badge variant="outline" className={ownReport.ready ? "border-emerald-300/15 text-emerald-200" : "border-rose-300/15 text-rose-200"}>{ownReport.ready ? "Tu Team · completo" : `Tu Team · ${ownReport.issues.length} huecos`}</Badge><Badge variant="outline" className="border-white/8 text-slate-400">{candidates.length} candidatos con fuente exacta</Badge>{rejected ? <Badge variant="outline" className="border-amber-300/15 text-amber-200">{rejected} incompletos saltados</Badge> : null}{opponent ? <Badge variant="outline" className="border-violet-300/15 text-violet-200">Rival: {opponent.team.playerName || opponent.team.id}</Badge> : null}</div>
+      <div className="mt-4 flex flex-wrap gap-2 text-[9px]"><Badge variant="outline" className={ownReport.ready ? "border-emerald-300/15 text-emerald-200" : "border-rose-300/15 text-rose-200"}>{ownReport.ready ? "Tu Team · completo" : `Tu Team · ${ownReport.issues.length} huecos`}</Badge><Badge variant="outline" className="border-white/8 text-slate-400">{candidates.length} candidatos con fuente exacta</Badge>{rejected ? <Badge variant="outline" className="border-amber-300/15 text-amber-200">{rejected} incompletos saltados</Badge> : null}{opponent ? <Badge variant="outline" className="border-violet-300/15 text-violet-200">Rival: {opponent.team.playerName || opponent.team.id}</Badge> : null}{matchFormat === "bo3" && opponent ? <Badge variant="outline" className={seriesComplete ? "border-emerald-300/15 bg-emerald-300/[0.04] text-emerald-200" : "border-cyan-300/15 bg-cyan-300/[0.035] text-cyan-200"}>BO3 · Tú {seriesScore.human}-{seriesScore.model} Nana{seriesScore.ties ? ` · ${seriesScore.ties} empate${seriesScore.ties === 1 ? "" : "s"}` : ""}{seriesComplete ? " · serie cerrada" : ""}</Badge> : null}</div>
       {healthError ? <p className="mt-3 flex items-center gap-2 text-[10px] text-rose-200"><CircleAlert className="size-3.5" />{healthError}</p> : null}
       {startError ? <p className="mt-2 flex items-start gap-2 rounded-xl border border-rose-300/12 bg-rose-300/[0.04] px-3 py-2 text-[10px] leading-4 text-rose-100"><CircleAlert className="mt-0.5 size-3.5 shrink-0" />{startError}</p> : null}
     </section>
