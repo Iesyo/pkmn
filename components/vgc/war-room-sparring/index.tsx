@@ -110,6 +110,7 @@ type NanaTelemetry = {
   generation?: number;
   reason?: string;
   intervened?: boolean;
+  autonomyLevel?: "N2" | "N4" | string;
   lambdaCap?: number | null;
   effectiveLambda?: number | null;
   requiredLambdaCap?: number | null;
@@ -129,6 +130,16 @@ type NanaTelemetry = {
     wouldChange?: boolean;
     commonScoreAvailable?: number;
     predictionConfidence?: number;
+    safetyGate?: {
+      authorized?: boolean;
+      reason?: string;
+      orderKey?: string;
+      representable?: boolean;
+      elapsedMs?: number;
+    } | null;
+    legalOrderMs?: number | null;
+    planningMs?: number | null;
+    totalDecisionMs?: number | null;
     counterCalibration?: {
       resolved?: boolean;
       reason?: string;
@@ -175,8 +186,8 @@ type NanaTelemetry = {
   candidate?: NanaTelemetryCandidate | null;
   lightTrust?: NanaTelemetryTrust | null;
   selfTrust?: NanaTelemetryTrust | null;
-  interventionsUsed?: number;
-  interventionBudget?: number;
+  interventionsUsed?: number | null;
+  interventionBudget?: number | null;
   teamMemory?: {
     eligible?: boolean;
     reason?: string;
@@ -211,11 +222,13 @@ type SparringSession = {
   nana?: {
     stage?: number;
     mode?: string;
+    autonomyLevel?: string;
     nursery?: {
-      lambdaCap?: number;
-      maxInterventionsPerBattle?: number;
-      interventionsUsed?: number;
+      lambdaCap?: number | null;
+      maxInterventionsPerBattle?: number | null;
+      interventionsUsed?: number | null;
       fallback?: string;
+      teacherRole?: string;
     };
     telemetry?: NanaTelemetry;
   };
@@ -573,6 +586,9 @@ function FunnelRow({ label, value, total, active = false }: { label: string; val
 function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const telemetry = session.nana?.telemetry;
   const nursery = session.nana?.nursery;
+  const isN4 = session.nana?.autonomyLevel === "N4"
+    || telemetry?.autonomyLevel === "N4"
+    || session.nana?.mode === "full-amiibo-live-v1";
   const lambdaCap = telemetryNumber(telemetry?.lambdaCap ?? nursery?.lambdaCap) ?? 0.15;
   const required = telemetryNumber(telemetry?.requiredLambdaCap);
   const gap = telemetryNumber(telemetry?.lambdaGap);
@@ -625,18 +641,35 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
           <Activity className="size-5 text-violet-300" />
           <p className="text-[11px] font-black uppercase tracking-[0.12em] text-violet-200">Telemetría Nana</p>
         </div>
-        <h3 className="mt-2 text-xl font-black text-white">Nursery N2 · live</h3>
-        <p className="mt-1 text-xs leading-5 text-slate-400">Qué está pensando Nana y qué freno le impide intervenir.</p>
+        <h3 className="mt-2 text-xl font-black text-white">{isN4 ? "Full Amiibo N4 · live" : "Nursery N2 · live"}</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-400">{isN4 ? "Nana decide sobre todas las órdenes legales; LIGHT queda como advisor y fallback." : "Qué está pensando Nana y qué freno le impide intervenir."}</p>
       </div>
       <Badge variant="outline" className={cn(
         "px-2.5 py-1 text-[11px] font-bold",
         telemetry?.intervened
           ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100"
           : "border-white/12 bg-white/[0.03] text-slate-300",
-      )}>{telemetry?.intervened ? "INTERVINO" : "OBSERVANDO"}</Badge>
+      )}>{isN4 ? (telemetry?.intervened ? "CAMBIÓ VS LIGHT" : "N4 ACTIVO") : telemetry?.intervened ? "INTERVINO" : "OBSERVANDO"}</Badge>
     </div>
 
-    <div className="mt-5 grid grid-cols-2 gap-3">
+    {isN4 ? <div className="mt-5 grid grid-cols-2 gap-3">
+      <div className="rounded-2xl border border-fuchsia-300/20 bg-fuchsia-300/[0.05] p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Autonomía</p>
+        <p className="mt-2 font-mono text-2xl font-black text-fuchsia-100">N4</p>
+      </div>
+      <div className="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.05] p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Rueditas</p>
+        <p className="mt-2 font-mono text-2xl font-black text-emerald-100">OFF</p>
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">SafetyGate</p>
+        <p className="mt-2 font-mono text-lg font-black text-white">{n4Shadow?.safetyGate?.authorized ? "OK" : "FALLBACK"}</p>
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Decisión N4</p>
+        <p className="mt-2 font-mono text-lg font-black text-white">{telemetryNumber(n4Shadow?.totalDecisionMs)?.toFixed(1) ?? "—"}<span className="text-sm text-slate-400"> ms</span></p>
+      </div>
+    </div> : <div className="mt-5 grid grid-cols-2 gap-3">
       <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
         <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Intervenciones</p>
         <p className="mt-2 font-mono text-2xl font-black text-white">{interventionsUsed}<span className="text-sm text-slate-400"> / {interventionBudget}</span></p>
@@ -661,9 +694,9 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Distancia al cap</p>
         <p className="mt-2 font-mono text-2xl font-black text-white">{gap === null ? "—" : `+${gap.toFixed(3)}`}</p>
       </div>
-    </div>
+    </div>}
 
-    <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+    {!isN4 ? <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
       <div className="flex items-start gap-3">
         <Gauge className="mt-0.5 size-5 shrink-0 text-cyan-300" />
         <div>
@@ -673,12 +706,12 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       </div>
       <div className="mt-4 grid grid-cols-3 gap-2">
         <TelemetryMiniStat label="Predicción" value={telemetryPercent(telemetry?.predictionConfidence)} />
-        <TelemetryMiniStat label="Alt. LIGHT" value={String(lightAlternatives)} />
-        <TelemetryMiniStat label="λ efectivo" value={telemetryLambda(telemetry?.effectiveLambda)} />
+        <TelemetryMiniStat label={isN4 ? "Órdenes legales" : "Alt. LIGHT"} value={String(isN4 ? (legalOrders?.totalLegal ?? 0) : lightAlternatives)} />
+        <TelemetryMiniStat label={isN4 ? "Con score" : "λ efectivo"} value={isN4 ? String(n4Shadow?.commonScoreAvailable ?? 0) : telemetryLambda(telemetry?.effectiveLambda)} />
       </div>
     </section>
 
-    <section className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/[0.025] p-4">
+    {!isN4 ? <section className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/[0.025] p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-[11px] font-black uppercase tracking-[0.08em] text-amber-100">Embudo de alternativas</p>
@@ -694,7 +727,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         <FunnelRow label="Dentro de λ actual" value={insideCapCount} total={Math.max(1, lightAlternatives)} active={bottleneck === "cap"} />
       </div>
       <p className="mt-4 rounded-xl border border-white/8 bg-slate-950/45 px-3 py-2.5 text-xs font-semibold leading-5 text-slate-200">{bottleneckText}</p>
-    </section>
+    </section> : null}
 
     <section className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-300/[0.025] p-4">
       <div className="flex items-center gap-2">
@@ -712,21 +745,21 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
           ? `No resuelto: ${legalOrders?.reason || "sin detalle"}`
           : (legalOrders?.missingFromTeacher ?? 0) > 0
             ? `${legalOrders?.missingFromTeacher} órdenes legales no están en el catálogo diagnóstico del teacher.`
-            : "La enumeración legal está resuelta; N4 podrá usarla sin branch-filter."}
+            : isN4 ? "La enumeración legal está resuelta y N4 decide sobre este conjunto." : "La enumeración legal está resuelta; N4 podrá usarla sin branch-filter."}
       </p>
     </section>
 
     <section className="mt-4 rounded-2xl border border-fuchsia-300/15 bg-fuchsia-300/[0.025] p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.08em] text-fuchsia-100">Full Amiibo N4 · shadow</p>
-          <p className="mt-1 text-xs leading-5 text-slate-400">Qué elegiría el scorer común sobre todas las órdenes legales.</p>
+          <p className="text-[11px] font-black uppercase tracking-[0.08em] text-fuchsia-100">Full Amiibo N4 · {isN4 ? "live" : "shadow"}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">{isN4 ? "La decisión que Nana autoriza y envía a Showdown." : "Qué elegiría el scorer común sobre todas las órdenes legales."}</p>
         </div>
         <Badge variant="outline" className={cn(
           "border-white/12 px-2.5 py-1 text-[11px]",
           n4Shadow?.wouldChange ? "text-fuchsia-100" : "text-slate-300",
         )}>
-          {n4Shadow?.eligible === false ? "BLOQUEADO" : n4Shadow?.wouldChange ? "CAMBIARÍA" : "MISMA JUGADA"}
+          {n4Shadow?.eligible === false ? "BLOQUEADO" : isN4 ? (n4Shadow?.wouldChange ? "CAMBIÓ VS LIGHT" : "SIGUIÓ REFERENCIA") : n4Shadow?.wouldChange ? "CAMBIARÍA" : "MISMA JUGADA"}
         </Badge>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-2">
@@ -776,7 +809,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       {telemetry?.selfTrust?.teamMemoryEffect ? <p className="mt-3 text-xs leading-5 text-violet-100/80">
         {telemetry.selfTrust.teamMemoryEffect === "added-caution"
           ? "TeamMemory añadió cautela a esta decisión."
-          : "TeamMemory no relajó los frenos de N2."}
+          : isN4 ? "TeamMemory no aportó evidencia suficiente para cambiar la decisión N4." : "TeamMemory no relajó los frenos de N2."}
       </p> : null}
     </section>
 
@@ -793,17 +826,17 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         <TelemetryMiniStat label="Light regret" value={telemetryNumber(diagnosticCandidate?.lightRegretLog)?.toFixed(3) ?? "—"} />
         <TelemetryMiniStat label="Δ counter" value={telemetryNumber(telemetry?.expectedCounterDelta)?.toFixed(3) ?? "—"} />
       </div>
-    </section>
+    </section> : null}
 
     <div className="mt-4 space-y-2">
       <p className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
-        Turno a turno cambian predicción, LIGHT trust, embudo, λ requerido y near-miss.
+        {isN4 ? "N4 evalúa todas las órdenes legales en cada turno; LIGHT aporta referencia y fallback, no permiso." : "Turno a turno cambian predicción, LIGHT trust, embudo, λ requerido y near-miss."}
       </p>
       <p className="rounded-xl border border-violet-300/10 bg-violet-300/[0.025] px-3 py-2.5 text-[11px] leading-5 text-violet-100/70">
         Self-trust y TeamMemory se reconstruyen con outcomes al cerrar el BO1; no tienen por qué moverse en cada turno.
       </p>
       <p className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
-        Sólo observabilidad: este panel no modifica λ, presupuesto ni autonomía de Nana.
+        {isN4 ? "N4 está ejecutando la orden autorizada por SafetyGate; no existe λ cap ni presupuesto de intervenciones." : "Sólo observabilidad: este panel no modifica λ, presupuesto ni autonomía de Nana."}
       </p>
     </div>
   </aside>;
