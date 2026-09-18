@@ -1,8 +1,8 @@
 """Canonical, model-agnostic identity contracts for Nana.
 
 This module intentionally has no VGC-Bench, poke-env or Nursery imports. Live
-runtimes must inject their actual decision parameters so persistent identity
-cannot silently depend on duplicated constants.
+runtimes inject their actual decision/autonomy contract so persistent identity
+changes whenever material policy semantics change.
 """
 
 from __future__ import annotations
@@ -15,12 +15,10 @@ from typing import Any
 
 FINGERPRINT_SPEC_VERSION = 1
 ORDER_KEY_SPEC_VERSION = 1
-NANA_POLICY_CONTRACT_VERSION = 1
+NANA_POLICY_CONTRACT_VERSION = 2
 
 
 def canonical_json(value: Any) -> str:
-    """Render deterministic UTF-8 JSON suitable for hashing."""
-
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -81,12 +79,13 @@ def build_nana_policy_contract(
     decision_mode: str,
     scorer_contract: str,
     score_spaces: dict[str, str],
-    lambda_cap: float,
-    max_interventions_per_battle: int,
+    governor_contract: dict[str, Any],
     legal_order_contract: str,
 ) -> dict[str, Any]:
-    """Build identity from the live policy values supplied by the runtime."""
+    """Build identity from live runtime values, including the full governor."""
 
+    if not isinstance(governor_contract, dict) or not governor_contract:
+        raise ValueError("governor_contract es obligatorio")
     return {
         "fingerprintSpecVersion": FINGERPRINT_SPEC_VERSION,
         "nanaPolicyContractVersion": NANA_POLICY_CONTRACT_VERSION,
@@ -94,10 +93,7 @@ def build_nana_policy_contract(
         "decisionMode": str(decision_mode),
         "scorerContract": str(scorer_contract),
         "scoreSpaces": dict(score_spaces),
-        "governor": {
-            "lambdaCap": float(lambda_cap),
-            "maxInterventionsPerBattle": int(max_interventions_per_battle),
-        },
+        "governor": dict(governor_contract),
         "legalOrderContract": str(legal_order_contract),
     }
 
