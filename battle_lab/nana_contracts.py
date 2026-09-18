@@ -80,12 +80,15 @@ def build_nana_policy_contract(
     scorer_contract: str,
     score_spaces: dict[str, str],
     governor_contract: dict[str, Any],
+    memory_contract: dict[str, Any],
     legal_order_contract: str,
 ) -> dict[str, Any]:
     """Build identity from live runtime values, including the full governor."""
 
     if not isinstance(governor_contract, dict) or not governor_contract:
         raise ValueError("governor_contract es obligatorio")
+    if not isinstance(memory_contract, dict) or not memory_contract:
+        raise ValueError("memory_contract es obligatorio")
     return {
         "fingerprintSpecVersion": FINGERPRINT_SPEC_VERSION,
         "nanaPolicyContractVersion": NANA_POLICY_CONTRACT_VERSION,
@@ -94,6 +97,7 @@ def build_nana_policy_contract(
         "scorerContract": str(scorer_contract),
         "scoreSpaces": dict(score_spaces),
         "governor": dict(governor_contract),
+        "memory": dict(memory_contract),
         "legalOrderContract": str(legal_order_contract),
     }
 
