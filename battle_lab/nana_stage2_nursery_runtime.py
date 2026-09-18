@@ -41,7 +41,12 @@ from battle_lab.nana_nursery import (
     rebuild_self_for_recorder,
 )
 from battle_lab.nana_contracts import build_nana_policy_contract, order_key
+from battle_lab.nana_counter_calibration import (
+    fit_counter_calibration,
+    rebuild_counter_calibration,
+)
 from battle_lab.nana_legal_orders import LegalOrderSource
+from battle_lab.nana_n4_shadow import build_n4_shadow_plan
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_shadow_v22_runtime import (
@@ -221,6 +226,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "observations": 0,
                 "buckets": {},
             }
+        try:
+            self.nana_counter_calibration = rebuild_counter_calibration(self.nana)
+        except Exception:
+            self.nana_counter_calibration = fit_counter_calibration([])
 
     def _teacher_query_args(self: Any) -> dict[str, Any]:
         return {
@@ -392,6 +401,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     # poke-env and compare them with the teacher's diagnostic joint
                     # catalog. This does not affect N2 decisions.
                     legal_order_diag: dict[str, Any]
+                    legal_set = None
                     try:
                         legal_set = LegalOrderSource().enumerate(current)
                         teacher_keys = {
@@ -448,6 +458,28 @@ def install_nursery_service(*, profile_id: str) -> type:
                     )
 
                     model_state = sparring._battle_snapshot(current)
+                    try:
+                        n4_shadow = (
+                            build_n4_shadow_plan(
+                                legal_orders=legal_set,
+                                light=light,
+                                prediction=cached,
+                                model_state=model_state,
+                                self_summary=service.nana_self_summary,
+                                counter_calibration=service.nana_counter_calibration,
+                            )
+                            if legal_set is not None and legal_set.resolved
+                            else {
+                                "eligible": False,
+                                "reason": "legal-orders-unresolved",
+                            }
+                        )
+                    except Exception as error:
+                        n4_shadow = {
+                            "eligible": False,
+                            "reason": f"{type(error).__name__}: {error}",
+                        }
+
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
                         service.light_critic_summary,
@@ -539,6 +571,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             selection.get("candidateFunnel") or {}
                         ),
                         "legalOrders": copy.deepcopy(legal_order_diag),
+                        "n4Shadow": copy.deepcopy(n4_shadow),
                         "discarded": {
                             "branchRegret": _compact_telemetry_candidate(
                                 selection.get("closestBranchReject")
@@ -681,6 +714,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                                 else {}
                             ),
                             "legalOrders": copy.deepcopy(legal_order_diag),
+                            "n4Shadow": copy.deepcopy(n4_shadow),
                             "selection": copy.deepcopy(selection),
                         },
                     )
@@ -875,6 +909,7 @@ def install_nursery_service(*, profile_id: str) -> type:
             before = int(self.nana_self_summary.get("observations") or 0)
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
             self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
+            self.nana_counter_calibration = rebuild_counter_calibration(self.nana)
             after = int(self.nana_self_summary.get("observations") or 0)
             promotion = promotion_status(
                 self.nana.iter_events(),
@@ -891,6 +926,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "teamMemoryObservations": int(
                         self.nana_team_memory.get("observations") or 0
                     ),
+                    "counterCalibration": self.nana_counter_calibration.public(),
                     "promotion": promotion,
                 },
             )
