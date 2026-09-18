@@ -59,7 +59,9 @@ def _team_signature(events: Iterable[dict[str, Any]]) -> str:
 
 
 def _bottleneck(selection: dict[str, Any]) -> str:
-    funnel = selection.get("candidateFunnel") if isinstance(selection.get("candidateFunnel"), dict) else {}
+    if not isinstance(selection.get("candidateFunnel"), dict):
+        return "telemetry-missing"
+    funnel = selection["candidateFunnel"]
     alternatives = max(0, int(funnel.get("jointTotal") or 0) - 1)
     branch = int(funnel.get("poolAlternatives") or 0)
     regret = int(funnel.get("nurseryRegretPassed") or 0)
@@ -128,6 +130,8 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
     lambda_gap: list[float] = []
     interventions = 0
     decisions_total = 0
+    instrumented_decisions = 0
+    legacy_decisions = 0
     results: Counter[str] = Counter()
     per_session: list[dict[str, Any]] = []
 
@@ -146,6 +150,10 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
             bottleneck = _bottleneck(selection)
             bottlenecks[bottleneck] += 1
             session_bottlenecks[bottleneck] += 1
+            if bottleneck == "telemetry-missing":
+                legacy_decisions += 1
+            else:
+                instrumented_decisions += 1
             if payload.get("intervened") is True:
                 interventions += 1
                 session_interventions += 1
@@ -201,6 +209,8 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
         "sessions": len(records),
         "decisions": decisions_total,
         "interventions": interventions,
+        "instrumentedDecisions": instrumented_decisions,
+        "legacyDecisions": legacy_decisions,
         "results": dict(results),
         "reasons": dict(reasons),
         "bottlenecks": dict(bottlenecks),
@@ -232,6 +242,10 @@ def print_report(report: dict[str, Any]) -> None:
     print(
         f"BO1={report['sessions']} · decisiones={report['decisions']} · "
         f"intervenciones={report['interventions']}"
+    )
+    print(
+        f"Telemetría completa={report['instrumentedDecisions']} · "
+        f"decisiones legacy/sin embudo={report['legacyDecisions']}"
     )
     print(f"Resultados: {report['results']}")
     print()
