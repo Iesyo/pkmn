@@ -13,7 +13,7 @@ const nurseryRuntime = path.join(root, "battle_lab", "nana_stage2_nursery_runtim
 
 test("M3 N2 envelope covers the complete live Nursery intervention policy", () => {
   const script = String.raw`
-from battle_lab.nana_autonomy import envelope, live_nursery_contract, assert_live_nursery_matches_n2, assert_level_activation_ready
+from battle_lab.nana_autonomy import envelope, full_amiibo_contract, live_nursery_contract, assert_live_nursery_matches_n2, assert_level_activation_ready
 from battle_lab.nana_nursery import (
     ALLOW_UNREPRESENTED_ORDERS, AUTOMATIC_PROMOTION,
     HIGH_LIGHT_TRUST_CONFIDENCE, HIGH_LIGHT_TRUST_VETO,
@@ -61,6 +61,13 @@ for key, changed in (
         raise AssertionError(f'ungated N2 drift must fail: {key}')
 assert_level_activation_ready('N2')
 assert_level_activation_ready('N4')
+n4=full_amiibo_contract()
+assert n4['level'] == 'N4'
+assert n4['lambdaCap'] is None
+assert n4['maxInterventionsPerBattle'] is None
+assert n4['safetyGateRequired'] is True
+assert n4['teacherRole'] == 'advisor-fallback'
+assert n4['activationReady'] is True
 try:
     assert_level_activation_ready('N3')
 except RuntimeError:
