@@ -3,15 +3,19 @@
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
   ArrowRightLeft,
+  Brain,
   Check,
   CircleAlert,
   Crosshair,
   ExternalLink,
   Gamepad2,
+  Gauge,
   Loader2,
   MonitorPlay,
   RefreshCw,
+  ShieldCheck,
   Sparkles,
   Swords,
 } from "lucide-react";
@@ -78,9 +82,69 @@ type BattleState = {
   opponentTeam?: SparringMon[];
 };
 
+type NanaTelemetryTrust = {
+  trust?: number | null;
+  confidence?: number | null;
+  teamMemoryBlend?: number | null;
+  teamMemoryEffect?: string | null;
+};
+
+type NanaTelemetryCandidate = {
+  action?: { first?: SingleAction; second?: SingleAction } | null;
+  probability?: number | null;
+  lightRegretLog?: number | null;
+  expectedCounter?: number | null;
+};
+
+type NanaTeamMemoryComponent = {
+  level?: string;
+  key?: string;
+  samples?: number;
+  trust?: number;
+  confidence?: number;
+  ready?: boolean;
+};
+
+type NanaTelemetry = {
+  turn?: number;
+  generation?: number;
+  reason?: string;
+  intervened?: boolean;
+  lambdaCap?: number | null;
+  effectiveLambda?: number | null;
+  requiredLambdaCap?: number | null;
+  lambdaGap?: number | null;
+  predictionConfidence?: number | null;
+  confidenceScale?: number | null;
+  candidateCountEvaluated?: number;
+  expectedCounterDelta?: number | null;
+  margin?: number | null;
+  candidate?: NanaTelemetryCandidate | null;
+  lightTrust?: NanaTelemetryTrust | null;
+  selfTrust?: NanaTelemetryTrust | null;
+  interventionsUsed?: number;
+  interventionBudget?: number;
+  teamMemory?: {
+    eligible?: boolean;
+    reason?: string;
+    selectedScope?: string | null;
+    selectedKey?: string | null;
+    samples?: number;
+    trust?: number;
+    confidence?: number;
+    components?: NanaTeamMemoryComponent[];
+  } | null;
+  teamMemorySummary?: {
+    modelVersion?: string | null;
+    observations?: number;
+    taggedSessions?: number;
+    ignoredLegacyTeamSessions?: number;
+  } | null;
+};
+
 type SparringSession = {
   id: string;
-  phase: "starting" | "team-preview" | "waiting-choice" | "resolving" | "completed" | "error" | "cancelled";
+  phase: "starting" | "team-preview" | "native-team-preview" | "waiting-choice" | "native-waiting-choice" | "resolving" | "completed" | "error" | "cancelled";
   error: string;
   opponent: { id: string; label: string; source: string };
   battle: BattleState;
@@ -91,6 +155,17 @@ type SparringSession = {
     battleTag: string;
   };
   events: string[];
+  nana?: {
+    stage?: number;
+    mode?: string;
+    nursery?: {
+      lambdaCap?: number;
+      maxInterventionsPerBattle?: number;
+      interventionsUsed?: number;
+      fallback?: string;
+    };
+    telemetry?: NanaTelemetry;
+  };
 };
 
 type LoadedOpponent = {
@@ -378,6 +453,98 @@ function SelectedAction({ label, mon, action, battle, onChange }: { label: strin
   </div>;
 }
 
+function telemetryNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function telemetryPercent(value: unknown) {
+  const number = telemetryNumber(value);
+  return number === null ? "—" : `${Math.round(number * 100)}%`;
+}
+
+function telemetryLambda(value: unknown) {
+  const number = telemetryNumber(value);
+  return number === null ? "—" : number.toFixed(3);
+}
+
+function telemetryReason(reason: string | undefined) {
+  switch (reason) {
+    case "waiting-first-decision": return "Esperando primera decisión";
+    case "no-live-candidate-inside-nursery-cap": return "Alternativas fuera del cap N2";
+    case "nursery-live-near-light": return "Nana encontró una intervención válida";
+    case "nursery-per-battle-budget-exhausted": return "Presupuesto de intervención agotado";
+    case "human-prediction-confidence-low": return "Predicción humana con poca confianza";
+    case "light-critic-high-trust-veto": return "LIGHT conserva el control por alta confianza";
+    case "nana-self-low-trust-veto": return "Nana se veta por baja confianza propia";
+    default: return reason || "Sin decisión registrada";
+  }
+}
+
+function TelemetryTrust({ label, value }: { label: string; value: NanaTelemetryTrust | null | undefined }) {
+  const trust = telemetryNumber(value?.trust);
+  const confidence = telemetryNumber(value?.confidence);
+  const width = trust === null ? 0 : Math.max(0, Math.min(100, trust * 100));
+  return <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3">
+    <div className="flex items-center justify-between gap-3"><span className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">{label}</span><strong className="font-mono text-[10px] text-white">{telemetryPercent(trust)}</strong></div>
+    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5"><div className="h-full rounded-full bg-cyan-300/70 transition-all" style={{ width: `${width}%` }} /></div>
+    <p className="mt-1.5 text-[8px] text-slate-600">confianza {telemetryPercent(confidence)}</p>
+  </div>;
+}
+
+function NanaTelemetryPanel({ session }: { session: SparringSession }) {
+  const telemetry = session.nana?.telemetry;
+  const nursery = session.nana?.nursery;
+  const lambdaCap = telemetryNumber(telemetry?.lambdaCap ?? nursery?.lambdaCap) ?? 0.15;
+  const required = telemetryNumber(telemetry?.requiredLambdaCap);
+  const gap = telemetryNumber(telemetry?.lambdaGap);
+  const interventionsUsed = telemetry?.interventionsUsed ?? nursery?.interventionsUsed ?? 0;
+  const interventionBudget = telemetry?.interventionBudget ?? nursery?.maxInterventionsPerBattle ?? 1;
+  const teamMemory = telemetry?.teamMemory;
+  const exactMemory = teamMemory?.components?.find((item) => item.level === "exactTeam");
+  const rosterMemory = teamMemory?.components?.find((item) => item.level === "roster");
+  const exactSamples = exactMemory?.samples ?? 0;
+  const sampleProgress = Math.max(0, Math.min(100, (exactSamples / 3) * 100));
+  const candidate = telemetry?.candidate;
+  const candidateAction = candidate?.action;
+  const insideCap = required !== null && required <= lambdaCap;
+  const reason = telemetryReason(telemetry?.reason);
+
+  return <aside className="rounded-[24px] border border-violet-300/14 bg-gradient-to-b from-violet-300/[0.065] via-slate-900/70 to-slate-950/70 p-4 xl:sticky xl:top-4">
+    <div className="flex items-start justify-between gap-3">
+      <div><div className="flex items-center gap-2"><Activity className="size-4 text-violet-300" /><p className="text-[8px] font-black uppercase tracking-[0.16em] text-violet-300">Telemetría Nana</p></div><h3 className="mt-1 text-sm font-black text-white">Nursery N2 · live</h3></div>
+      <Badge variant="outline" className={cn("text-[7px]", telemetry?.intervened ? "border-emerald-300/20 text-emerald-200" : "border-white/8 text-slate-400")}>{telemetry?.intervened ? "INTERVINO" : "OBSERVANDO"}</Badge>
+    </div>
+
+    <div className="mt-4 grid grid-cols-2 gap-2">
+      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Intervenciones</p><p className="mt-1 font-mono text-lg font-black text-white">{interventionsUsed}<span className="text-[10px] text-slate-600"> / {interventionBudget}</span></p></div>
+      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">λ cap actual</p><p className="mt-1 font-mono text-lg font-black text-cyan-200">{telemetryLambda(lambdaCap)}</p></div>
+      <div className={cn("rounded-xl border p-3", insideCap ? "border-emerald-300/15 bg-emerald-300/[0.035]" : "border-amber-300/15 bg-amber-300/[0.035]")}><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">λ requerido</p><p className={cn("mt-1 font-mono text-lg font-black", insideCap ? "text-emerald-200" : "text-amber-200")}>{telemetryLambda(required)}</p></div>
+      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Distancia al cap</p><p className="mt-1 font-mono text-lg font-black text-white">{gap === null ? "—" : `+${gap.toFixed(3)}`}</p></div>
+    </div>
+
+    <div className="mt-3 rounded-xl border border-white/7 bg-slate-950/45 p-3">
+      <div className="flex items-start gap-2"><Gauge className="mt-0.5 size-3.5 shrink-0 text-cyan-300" /><div><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Decisión actual · turno {telemetry?.turn ?? session.battle.turn ?? 0}</p><p className="mt-1 text-[10px] font-bold leading-4 text-slate-200">{reason}</p></div></div>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[8px] text-slate-600"><span>predicción {telemetryPercent(telemetry?.predictionConfidence)}</span><span>candidatos {telemetry?.candidateCountEvaluated ?? 0}</span><span>λ efectivo {telemetryLambda(telemetry?.effectiveLambda)}</span></div>
+    </div>
+
+    <div className="mt-3 grid grid-cols-2 gap-2"><TelemetryTrust label="LIGHT trust" value={telemetry?.lightTrust} /><TelemetryTrust label="Nana self-trust" value={telemetry?.selfTrust} /></div>
+
+    <div className="mt-3 rounded-xl border border-violet-300/10 bg-violet-300/[0.025] p-3">
+      <div className="flex items-center gap-2"><Brain className="size-3.5 text-violet-300" /><p className="text-[8px] font-black uppercase tracking-[0.12em] text-violet-200">TeamMemory</p></div>
+      <div className="mt-2 flex items-end justify-between gap-3"><div><p className="text-[9px] text-slate-400">Team exacto</p><p className="font-mono text-base font-black text-white">{exactSamples}<span className="text-[9px] text-slate-600"> / 3 outcomes</span></p></div><Badge variant="outline" className="border-white/8 text-[7px] text-slate-500">{teamMemory?.selectedScope || (rosterMemory?.samples ? "backoff" : "cold start")}</Badge></div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5"><div className="h-full rounded-full bg-violet-300/70 transition-all" style={{ width: `${sampleProgress}%` }} /></div>
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[8px] text-slate-600"><span>memoria total <strong className="text-slate-300">{telemetry?.teamMemorySummary?.observations ?? 0}</strong></span><span>sesiones <strong className="text-slate-300">{telemetry?.teamMemorySummary?.taggedSessions ?? 0}</strong></span></div>
+      {telemetry?.selfTrust?.teamMemoryEffect ? <p className="mt-2 text-[8px] text-violet-200/70">{telemetry.selfTrust.teamMemoryEffect === "added-caution" ? "TeamMemory añadió cautela." : "TeamMemory no relajó los frenos de N2."}</p> : null}
+    </div>
+
+    <div className="mt-3 rounded-xl border border-white/7 bg-slate-950/45 p-3">
+      <div className="flex items-center gap-2"><ShieldCheck className="size-3.5 text-emerald-300" /><p className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">{telemetry?.intervened ? "Acción Nana" : "Mejor near-miss"}</p></div>
+      {candidateAction?.first || candidateAction?.second ? <div className="mt-2 space-y-1 text-[9px] leading-4 text-slate-300">{candidateAction.first ? <p>1 · {describeAction(candidateAction.first, session.battle)}</p> : null}{candidateAction.second ? <p>2 · {describeAction(candidateAction.second, session.battle)}</p> : null}</div> : <p className="mt-2 text-[9px] text-slate-600">Aún no hay una alternativa que pase los filtros base.</p>}
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[8px] text-slate-600"><span>regret <strong className="font-mono text-slate-300">{telemetryNumber(candidate?.lightRegretLog)?.toFixed(3) ?? "—"}</strong></span><span>Δ counter <strong className="font-mono text-slate-300">{telemetryNumber(telemetry?.expectedCounterDelta)?.toFixed(3) ?? "—"}</strong></span></div>
+    </div>
+  </aside>;
+}
+
 export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corpusTeams: WarRoomCorpusTeam[] }) {
   const [health, setHealth] = useState<LocalHealth | null>(null);
   const [healthError, setHealthError] = useState("");
@@ -557,6 +724,7 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     </section> : null}
 
     {session && session.phase !== "starting" && session.phase !== "team-preview" ? <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-start">
       <section className="overflow-hidden rounded-[24px] border border-white/8 bg-slate-900/45">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 bg-slate-950/45 px-5 py-3">
           <div className="flex items-center gap-2"><MonitorPlay className="size-4 text-cyan-300" /><div><p className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-300">Pokémon Showdown · batalla real</p><p className="text-[9px] text-slate-500">Animaciones y log vienen directamente del room local.</p></div></div>
@@ -565,6 +733,8 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
         {viewerUrl ? <iframe key={viewerUrl} src={viewerUrl} title="Pokémon Showdown battle renderer" onLoad={() => setViewerLoaded(true)} className="h-[720px] w-full bg-[#444]" allow="autoplay" /> : <div className="flex h-72 items-center justify-center gap-2 text-xs text-slate-500"><Loader2 className="size-4 animate-spin text-cyan-300" />Esperando que Showdown publique el room…</div>}
         <div className="border-t border-white/7 px-5 py-2 text-[8px] text-slate-600">Renderer externo local: Pokémon Showdown Client AGPLv3, checkout sin modificar y separado del código de War Room.</div>
       </section>
+      <NanaTelemetryPanel session={session} />
+      </div>
 
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
         {session.phase === "waiting-choice" ? <div className="space-y-3">
