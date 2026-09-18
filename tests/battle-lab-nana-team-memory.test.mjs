@@ -33,13 +33,37 @@ second=team_trust_for(summary,ctx)
 assert second['selectedScope'] == 'exactTeam'
 assert second['trust'] == 0.90
 blended=blend_self_with_team({'trust':0.50,'confidence':0.20}, second)
-assert 0.50 < blended['trust'] < 0.90
-assert 0 < blended['teamMemoryBlend'] <= 0.35
+assert blended['trust'] == 0.50
+assert blended['confidence'] == 0.20
+assert blended['teamMemoryBlend'] == 0.0
+assert blended['teamMemoryEffect'] == 'no-relaxation'
+negative={**second,'trust':0.10,'confidence':0.50}
+cautious=blend_self_with_team({'trust':0.50,'confidence':0.20}, negative)
+assert 0.10 < cautious['trust'] < 0.50
+assert cautious['teamMemoryBlend'] > 0.0
+assert cautious['teamMemoryEffect'] == 'added-caution'
 cold=team_trust_for({'buckets':{}},ctx)
 unchanged=blend_self_with_team({'trust':0.42,'confidence':0.11},cold)
 assert unchanged['trust'] == 0.42
 assert unchanged['confidence'] == 0.11
 assert unchanged['teamMemoryBlend'] == 0.0
+
+from battle_lab.nana_nursery import choose_candidate
+plan={
+ 'eligible':True,'confidence':1.0,'confidenceScale':1.0,
+ 'canonical':{'expectedCounter':0.0},
+ 'candidatePool':[{
+   'selectedByLight':False,'lightRegretLog':-0.01,
+   'expectedCounter':1.0,'probability':0.5,'action':{},'indices':[0,0]
+ }],
+}
+light={'trust':0.5,'confidence':0.0}
+raw={'trust':0.30,'confidence':0.40}
+assert choose_candidate(plan,light_trust=light,self_trust=raw)['reason'] == 'nana-self-low-trust-veto'
+positive_team={'eligible':True,'trust':0.90,'confidence':1.0,'selectedScope':'exactTeam'}
+safe=blend_self_with_team(raw,positive_team)
+assert safe['trust'] == raw['trust']
+assert choose_candidate(plan,light_trust=light,self_trust=safe)['reason'] == 'nana-self-low-trust-veto'
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
