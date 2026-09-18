@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 
-SCORER_CONTRACT_VERSION = 3
+SCORER_CONTRACT_VERSION = 4
 COMMON_SCORE_SPACE = "board-delta-v1"
 LIVE_NURSERY_USES_COMMON_SCORER = False
 _COMMON_TERM_PROOF = object()
@@ -40,7 +40,11 @@ def scorer_contract() -> dict[str, Any]:
         "contractVersion": SCORER_CONTRACT_VERSION,
         "commonScoreSpace": COMMON_SCORE_SPACE,
         "liveNurseryUsesCommonScorer": LIVE_NURSERY_USES_COMMON_SCORER,
-        "candidateRanking": "deterministic-common-space-v1",
+        "candidateRanking": "evidence-shrunk-common-space-v2",
+        "evidenceShrink": {
+            "rule": "score = rawScore * min(1, effectiveWeight)",
+            "neutralReference": 0.0,
+        },
         "referenceFallback": {
             "teacherMayBreakCommonScoreTies": True,
             "teacherCannotFilterCandidates": True,
@@ -201,6 +205,7 @@ class CandidateScore:
             "score": self.score,
             "rawScore": self.raw_score,
             "effectiveWeight": self.effective_weight,
+            "evidenceStrength": max(0.0, min(1.0, self.effective_weight)),
             "blind": self.blind,
             "terms": [dict(term) for term in self.terms],
         }
@@ -238,17 +243,24 @@ class NanaScorer:
     def score(self, evidence: CandidateEvidence) -> CandidateScore:
         combined = combine_common_terms(evidence.terms)
         raw = combined["score"]
+        effective_weight = float(combined["effectiveWeight"])
         blind = not evidence.teacher_represented and not evidence.context_evidence
+
+        # Evidence-adjusted score: a common-space estimate with tiny support must
+        # remain close to the neutral reference instead of ranking as if its raw
+        # point estimate had full confidence. Weight >= 1.0 reaches full strength.
+        evidence_strength = max(0.0, min(1.0, effective_weight))
         scored = (
             None
             if raw is None
-            else float(raw) - (self.blind_uncertainty_penalty if blind else 0.0)
+            else float(raw) * evidence_strength
+            - (self.blind_uncertainty_penalty if blind else 0.0)
         )
         return CandidateScore(
             key=str(evidence.key),
             score=scored,
             raw_score=None if raw is None else float(raw),
-            effective_weight=float(combined["effectiveWeight"]),
+            effective_weight=effective_weight,
             blind=blind,
             terms=tuple(combined["terms"]),
         )
