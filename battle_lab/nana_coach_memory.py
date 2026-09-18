@@ -105,9 +105,15 @@ def rebuild_coach_memory(
     profile_id: str,
 ) -> dict[str, Any]:
     advices: dict[str, dict[str, Any]] = {}
-    for event in events:
-        if not isinstance(event, dict):
-            continue
+    materialized = [event for event in events if isinstance(event, dict)]
+    materialized.sort(
+        key=lambda event: (
+            str(event.get("timestamp") or ""),
+            str(event.get("sessionId") or ""),
+            str(event.get("type") or ""),
+        )
+    )
+    for event in materialized:
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         event_type = str(event.get("type") or "")
 
