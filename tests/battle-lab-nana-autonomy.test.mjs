@@ -120,7 +120,7 @@ else:
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
 
-test("live Nursery exposes complete N2 contract without changing choose_candidate", () => {
+test("runtime exposes complete N2 and N4 autonomy contracts without changing choose_candidate", () => {
   const source = readFileSync(nurseryRuntime, "utf8");
   for (const token of [
     "MIN_PREDICTION_CONFIDENCE",
@@ -135,16 +135,26 @@ test("live Nursery exposes complete N2 contract without changing choose_candidat
   ]) {
     assert.match(source, new RegExp(token));
   }
+
+  // N2 still has one canonical helper and must remain byte-for-byte gated.
   assert.match(source, /governor_contract=_live_autonomy_contract\(\)/);
   assert.equal(
     (source.match(/live_nursery_contract\(/g) || []).length,
     1,
-    "all runtime consumers must use the complete _live_autonomy_contract helper",
+    "N2 runtime must keep a single complete _live_autonomy_contract helper",
   );
-  assert.ok(
-    (source.match(/"autonomy": _live_autonomy_contract\(\)/g) || []).length >= 2,
-    "metadata and snapshot must use the complete autonomy helper",
+
+  // Metadata and snapshot now select the autonomy contract by active mode.
+  // Assert both branches explicitly instead of counting the old literal twice.
+  assert.match(
+    source,
+    /if full_amiibo_live:[\s\S]*"autonomy": full_amiibo_contract\(\)[\s\S]*"autonomy": _live_autonomy_contract\(\)/,
   );
+  assert.match(
+    source,
+    /"autonomy": \([\s\S]*full_amiibo_contract\(\)[\s\S]*if full_amiibo_live[\s\S]*else _live_autonomy_contract\(\)[\s\S]*\)/,
+  );
+  assert.match(source, /"autonomyLevel": "N4" if full_amiibo_live else "N2"/);
 });
 
 test("M3 modules compile", () => {
