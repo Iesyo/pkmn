@@ -17,6 +17,10 @@ from poke_env.environment import DoublesEnv
 
 from battle_lab import local_sparring_service as sparring
 from battle_lab import nana_stage2_shadow_v2_runtime as stage2_v2
+from battle_lab.nana_autonomy import (
+    assert_live_nursery_matches_n2,
+    live_nursery_contract,
+)
 from battle_lab.nana_light_critic import trust_for
 from battle_lab.nana_nursery import (
     MAX_INTERVENTIONS_PER_BATTLE,
@@ -94,6 +98,10 @@ async def _await_prechoice_prediction(
 
 
 def install_nursery_service(*, profile_id: str) -> type:
+    assert_live_nursery_matches_n2(
+        lambda_cap=NURSERY_LAMBDA_CAP,
+        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+    )
     service_class = install_light_critic_service(profile_id=profile_id)
     if getattr(service_class, "_nana_nursery_live_v1", False):
         service_class.nana_profile_id = profile_id
@@ -170,6 +178,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "nurseryModel": NURSERY_MODEL_VERSION,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
+                "autonomy": live_nursery_contract(
+                    lambda_cap=NURSERY_LAMBDA_CAP,
+                    max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+                ),
                 "teacher": _teacher_ref(self._nana_teacher),
             }
         )
@@ -603,6 +615,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "teacher": _teacher_ref(self._nana_teacher),
                     "lambdaCap": NURSERY_LAMBDA_CAP,
                     "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
+                    "autonomy": live_nursery_contract(
+                        lambda_cap=NURSERY_LAMBDA_CAP,
+                        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+                    ),
                     "interventionsUsed": used,
                     "fallback": "LIGHT",
                     "automaticPromotion": False,
