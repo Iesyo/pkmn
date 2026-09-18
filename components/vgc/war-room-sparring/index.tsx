@@ -594,7 +594,6 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const exactSamples = exactMemory?.samples ?? 0;
   const legalOrders = telemetry?.legalOrders;
   const n4 = telemetry?.n4Shadow;
-  const n4Action = n4?.selectedAction;
   const gateOk = n4?.safetyGate?.authorized === true;
   const decisionMs = telemetryNumber(n4?.totalDecisionMs);
   const legalCount = n4?.legalTotal ?? legalOrders?.totalLegal ?? 0;
@@ -615,15 +614,6 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const regretPassed = funnel?.nurseryRegretPassed ?? 0;
   const counterImproved = funnel?.counterImproved ?? 0;
   const insideCapCount = funnel?.insideCap ?? 0;
-  const candidate = telemetry?.candidate;
-  const diagnosticCandidate =
-    candidate
-    ?? telemetry?.discarded?.counterMiss
-    ?? telemetry?.discarded?.nurseryRegret
-    ?? telemetry?.discarded?.branchRegret
-    ?? null;
-  const fallbackAction = diagnosticCandidate?.action;
-  const action = isN4 ? n4Action : fallbackAction;
 
   return <aside className="rounded-[22px] border border-violet-300/18 bg-gradient-to-b from-violet-300/[0.055] via-slate-900/80 to-slate-950/85 p-4 shadow-xl shadow-black/15 xl:sticky xl:top-4">
     <div className="flex items-center justify-between gap-3">
@@ -651,19 +641,13 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       <span className="rounded-lg border border-violet-300/12 bg-violet-300/[0.035] px-2 py-1 text-violet-100">Mem {exactSamples}/3</span>
     </div>
 
-    <section className="mt-3 rounded-xl border border-white/9 bg-slate-950/45 px-3 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Turno {telemetry?.turn ?? session.battle.turn ?? 0}</p>
-        <Badge variant="outline" className={cn(
-          "border-white/8 px-2 py-0.5 text-[11px]",
-          n4?.wouldChange ? "text-fuchsia-100" : "text-slate-300",
-        )}>{decisionLabel}</Badge>
-      </div>
-      {action?.first || action?.second ? <div className="mt-2 space-y-1 text-xs font-semibold leading-5 text-slate-100">
-        {action.first ? <p><span className="mr-2 font-mono text-fuchsia-300">1</span>{describeAction(action.first, session.battle)}</p> : null}
-        {action.second ? <p><span className="mr-2 font-mono text-fuchsia-300">2</span>{describeAction(action.second, session.battle)}</p> : null}
-      </div> : <p className="mt-2 text-xs text-slate-500">Esperando decisión.</p>}
-    </section>
+    <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-white/8 bg-slate-950/35 px-3 py-2.5">
+      <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-500">Turno {telemetry?.turn ?? session.battle.turn ?? 0}</span>
+      <Badge variant="outline" className={cn(
+        "border-white/8 px-2 py-0.5 text-[11px]",
+        n4?.wouldChange ? "text-fuchsia-100" : "text-slate-300",
+      )}>{decisionLabel}</Badge>
+    </div>
 
     <details className="group mt-3 rounded-xl border border-white/8 bg-white/[0.02]">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-bold text-slate-300">
@@ -716,6 +700,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         </div>}
 
         <p className="text-[11px] leading-5 text-slate-500">Raw: {telemetry?.reason || "sin decisión"} · LIGHT sigue disponible como advisor/fallback.</p>
+        <p className="text-[11px] leading-5 text-slate-600">Las acciones concretas de Nana se ocultan durante la batalla para no revelar la jugada del rival.</p>
       </div>
     </details>
   </aside>;
