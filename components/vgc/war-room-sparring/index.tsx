@@ -484,10 +484,23 @@ function TelemetryTrust({ label, value }: { label: string; value: NanaTelemetryT
   const trust = telemetryNumber(value?.trust);
   const confidence = telemetryNumber(value?.confidence);
   const width = trust === null ? 0 : Math.max(0, Math.min(100, trust * 100));
-  return <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3">
-    <div className="flex items-center justify-between gap-3"><span className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">{label}</span><strong className="font-mono text-[10px] text-white">{telemetryPercent(trust)}</strong></div>
-    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5"><div className="h-full rounded-full bg-cyan-300/70 transition-all" style={{ width: `${width}%` }} /></div>
-    <p className="mt-1.5 text-[8px] text-slate-600">confianza {telemetryPercent(confidence)}</p>
+
+  return <div className="rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-300">{label}</span>
+      <strong className="font-mono text-xl font-black text-white">{telemetryPercent(trust)}</strong>
+    </div>
+    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
+      <div className="h-full rounded-full bg-cyan-300/80 transition-all" style={{ width: `${width}%` }} />
+    </div>
+    <p className="mt-2 text-[11px] text-slate-400">Confianza: <strong className="text-slate-200">{telemetryPercent(confidence)}</strong></p>
+  </div>;
+}
+
+function TelemetryMiniStat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5">
+    <p className="text-[11px] font-semibold text-slate-400">{label}</p>
+    <p className="mt-1 font-mono text-sm font-bold text-slate-100">{value}</p>
   </div>;
 }
 
@@ -509,39 +522,117 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const insideCap = required !== null && required <= lambdaCap;
   const reason = telemetryReason(telemetry?.reason);
 
-  return <aside className="rounded-[24px] border border-violet-300/14 bg-gradient-to-b from-violet-300/[0.065] via-slate-900/70 to-slate-950/70 p-4 xl:sticky xl:top-4">
-    <div className="flex items-start justify-between gap-3">
-      <div><div className="flex items-center gap-2"><Activity className="size-4 text-violet-300" /><p className="text-[8px] font-black uppercase tracking-[0.16em] text-violet-300">Telemetría Nana</p></div><h3 className="mt-1 text-sm font-black text-white">Nursery N2 · live</h3></div>
-      <Badge variant="outline" className={cn("text-[7px]", telemetry?.intervened ? "border-emerald-300/20 text-emerald-200" : "border-white/8 text-slate-400")}>{telemetry?.intervened ? "INTERVINO" : "OBSERVANDO"}</Badge>
+  return <aside className="rounded-[26px] border border-violet-300/20 bg-gradient-to-b from-violet-300/[0.08] via-slate-900/85 to-slate-950/90 p-5 shadow-2xl shadow-black/20 xl:sticky xl:top-4">
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <div className="flex items-center gap-2">
+          <Activity className="size-5 text-violet-300" />
+          <p className="text-[11px] font-black uppercase tracking-[0.12em] text-violet-200">Telemetría Nana</p>
+        </div>
+        <h3 className="mt-2 text-xl font-black text-white">Nursery N2 · live</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-400">Qué está pensando Nana y qué freno le impide intervenir.</p>
+      </div>
+      <Badge variant="outline" className={cn(
+        "px-2.5 py-1 text-[10px] font-bold",
+        telemetry?.intervened
+          ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100"
+          : "border-white/12 bg-white/[0.03] text-slate-300",
+      )}>{telemetry?.intervened ? "INTERVINO" : "OBSERVANDO"}</Badge>
     </div>
 
-    <div className="mt-4 grid grid-cols-2 gap-2">
-      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Intervenciones</p><p className="mt-1 font-mono text-lg font-black text-white">{interventionsUsed}<span className="text-[10px] text-slate-600"> / {interventionBudget}</span></p></div>
-      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">λ cap actual</p><p className="mt-1 font-mono text-lg font-black text-cyan-200">{telemetryLambda(lambdaCap)}</p></div>
-      <div className={cn("rounded-xl border p-3", insideCap ? "border-emerald-300/15 bg-emerald-300/[0.035]" : "border-amber-300/15 bg-amber-300/[0.035]")}><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">λ requerido</p><p className={cn("mt-1 font-mono text-lg font-black", insideCap ? "text-emerald-200" : "text-amber-200")}>{telemetryLambda(required)}</p></div>
-      <div className="rounded-xl border border-white/7 bg-slate-950/45 p-3"><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Distancia al cap</p><p className="mt-1 font-mono text-lg font-black text-white">{gap === null ? "—" : `+${gap.toFixed(3)}`}</p></div>
+    <div className="mt-5 grid grid-cols-2 gap-3">
+      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Intervenciones</p>
+        <p className="mt-2 font-mono text-2xl font-black text-white">{interventionsUsed}<span className="text-sm text-slate-400"> / {interventionBudget}</span></p>
+      </div>
+      <div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/[0.04] p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">λ cap actual</p>
+        <p className="mt-2 font-mono text-2xl font-black text-cyan-100">{telemetryLambda(lambdaCap)}</p>
+      </div>
+      <div className={cn(
+        "rounded-2xl border p-4",
+        insideCap
+          ? "border-emerald-300/25 bg-emerald-300/[0.06]"
+          : "border-amber-300/25 bg-amber-300/[0.06]",
+      )}>
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">λ requerido</p>
+        <p className={cn(
+          "mt-2 font-mono text-2xl font-black",
+          insideCap ? "text-emerald-100" : "text-amber-100",
+        )}>{telemetryLambda(required)}</p>
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+        <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Distancia al cap</p>
+        <p className="mt-2 font-mono text-2xl font-black text-white">{gap === null ? "—" : `+${gap.toFixed(3)}`}</p>
+      </div>
     </div>
 
-    <div className="mt-3 rounded-xl border border-white/7 bg-slate-950/45 p-3">
-      <div className="flex items-start gap-2"><Gauge className="mt-0.5 size-3.5 shrink-0 text-cyan-300" /><div><p className="text-[7px] font-black uppercase tracking-[0.12em] text-slate-600">Decisión actual · turno {telemetry?.turn ?? session.battle.turn ?? 0}</p><p className="mt-1 text-[10px] font-bold leading-4 text-slate-200">{reason}</p></div></div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[8px] text-slate-600"><span>predicción {telemetryPercent(telemetry?.predictionConfidence)}</span><span>candidatos {telemetry?.candidateCountEvaluated ?? 0}</span><span>λ efectivo {telemetryLambda(telemetry?.effectiveLambda)}</span></div>
+    <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+      <div className="flex items-start gap-3">
+        <Gauge className="mt-0.5 size-5 shrink-0 text-cyan-300" />
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Decisión actual · turno {telemetry?.turn ?? session.battle.turn ?? 0}</p>
+          <p className="mt-1.5 text-sm font-bold leading-5 text-white">{reason}</p>
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <TelemetryMiniStat label="Predicción" value={telemetryPercent(telemetry?.predictionConfidence)} />
+        <TelemetryMiniStat label="Candidatos" value={String(telemetry?.candidateCountEvaluated ?? 0)} />
+        <TelemetryMiniStat label="λ efectivo" value={telemetryLambda(telemetry?.effectiveLambda)} />
+      </div>
+    </section>
+
+    <div className="mt-4 grid grid-cols-2 gap-3">
+      <TelemetryTrust label="LIGHT trust" value={telemetry?.lightTrust} />
+      <TelemetryTrust label="Nana self-trust" value={telemetry?.selfTrust} />
     </div>
 
-    <div className="mt-3 grid grid-cols-2 gap-2"><TelemetryTrust label="LIGHT trust" value={telemetry?.lightTrust} /><TelemetryTrust label="Nana self-trust" value={telemetry?.selfTrust} /></div>
+    <section className="mt-4 rounded-2xl border border-violet-300/18 bg-violet-300/[0.04] p-4">
+      <div className="flex items-center gap-2">
+        <Brain className="size-5 text-violet-300" />
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-violet-100">TeamMemory</p>
+      </div>
+      <div className="mt-3 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-xs text-slate-300">Team exacto</p>
+          <p className="mt-1 font-mono text-2xl font-black text-white">{exactSamples}<span className="text-sm text-slate-400"> / 3 outcomes</span></p>
+        </div>
+        <Badge variant="outline" className="border-white/12 px-2.5 py-1 text-[10px] text-slate-300">
+          {teamMemory?.selectedScope || (rosterMemory?.samples ? "backoff" : "cold start")}
+        </Badge>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
+        <div className="h-full rounded-full bg-violet-300/80 transition-all" style={{ width: `${sampleProgress}%` }} />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <TelemetryMiniStat label="Memoria total" value={String(telemetry?.teamMemorySummary?.observations ?? 0)} />
+        <TelemetryMiniStat label="Sesiones útiles" value={String(telemetry?.teamMemorySummary?.taggedSessions ?? 0)} />
+      </div>
+      {telemetry?.selfTrust?.teamMemoryEffect ? <p className="mt-3 text-xs leading-5 text-violet-100/80">
+        {telemetry.selfTrust.teamMemoryEffect === "added-caution"
+          ? "TeamMemory añadió cautela a esta decisión."
+          : "TeamMemory no relajó los frenos de N2."}
+      </p> : null}
+    </section>
 
-    <div className="mt-3 rounded-xl border border-violet-300/10 bg-violet-300/[0.025] p-3">
-      <div className="flex items-center gap-2"><Brain className="size-3.5 text-violet-300" /><p className="text-[8px] font-black uppercase tracking-[0.12em] text-violet-200">TeamMemory</p></div>
-      <div className="mt-2 flex items-end justify-between gap-3"><div><p className="text-[9px] text-slate-400">Team exacto</p><p className="font-mono text-base font-black text-white">{exactSamples}<span className="text-[9px] text-slate-600"> / 3 outcomes</span></p></div><Badge variant="outline" className="border-white/8 text-[7px] text-slate-500">{teamMemory?.selectedScope || (rosterMemory?.samples ? "backoff" : "cold start")}</Badge></div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5"><div className="h-full rounded-full bg-violet-300/70 transition-all" style={{ width: `${sampleProgress}%` }} /></div>
-      <div className="mt-2 grid grid-cols-2 gap-2 text-[8px] text-slate-600"><span>memoria total <strong className="text-slate-300">{telemetry?.teamMemorySummary?.observations ?? 0}</strong></span><span>sesiones <strong className="text-slate-300">{telemetry?.teamMemorySummary?.taggedSessions ?? 0}</strong></span></div>
-      {telemetry?.selfTrust?.teamMemoryEffect ? <p className="mt-2 text-[8px] text-violet-200/70">{telemetry.selfTrust.teamMemoryEffect === "added-caution" ? "TeamMemory añadió cautela." : "TeamMemory no relajó los frenos de N2."}</p> : null}
-    </div>
+    <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="size-5 text-emerald-300" />
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-300">{telemetry?.intervened ? "Acción Nana" : "Mejor near-miss"}</p>
+      </div>
+      {candidateAction?.first || candidateAction?.second ? <div className="mt-3 space-y-2 text-sm leading-5 text-slate-100">
+        {candidateAction.first ? <p><span className="mr-2 font-mono text-cyan-300">1</span>{describeAction(candidateAction.first, session.battle)}</p> : null}
+        {candidateAction.second ? <p><span className="mr-2 font-mono text-cyan-300">2</span>{describeAction(candidateAction.second, session.battle)}</p> : null}
+      </div> : <p className="mt-3 text-sm leading-5 text-slate-400">Aún no hay una alternativa que pase los filtros base.</p>}
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <TelemetryMiniStat label="Light regret" value={telemetryNumber(candidate?.lightRegretLog)?.toFixed(3) ?? "—"} />
+        <TelemetryMiniStat label="Δ counter" value={telemetryNumber(telemetry?.expectedCounterDelta)?.toFixed(3) ?? "—"} />
+      </div>
+    </section>
 
-    <div className="mt-3 rounded-xl border border-white/7 bg-slate-950/45 p-3">
-      <div className="flex items-center gap-2"><ShieldCheck className="size-3.5 text-emerald-300" /><p className="text-[8px] font-black uppercase tracking-[0.12em] text-slate-500">{telemetry?.intervened ? "Acción Nana" : "Mejor near-miss"}</p></div>
-      {candidateAction?.first || candidateAction?.second ? <div className="mt-2 space-y-1 text-[9px] leading-4 text-slate-300">{candidateAction.first ? <p>1 · {describeAction(candidateAction.first, session.battle)}</p> : null}{candidateAction.second ? <p>2 · {describeAction(candidateAction.second, session.battle)}</p> : null}</div> : <p className="mt-2 text-[9px] text-slate-600">Aún no hay una alternativa que pase los filtros base.</p>}
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[8px] text-slate-600"><span>regret <strong className="font-mono text-slate-300">{telemetryNumber(candidate?.lightRegretLog)?.toFixed(3) ?? "—"}</strong></span><span>Δ counter <strong className="font-mono text-slate-300">{telemetryNumber(telemetry?.expectedCounterDelta)?.toFixed(3) ?? "—"}</strong></span></div>
-    </div>
+    <p className="mt-4 rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
+      Sólo observabilidad: este panel no modifica λ, presupuesto ni autonomía de Nana.
+    </p>
   </aside>;
 }
 
@@ -724,7 +815,7 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
     </section> : null}
 
     {session && session.phase !== "starting" && session.phase !== "team-preview" ? <div className="space-y-4">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-start">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px] 2xl:grid-cols-[minmax(0,1fr)_440px] xl:items-start">
       <section className="overflow-hidden rounded-[24px] border border-white/8 bg-slate-900/45">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 bg-slate-950/45 px-5 py-3">
           <div className="flex items-center gap-2"><MonitorPlay className="size-4 text-cyan-300" /><div><p className="text-[9px] font-black uppercase tracking-[0.14em] text-cyan-300">Pokémon Showdown · batalla real</p><p className="text-[9px] text-slate-500">Animaciones y log vienen directamente del room local.</p></div></div>
