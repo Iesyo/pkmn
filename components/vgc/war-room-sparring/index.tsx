@@ -696,7 +696,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       </div>
     </div>}
 
-    {!isN4 ? <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
+    <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
       <div className="flex items-start gap-3">
         <Gauge className="mt-0.5 size-5 shrink-0 text-cyan-300" />
         <div>
