@@ -41,6 +41,11 @@ def scorer_contract() -> dict[str, Any]:
         "commonScoreSpace": COMMON_SCORE_SPACE,
         "liveNurseryUsesCommonScorer": LIVE_NURSERY_USES_COMMON_SCORER,
         "candidateRanking": "deterministic-common-space-v1",
+        "referenceFallback": {
+            "teacherMayBreakCommonScoreTies": True,
+            "teacherCannotFilterCandidates": True,
+            "minimumCommonScoreImprovement": True,
+        },
         "blindPick": {
             "requiresEvidencedReference": True,
             "marginGate": True,
@@ -209,6 +214,7 @@ class NanaScorer:
         *,
         blind_uncertainty_penalty: float = 0.15,
         blind_margin: float = 0.25,
+        min_improvement_margin: float = 0.05,
     ) -> None:
         self.blind_uncertainty_penalty = max(
             0.0,
@@ -220,6 +226,13 @@ class NanaScorer:
         self.blind_margin = max(
             0.0,
             _finite(blind_margin, field_name="blind_margin"),
+        )
+        self.min_improvement_margin = max(
+            0.0,
+            _finite(
+                min_improvement_margin,
+                field_name="min_improvement_margin",
+            ),
         )
 
     def score(self, evidence: CandidateEvidence) -> CandidateScore:
@@ -269,13 +282,6 @@ class NanaScorer:
             }
 
         best = viable[0]
-        if not best.blind:
-            return {
-                "selected": best.public(),
-                "reason": "best-common-score",
-                "ranked": [item.public() for item in ranked],
-            }
-
         reference = next(
             (
                 item
@@ -284,31 +290,59 @@ class NanaScorer:
             ),
             None,
         )
-        if reference is None:
-            reference = next((item for item in viable if not item.blind), None)
-        if reference is None:
-            return {
-                "selected": None,
-                "reason": "blind-without-evidenced-reference",
-                "ranked": [item.public() for item in ranked],
-            }
 
-        margin = float(best.score) - float(reference.score)
-        if margin < self.blind_margin:
+        if reference is not None and best.key != reference.key:
+            margin = float(best.score) - float(reference.score)
+            required = max(
+                self.min_improvement_margin,
+                self.blind_margin if best.blind else 0.0,
+            )
+            if margin < required:
+                return {
+                    "selected": reference.public(),
+                    "reason": (
+                        "blind-margin-not-met"
+                        if best.blind
+                        else "common-margin-not-met"
+                    ),
+                    "challenger": best.public(),
+                    "margin": margin,
+                    "requiredMargin": required,
+                    "ranked": [item.public() for item in ranked],
+                }
+
+        if best.blind:
+            if reference is None:
+                reference = next((item for item in viable if not item.blind), None)
+            if reference is None:
+                return {
+                    "selected": None,
+                    "reason": "blind-without-evidenced-reference",
+                    "ranked": [item.public() for item in ranked],
+                }
+            margin = float(best.score) - float(reference.score)
+            if margin < self.blind_margin:
+                return {
+                    "selected": reference.public(),
+                    "reason": "blind-margin-not-met",
+                    "challenger": best.public(),
+                    "margin": margin,
+                    "requiredMargin": self.blind_margin,
+                    "ranked": [item.public() for item in ranked],
+                }
             return {
-                "selected": reference.public(),
-                "reason": "blind-margin-not-met",
-                "blindCandidate": best.public(),
+                "selected": best.public(),
+                "reason": "blind-margin-met",
+                "reference": reference.public(),
                 "margin": margin,
                 "requiredMargin": self.blind_margin,
                 "ranked": [item.public() for item in ranked],
             }
+
         return {
             "selected": best.public(),
-            "reason": "blind-margin-met",
-            "reference": reference.public(),
-            "margin": margin,
-            "requiredMargin": self.blind_margin,
+            "reason": "best-common-score",
+            "reference": reference.public() if reference is not None else None,
             "ranked": [item.public() for item in ranked],
         }
 
