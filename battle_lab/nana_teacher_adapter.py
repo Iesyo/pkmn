@@ -7,8 +7,10 @@ model indices as persistent keys.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import math
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from battle_lab.nana_contracts import FINGERPRINT_SPEC_VERSION, fingerprint_payload, order_key
@@ -116,14 +118,30 @@ def action_space_contract() -> dict[str, Any]:
     }
 
 
-def action_space_id() -> str:
+def action_space_identity() -> dict[str, Any]:
     contract = action_space_contract()
-    if not contract["resolved"]:
-        return f"action-space:v{ACTION_SPACE_SPEC_VERSION}:unresolved"
-    return (
-        f"action-space:v{ACTION_SPACE_SPEC_VERSION}:"
-        f"{fingerprint_payload(contract)}"
-    )
+    resolved = bool(contract.get("resolved"))
+    return {
+        "resolved": resolved,
+        "id": (
+            f"action-space:v{ACTION_SPACE_SPEC_VERSION}:{fingerprint_payload(contract)}"
+            if resolved
+            else ""
+        ),
+        "contract": contract,
+    }
+
+
+def action_space_id() -> str:
+    return str(action_space_identity().get("id") or "")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _feature_source_identity(service: Any | None) -> dict[str, Any]:
@@ -132,20 +150,34 @@ def _feature_source_identity(service: Any | None) -> dict[str, Any]:
     embed = getattr(player_class, "embed_battle", None)
     if embed is None:
         return {"resolved": False, "source": "PolicyPlayer.embed_battle"}
+
+    try:
+        signature = str(inspect.signature(embed))
+    except (TypeError, ValueError):
+        signature = ""
     try:
         source = inspect.getsource(embed)
     except (OSError, TypeError):
         source = ""
     try:
-        signature = str(inspect.signature(embed))
-    except (TypeError, ValueError):
-        signature = ""
+        source_file_raw = inspect.getsourcefile(embed) or inspect.getfile(embed)
+        source_file = Path(source_file_raw).resolve() if source_file_raw else None
+        module_sha256 = _file_sha256(source_file) if source_file and source_file.is_file() else ""
+    except (OSError, TypeError):
+        source_file = None
+        module_sha256 = ""
+
+    # The module hash intentionally covers helpers called by embed_battle too.
+    # A readable implementation file is required before this identity is trusted.
+    resolved = bool(module_sha256 and signature)
     return {
-        "resolved": True,
+        "resolved": resolved,
         "module": str(getattr(embed, "__module__", "")),
         "qualname": str(getattr(embed, "__qualname__", "")),
         "signature": signature,
-        "sourceSha256": fingerprint_payload({"source": source}) if source else "unknown",
+        "sourceFile": str(source_file) if source_file else "",
+        "moduleFileSha256": module_sha256,
+        "sourceSha256": fingerprint_payload({"source": source}) if source else "",
     }
 
 
@@ -158,14 +190,22 @@ def feature_schema_contract(service: Any | None = None) -> dict[str, Any]:
     }
 
 
-def feature_schema_id(service: Any | None = None) -> str:
+def feature_schema_identity(service: Any | None = None) -> dict[str, Any]:
     contract = feature_schema_contract(service)
-    if not contract["implementation"].get("resolved"):
-        return f"feature-schema:v{FEATURE_SCHEMA_SPEC_VERSION}:unresolved"
-    return (
-        f"feature-schema:v{FEATURE_SCHEMA_SPEC_VERSION}:"
-        f"{fingerprint_payload(contract)}"
-    )
+    resolved = bool((contract.get("implementation") or {}).get("resolved"))
+    return {
+        "resolved": resolved,
+        "id": (
+            f"feature-schema:v{FEATURE_SCHEMA_SPEC_VERSION}:{fingerprint_payload(contract)}"
+            if resolved
+            else ""
+        ),
+        "contract": contract,
+    }
+
+
+def feature_schema_id(service: Any | None = None) -> str:
+    return str(feature_schema_identity(service).get("id") or "")
 
 
 def teacher_behavior_contract(
@@ -174,23 +214,40 @@ def teacher_behavior_contract(
     battle_format: str,
     checkpoint_sha256: str,
 ) -> dict[str, Any]:
+    action_identity = action_space_identity()
+    feature_identity = feature_schema_identity(service)
+    checksum = str(checkpoint_sha256 or "")
+    resolved = bool(
+        checksum
+        and checksum != "unknown"
+        and action_identity["resolved"]
+        and feature_identity["resolved"]
+    )
     return {
         "fingerprintSpecVersion": FINGERPRINT_SPEC_VERSION,
+        "resolved": resolved,
         "family": TEACHER_FAMILY,
         "format": str(battle_format),
-        "checkpointSha256": str(checkpoint_sha256 or "unknown"),
-        "actionSpaceId": action_space_id(),
-        "featureSchemaId": feature_schema_id(service),
+        "checkpointSha256": checksum or "unknown",
+        "actionSpaceId": action_identity["id"],
+        "featureSchemaId": feature_identity["id"],
         "adapterContractVersion": ADAPTER_CONTRACT_VERSION,
         "selectionRule": SELECTION_RULE,
         "inferenceParams": {
             "fakeRating": FAKE_RATING,
             "deterministic": True,
         },
+        "resolution": {
+            "actionSpace": bool(action_identity["resolved"]),
+            "featureSchema": bool(feature_identity["resolved"]),
+            "checkpoint": bool(checksum and checksum != "unknown"),
+        },
     }
 
 
 def teacher_behavior_key(contract: dict[str, Any]) -> str:
+    if not isinstance(contract, dict) or contract.get("resolved") is not True:
+        return ""
     return f"teacher-behavior:v1:{fingerprint_payload(contract)}"
 
 
@@ -199,6 +256,7 @@ def structured_action(battle: Any, indices: list[int]) -> dict[str, Any]:
 
     import numpy as np
     from poke_env.environment import DoublesEnv
+    # Deliberately lazy: a module-level import would recreate adapter ↔ sparring cycle.
     from battle_lab import local_sparring_service as sparring
 
     order = DoublesEnv.action_to_order(np.asarray(indices, dtype=np.int64), battle)
