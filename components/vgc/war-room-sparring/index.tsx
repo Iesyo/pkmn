@@ -706,6 +706,143 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   </aside>;
 }
 
+type CoachAdvice = {
+  adviceId: string;
+  text: string;
+  status: "active" | "revoked" | "superseded";
+  scope?: { level?: string; species?: string };
+  condition?: { kind?: string; mechanic?: string };
+  effect?: { kind?: string; strength?: number; mode?: string };
+  evidence?: { applied?: number; skipped?: number };
+};
+
+type CoachMemoryResponse = {
+  advices?: CoachAdvice[];
+};
+
+function CoachMemoryPanel() {
+  const [memory, setMemory] = useState<CoachMemoryResponse>({});
+  const [text, setText] = useState("");
+  const [species, setSpecies] = useState("");
+  const [mechanic, setMechanic] = useState("Mega");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const active = (memory.advices ?? []).filter((item) => item.status === "active");
+
+  async function refresh() {
+    try {
+      const response = await fetch(`${LOCAL_SERVICE}/nana/advice`, { cache: "no-store" });
+      const payload = await readPayload(response);
+      if (!response.ok) throw new Error(errorText(payload, "No pudimos leer CoachMemory."));
+      setMemory(payload as CoachMemoryResponse);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "CoachMemory no disponible.");
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  async function createAdvice() {
+    if (!text.trim() || !species.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${LOCAL_SERVICE}/nana/advice`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: text.trim(),
+          species: species.trim(),
+          mechanic,
+          strength: 0.20,
+        }),
+      });
+      const payload = await readPayload(response);
+      if (!response.ok) throw new Error(errorText(payload, "No pudimos guardar el tip."));
+      if (payload && typeof payload === "object" && "memory" in payload) {
+        setMemory(payload.memory as CoachMemoryResponse);
+      } else {
+        await refresh();
+      }
+      setText("");
+      setSpecies("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No pudimos guardar el tip.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeAdvice(adviceId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${LOCAL_SERVICE}/nana/advice/${encodeURIComponent(adviceId)}/revoke`, {
+        method: "POST",
+      });
+      const payload = await readPayload(response);
+      if (!response.ok) throw new Error(errorText(payload, "No pudimos retirar el tip."));
+      if (payload && typeof payload === "object" && "memory" in payload) {
+        setMemory(payload.memory as CoachMemoryResponse);
+      } else {
+        await refresh();
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No pudimos retirar el tip.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <section className="rounded-[22px] border border-amber-300/14 bg-amber-300/[0.025] p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-[11px] font-black uppercase tracking-[0.1em] text-amber-100">CoachMemory</p>
+        <h3 className="mt-0.5 text-sm font-black text-white">Tips para Nana</h3>
+      </div>
+      <Badge variant="outline" className="border-white/8 px-2 py-1 text-[11px] text-slate-300">{active.length} activos</Badge>
+    </div>
+
+    {active.length ? <div className="mt-3 space-y-2">
+      {active.slice(0, 4).map((advice) => <div key={advice.adviceId} className="rounded-xl border border-white/8 bg-slate-950/35 px-3 py-2.5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold leading-5 text-slate-100">{advice.text}</p>
+            <p className="mt-1 text-[11px] text-slate-500">
+              {advice.scope?.species || "species"} · {advice.condition?.mechanic || "mechanic"} · soft
+              {advice.evidence?.applied ? ` · usado ${advice.evidence.applied}×` : ""}
+            </p>
+          </div>
+          <button type="button" disabled={busy} onClick={() => void revokeAdvice(advice.adviceId)} className="shrink-0 rounded-lg border border-white/8 px-2 py-1 text-[11px] text-slate-500 hover:text-rose-200">Retirar</button>
+        </div>
+      </div>)}
+    </div> : <p className="mt-3 text-xs leading-5 text-slate-500">Aún no hay tips activos.</p>}
+
+    <details className="group mt-3 rounded-xl border border-white/8 bg-slate-950/30">
+      <summary className="cursor-pointer list-none px-3 py-2.5 text-xs font-bold text-amber-100">+ Nuevo tip</summary>
+      <div className="space-y-2.5 border-t border-white/7 px-3 pb-3 pt-3">
+        <textarea value={text} onChange={(event) => setText(event.target.value)} maxLength={500} placeholder="Ej. Con Garchomp, si Mega es legal, priorizar Mega salvo razón táctica fuerte." className="min-h-20 w-full resize-y rounded-xl border border-white/8 bg-slate-950/55 px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-slate-600 focus:border-amber-300/25" />
+        <div className="grid grid-cols-[1fr_120px] gap-2">
+          <input value={species} onChange={(event) => setSpecies(event.target.value)} placeholder="Especie: Garchomp" className="rounded-xl border border-white/8 bg-slate-950/55 px-3 py-2 text-xs text-white outline-none placeholder:text-slate-600 focus:border-amber-300/25" />
+          <select value={mechanic} onChange={(event) => setMechanic(event.target.value)} className="rounded-xl border border-white/8 bg-slate-950/55 px-3 py-2 text-xs text-white outline-none">
+            <option>Mega</option>
+            <option>Tera</option>
+            <option>Z-Move</option>
+            <option>Dynamax</option>
+          </select>
+        </div>
+        <p className="rounded-lg border border-amber-300/10 bg-amber-300/[0.025] px-2.5 py-2 text-[11px] leading-4 text-slate-400">
+          Regla ejecutable: si <strong className="text-slate-200">{species.trim() || "la especie"}</strong> está activa y <strong className="text-slate-200">{mechanic}</strong> es legal, Nana le da una preferencia soft. SafetyGate y el resto del scorer pueden elegir otra jugada.
+        </p>
+        <Button type="button" onClick={() => void createAdvice()} disabled={busy || !text.trim() || !species.trim()} className="w-full bg-amber-200 text-slate-950 hover:bg-amber-100">{busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}Confirmar y guardar tip</Button>
+      </div>
+    </details>
+    {error ? <p className="mt-2 text-[11px] leading-4 text-rose-200">{error}</p> : null}
+  </section>;
+}
+
 export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corpusTeams: WarRoomCorpusTeam[] }) {
   const [health, setHealth] = useState<LocalHealth | null>(null);
   const [healthError, setHealthError] = useState("");
@@ -894,7 +1031,7 @@ export function WarRoomSparring({ team, corpusTeams }: { team: TeamVersion; corp
         {viewerUrl ? <iframe key={viewerUrl} src={viewerUrl} title="Pokémon Showdown battle renderer" onLoad={() => setViewerLoaded(true)} className="h-[720px] w-full bg-[#444]" allow="autoplay" /> : <div className="flex h-72 items-center justify-center gap-2 text-xs text-slate-500"><Loader2 className="size-4 animate-spin text-cyan-300" />Esperando que Showdown publique el room…</div>}
         <div className="border-t border-white/7 px-5 py-2 text-[8px] text-slate-600">Renderer externo local: Pokémon Showdown Client AGPLv3, checkout sin modificar y separado del código de War Room.</div>
       </section>
-      <div className="space-y-3"><NanaTelemetryPanel session={session} /></div>
+      <div className="space-y-3"><NanaTelemetryPanel session={session} /><CoachMemoryPanel /></div>
       </div>
 
       <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
