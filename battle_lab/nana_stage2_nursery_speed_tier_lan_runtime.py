@@ -1,4 +1,4 @@
-"""Nana 2.3 Nursery LIVE + Speed Tier, isolated feature launcher.
+"""Nana Full Amiibo N4 LIVE + Speed Tier launcher.
 
 This keeps the current Nana/Showdown stack intact and layers the advisory Speed
 Tier plus its LAN viewer on top. Once the ROG smoke is accepted, this small
@@ -140,7 +140,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # is installed before Speed Tier replaces only the renderer layer.
     lan_args, remaining = lan.parse_lan_args(argv)
     nana_args, remaining = parse_nana_args(remaining)
-    service_class = install_nursery_service(profile_id=nana_args.nana_profile)
+    service_class = install_nursery_service(
+        profile_id=nana_args.nana_profile,
+        full_amiibo_live=True,
+    )
     install_nursery_lan_request_guard(service_class)
 
     lan.install_direct_lan(local_runtime)
@@ -152,10 +155,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         addresses.insert(0, lan_args.lan_address)
 
     print("", flush=True)
-    print("=== Battle Lab LAN · Nana 2.3 Nursery LIVE + Speed Tier v2 ===", flush=True)
+    print("=== Battle Lab LAN · Nana Full Amiibo N4 LIVE + Speed Tier ===", flush=True)
     print(
-        "Nana puede ejecutar hasta 1 intervención near-LIGHT por BO1; "
-        "todo lo demás cae a LIGHT.",
+        "Nana decide sobre todas las órdenes legales con NanaScorer + SafetyGate; "
+        "sin λ cap y sin presupuesto de intervenciones.",
         flush=True,
     )
     print(
@@ -180,7 +183,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "propia experiencia en partidas posteriores.",
         flush=True,
     )
-    print("Fallback absoluto: LIGHT. Promoción de autonomía: NO automática.", flush=True)
+    print(
+        "LIGHT es advisor/fallback; SafetyGate valida toda orden N4 antes de enviarla.",
+        flush=True,
+    )
     print("===============================================================", flush=True)
     print("", flush=True)
 
