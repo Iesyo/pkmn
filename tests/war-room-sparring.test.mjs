@@ -182,6 +182,9 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.match(source, /Pasan regret N2/);
   assert.match(source, /Mejoran el counter/);
   assert.match(source, /Dentro de λ actual/);
+  assert.match(source, /Fuente legal N4/);
+  assert.match(source, /teacherCoverage/);
+  assert.match(source, /missingFromTeacher/);
   assert.match(source, /Self-trust y TeamMemory se reconstruyen con outcomes al cerrar el BO1/);
   assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_400px\]/);
   assert.match(source, /2xl:grid-cols-\[minmax\(0,1fr\)_440px\]/);
