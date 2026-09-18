@@ -7,7 +7,7 @@ import path from "node:path";
 const root = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), "..");
 const python = process.env.PYTHON ?? "python";
 
-test("N4 readiness separates runtime evidence from manual activation gate", () => {
+test("N4 readiness promotes activation only with current runtime evidence", () => {
   const script = String.raw`
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -45,7 +45,7 @@ with TemporaryDirectory() as tmp:
         mod.fit_counter_calibration=old
 
 assert r['runtimeReady'] is True
-assert r['activationReady'] is False
+assert r['activationReady'] is True
 assert r['blockers'] == []
 assert r['legalOrderSource']['samples'] == 1
 assert r['n4Shadow']['wouldChange'] == 1
