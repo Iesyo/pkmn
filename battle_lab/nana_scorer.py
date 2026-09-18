@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 
-SCORER_CONTRACT_VERSION = 2
+SCORER_CONTRACT_VERSION = 3
 COMMON_SCORE_SPACE = "board-delta-v1"
 LIVE_NURSERY_USES_COMMON_SCORER = False
 _COMMON_TERM_PROOF = object()
@@ -40,6 +40,11 @@ def scorer_contract() -> dict[str, Any]:
         "contractVersion": SCORER_CONTRACT_VERSION,
         "commonScoreSpace": COMMON_SCORE_SPACE,
         "liveNurseryUsesCommonScorer": LIVE_NURSERY_USES_COMMON_SCORER,
+        "candidateRanking": "deterministic-common-space-v1",
+        "blindPick": {
+            "requiresEvidencedReference": True,
+            "marginGate": True,
+        },
         "activationPrerequisite": (
             "N3/N4 cannot activate until choose_candidate is migrated to mapped "
             "common-score terms and no raw regret/response_utility arithmetic remains."
@@ -163,6 +168,149 @@ def combine_common_terms(terms: Iterable[_CommonScoreTerm]) -> dict[str, Any]:
         "insufficientEvidence": insufficient,
         "terms": accepted,
     }
+
+
+@dataclass(frozen=True)
+class CandidateEvidence:
+    """Common-space evidence for one model-agnostic legal order."""
+
+    key: str
+    terms: tuple[_CommonScoreTerm, ...]
+    teacher_represented: bool
+    context_evidence: bool
+
+
+@dataclass(frozen=True)
+class CandidateScore:
+    key: str
+    score: float | None
+    raw_score: float | None
+    effective_weight: float
+    blind: bool
+    terms: tuple[dict[str, Any], ...]
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "orderKey": self.key,
+            "scoreSpace": COMMON_SCORE_SPACE,
+            "score": self.score,
+            "rawScore": self.raw_score,
+            "effectiveWeight": self.effective_weight,
+            "blind": self.blind,
+            "terms": [dict(term) for term in self.terms],
+        }
+
+
+class NanaScorer:
+    """Deterministic scorer over model-agnostic legal order keys."""
+
+    def __init__(
+        self,
+        *,
+        blind_uncertainty_penalty: float = 0.15,
+        blind_margin: float = 0.25,
+    ) -> None:
+        self.blind_uncertainty_penalty = max(
+            0.0,
+            _finite(
+                blind_uncertainty_penalty,
+                field_name="blind_uncertainty_penalty",
+            ),
+        )
+        self.blind_margin = max(
+            0.0,
+            _finite(blind_margin, field_name="blind_margin"),
+        )
+
+    def score(self, evidence: CandidateEvidence) -> CandidateScore:
+        combined = combine_common_terms(evidence.terms)
+        raw = combined["score"]
+        blind = not evidence.teacher_represented and not evidence.context_evidence
+        scored = (
+            None
+            if raw is None
+            else float(raw) - (self.blind_uncertainty_penalty if blind else 0.0)
+        )
+        return CandidateScore(
+            key=str(evidence.key),
+            score=scored,
+            raw_score=None if raw is None else float(raw),
+            effective_weight=float(combined["effectiveWeight"]),
+            blind=blind,
+            terms=tuple(combined["terms"]),
+        )
+
+    def rank(self, candidates: Iterable[CandidateEvidence]) -> list[CandidateScore]:
+        scored = [self.score(candidate) for candidate in candidates]
+        scored.sort(
+            key=lambda item: (
+                item.score is not None,
+                float("-inf") if item.score is None else item.score,
+                item.effective_weight,
+                item.key,
+            ),
+            reverse=True,
+        )
+        return scored
+
+    def select(
+        self,
+        candidates: Iterable[CandidateEvidence],
+        *,
+        reference_key: str | None = None,
+    ) -> dict[str, Any]:
+        ranked = self.rank(candidates)
+        viable = [item for item in ranked if item.score is not None]
+        if not viable:
+            return {
+                "selected": None,
+                "reason": "insufficient-evidence",
+                "ranked": [item.public() for item in ranked],
+            }
+
+        best = viable[0]
+        if not best.blind:
+            return {
+                "selected": best.public(),
+                "reason": "best-common-score",
+                "ranked": [item.public() for item in ranked],
+            }
+
+        reference = next(
+            (
+                item
+                for item in viable
+                if reference_key is not None and item.key == reference_key
+            ),
+            None,
+        )
+        if reference is None:
+            reference = next((item for item in viable if not item.blind), None)
+        if reference is None:
+            return {
+                "selected": None,
+                "reason": "blind-without-evidenced-reference",
+                "ranked": [item.public() for item in ranked],
+            }
+
+        margin = float(best.score) - float(reference.score)
+        if margin < self.blind_margin:
+            return {
+                "selected": reference.public(),
+                "reason": "blind-margin-not-met",
+                "blindCandidate": best.public(),
+                "margin": margin,
+                "requiredMargin": self.blind_margin,
+                "ranked": [item.public() for item in ranked],
+            }
+        return {
+            "selected": best.public(),
+            "reason": "blind-margin-met",
+            "reference": reference.public(),
+            "margin": margin,
+            "requiredMargin": self.blind_margin,
+            "ranked": [item.public() for item in ranked],
+        }
 
 
 def assert_common_scorer_ready_for_level(level: str) -> None:
