@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from typing import Any, Sequence
 
 import numpy as np
@@ -45,7 +46,7 @@ from battle_lab.nana_counter_calibration import (
     fit_counter_calibration,
     rebuild_counter_calibration,
 )
-from battle_lab.nana_legal_orders import LegalOrderSource
+from battle_lab.nana_legal_orders import LegalOrderSource, SafetyGate
 from battle_lab.nana_n4_shadow import build_n4_shadow_plan
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
@@ -402,8 +403,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                     # catalog. This does not affect N2 decisions.
                     legal_order_diag: dict[str, Any]
                     legal_set = None
+                    legal_started = time.perf_counter()
                     try:
                         legal_set = LegalOrderSource().enumerate(current)
+                        legal_elapsed_ms = (time.perf_counter() - legal_started) * 1000.0
                         teacher_keys = {
                             order_key(item.get("action"))
                             for item in (light.get("jointScores") or [])
@@ -437,8 +440,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                             ),
                             "individualCounts": list(legal_set.individual_counts),
                             "joinedCount": legal_set.joined_count,
+                            "elapsedMs": legal_elapsed_ms,
                         }
                     except Exception as error:
+                        legal_elapsed_ms = (time.perf_counter() - legal_started) * 1000.0
                         legal_order_diag = {
                             "resolved": False,
                             "reason": f"{type(error).__name__}: {error}",
@@ -449,6 +454,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "teacherCoverage": 0.0,
                             "missingFromTeacher": None,
                             "extraTeacher": None,
+                            "elapsedMs": legal_elapsed_ms,
                         }
 
                     state_turn = int((session.battle_state or {}).get("turn", 0) or 0)
@@ -466,6 +472,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     )
 
                     model_state = sparring._battle_snapshot(current)
+                    n4_started = time.perf_counter()
                     try:
                         n4_shadow = (
                             build_n4_shadow_plan(
@@ -487,6 +494,48 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "eligible": False,
                             "reason": f"{type(error).__name__}: {error}",
                         }
+                    n4_elapsed_ms = (time.perf_counter() - n4_started) * 1000.0
+                    n4_shadow["planningMs"] = n4_elapsed_ms
+                    n4_shadow["legalOrderMs"] = legal_order_diag.get("elapsedMs")
+                    n4_shadow["totalDecisionMs"] = (
+                        n4_elapsed_ms + float(legal_order_diag.get("elapsedMs") or 0.0)
+                    )
+
+                    # Exercise the exact N4 execution boundary in dry-run mode:
+                    # selected orderKey -> current LegalOrderSet -> SafetyGate.
+                    safety_gate_diag = {
+                        "authorized": False,
+                        "reason": "no-selection",
+                        "elapsedMs": 0.0,
+                    }
+                    selected_key = str(n4_shadow.get("selectedKey") or "")
+                    if (
+                        selected_key
+                        and legal_set is not None
+                        and legal_set.resolved is True
+                    ):
+                        gate_started = time.perf_counter()
+                        try:
+                            authorized = SafetyGate(legal_set).authorize_key(selected_key)
+                            safety_gate_diag = {
+                                "authorized": True,
+                                "reason": "ok",
+                                "orderKey": authorized.key,
+                                "representable": authorized.representable,
+                                "elapsedMs": (
+                                    time.perf_counter() - gate_started
+                                ) * 1000.0,
+                            }
+                        except Exception as error:
+                            safety_gate_diag = {
+                                "authorized": False,
+                                "reason": f"{type(error).__name__}: {error}",
+                                "orderKey": selected_key,
+                                "elapsedMs": (
+                                    time.perf_counter() - gate_started
+                                ) * 1000.0,
+                            }
+                    n4_shadow["safetyGate"] = copy.deepcopy(safety_gate_diag)
 
                     teacher_args = service._teacher_query_args()
                     light_trust = trust_for(
