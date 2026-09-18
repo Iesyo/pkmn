@@ -177,7 +177,15 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.match(source, /requiredLambdaCap/);
   assert.match(source, /TeamMemory/);
   assert.match(source, /Mejor near-miss/);
-  assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_340px\]/);
+  assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_400px\]/);
+  assert.match(source, /2xl:grid-cols-\[minmax\(0,1fr\)_440px\]/);
+  const panelStart = source.indexOf("function TelemetryTrust");
+  const panelEnd = source.indexOf("export function WarRoomSparring", panelStart);
+  const panel = source.slice(panelStart, panelEnd);
+  assert.ok(panelStart >= 0 && panelEnd > panelStart);
+  assert.doesNotMatch(panel, /text-\[(?:7|8|9|10)px\]/);
+  assert.match(panel, /text-2xl/);
+  assert.match(panel, /Qué está pensando Nana/);
   assert.doesNotMatch(source, /Battle log/);
 });
 
