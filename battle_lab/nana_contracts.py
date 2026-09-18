@@ -15,7 +15,7 @@ from typing import Any
 
 FINGERPRINT_SPEC_VERSION = 1
 ORDER_KEY_SPEC_VERSION = 1
-NANA_POLICY_CONTRACT_VERSION = 3
+NANA_POLICY_CONTRACT_VERSION = 4
 
 
 def canonical_json(value: Any) -> str:
