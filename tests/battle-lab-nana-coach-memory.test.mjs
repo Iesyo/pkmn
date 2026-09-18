@@ -62,7 +62,7 @@ advice={
  'adviceId':'tip1','status':'active','scope':{'level':'species','species':'garchomp'},
  'condition':{'kind':'mechanic-legal-for-active-species','mechanic':'Mega'},
  'effect':{'kind':'prefer','target':{'slotSpecies':'garchomp','flag':'Mega'},'strength':0.20,'mode':'soft'},
- 'priority':1.0,'confidence':0.50,
+ 'priority':1.0,'confidence':0.30,
 }
 state={'ownActive':[{'species':'Garchomp'},{'species':'Incineroar'}]}
 normal={'first':{'kind':'move','value':'earthquake','flags':[]},'second':{'kind':'move','value':'fakeout','flags':[]}}
@@ -80,6 +80,14 @@ assert terms==[] and ids==[]
 ctx=coach_context({'advices':[advice]},model_state={'ownActive':[{'species':'Salamence'}]},legal_actions=[mega])
 assert ctx['applicable']==[]
 assert [a['adviceId'] for a in ctx['conditionFalse']]==['tip1']
+
+# The slot convention must be explicit for both halves of a doubles order.
+right_state={'ownActive':[{'species':'Incineroar'},{'species':'Garchomp'}]}
+right_mega={'first':{'kind':'move','value':'fakeout','flags':[]},'second':{'kind':'move','value':'earthquake','flags':['Mega']}}
+ctx=coach_context({'advices':[advice]},model_state=right_state,legal_actions=[normal,right_mega])
+assert [a['adviceId'] for a in ctx['applicable']]==['tip1']
+terms, ids=coach_terms_for_action(ctx,model_state=right_state,action=right_mega)
+assert ids==['tip1'] and len(terms)==1
 
 yanmega={**advice,'adviceId':'yan','scope':{'level':'species','species':'yanmega'}}
 ctx=coach_context({'advices':[yanmega]},model_state={'ownActive':[{'species':'Yanmega'}]},legal_actions=[mega])
@@ -108,7 +116,7 @@ coach={'advices':[{
  'adviceId':'tip1','status':'active','scope':{'level':'species','species':'garchomp'},
  'condition':{'kind':'mechanic-legal-for-active-species','mechanic':'Mega'},
  'effect':{'kind':'prefer','target':{'slotSpecies':'garchomp','flag':'Mega'},'strength':0.20,'mode':'soft'},
- 'priority':1.0,'confidence':0.50,
+ 'priority':1.0,'confidence':0.30,
 }]}
 plan=build_n4_shadow_plan(
     legal_orders=legal,light=light,prediction={'confidence':0.0,'candidates':[]},
