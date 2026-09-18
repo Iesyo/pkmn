@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from battle_lab.nana_recorder import NanaRecorder
 from battle_lab.nana_counter_calibration import CounterCalibration
+from battle_lab.nana_n4_shadow import N4_SHADOW_VERSION
 import battle_lab.nana_n4_readiness as mod
 
 ready_cal=CounterCalibration(
@@ -29,7 +30,10 @@ with TemporaryDirectory() as tmp:
             'missingFromTeacher':0,'totalLegal':42,
         },
         'n4Shadow':{
+            'version':N4_SHADOW_VERSION,
             'eligible':True,'wouldChange':True,'commonScoreAvailable':4,
+            'safetyGate':{'authorized':True,'reason':'ok'},
+            'legalOrderMs':4.0,'planningMs':6.0,'totalDecisionMs':10.0,
         },
         'selection':{'reason':'x'},
     })
@@ -45,6 +49,9 @@ assert r['activationReady'] is False
 assert r['blockers'] == []
 assert r['legalOrderSource']['samples'] == 1
 assert r['n4Shadow']['wouldChange'] == 1
+assert r['n4Shadow']['safetyGate']['authorized'] == 1
+assert r['n4Shadow']['safetyGate']['failures'] == 0
+assert r['n4Shadow']['timingMs']['totalMax'] == 10.0
 `;
   execFileSync(python, ["-c", script], { cwd: root, encoding: "utf8" });
 });
