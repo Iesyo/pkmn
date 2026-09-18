@@ -533,7 +533,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
         <p className="mt-1 text-xs leading-5 text-slate-400">Qué está pensando Nana y qué freno le impide intervenir.</p>
       </div>
       <Badge variant="outline" className={cn(
-        "px-2.5 py-1 text-[10px] font-bold",
+        "px-2.5 py-1 text-[11px] font-bold",
         telemetry?.intervened
           ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100"
           : "border-white/12 bg-white/[0.03] text-slate-300",
@@ -597,7 +597,7 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
           <p className="text-xs text-slate-300">Team exacto</p>
           <p className="mt-1 font-mono text-2xl font-black text-white">{exactSamples}<span className="text-sm text-slate-400"> / 3 outcomes</span></p>
         </div>
-        <Badge variant="outline" className="border-white/12 px-2.5 py-1 text-[10px] text-slate-300">
+        <Badge variant="outline" className="border-white/12 px-2.5 py-1 text-[11px] text-slate-300">
           {teamMemory?.selectedScope || (rosterMemory?.samples ? "backoff" : "cold start")}
         </Badge>
       </div>
