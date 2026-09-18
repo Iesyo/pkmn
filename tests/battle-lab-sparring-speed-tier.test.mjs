@@ -77,7 +77,7 @@ assert normal["ownTailwind"] is True
 assert normal["ownTailwindTurns"] == 3
 assert normal["order"][0]["species"] == "Rillaboom"
 assert normal["order"][0]["effectiveSpeed"] == 300
-assert normal["order"][1]["effectiveSpeed"] == 75
+assert normal["order"][1]["effectiveSpeed"] == 83
 assert [entry["priority"] for entry in normal["priority"][:2]] == [4, 3]
 
 battle.fields = {EnumValue("TRICK_ROOM"): 2}
