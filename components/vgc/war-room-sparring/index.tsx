@@ -117,6 +117,24 @@ type NanaTelemetry = {
   predictionConfidence?: number | null;
   confidenceScale?: number | null;
   candidateCountEvaluated?: number;
+  candidateFunnel?: {
+    jointTotal?: number;
+    jointStructured?: number;
+    regretMapped?: number;
+    branchRegretPassed?: number;
+    branchRegretRejected?: number;
+    poolAlternatives?: number;
+    nurseryRegretPassed?: number;
+    counterImproved?: number;
+    insideCap?: number;
+    counterRelevantAlternatives?: number;
+    humanPredictionCandidates?: number;
+  } | null;
+  discarded?: {
+    branchRegret?: NanaTelemetryCandidate | null;
+    nurseryRegret?: NanaTelemetryCandidate | null;
+    counterMiss?: NanaTelemetryCandidate | null;
+  } | null;
   expectedCounterDelta?: number | null;
   margin?: number | null;
   candidate?: NanaTelemetryCandidate | null;
@@ -504,6 +522,19 @@ function TelemetryMiniStat({ label, value }: { label: string; value: string }) {
   </div>;
 }
 
+function FunnelRow({ label, value, total, active = false }: { label: string; value: number; total: number; active?: boolean }) {
+  const width = total > 0 ? Math.max(3, Math.min(100, (value / total) * 100)) : 0;
+  return <div>
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <span className={active ? "font-bold text-amber-100" : "text-slate-300"}>{label}</span>
+      <strong className={cn("font-mono", active ? "text-amber-100" : "text-white")}>{value}</strong>
+    </div>
+    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-white/8">
+      <div className={cn("h-full rounded-full transition-all", active ? "bg-amber-300/80" : "bg-cyan-300/65")} style={{ width: `${width}%` }} />
+    </div>
+  </div>;
+}
+
 function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const telemetry = session.nana?.telemetry;
   const nursery = session.nana?.nursery;
@@ -517,8 +548,34 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
   const rosterMemory = teamMemory?.components?.find((item) => item.level === "roster");
   const exactSamples = exactMemory?.samples ?? 0;
   const sampleProgress = Math.max(0, Math.min(100, (exactSamples / 3) * 100));
+  const funnel = telemetry?.candidateFunnel;
+  const lightAlternatives = Math.max(0, (funnel?.jointTotal ?? 0) - 1);
+  const branchPassed = funnel?.poolAlternatives ?? 0;
+  const regretPassed = funnel?.nurseryRegretPassed ?? 0;
+  const counterImproved = funnel?.counterImproved ?? 0;
+  const insideCapCount = funnel?.insideCap ?? 0;
+  const bottleneck =
+    lightAlternatives > 0 && branchPassed === 0 ? "branch"
+      : branchPassed > 0 && regretPassed === 0 ? "regret"
+        : regretPassed > 0 && counterImproved === 0 ? "counter"
+          : counterImproved > 0 && insideCapCount === 0 ? "cap"
+            : insideCapCount > 0 ? "ready"
+              : "empty";
+  const bottleneckText =
+    bottleneck === "branch" ? "El filtro de probabilidad por rama de LIGHT está descartando todas las alternativas."
+      : bottleneck === "regret" ? "Hay alternativas de LIGHT, pero ninguna supera el piso de regret permitido por N2."
+        : bottleneck === "counter" ? "Hay alternativas cercanas a LIGHT, pero el proxy actual no ve una mejora contra tu respuesta predicha."
+          : bottleneck === "cap" ? "Sí hay alternativas mejores para Nana, pero λ=0.15 todavía no alcanza."
+            : bottleneck === "ready" ? "Hay al menos una alternativa que supera todos los filtros de N2."
+              : "Aún no hay suficientes alternativas estructuradas para formar el embudo.";
   const candidate = telemetry?.candidate;
-  const candidateAction = candidate?.action;
+  const diagnosticCandidate =
+    candidate
+    ?? telemetry?.discarded?.counterMiss
+    ?? telemetry?.discarded?.nurseryRegret
+    ?? telemetry?.discarded?.branchRegret
+    ?? null;
+  const candidateAction = diagnosticCandidate?.action;
   const insideCap = required !== null && required <= lambdaCap;
   const reason = telemetryReason(telemetry?.reason);
 
@@ -577,9 +634,27 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
       </div>
       <div className="mt-4 grid grid-cols-3 gap-2">
         <TelemetryMiniStat label="Predicción" value={telemetryPercent(telemetry?.predictionConfidence)} />
-        <TelemetryMiniStat label="Candidatos" value={String(telemetry?.candidateCountEvaluated ?? 0)} />
+        <TelemetryMiniStat label="Alt. LIGHT" value={String(lightAlternatives)} />
         <TelemetryMiniStat label="λ efectivo" value={telemetryLambda(telemetry?.effectiveLambda)} />
       </div>
+    </section>
+
+    <section className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/[0.025] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.08em] text-amber-100">Embudo de alternativas</p>
+          <p className="mt-1 text-xs text-slate-400">Dónde se están descartando las jugadas de Nana en este turno.</p>
+        </div>
+        <Badge variant="outline" className="border-amber-300/20 px-2.5 py-1 text-[11px] text-amber-100">turno {telemetry?.turn ?? session.battle.turn ?? 0}</Badge>
+      </div>
+      <div className="mt-4 space-y-3">
+        <FunnelRow label="Alternativas del teacher" value={lightAlternatives} total={Math.max(1, lightAlternatives)} active={bottleneck === "empty"} />
+        <FunnelRow label="Pasan filtro de rama" value={branchPassed} total={Math.max(1, lightAlternatives)} active={bottleneck === "branch"} />
+        <FunnelRow label="Pasan regret N2" value={regretPassed} total={Math.max(1, lightAlternatives)} active={bottleneck === "regret"} />
+        <FunnelRow label="Mejoran el counter" value={counterImproved} total={Math.max(1, lightAlternatives)} active={bottleneck === "counter"} />
+        <FunnelRow label="Dentro de λ actual" value={insideCapCount} total={Math.max(1, lightAlternatives)} active={bottleneck === "cap"} />
+      </div>
+      <p className="mt-4 rounded-xl border border-white/8 bg-slate-950/45 px-3 py-2.5 text-xs font-semibold leading-5 text-slate-200">{bottleneckText}</p>
     </section>
 
     <div className="mt-4 grid grid-cols-2 gap-3">
@@ -618,21 +693,29 @@ function NanaTelemetryPanel({ session }: { session: SparringSession }) {
     <section className="mt-4 rounded-2xl border border-white/10 bg-slate-950/55 p-4">
       <div className="flex items-center gap-2">
         <ShieldCheck className="size-5 text-emerald-300" />
-        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-300">{telemetry?.intervened ? "Acción Nana" : "Mejor near-miss"}</p>
+        <p className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-300">{telemetry?.intervened ? "Acción Nana" : candidate ? "Mejor near-miss" : "Mejor descartado"}</p>
       </div>
       {candidateAction?.first || candidateAction?.second ? <div className="mt-3 space-y-2 text-sm leading-5 text-slate-100">
         {candidateAction.first ? <p><span className="mr-2 font-mono text-cyan-300">1</span>{describeAction(candidateAction.first, session.battle)}</p> : null}
         {candidateAction.second ? <p><span className="mr-2 font-mono text-cyan-300">2</span>{describeAction(candidateAction.second, session.battle)}</p> : null}
-      </div> : <p className="mt-3 text-sm leading-5 text-slate-400">Aún no hay una alternativa que pase los filtros base.</p>}
+      </div> : <p className="mt-3 text-sm leading-5 text-slate-400">No hay una alternativa estructurada que podamos mostrar en este turno.</p>}
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <TelemetryMiniStat label="Light regret" value={telemetryNumber(candidate?.lightRegretLog)?.toFixed(3) ?? "—"} />
+        <TelemetryMiniStat label="Light regret" value={telemetryNumber(diagnosticCandidate?.lightRegretLog)?.toFixed(3) ?? "—"} />
         <TelemetryMiniStat label="Δ counter" value={telemetryNumber(telemetry?.expectedCounterDelta)?.toFixed(3) ?? "—"} />
       </div>
     </section>
 
-    <p className="mt-4 rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
-      Sólo observabilidad: este panel no modifica λ, presupuesto ni autonomía de Nana.
-    </p>
+    <div className="mt-4 space-y-2">
+      <p className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
+        Turno a turno cambian predicción, LIGHT trust, embudo, λ requerido y near-miss.
+      </p>
+      <p className="rounded-xl border border-violet-300/10 bg-violet-300/[0.025] px-3 py-2.5 text-[11px] leading-5 text-violet-100/70">
+        Self-trust y TeamMemory se reconstruyen con outcomes al cerrar el BO1; no tienen por qué moverse en cada turno.
+      </p>
+      <p className="rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5 text-[11px] leading-5 text-slate-400">
+        Sólo observabilidad: este panel no modifica λ, presupuesto ni autonomía de Nana.
+      </p>
+    </div>
   </aside>;
 }
 
