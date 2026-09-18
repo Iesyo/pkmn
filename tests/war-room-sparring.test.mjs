@@ -172,6 +172,12 @@ test("sparring UI embeds the real classic Showdown battle room and keeps staged 
   assert.match(source, /#\$\{session\.battle\.tag\}/);
   assert.match(source, /<iframe/);
   assert.match(source, /Pokémon Showdown · batalla real/);
+  assert.match(source, /Telemetría Nana/);
+  assert.match(source, /λ requerido/);
+  assert.match(source, /requiredLambdaCap/);
+  assert.match(source, /TeamMemory/);
+  assert.match(source, /Mejor near-miss/);
+  assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_340px\]/);
   assert.doesNotMatch(source, /Battle log/);
 });
 
