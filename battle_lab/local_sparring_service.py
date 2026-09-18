@@ -70,6 +70,13 @@ class BattleChoice(BaseModel):
     choiceId: str = Field(min_length=1)
 
 
+class CoachAdviceCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    species: str = Field(min_length=1, max_length=80)
+    mechanic: str
+    strength: float = Field(default=0.20, ge=0.0, le=0.35)
+
+
 @dataclass
 class SparringSession:
     id: str
@@ -583,6 +590,40 @@ def build_app(service: BattleLabLocalService) -> FastAPI:
     @app.post("/sparring/{session_id}/choice")
     async def choose_action(session_id: str, request: BattleChoice) -> dict[str, Any]:
         return await service.submit_choice(session_id, request.choiceId)
+
+    @app.get("/nana/advice")
+    async def list_nana_advice() -> dict[str, Any]:
+        store = getattr(service, "nana_coach_memory", None)
+        if store is None:
+            raise HTTPException(status_code=503, detail="CoachMemory no está cargado en este runtime.")
+        return store.list()
+
+    @app.post("/nana/advice")
+    async def create_nana_advice(request: CoachAdviceCreate) -> dict[str, Any]:
+        store = getattr(service, "nana_coach_memory", None)
+        if store is None:
+            raise HTTPException(status_code=503, detail="CoachMemory no está cargado en este runtime.")
+        try:
+            advice = store.create_species_mechanic(
+                text=request.text,
+                species=request.species,
+                mechanic=request.mechanic,
+                strength=request.strength,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"ok": True, "advice": advice, "memory": store.list()}
+
+    @app.post("/nana/advice/{advice_id}/revoke")
+    async def revoke_nana_advice(advice_id: str) -> dict[str, Any]:
+        store = getattr(service, "nana_coach_memory", None)
+        if store is None:
+            raise HTTPException(status_code=503, detail="CoachMemory no está cargado en este runtime.")
+        try:
+            advice = store.revoke(advice_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Tip no encontrado.") from error
+        return {"ok": True, "advice": advice, "memory": store.list()}
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
