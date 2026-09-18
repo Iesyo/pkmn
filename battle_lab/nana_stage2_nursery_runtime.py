@@ -128,6 +128,20 @@ def _live_autonomy_contract() -> dict[str, Any]:
     )
 
 
+def _compact_telemetry_candidate(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    action = candidate.get("action") if isinstance(candidate.get("action"), dict) else None
+    indices = candidate.get("indices")
+    return {
+        "action": copy.deepcopy(action),
+        "indices": copy.deepcopy(indices) if isinstance(indices, list) else None,
+        "probability": candidate.get("probability"),
+        "lightRegretLog": candidate.get("lightRegretLog"),
+        "expectedCounter": candidate.get("expectedCounter"),
+    }
+
+
 def install_nursery_service(*, profile_id: str) -> type:
     assert_live_nursery_matches_n2(
         lambda_cap=NURSERY_LAMBDA_CAP,
@@ -446,6 +460,61 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "reason": "nursery-per-battle-budget-exhausted",
                         }
 
+                    telemetry_candidate = (
+                        selection.get("candidate")
+                        if isinstance(selection.get("candidate"), dict)
+                        else selection.get("nearestCandidate")
+                    )
+                    team_memory_from_self = (
+                        self_trust.get("teamMemory")
+                        if isinstance(self_trust, dict)
+                        and isinstance(self_trust.get("teamMemory"), dict)
+                        else {}
+                    )
+                    session.nana_telemetry = {
+                        "turn": turn,
+                        "generation": generation,
+                        "reason": str(selection.get("reason") or "unknown"),
+                        "intervened": intervened,
+                        "lambdaCap": selection.get("lambdaCap", NURSERY_LAMBDA_CAP),
+                        "effectiveLambda": selection.get("effectiveLambda"),
+                        "requiredLambdaCap": selection.get("requiredLambdaCap"),
+                        "lambdaGap": selection.get("lambdaGap"),
+                        "predictionConfidence": selection.get(
+                            "confidence", plan.get("confidence")
+                        ),
+                        "confidenceScale": selection.get(
+                            "confidenceScale", plan.get("confidenceScale")
+                        ),
+                        "candidateCountEvaluated": int(
+                            selection.get("candidateCountEvaluated") or 0
+                        ),
+                        "expectedCounterDelta": selection.get("expectedCounterDelta"),
+                        "margin": selection.get("margin"),
+                        "candidate": _compact_telemetry_candidate(telemetry_candidate),
+                        "lightTrust": {
+                            "trust": light_trust.get("trust"),
+                            "confidence": light_trust.get("confidence"),
+                        },
+                        "selfTrust": {
+                            "trust": self_trust.get("trust")
+                            if isinstance(self_trust, dict)
+                            else None,
+                            "confidence": self_trust.get("confidence")
+                            if isinstance(self_trust, dict)
+                            else None,
+                            "teamMemoryBlend": self_trust.get("teamMemoryBlend")
+                            if isinstance(self_trust, dict)
+                            else None,
+                            "teamMemoryEffect": self_trust.get("teamMemoryEffect")
+                            if isinstance(self_trust, dict)
+                            else None,
+                        },
+                        "teamMemoryAtDecision": copy.deepcopy(team_memory_from_self),
+                        "interventionsUsed": used + (1 if intervened else 0),
+                        "interventionBudget": MAX_INTERVENTIONS_PER_BATTLE,
+                    }
+
                     canonical = light.get("canonicalAction") or {}
                     canonical_indices = canonical.get("indices") or []
                     if intervened:
@@ -587,6 +656,18 @@ def install_nursery_service(*, profile_id: str) -> type:
         session = await original_start(self, request)
         self._nana_nursery_interventions[session.id] = 0
         self._nana_nursery_model_generation[session.id] = 0
+        session.nana_telemetry = {
+            "turn": 0,
+            "generation": 0,
+            "reason": "waiting-first-decision",
+            "intervened": False,
+            "lambdaCap": NURSERY_LAMBDA_CAP,
+            "requiredLambdaCap": None,
+            "lambdaGap": None,
+            "candidateCountEvaluated": 0,
+            "interventionsUsed": 0,
+            "interventionBudget": MAX_INTERVENTIONS_PER_BATTLE,
+        }
         self._nana_policy_contract = _live_policy_contract()
         self._nana_teacher = descriptor_for_service(self)
         _apply_nursery_metadata(self)
@@ -665,6 +746,44 @@ def install_nursery_service(*, profile_id: str) -> type:
     def snapshot(self: Any, session: Any) -> dict[str, Any]:
         data = original_snapshot(self, session)
         used = self._nana_nursery_interventions.get(session.id, 0)
+        team_context = (
+            self._nana_session_team_context.get(session.id, {})
+            if hasattr(self, "_nana_session_team_context")
+            else {}
+        )
+        try:
+            current_team_memory = team_trust_for(
+                self.nana_team_memory,
+                team_context,
+            )
+        except Exception:
+            current_team_memory = {
+                "eligible": False,
+                "reason": "team-memory-unavailable",
+                "components": [],
+            }
+        telemetry = copy.deepcopy(
+            getattr(session, "nana_telemetry", {})
+            if isinstance(getattr(session, "nana_telemetry", {}), dict)
+            else {}
+        )
+        telemetry["teamMemory"] = copy.deepcopy(current_team_memory)
+        telemetry["teamMemorySummary"] = {
+            "modelVersion": self.nana_team_memory.get("modelVersion")
+            if isinstance(self.nana_team_memory, dict)
+            else None,
+            "observations": int(self.nana_team_memory.get("observations") or 0)
+            if isinstance(self.nana_team_memory, dict)
+            else 0,
+            "taggedSessions": int(self.nana_team_memory.get("taggedSessions") or 0)
+            if isinstance(self.nana_team_memory, dict)
+            else 0,
+            "ignoredLegacyTeamSessions": int(
+                self.nana_team_memory.get("ignoredLegacyTeamSessions") or 0
+            )
+            if isinstance(self.nana_team_memory, dict)
+            else 0,
+        }
         data.setdefault("nana", {}).update(
             {
                 "stage": 2.3,
@@ -680,6 +799,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "fallback": "LIGHT",
                     "automaticPromotion": False,
                 },
+                "telemetry": telemetry,
             }
         )
         return data
