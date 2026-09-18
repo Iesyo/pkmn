@@ -94,17 +94,84 @@ def choose_candidate(
     self_trust: dict[str, Any],
     lambda_cap: float = NURSERY_LAMBDA_CAP,
 ) -> dict[str, Any]:
-    """Choose a live Nursery alternative or return an explicit fallback reason."""
+    """Choose a live Nursery alternative and expose read-only near-miss telemetry."""
 
     if plan.get("eligible") is not True:
-        return {"intervene": False, "reason": str(plan.get("reason") or "not-eligible")}
-
-    confidence = _safe_float(plan.get("confidence"))
-    if confidence < MIN_PREDICTION_CONFIDENCE:
         return {
             "intervene": False,
+            "reason": str(plan.get("reason") or "not-eligible"),
+            "lambdaCap": lambda_cap,
+            "requiredLambdaCap": None,
+            "lambdaGap": None,
+            "nearestCandidate": None,
+            "candidateCountEvaluated": 0,
+        }
+
+    confidence = _safe_float(plan.get("confidence"))
+    confidence_scale = max(0.0, min(1.0, _safe_float(plan.get("confidenceScale"))))
+    effective_lambda = max(0.0, lambda_cap) * confidence_scale
+    canonical = plan.get("canonical") if isinstance(plan.get("canonical"), dict) else {}
+    canonical_counter = _safe_float(canonical.get("expectedCounter"))
+    canonical_score = effective_lambda * canonical_counter
+
+    # Build the legal near-LIGHT frontier once. This is observability only: the
+    # actual intervention ranking below remains the same margin/delta/probability
+    # ordering Nursery used before telemetry existed.
+    ranked: list[tuple[float, dict[str, Any], float, float]] = []
+    frontier: list[tuple[float, float, float, dict[str, Any]]] = []
+    for candidate in plan.get("candidatePool") or []:
+        if not isinstance(candidate, dict) or candidate.get("selectedByLight") is True:
+            continue
+        regret = _safe_float(candidate.get("lightRegretLog"))
+        if regret < MIN_ALLOWED_LIGHT_REGRET_LOG:
+            continue
+        delta_counter = _safe_float(candidate.get("expectedCounter")) - canonical_counter
+        if delta_counter <= _EPS:
+            continue
+        required_effective = max(0.0, -regret / delta_counter)
+        required_cap = (
+            required_effective / confidence_scale
+            if confidence_scale > _EPS
+            else math.inf
+        )
+        probability = _safe_float(candidate.get("probability"))
+        frontier.append((required_cap, -delta_counter, -probability, candidate))
+
+        candidate_score = regret + effective_lambda * _safe_float(
+            candidate.get("expectedCounter")
+        )
+        margin = candidate_score - canonical_score
+        if margin > _EPS:
+            ranked.append((margin, candidate, delta_counter, required_cap))
+
+    nearest_candidate: dict[str, Any] | None = None
+    nearest_required: float | None = None
+    if frontier:
+        frontier.sort(key=lambda item: (item[0], item[1], item[2]))
+        nearest_required = float(frontier[0][0])
+        nearest_candidate = frontier[0][3]
+
+    lambda_gap = (
+        max(0.0, nearest_required - lambda_cap)
+        if nearest_required is not None and math.isfinite(nearest_required)
+        else None
+    )
+    telemetry = {
+        "confidence": confidence,
+        "confidenceScale": confidence_scale,
+        "lambdaCap": lambda_cap,
+        "effectiveLambda": effective_lambda,
+        "requiredLambdaCap": nearest_required,
+        "lambdaGap": lambda_gap,
+        "nearestCandidate": nearest_candidate,
+        "candidateCountEvaluated": len(frontier),
+    }
+
+    if confidence < MIN_PREDICTION_CONFIDENCE:
+        return {
+            **telemetry,
+            "intervene": False,
             "reason": "human-prediction-confidence-low",
-            "confidence": confidence,
         }
 
     light_trust_value = _safe_float(light_trust.get("trust"), 0.90)
@@ -114,6 +181,7 @@ def choose_candidate(
         and light_trust_value >= HIGH_LIGHT_TRUST_VETO
     ):
         return {
+            **telemetry,
             "intervene": False,
             "reason": "light-critic-high-trust-veto",
             "lightTrust": light_trust_value,
@@ -127,40 +195,18 @@ def choose_candidate(
         and self_trust_value <= SELF_LOW_TRUST_VETO
     ):
         return {
+            **telemetry,
             "intervene": False,
             "reason": "nana-self-low-trust-veto",
             "selfTrust": self_trust_value,
             "selfTrustConfidence": self_trust_confidence,
         }
 
-    canonical = plan.get("canonical") if isinstance(plan.get("canonical"), dict) else {}
-    canonical_counter = _safe_float(canonical.get("expectedCounter"))
-    confidence_scale = max(0.0, min(1.0, _safe_float(plan.get("confidenceScale"))))
-    effective_lambda = max(0.0, lambda_cap) * confidence_scale
-    canonical_score = effective_lambda * canonical_counter
-
-    ranked: list[tuple[float, dict[str, Any], float]] = []
-    for candidate in plan.get("candidatePool") or []:
-        if not isinstance(candidate, dict) or candidate.get("selectedByLight") is True:
-            continue
-        regret = _safe_float(candidate.get("lightRegretLog"))
-        if regret < MIN_ALLOWED_LIGHT_REGRET_LOG:
-            continue
-        delta_counter = _safe_float(candidate.get("expectedCounter")) - canonical_counter
-        if delta_counter <= _EPS:
-            continue
-        candidate_score = regret + effective_lambda * _safe_float(candidate.get("expectedCounter"))
-        margin = candidate_score - canonical_score
-        if margin <= _EPS:
-            continue
-        ranked.append((margin, candidate, delta_counter))
-
     if not ranked:
         return {
+            **telemetry,
             "intervene": False,
             "reason": "no-live-candidate-inside-nursery-cap",
-            "lambdaCap": lambda_cap,
-            "effectiveLambda": effective_lambda,
         }
 
     ranked.sort(
@@ -171,31 +217,24 @@ def choose_candidate(
         ),
         reverse=True,
     )
-    margin, candidate, delta_counter = ranked[0]
-    required_effective = max(
-        0.0,
-        -_safe_float(candidate.get("lightRegretLog")) / delta_counter,
-    )
-    required_cap = (
-        required_effective / confidence_scale
-        if confidence_scale > _EPS
-        else math.inf
-    )
+    margin, candidate, delta_counter, required_cap = ranked[0]
     return {
+        **telemetry,
         "intervene": True,
         "reason": "nursery-live-near-light",
-        "lambdaCap": lambda_cap,
-        "effectiveLambda": effective_lambda,
         "margin": margin,
         "requiredLambdaCap": required_cap,
+        "lambdaGap": max(0.0, required_cap - lambda_cap)
+        if math.isfinite(required_cap)
+        else None,
         "expectedCounterDelta": delta_counter,
         "candidate": candidate,
+        "nearestCandidate": candidate,
         "lightTrust": light_trust_value,
         "lightTrustConfidence": light_trust_confidence,
         "selfTrust": self_trust_value,
         "selfTrustConfidence": self_trust_confidence,
     }
-
 
 def promotion_status(
     events: Iterable[dict[str, Any]],
