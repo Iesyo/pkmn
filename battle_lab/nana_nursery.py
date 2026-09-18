@@ -151,9 +151,14 @@ def choose_candidate(
         nearest_required = float(frontier[0][0])
         nearest_candidate = frontier[0][3]
 
-    lambda_gap = (
-        max(0.0, nearest_required - lambda_cap)
+    finite_nearest_required = (
+        nearest_required
         if nearest_required is not None and math.isfinite(nearest_required)
+        else None
+    )
+    lambda_gap = (
+        max(0.0, finite_nearest_required - lambda_cap)
+        if finite_nearest_required is not None
         else None
     )
     telemetry = {
@@ -161,7 +166,7 @@ def choose_candidate(
         "confidenceScale": confidence_scale,
         "lambdaCap": lambda_cap,
         "effectiveLambda": effective_lambda,
-        "requiredLambdaCap": nearest_required,
+        "requiredLambdaCap": finite_nearest_required,
         "lambdaGap": lambda_gap,
         "nearestCandidate": nearest_candidate,
         "candidateCountEvaluated": len(frontier),
