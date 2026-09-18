@@ -427,6 +427,14 @@ def install_nursery_service(*, profile_id: str) -> type:
                             ),
                             "missingFromTeacher": len(missing_from_teacher),
                             "extraTeacher": len(extra_teacher),
+                            "representable": sum(
+                                candidate.representable
+                                for candidate in legal_set.candidates
+                            ),
+                            "unrepresentable": sum(
+                                not candidate.representable
+                                for candidate in legal_set.candidates
+                            ),
                             "individualCounts": list(legal_set.individual_counts),
                             "joinedCount": legal_set.joined_count,
                         }
