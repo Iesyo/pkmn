@@ -206,7 +206,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     session.id,
                     "nana_teacher_version",
                     {
-                        "teacher": _teacher_ref(self._nana_teacher),
+                        "teacher": copy.deepcopy(self._nana_teacher),
                         "reason": "nursery-live-resolved-identity",
                     },
                 )
