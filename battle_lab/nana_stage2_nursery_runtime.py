@@ -23,9 +23,18 @@ from battle_lab.nana_autonomy import (
 )
 from battle_lab.nana_light_critic import trust_for
 from battle_lab.nana_nursery import (
+    ALLOW_UNREPRESENTED_ORDERS,
+    AUTOMATIC_PROMOTION,
+    HIGH_LIGHT_TRUST_CONFIDENCE,
+    HIGH_LIGHT_TRUST_VETO,
     MAX_INTERVENTIONS_PER_BATTLE,
+    MIN_ALLOWED_LIGHT_REGRET_LOG,
+    MIN_PREDICTION_CONFIDENCE,
     NURSERY_LAMBDA_CAP,
     NURSERY_MODEL_VERSION,
+    PROMOTION_INTERVENTION_WINDOW,
+    SELF_LOW_TRUST_CONFIDENCE,
+    SELF_LOW_TRUST_VETO,
     SELF_PRIOR_TRUST,
     choose_candidate,
     promotion_status,
@@ -97,10 +106,35 @@ async def _await_prechoice_prediction(
         await asyncio.sleep(min(PRECHOICE_POLL_SECONDS, remaining))
 
 
+def _live_autonomy_contract() -> dict[str, Any]:
+    return live_nursery_contract(
+        lambda_cap=NURSERY_LAMBDA_CAP,
+        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+        min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
+        min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
+        high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
+        high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
+        self_low_trust_veto=SELF_LOW_TRUST_VETO,
+        self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
+        promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
+        allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
+        automatic_promotion=AUTOMATIC_PROMOTION,
+    )
+
+
 def install_nursery_service(*, profile_id: str) -> type:
     assert_live_nursery_matches_n2(
         lambda_cap=NURSERY_LAMBDA_CAP,
         max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+        min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
+        min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
+        high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
+        high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
+        self_low_trust_veto=SELF_LOW_TRUST_VETO,
+        self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
+        promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
+        allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
+        automatic_promotion=AUTOMATIC_PROMOTION,
     )
     service_class = install_light_critic_service(profile_id=profile_id)
     if getattr(service_class, "_nana_nursery_live_v1", False):
@@ -116,13 +150,12 @@ def install_nursery_service(*, profile_id: str) -> type:
     def _live_policy_contract() -> dict[str, Any]:
         return build_nana_policy_contract(
             decision_mode=NURSERY_MODEL_VERSION,
-            scorer_contract="light-regret-plus-response-utility-v1",
+            scorer_contract="legacy-n2-light-regret-plus-response-utility-v1",
             score_spaces={
                 "teacherPrior": "teacher-log-regret-v1",
                 "counter": "response-utility-v1",
             },
-            lambda_cap=NURSERY_LAMBDA_CAP,
-            max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+            governor_contract=_live_autonomy_contract(),
             legal_order_contract="vgc-bench-indexed-order-v1",
         )
 
@@ -178,10 +211,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "nurseryModel": NURSERY_MODEL_VERSION,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
-                "autonomy": live_nursery_contract(
-                    lambda_cap=NURSERY_LAMBDA_CAP,
-                    max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
-                ),
+                "autonomy": _live_autonomy_contract(),
                 "teacher": _teacher_ref(self._nana_teacher),
             }
         )
