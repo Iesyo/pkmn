@@ -17,23 +17,48 @@ from poke_env.environment import DoublesEnv
 
 from battle_lab import local_sparring_service as sparring
 from battle_lab import nana_stage2_shadow_v2_runtime as stage2_v2
+from battle_lab.nana_autonomy import (
+    assert_live_nursery_matches_n2,
+    live_nursery_contract,
+)
 from battle_lab.nana_light_critic import trust_for
 from battle_lab.nana_nursery import (
+    ALLOW_UNREPRESENTED_ORDERS,
+    AUTOMATIC_PROMOTION,
+    HIGH_LIGHT_TRUST_CONFIDENCE,
+    HIGH_LIGHT_TRUST_VETO,
     MAX_INTERVENTIONS_PER_BATTLE,
+    MIN_ALLOWED_LIGHT_REGRET_LOG,
+    MIN_PREDICTION_CONFIDENCE,
     NURSERY_LAMBDA_CAP,
     NURSERY_MODEL_VERSION,
+    PROMOTION_INTERVENTION_WINDOW,
+    SELF_LOW_TRUST_CONFIDENCE,
+    SELF_LOW_TRUST_VETO,
     SELF_PRIOR_TRUST,
     choose_candidate,
     promotion_status,
     rebuild_self_for_recorder,
 )
+from battle_lab.nana_contracts import build_nana_policy_contract
 from battle_lab.nana_policy import inspect_light_decision
 from battle_lab.nana_runtime import install_reusable_viewer, parse_nana_args
 from battle_lab.nana_stage2_shadow_v22_runtime import (
     STAGE2_MODEL_VERSION,
     install_light_critic_service,
 )
-from battle_lab.nana_teacher import descriptor_for_service, latest_teacher_from_events
+from battle_lab.nana_teacher import (
+    compact_teacher_descriptor,
+    descriptor_for_service,
+    latest_teacher_from_events,
+)
+from battle_lab.nana_team_memory import (
+    blend_self_with_team,
+    rebuild_team_memory_for_recorder,
+    team_memory_contract,
+    team_trust_for,
+)
+from battle_lab.nana_transition import build_transition, write_transition_act
 
 
 LIVE_INFLUENCE = 1.0
@@ -87,7 +112,36 @@ async def _await_prechoice_prediction(
         await asyncio.sleep(min(PRECHOICE_POLL_SECONDS, remaining))
 
 
+def _live_autonomy_contract() -> dict[str, Any]:
+    return live_nursery_contract(
+        lambda_cap=NURSERY_LAMBDA_CAP,
+        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+        min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
+        min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
+        high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
+        high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
+        self_low_trust_veto=SELF_LOW_TRUST_VETO,
+        self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
+        promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
+        allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
+        automatic_promotion=AUTOMATIC_PROMOTION,
+    )
+
+
 def install_nursery_service(*, profile_id: str) -> type:
+    assert_live_nursery_matches_n2(
+        lambda_cap=NURSERY_LAMBDA_CAP,
+        max_interventions_per_battle=MAX_INTERVENTIONS_PER_BATTLE,
+        min_prediction_confidence=MIN_PREDICTION_CONFIDENCE,
+        min_allowed_light_regret_log=MIN_ALLOWED_LIGHT_REGRET_LOG,
+        high_light_trust_veto=HIGH_LIGHT_TRUST_VETO,
+        high_light_trust_confidence=HIGH_LIGHT_TRUST_CONFIDENCE,
+        self_low_trust_veto=SELF_LOW_TRUST_VETO,
+        self_low_trust_confidence=SELF_LOW_TRUST_CONFIDENCE,
+        promotion_intervention_window=PROMOTION_INTERVENTION_WINDOW,
+        allow_unrepresented_orders=ALLOW_UNREPRESENTED_ORDERS,
+        automatic_promotion=AUTOMATIC_PROMOTION,
+    )
     service_class = install_light_critic_service(profile_id=profile_id)
     if getattr(service_class, "_nana_nursery_live_v1", False):
         service_class.nana_profile_id = profile_id
@@ -99,11 +153,31 @@ def install_nursery_service(*, profile_id: str) -> type:
     original_snapshot = service_class.snapshot
     original_finish = service_class._nana_finish
 
+    def _live_policy_contract() -> dict[str, Any]:
+        return build_nana_policy_contract(
+            decision_mode=NURSERY_MODEL_VERSION,
+            scorer_contract="legacy-n2-light-regret-plus-response-utility-v1",
+            score_spaces={
+                "teacherPrior": "teacher-log-regret-v1",
+                "counter": "response-utility-v1",
+            },
+            governor_contract=_live_autonomy_contract(),
+            memory_contract=team_memory_contract(),
+            legal_order_contract="vgc-bench-indexed-order-v1",
+        )
+
+    def _teacher_ref(teacher: dict[str, Any] | None) -> dict[str, Any]:
+        return compact_teacher_descriptor(teacher)
+
     def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
+        self._nana_policy_contract = _live_policy_contract()
         history = list(self.nana.iter_events())
         latest_teacher = latest_teacher_from_events(history)
-        self._nana_previous_teacher_key = str(latest_teacher.get("key") or "")
+        self._nana_previous_teacher = copy.deepcopy(latest_teacher)
+        self._nana_previous_teacher_key = str(
+            latest_teacher.get("key") or latest_teacher.get("weightsKey") or ""
+        )
         self._nana_teacher = descriptor_for_service(self)
         self._nana_allow_legacy_teacher_fallback = (
             not self._nana_previous_teacher_key
@@ -113,6 +187,7 @@ def install_nursery_service(*, profile_id: str) -> type:
         self._nana_nursery_interventions: dict[str, int] = {}
         self._nana_nursery_model_generation: dict[str, int] = {}
         self._nana_nursery_finished: set[str] = set()
+        self._nana_identity_recorded_sessions: set[str] = set()
         try:
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
         except Exception:
@@ -122,6 +197,14 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "prior": {"trust": SELF_PRIOR_TRUST, "weight": 6.0},
                 "buckets": {},
                 "teachers": {},
+            }
+        try:
+            self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
+        except Exception:
+            self.nana_team_memory = {
+                "modelVersion": "nana-team-memory-v1",
+                "observations": 0,
+                "buckets": {},
             }
 
     def _teacher_query_args(self: Any) -> dict[str, Any]:
@@ -143,13 +226,69 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "nurseryModel": NURSERY_MODEL_VERSION,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
-                "teacher": copy.deepcopy(self._nana_teacher),
+                "autonomy": _live_autonomy_contract(),
+                "teacher": _teacher_ref(self._nana_teacher),
             }
         )
 
     async def ensure_ready(self: Any) -> None:
         await original_ensure_ready(self)
+        self._nana_policy_contract = _live_policy_contract()
         self._nana_teacher = descriptor_for_service(self)
+
+        session = self.active_session
+        if (
+            session is not None
+            and session.id not in self._nana_identity_recorded_sessions
+            and self._nana_teacher.get("behaviorKeyResolved") is True
+            and self._nana_teacher.get("nanaPolicyKeyResolved") is True
+        ):
+            transition_resolved = False
+            try:
+                transition = build_transition(
+                    getattr(self, "_nana_previous_teacher", {}),
+                    self._nana_teacher,
+                )
+                if transition.get("record") is True:
+                    act_path = write_transition_act(self.nana.profile_root, transition)
+                    self.nana.append_event(
+                        session.id,
+                        "nana_teacher_change",
+                        {
+                            **transition,
+                            "actPath": str(act_path.relative_to(self.nana.profile_root)),
+                        },
+                    )
+                self.nana.append_event(
+                    session.id,
+                    "nana_teacher_version",
+                    {
+                        "teacher": copy.deepcopy(self._nana_teacher),
+                        "reason": "nursery-live-resolved-identity",
+                    },
+                )
+                transition_resolved = True
+            except Exception as error:
+                try:
+                    self.nana.append_event(
+                        session.id,
+                        "nana_transition_error",
+                        {
+                            "error": f"{type(error).__name__}: {error}",
+                            "liveBehaviorChanged": False,
+                        },
+                    )
+                except Exception:
+                    pass
+            if transition_resolved:
+                self._nana_previous_teacher = copy.deepcopy(self._nana_teacher)
+                self._nana_previous_teacher_key = str(
+                    self._nana_teacher.get("key")
+                    or self._nana_teacher.get("weightsKey")
+                    or ""
+                )
+                self._nana_identity_recorded_sessions.add(session.id)
+
         _apply_nursery_metadata(self)
         if self._nana_nursery_player_wrapped:
             return
@@ -208,7 +347,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             {
                                 "modelVersion": NURSERY_MODEL_VERSION,
                                 "turn": turn,
-                                "teacher": copy.deepcopy(service._nana_teacher),
+                                "teacher": _teacher_ref(service._nana_teacher),
                                 "error": "prechoice synchronization timed out",
                                 "fallback": "LIGHT",
                                 "phase": "prechoice-sync-timeout",
@@ -278,6 +417,16 @@ def install_nursery_service(*, profile_id: str) -> type:
                             light,
                             **teacher_args,
                         )
+                        team_context = (
+                            service._nana_session_team_context.get(session.id, {})
+                            if hasattr(service, "_nana_session_team_context")
+                            else {}
+                        )
+                        team_trust = team_trust_for(
+                            service.nana_team_memory,
+                            team_context,
+                        )
+                        self_trust = blend_self_with_team(self_trust, team_trust)
                     selection = choose_candidate(
                         plan,
                         light_trust=light_trust,
@@ -335,7 +484,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             {
                                 "modelVersion": NURSERY_MODEL_VERSION,
                                 "turn": turn,
-                                "teacher": copy.deepcopy(service._nana_teacher),
+                                "teacher": _teacher_ref(service._nana_teacher),
                                 "error": f"{type(error).__name__}: {error}",
                                 "fallback": "LIGHT",
                                 "phase": "pre-commit",
@@ -369,7 +518,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             **copy.deepcopy(light),
                             "_nurseryExecutedAction": copy.deepcopy(executed_action),
                             "_nurseryActor": actor,
-                            "_nurseryTeacher": copy.deepcopy(service._nana_teacher),
+                            "_nurseryTeacher": _teacher_ref(service._nana_teacher),
                         },
                     )
                 except Exception as error:
@@ -386,7 +535,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "shadowModel": STAGE2_MODEL_VERSION,
                             "generation": generation,
                             "turn": turn,
-                            "teacher": copy.deepcopy(service._nana_teacher),
+                            "teacher": _teacher_ref(service._nana_teacher),
                             "intervened": intervened,
                             "actor": actor,
                             "interventionsUsed": service._nana_nursery_interventions.get(session.id, 0),
@@ -396,6 +545,11 @@ def install_nursery_service(*, profile_id: str) -> type:
                             "executedAction": copy.deepcopy(executed_action),
                             "lightTrust": copy.deepcopy(light_trust),
                             "selfTrust": copy.deepcopy(self_trust),
+                            "teamMemory": copy.deepcopy(
+                                (self_trust.get("teamMemory") or {})
+                                if isinstance(self_trust, dict)
+                                else {}
+                            ),
                             "selection": copy.deepcopy(selection),
                         },
                     )
@@ -412,7 +566,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                             {
                                 "modelVersion": NURSERY_MODEL_VERSION,
                                 "turn": turn,
-                                "teacher": copy.deepcopy(service._nana_teacher),
+                                "teacher": _teacher_ref(service._nana_teacher),
                                 "actor": actor,
                                 "intervened": intervened,
                                 "errors": recording_errors,
@@ -433,19 +587,17 @@ def install_nursery_service(*, profile_id: str) -> type:
         session = await original_start(self, request)
         self._nana_nursery_interventions[session.id] = 0
         self._nana_nursery_model_generation[session.id] = 0
+        self._nana_policy_contract = _live_policy_contract()
         self._nana_teacher = descriptor_for_service(self)
         _apply_nursery_metadata(self)
-        self.nana.append_event(
-            session.id,
-            "nana_teacher_version",
-            {"teacher": copy.deepcopy(self._nana_teacher), "reason": "nursery-live-session"},
-        )
+        # Strict behavior identity is recorded only after ensure_ready resolves the
+        # VGC-Bench action/feature contracts. Start keeps compatibility metadata.
         self.nana.append_event(
             session.id,
             "nana_nursery_start",
             {
                 "modelVersion": NURSERY_MODEL_VERSION,
-                "teacher": copy.deepcopy(self._nana_teacher),
+                "teacher": _teacher_ref(self._nana_teacher),
                 "live": True,
                 "lambdaCap": NURSERY_LAMBDA_CAP,
                 "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
@@ -473,7 +625,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 executed if isinstance(executed, dict) else clean_light.get("canonicalAction")
             ),
             "actor": actor,
-            "teacher": copy.deepcopy(
+            "teacher": _teacher_ref(
                 teacher if isinstance(teacher, dict) else self._nana_teacher
             ),
             "light": clean_light,
@@ -501,7 +653,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "humanAction": human["action"],
                 "modelAction": model["action"],
                 "modelActor": model.get("actor") or "light",
-                "teacher": copy.deepcopy(model.get("teacher") or self._nana_teacher),
+                "teacher": _teacher_ref(model.get("teacher") or self._nana_teacher),
                 "lightCanonicalAction": copy.deepcopy(
                     (model.get("light") or {}).get("canonicalAction")
                 ),
@@ -520,9 +672,10 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "influence": LIVE_INFLUENCE,
                 "nursery": {
                     "modelVersion": NURSERY_MODEL_VERSION,
-                    "teacher": copy.deepcopy(self._nana_teacher),
+                    "teacher": _teacher_ref(self._nana_teacher),
                     "lambdaCap": NURSERY_LAMBDA_CAP,
                     "maxInterventionsPerBattle": MAX_INTERVENTIONS_PER_BATTLE,
+                    "autonomy": _live_autonomy_contract(),
                     "interventionsUsed": used,
                     "fallback": "LIGHT",
                     "automaticPromotion": False,
@@ -539,6 +692,7 @@ def install_nursery_service(*, profile_id: str) -> type:
         try:
             before = int(self.nana_self_summary.get("observations") or 0)
             self.nana_self_summary = rebuild_self_for_recorder(self.nana)
+            self.nana_team_memory = rebuild_team_memory_for_recorder(self.nana)
             after = int(self.nana_self_summary.get("observations") or 0)
             promotion = promotion_status(
                 self.nana.iter_events(),
@@ -549,9 +703,12 @@ def install_nursery_service(*, profile_id: str) -> type:
                 "nana_nursery_rebuild",
                 {
                     "modelVersion": NURSERY_MODEL_VERSION,
-                    "teacher": copy.deepcopy(self._nana_teacher),
+                    "teacher": _teacher_ref(self._nana_teacher),
                     "selfObservationsBefore": before,
                     "selfObservationsAfter": after,
+                    "teamMemoryObservations": int(
+                        self.nana_team_memory.get("observations") or 0
+                    ),
                     "promotion": promotion,
                 },
             )
@@ -562,7 +719,7 @@ def install_nursery_service(*, profile_id: str) -> type:
                     "nana_nursery_error",
                     {
                         "modelVersion": NURSERY_MODEL_VERSION,
-                        "teacher": copy.deepcopy(self._nana_teacher),
+                        "teacher": _teacher_ref(self._nana_teacher),
                         "error": f"{type(error).__name__}: {error}",
                         "phase": "post-battle-rebuild",
                     },
