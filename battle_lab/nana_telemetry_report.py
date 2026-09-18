@@ -128,6 +128,9 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
     bottlenecks: Counter[str] = Counter()
     lambda_required: list[float] = []
     lambda_gap: list[float] = []
+    legal_coverages: list[float] = []
+    legal_missing: list[int] = []
+    legal_totals: list[int] = []
     interventions = 0
     decisions_total = 0
     instrumented_decisions = 0
@@ -157,6 +160,13 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
             if payload.get("intervened") is True:
                 interventions += 1
                 session_interventions += 1
+            legal = payload.get("legalOrders") if isinstance(payload.get("legalOrders"), dict) else {}
+            coverage = _safe_float(legal.get("teacherCoverage"))
+            if legal.get("resolved") is True and coverage is not None:
+                legal_coverages.append(coverage)
+                legal_missing.append(int(legal.get("missingFromTeacher") or 0))
+                legal_totals.append(int(legal.get("totalLegal") or 0))
+
             required = _safe_float(selection.get("requiredLambdaCap"))
             gap = _safe_float(selection.get("lambdaGap"))
             if required is not None:
@@ -227,6 +237,14 @@ def build_report(profile_root: Path, *, last: int = 10) -> dict[str, Any]:
             "samples": len(lambda_gap),
             "median": statistics.median(lambda_gap) if lambda_gap else None,
         },
+        "legalOrders": {
+            "samples": len(legal_coverages),
+            "coverageMin": min(legal_coverages) if legal_coverages else None,
+            "coverageMedian": statistics.median(legal_coverages) if legal_coverages else None,
+            "coverageMax": max(legal_coverages) if legal_coverages else None,
+            "missingMax": max(legal_missing) if legal_missing else None,
+            "legalTotalMedian": statistics.median(legal_totals) if legal_totals else None,
+        },
         "teamMemory": team_memory,
         "perSession": per_session,
     }
@@ -275,6 +293,13 @@ def print_report(report: dict[str, Any]) -> None:
     )
     print(f"Umbrales: {required['thresholds']}")
     print(f"Gap mediano al λ actual: {_fmt(report['lambdaGap']['median'])}")
+    legal = report["legalOrders"]
+    print(
+        "Cobertura fuente legal N4: "
+        f"n={legal['samples']} · min={_fmt(legal['coverageMin'])} · "
+        f"median={_fmt(legal['coverageMedian'])} · max={_fmt(legal['coverageMax'])} · "
+        f"missingMax={legal['missingMax']} · legales medianos={legal['legalTotalMedian']}"
+    )
     print()
     print(f"TeamMemory: {report['teamMemory']}")
     print()
