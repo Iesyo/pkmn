@@ -15,6 +15,8 @@ histórico de equipos de Pokémon VGC.
 - Cobertura, debilidades, resistencias, inmunidades y puntos ciegos.
 - Vista defensiva base y Tera separadas.
 - Registro de partidas con replay, cuatro picks, dos leads y el equipo rival visto.
+- Los replays reconstruidos de Champions quedan ligados a la partida y se
+  abren desde el historial en una pestaña nueva con el visor de Showdown.
 - Primer corte del traductor Pokémon Champions → replay Showdown: acepta vídeo
   o captura en vivo mediante FFmpeg, normaliza eventos con confianza y genera
   JSON, log y HTML consumibles por Teams/Comparación.
