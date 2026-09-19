@@ -76,6 +76,12 @@ champions-replay video "batalla.mp4" \
   --output replays/batalla-001
 ```
 
+El comando calcula con `ffprobe` cuántos frames analizará y muestra porcentaje,
+tiempo transcurrido, ETA, eventos detectados y frames omitidos. La frecuencia
+del vídeo original puede ser 60 FPS: por defecto sólo se envían 2 FPS al modelo
+visual. Si Ollama no entrega JSON válido, el detector reintenta una vez y omite
+ese frame; tres fallos consecutivos detienen el proceso con un error legible.
+
 ## En vivo con OBS Virtual Camera en Windows
 
 ```bash
