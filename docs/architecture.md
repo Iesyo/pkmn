@@ -50,9 +50,10 @@ flowchart TD
   persiste equipos, resultados, replays y checkpoints, mientras Gradio será la
   única superficie web temporal en las fases interactivas.
 - `backend/pkmn_vgc/champions_replay/`: compañero local que obtiene frames de
-  vídeo u OBS mediante FFmpeg, normaliza observaciones visuales y genera un
-  documento de replay Showdown. El sitio sólo recibe el replay terminado; la
-  captura y la inferencia no se ejecutan dentro de Cloudflare.
+  vídeo u OBS mediante FFmpeg, los lee con RapidOCR/ONNX Runtime, normaliza las
+  observaciones y genera un documento de replay Showdown. La fuente live usa un
+  buffer del último frame para no acumular atraso. El sitio sólo recibe el
+  replay terminado; la captura no se ejecuta dentro de Cloudflare.
 
 ## Invariantes
 

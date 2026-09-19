@@ -39,7 +39,7 @@ class CaptureProgress:
 
 @dataclass(frozen=True, slots=True)
 class CaptureSeed:
-    p1_name: str = "Jugador"
+    p1_name: str = "Player"
     p2_name: str = "Rival"
     p1_team: tuple[str, ...] = ()
     p2_team: tuple[str, ...] = ()
@@ -224,7 +224,7 @@ class ReplayCapturePipeline:
                 report(frame.timestamp_ms)
                 if consecutive_errors >= max_consecutive_detection_errors:
                     raise DetectionError(
-                        f"Ollama falló en {consecutive_errors} frames consecutivos; se detuvo para no "
+                        f"El detector falló en {consecutive_errors} frames consecutivos; se detuvo para no "
                         f"procesar el vídeo completo sin datos. Último error: {error}"
                     ) from error
                 continue

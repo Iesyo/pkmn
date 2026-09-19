@@ -12,49 +12,71 @@ movimientos usados.
 flowchart TD
     LIVE[OBS o capturadora] --> FRAMES[Frames FFmpeg]
     VIDEO[Vídeo grabado] --> FRAMES
-    FRAMES --> VISION[Detector visual local]
-    VISION --> EVENTS[Eventos con confianza]
+    FRAMES --> OCR[RapidOCR local]
+    OCR --> EVENTS[Eventos con confianza]
     EVENTS --> REPLAY[Replay Showdown]
     REPLAY --> STATS[Teams y Comparación]
 ```
 
-## Primer corte implementado
+## Ruta implementada
 
-- `VideoFrameSource` y `LiveFrameSource` comparten la misma salida MJPEG y no
-  dependen de OpenCV.
-- `OllamaVisionDetector` consulta únicamente un servidor local y solicita JSON
-  estructurado a `qwen3-vl:4b` por defecto.
-- `CaptureAccumulator` combina Team Preview, selección y eventos, y elimina
-  lecturas repetidas de un mismo mensaje visible en varios frames.
+- `ChampionsOcrDetector` usa RapidOCR y ONNX Runtime localmente. Lee el HUD y
+  los mensajes en inglés, corrige errores comunes de HP, reconcilia nombres con
+  el Pokédex incluido y produce eventos deterministas.
+- `VideoFrameSource` procesa grabaciones a una frecuencia configurable. La
+  entrada puede ser 60 FPS; no es necesario analizar los 60 frames de cada
+  segundo.
+- `LiveFrameSource` lee OBS Virtual Camera mediante FFmpeg y conserva sólo el
+  frame más reciente. Si el OCR tarda, descarta imágenes viejas en vez de
+  acumular retraso.
+- `CaptureAccumulator` combina el Team conocido, Pokémon vistos y eventos, y
+  elimina lecturas repetidas de un mismo mensaje visible en varios frames.
 - El serializador produce tres artefactos equivalentes:
   - `.json`: contrato consumido por la aplicación;
   - `.log`: protocolo de batalla de Showdown;
-  - `.html`: replay reproducible mediante el visor oficial de Showdown.
-- Teams admite cargar el `.json` reconstruido desde **Replay Champions**. La
-  partida conserva origen Champions porque no se guarda una URL pública de
-  Showdown. Al guardar, Teams persiste el protocolo validado —no HTML
-  arbitrario— y el historial ofrece **Ver**, que genera el visor HTML interno y
-  lo abre en una pestaña nueva.
+  - `.html`: replay reproducible mediante el visor de Showdown.
+- `OllamaVisionDetector` sigue disponible con `--detector ollama`, pero ya no es
+  el detector por defecto.
+- `--ocr-trace` guarda un JSONL por frame con texto, coordenadas, tiempo de OCR
+  y eventos. Sirve para corregir un caso real sin volver a adivinar qué leyó el
+  motor.
 
-## Requisitos locales
+Teams admite cargar el `.json` reconstruido desde **Replay Champions**. La
+partida conserva origen Champions porque no se guarda una URL pública de
+Showdown. Al guardar, Teams persiste el protocolo validado —no HTML
+arbitrario— y el historial ofrece **Ver**, que genera el visor HTML interno y
+lo abre en una pestaña nueva.
 
-- Python 3.12 o superior.
-- FFmpeg disponible en `PATH`.
-- [Ollama](https://ollama.com/) 0.12.7 o posterior ejecutándose localmente.
-- Un modelo visual compatible:
+## Instalación en Windows
 
-```bash
-ollama pull qwen3-vl:4b
-pip install -e backend
+Requiere Python 3.12 o superior y FFmpeg disponible en `PATH`. Desde la raíz
+del repositorio, usando el entorno ya creado:
+
+```powershell
+git switch desarrollo
+git pull origin desarrollo
+.\.venv-champions\Scripts\python.exe -m pip install -e ".\backend[dev,champions]"
+.\.venv-champions\Scripts\champions-replay.exe --help
 ```
 
-El detector rechaza endpoints remotos deliberadamente: las imágenes del juego
-permanecen en la computadora del usuario.
+No hace falta activar el entorno ni cambiar la política de ejecución de
+PowerShell. Los modelos pequeños de RapidOCR quedan instalados dentro del
+entorno local.
+
+Ollama es opcional. Sólo para comparar el fallback visual anterior:
+
+```powershell
+ollama pull qwen3-vl:4b
+```
+
+Las imágenes permanecen en la computadora: RapidOCR es local y el fallback de
+Ollama rechaza endpoints remotos.
 
 ## Contexto conocido
 
-Dar al detector el Team que se está probando reduce errores de nombres. El
-archivo es opcional; el rival puede quedar vacío hasta leer el Team Preview.
+Dar al detector el Team que se está probando reduce errores de nombres y
+completa el Team Preview que no aparezca como texto durante el combate. El
+archivo es opcional; todos los nombres del juego deben estar en inglés.
 
 ```json
 {
@@ -70,57 +92,92 @@ archivo es opcional; el rival puede quedar vacío hasta leer el Team Preview.
 
 ## Desde vídeo
 
-```bash
-champions-replay video "batalla.mp4" \
-  --context champions-context.json \
-  --output replays/batalla-001
+Prueba corta con traza de diagnóstico:
+
+```powershell
+.\.venv-champions\Scripts\champions-replay.exe video ".\captures\champions-real-001.mp4" `
+  --context ".\captures\champions-context.json" `
+  --output ".\replays\champions-ocr-smoke" `
+  --ocr-trace ".\replays\champions-ocr-smoke.trace.jsonl" `
+  --max-frames 20 `
+  --force
+```
+
+Ejecución completa:
+
+```powershell
+.\.venv-champions\Scripts\champions-replay.exe video ".\captures\champions-real-001.mp4" `
+  --context ".\captures\champions-context.json" `
+  --output ".\replays\champions-real-001" `
+  --ocr-trace ".\replays\champions-real-001.trace.jsonl" `
+  --force
 ```
 
 El comando calcula con `ffprobe` cuántos frames analizará y muestra porcentaje,
-tiempo transcurrido, ETA, eventos detectados y frames omitidos. La frecuencia
-del vídeo original puede ser 60 FPS: por defecto sólo se envían 2 FPS al modelo
-visual. Si Ollama no entrega JSON válido, el detector reintenta una vez y omite
-ese frame; tres fallos consecutivos detienen el proceso con un error legible.
-El alias `qwen3-vl:4b` corresponde a la variante Thinking y algunas versiones
-de Ollama colocan su salida estructurada en `thinking` dejando `response` vacío;
-el detector acepta ambos campos sin exponer el razonamiento en el replay.
+tiempo transcurrido, ETA, eventos detectados y frames omitidos. Por defecto
+analiza 2 FPS aunque el vídeo sea 60 FPS. Puede bajarse a `--sample-fps 1` en
+una CPU lenta; subirlo aumenta sensibilidad y costo casi linealmente.
+
+Una prueba con `--max-frames` puede terminar con “fuente sin batalla completa”:
+eso es normal si esos primeros frames no incluyen el resultado. La traza sí se
+conserva y permite revisar lo leído.
 
 ## En vivo con OBS Virtual Camera en Windows
 
-```bash
-champions-replay live "OBS Virtual Camera" \
-  --backend dshow \
-  --context champions-context.json \
-  --output replays/batalla-live
+Primero se puede confirmar el nombre exacto del dispositivo:
+
+```powershell
+ffmpeg -hide_banner -list_devices true -f dshow -i dummy
+```
+
+Después, iniciar la captura antes de comenzar la batalla:
+
+```powershell
+.\.venv-champions\Scripts\champions-replay.exe live "OBS Virtual Camera" `
+  --backend dshow `
+  --context ".\captures\champions-context.json" `
+  --output ".\replays\champions-live" `
+  --ocr-trace ".\replays\champions-live.trace.jsonl" `
+  --force
 ```
 
 También están disponibles `v4l2` para Linux, `avfoundation` para macOS y una
 entrada `auto` para una URL o fuente que FFmpeg pueda abrir directamente.
 
-## Contrato visual
+## Contrato visual y límites actuales
 
 Cada observación contiene timestamp, frame de origen y confianza. El detector
-sólo puede declarar hechos visibles: turnos, entradas al campo, movimientos
-confirmados, HP, estados, objetos/habilidades revelados, KO y resultado. Los
-cuatro seleccionados deben ordenarse con los dos leads primero para generar el
-`inputlog` de Showdown correctamente.
+sólo declara hechos visibles: turnos, entradas al campo, movimientos
+confirmados, HP, estados, KO, clima y resultado. Nunca rellena información
+oculta por inferencia.
 
-Una captura se marca para revisión cuando no contiene los cuatro picks de algún
-lado o cuando un evento crítico queda por debajo de 75% de confianza. Nunca se
-rellena información oculta por inferencia.
+El OCR ya reconoce texto del HUD y mensajes; todavía no identifica los iconos
+del Team Preview. Hasta implementar ese clasificador, conviene proporcionar el
+Team propio en `--context`. Los Pokémon rivales se agregan cuando aparecen en
+campo. Una captura se marca para revisión si no contiene seis Pokémon o cuatro
+picks por lado, o si un evento crítico queda por debajo de 75% de confianza.
 
-## Estado y siguiente validación
+## Investigación previa
 
-La tubería y el contrato están probados con un combate fixture de extremo a
-extremo. Antes de considerar fiable el reconocimiento visual faltan:
+No se encontró una ingeniería inversa pública del logger original. Su
+repositorio publica documentación y binarios con licencia propietaria. Los
+proyectos públicos encontrados cubren partes aisladas —OCR de screenshots,
+overlays o grabación—, pero no generan un battle log completo desde OBS. Por
+eso esta implementación usa RapidOCR (Apache-2.0) y código propio para el
+estado de batalla, sin copiar código sin licencia.
 
-1. calibrar el prompt y la frecuencia de muestreo con grabaciones reales del
-   juego en inglés a 1080p/30fps;
-2. añadir detección barata de escenas para enviar al modelo sólo frames con
-   Team Preview, mensajes o resultados;
-3. medir precisión por campo y preparar una revisión rápida de eventos dudosos;
-4. validar batallas con cambios, Megaevolución, estados, clima, movimientos de
-   área, multi-hit y daño residual.
+## Siguiente validación
+
+La tubería, el contrato y el parser OCR tienen pruebas automatizadas y se
+validaron contra screenshots públicos reales. La siguiente fuente de verdad es
+la grabación real del usuario y su archivo `.trace.jsonl`; con esa traza toca:
+
+1. ajustar zonas y frases que difieran en 1080p;
+2. añadir el clasificador de iconos del Team Preview;
+3. validar cambios, Mega Evolution, estados, clima, movimientos de área,
+   multi-hit y daño residual;
+4. medir precisión por tipo de evento antes de alimentar estadísticas sin
+   revisión.
 
 La fixture canónica vive en
 `backend/tests/data/champions_capture.json`; su replay esperado es

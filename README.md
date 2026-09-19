@@ -17,9 +17,9 @@ histórico de equipos de Pokémon VGC.
 - Registro de partidas con replay, cuatro picks, dos leads y el equipo rival visto.
 - Los replays reconstruidos de Champions quedan ligados a la partida y se
   abren desde el historial en una pestaña nueva con el visor de Showdown.
-- Primer corte del traductor Pokémon Champions → replay Showdown: acepta vídeo
-  o captura en vivo mediante FFmpeg, normaliza eventos con confianza y genera
-  JSON, log y HTML consumibles por Teams/Comparación.
+- Traductor Pokémon Champions → replay Showdown: acepta vídeo o captura live de
+  OBS mediante FFmpeg, usa OCR local como detector rápido y genera JSON, log y
+  HTML consumibles por Teams/Comparación. Ollama queda como fallback opcional.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los
@@ -119,6 +119,12 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e "backend[dev]"
 uvicorn pkmn_vgc.api:app --app-dir backend --reload
+```
+
+Para instalar también el capturador OCR de Pokémon Champions:
+
+```bash
+pip install -e "backend[dev,champions]"
 ```
 
 Sin instalar dependencias externas se pueden ejecutar las pruebas del parser y

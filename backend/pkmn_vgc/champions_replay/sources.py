@@ -3,10 +3,12 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
+from queue import Empty, Full, Queue
 from typing import BinaryIO, Iterator, Literal, Protocol
 
 LiveBackend = Literal["auto", "dshow", "v4l2", "avfoundation", "lavfi"]
@@ -187,3 +189,92 @@ class LiveFrameSource(_FfmpegMjpegSource):
 
     def _timestamp_ms(self, index: int, started: float) -> int:
         return round((time.monotonic() - started) * 1000)
+
+    def __iter__(self) -> Iterator[FramePacket]:
+        """Consume FFmpeg continuamente y entrega sólo el frame live más reciente.
+
+        El OCR puede tardar más que el intervalo entre frames. Un buffer de un
+        elemento evita que esa diferencia convierta una sesión de OBS en una
+        reproducción atrasada de varios minutos.
+        """
+
+        if not shutil.which(self.ffmpeg_binary):
+            raise CaptureSourceError(
+                "FFmpeg no está instalado o no aparece en PATH; es necesario para leer vídeo y captura en vivo."
+            )
+
+        latest: Queue[tuple[int, bytes]] = Queue(maxsize=1)
+        reader_done = threading.Event()
+        reader_errors: list[BaseException] = []
+        stopped_early = False
+
+        with tempfile.TemporaryFile() as stderr_stream:
+            process = subprocess.Popen(
+                self.command(),
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+            )
+            assert process.stdout is not None
+
+            def publish(value: tuple[int, bytes]) -> None:
+                while True:
+                    try:
+                        latest.put_nowait(value)
+                        return
+                    except Full:
+                        try:
+                            latest.get_nowait()
+                        except Empty:
+                            pass
+
+            def read_latest() -> None:
+                try:
+                    for source_index, image in enumerate(iter_mjpeg(process.stdout)):
+                        publish((source_index, image))
+                except BaseException as error:  # pragma: no cover - fallo excepcional del pipe
+                    reader_errors.append(error)
+                finally:
+                    reader_done.set()
+
+            reader = threading.Thread(target=read_latest, name="champions-live-reader", daemon=True)
+            reader.start()
+            started = time.monotonic()
+            yielded = 0
+            try:
+                while True:
+                    try:
+                        source_index, image = latest.get(timeout=0.1)
+                    except Empty:
+                        if reader_done.is_set():
+                            break
+                        continue
+                    yield FramePacket(
+                        index=source_index,
+                        timestamp_ms=self._timestamp_ms(source_index, started),
+                        image=image,
+                    )
+                    yielded += 1
+                    if self.max_frames is not None and yielded >= self.max_frames:
+                        stopped_early = True
+                        break
+            except GeneratorExit:
+                stopped_early = True
+                raise
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+                reader.join(timeout=3)
+                process.stdout.close()
+                stderr_stream.seek(0)
+                stderr = stderr_stream.read()
+
+        if reader_errors and not stopped_early:
+            raise CaptureSourceError(f"FFmpeg no pudo entregar frames: {reader_errors[-1]}")
+        if process.returncode and not stopped_early:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise CaptureSourceError(detail or "FFmpeg no pudo leer la fuente.")

@@ -22,7 +22,7 @@ class FrameDetector(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DetectorContext:
-    p1_name: str = "Jugador"
+    p1_name: str = "Player"
     p2_name: str = "Rival"
     p1_team: tuple[str, ...] = ()
     p2_team: tuple[str, ...] = ()

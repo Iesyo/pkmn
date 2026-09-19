@@ -217,6 +217,28 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("video=OBS Virtual Camera", live_command)
         self.assertIn("fps=3", live_command)
 
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffmpeg")
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.Popen")
+    def test_live_source_keeps_latest_frame_instead_of_building_backlog(
+        self,
+        popen: MagicMock,
+        _which: object,
+    ) -> None:
+        first = b"\xff\xd8first\xff\xd9"
+        second = b"\xff\xd8second\xff\xd9"
+        third = b"\xff\xd8third\xff\xd9"
+        process = MagicMock()
+        process.stdout = io.BytesIO(first + second + third)
+        process.poll.return_value = 0
+        process.wait.return_value = 0
+        process.returncode = 0
+        popen.return_value = process
+
+        frames = list(LiveFrameSource(input_name="OBS Virtual Camera", backend="dshow"))
+
+        self.assertEqual([(frame.index, frame.image) for frame in frames], [(2, third)])
+        process.terminate.assert_not_called()
+
     @patch("pkmn_vgc.champions_replay.sources.subprocess.run")
     @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffprobe")
     def test_estimates_sampled_video_frames_with_ffprobe(

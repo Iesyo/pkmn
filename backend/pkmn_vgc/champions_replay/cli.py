@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from .detector import DetectionError, DetectorContext, OllamaVisionDetector
 from .models import CapturedBattle
+from .ocr_detector import ChampionsOcrDetector
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, VideoFrameSource
@@ -33,7 +34,7 @@ def _species(value: object) -> tuple[str, ...]:
 def _seed_from_context(value: Mapping[str, Any], source_mode: str) -> tuple[CaptureSeed, DetectorContext]:
     players = value.get("players") if isinstance(value.get("players"), Mapping) else {}
     teams = value.get("teams") if isinstance(value.get("teams"), Mapping) else {}
-    p1_name = str(players.get("p1") or "Jugador")
+    p1_name = str(players.get("p1") or "Player")
     p2_name = str(players.get("p2") or "Rival")
     p1_team = _species(teams.get("p1"))
     p2_team = _species(teams.get("p2"))
@@ -83,15 +84,15 @@ def _format_duration(seconds: float | None) -> str:
 
 
 class _ProgressPrinter:
-    def __init__(self, total_frames: int | None, *, model: str, sample_fps: float) -> None:
+    def __init__(self, total_frames: int | None, *, detector: str, sample_fps: float) -> None:
         self.total_frames = total_frames
-        self.model = model
+        self.detector = detector
         self.sample_fps = sample_fps
         self.active_line = False
 
     def start(self) -> None:
         target = f"{self.total_frames} frames estimados" if self.total_frames else "duración desconocida"
-        print(f"Analizando {target} a {self.sample_fps:g} FPS con {self.model}...")
+        print(f"Analizando {target} a {self.sample_fps:g} FPS con {self.detector}...")
 
     def update(self, progress: CaptureProgress) -> None:
         elapsed = _format_duration(progress.elapsed_seconds)
@@ -129,6 +130,23 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sample-fps", type=float, default=2.0, help="Frames por segundo enviados al detector.")
     parser.add_argument("--max-frames", type=int, help="Límite opcional de frames para una prueba.")
     parser.add_argument("--max-battles", type=int, default=1, help="Cantidad máxima de batallas a producir.")
+    parser.add_argument(
+        "--detector",
+        choices=["ocr", "ollama"],
+        default="ocr",
+        help="Detector principal; OCR local es rápido y Ollama queda como compatibilidad.",
+    )
+    parser.add_argument(
+        "--ocr-trace",
+        type=Path,
+        help="JSONL opcional con texto, coordenadas, tiempos y eventos detectados por frame.",
+    )
+    parser.add_argument(
+        "--ocr-min-confidence",
+        type=float,
+        default=0.5,
+        help="Confianza mínima de texto para el detector OCR (0 a 1).",
+    )
     parser.add_argument("--model", default="qwen3-vl:4b", help="Modelo visual disponible en Ollama.")
     parser.add_argument(
         "--ollama-url",
@@ -150,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     events.add_argument("--output", type=Path, required=True)
     events.add_argument("--force", action="store_true")
 
-    video = subparsers.add_parser("video", help="Lee una grabación mediante FFmpeg y Ollama local.")
+    video = subparsers.add_parser("video", help="Lee una grabación mediante FFmpeg y OCR local.")
     video.add_argument("video", type=Path)
     _common_capture_arguments(video)
 
@@ -171,7 +189,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         context_value = _load_mapping(args.context) if args.context else {}
         seed, detector_context = _seed_from_context(context_value, args.command)
-        detector = OllamaVisionDetector(model=args.model, endpoint=args.ollama_url, context=detector_context)
+        if args.detector == "ollama":
+            detector = OllamaVisionDetector(
+                model=args.model,
+                endpoint=args.ollama_url,
+                context=detector_context,
+            )
+            detector_label = f"Ollama {args.model}"
+        else:
+            if args.ocr_trace and args.ocr_trace.exists():
+                if not args.force:
+                    raise FileExistsError(
+                        f"Ya existe {args.ocr_trace}; usa --force para reemplazarlo."
+                    )
+                args.ocr_trace.unlink()
+            detector = ChampionsOcrDetector(
+                context=detector_context,
+                trace_path=args.ocr_trace,
+                min_confidence=args.ocr_min_confidence,
+            )
+            detector_label = "OCR local"
         if args.command == "video":
             source = VideoFrameSource(
                 path=args.video,
@@ -187,7 +224,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_frames=args.max_frames,
             )
             total_frames = args.max_frames
-        progress = _ProgressPrinter(total_frames, model=args.model, sample_fps=args.sample_fps)
+        progress = _ProgressPrinter(
+            total_frames,
+            detector=detector_label,
+            sample_fps=args.sample_fps,
+        )
         progress.start()
         captures = ReplayCapturePipeline(source, detector, seed).capture(
             max_battles=args.max_battles,
