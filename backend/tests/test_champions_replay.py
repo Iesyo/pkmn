@@ -236,6 +236,27 @@ class ChampionsReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "localmente"):
             OllamaVisionDetector(endpoint="https://example.com")
 
+    @patch("pkmn_vgc.champions_replay.detector.urlopen")
+    def test_reads_qwen_structured_output_from_thinking_field(self, urlopen: MagicMock) -> None:
+        body = {
+            "response": "",
+            "thinking": json.dumps({
+                "battle_started": True,
+                "events": [{"kind": "turn", "turn": 1, "confidence": 0.95}],
+            }),
+            "done_reason": "stop",
+            "eval_count": 25,
+        }
+        urlopen.return_value = io.BytesIO(json.dumps(body).encode())
+
+        detections = OllamaVisionDetector().detect(
+            FramePacket(index=0, timestamp_ms=700, image=b"jpeg")
+        )
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(detections.battle_started)
+        self.assertEqual(detections.events[0].timestamp_ms, 700)
+
     def test_calls_local_ollama_with_image_and_structured_output(self) -> None:
         received: list[dict[str, object]] = []
 
