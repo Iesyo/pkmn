@@ -1,5 +1,5 @@
 import { toId } from "./pokemon-data";
-import { POKEMON_TYPES, type MatchResult, type PokemonType, type ScoutingDamageObservation, type ScoutingPokemonEvidence } from "./types";
+import { POKEMON_TYPES, type MatchResult, type MatchSource, type PokemonType, type ScoutingDamageObservation, type ScoutingPokemonEvidence } from "./types";
 
 type PlayerSlot = "p1" | "p2";
 
@@ -27,6 +27,8 @@ interface ReplaySide {
 
 export interface ImportedReplayMatch {
   replayUrl: string;
+  origin: MatchSource;
+  replayArtifact: ShowdownReplayDocument | null;
   result: MatchResult;
   playerName: string;
   opponentName: string;
@@ -125,6 +127,48 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     p2rating: rawReplay.p2rating,
     format: replayText(rawReplay.format, 100),
   };
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+export function renderShowdownReplayHtml(value: unknown, replayId = "champions-reconstructed") {
+  const document = normalizeShowdownReplayDocument(value);
+  const title = escapeHtml(
+    `${document.format || "Pokémon Champions"}: ${document.p1 || "Player 1"} vs. ${document.p2 || "Player 2"}`,
+  );
+  const safeId = escapeHtml(replayId);
+  const protocol = document.log.replaceAll("/", "\\/");
+  const embedVersion = Math.floor(Date.now() / 86_400_000);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    html,body{font-family:Verdana,sans-serif;font-size:10pt;margin:0;padding:0;background:#eef2f5}
+    body{padding:12px 0}.wrapper{max-width:1180px;margin:0 auto}
+  </style>
+</head>
+<body>
+  <div class="wrapper replay-wrapper">
+    <input type="hidden" name="replayid" value="${safeId}" />
+    <div class="battle"></div><div class="battle-log"></div>
+    <div class="replay-controls"></div><div class="replay-controls-2"></div>
+    <h1 style="font-weight:normal;text-align:center">${title}</h1>
+    <script type="text/plain" class="battle-log-data">${protocol}</script>
+  </div>
+  <script src="https://play.pokemonshowdown.com/js/replay-embed.js?version${embedVersion}"></script>
+</body>
+</html>`;
 }
 
 export async function fetchShowdownReplay(value: string) {
@@ -443,7 +487,13 @@ function replayDate(document: ShowdownReplayDocument, timestamp: number | null) 
 
 export function importShowdownReplay(
   document: ShowdownReplayDocument,
-  options: { replayUrl: string; showdownNames: string[]; teamSpecies: string[] },
+  options: {
+    replayUrl: string;
+    showdownNames: string[];
+    teamSpecies: string[];
+    origin?: MatchSource;
+    replayArtifact?: ShowdownReplayDocument | null;
+  },
 ): ImportedReplayMatch {
   if (!document.log?.trim()) {
     throw new ReplayValidationError("Showdown no devolvió el registro de esta partida.", 422);
@@ -475,6 +525,10 @@ export function importShowdownReplay(
 
   return {
     replayUrl: options.replayUrl,
+    origin: options.origin ?? (options.replayUrl ? "showdown" : "champions"),
+    replayArtifact: options.replayArtifact
+      ? normalizeShowdownReplayDocument(options.replayArtifact)
+      : null,
     result: toId(parsed.winnerName) === toId(own.name) ? "win" : "loss",
     playerName: own.name,
     opponentName: opponent.name || "Rival",
