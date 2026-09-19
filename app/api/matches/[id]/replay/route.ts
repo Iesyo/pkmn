@@ -7,7 +7,9 @@ export const dynamic = "force-dynamic";
 const REPLAY_HEADERS = {
   "cache-control": "private, no-store",
   "content-disposition": 'inline; filename="champions-replay.html"',
-  "content-security-policy": "default-src 'none'; script-src https://play.pokemonshowdown.com; style-src 'unsafe-inline' https://play.pokemonshowdown.com; img-src data: https://play.pokemonshowdown.com; media-src https://play.pokemonshowdown.com; font-src https://play.pokemonshowdown.com; connect-src https://play.pokemonshowdown.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox allow-scripts allow-popups",
+  // Showdown derives sprite URLs from the page protocol. Upgrade them so the
+  // HTTP dev server still uses the HTTPS origin allowed by this policy.
+  "content-security-policy": "default-src 'none'; script-src https://play.pokemonshowdown.com; style-src 'unsafe-inline' https://play.pokemonshowdown.com; img-src data: https://play.pokemonshowdown.com; media-src https://play.pokemonshowdown.com; font-src https://play.pokemonshowdown.com; connect-src https://play.pokemonshowdown.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox allow-scripts allow-popups; upgrade-insecure-requests",
   "content-type": "text/html; charset=utf-8",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
