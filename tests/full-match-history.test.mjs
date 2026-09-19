@@ -24,6 +24,8 @@ const baseMatch = {
   opponentName: "Rival",
   opponentPaste: "",
   replayUrl: "",
+  origin: "champions",
+  hasReplayArtifact: false,
   selected: [],
   opponentSelected: [],
   opponentPicks: [],
@@ -35,8 +37,8 @@ const baseMatch = {
 
 test("classifies manual Champions matches separately from Showdown replays", async () => {
   const { getMatchOrigin, filterMatchesByOrigin, countMatchesByOrigin } = await vite.ssrLoadModule("/lib/match-history.ts");
-  const champions = { ...baseMatch, id: "champions", replayUrl: "" };
-  const showdown = { ...baseMatch, id: "showdown", replayUrl: "https://replay.pokemonshowdown.com/gen9vgc-test" };
+  const champions = { ...baseMatch, id: "champions", origin: "champions" };
+  const showdown = { ...baseMatch, id: "showdown", origin: "showdown", replayUrl: "https://replay.pokemonshowdown.com/gen9vgc-test" };
   const matches = [showdown, champions];
 
   assert.equal(getMatchOrigin(champions), "champions");
@@ -45,6 +47,16 @@ test("classifies manual Champions matches separately from Showdown replays", asy
   assert.deepEqual(filterMatchesByOrigin(matches, "champions").map((match) => match.id), ["champions"]);
   assert.deepEqual(filterMatchesByOrigin(matches, "showdown").map((match) => match.id), ["showdown"]);
   assert.deepEqual(countMatchesByOrigin(matches), { champions: 1, showdown: 1 });
+});
+
+test("opens public and reconstructed replays through links in a new tab", async () => {
+  const { getMatchReplayHref } = await vite.ssrLoadModule("/lib/match-history.ts");
+  const champions = { ...baseMatch, id: "champions fixture", hasReplayArtifact: true };
+  const showdown = { ...baseMatch, id: "showdown", origin: "showdown", replayUrl: "https://replay.pokemonshowdown.com/gen9vgc-test" };
+
+  assert.equal(getMatchReplayHref(champions), "/api/matches/champions%20fixture/replay");
+  assert.equal(getMatchReplayHref(showdown), showdown.replayUrl);
+  assert.equal(getMatchReplayHref(baseMatch), "");
 });
 
 test("recent history stays capped at five while exposing the complete filtered history", async () => {
@@ -58,4 +70,6 @@ test("recent history stays capped at five while exposing the complete filtered h
   assert.match(source, /value: "showdown", label: "Showdown"/);
   assert.match(source, /filterMatchesByOrigin\(matches, historyFilter\)/);
   assert.match(source, /<OriginBadge match=\{match\} \/>/);
+  assert.match(source, /<ReplayLink match=\{match\} \/>/);
+  assert.match(source, /target="_blank"/);
 });
