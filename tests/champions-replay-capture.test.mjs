@@ -30,6 +30,7 @@ test("persists reconstructed replay protocol and serves it as inline HTML", () =
   assert.match(replayPageRoute, /renderShowdownReplayHtml/);
   assert.match(replayPageRoute, /content-disposition/);
   assert.match(replayPageRoute, /sandbox allow-scripts/);
+  assert.match(replayPageRoute, /upgrade-insecure-requests/);
 });
 
 test("registers the local Champions replay companion CLI", () => {
