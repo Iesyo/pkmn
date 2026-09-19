@@ -49,7 +49,7 @@ def _seed_from_context(value: Mapping[str, Any], source_mode: str) -> tuple[Capt
         p2_name=p2_name,
         p1_team=p1_team,
         p2_team=p2_team,
-        language=str(value.get("language") or "es"),
+        language=str(value.get("language") or "en"),
     )
     return seed, context
 
