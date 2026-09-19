@@ -26,7 +26,7 @@ class DetectorContext:
     p2_name: str = "Rival"
     p1_team: tuple[str, ...] = ()
     p2_team: tuple[str, ...] = ()
-    language: str = "es"
+    language: str = "en"
 
     def prompt_context(self) -> str:
         return json.dumps(
