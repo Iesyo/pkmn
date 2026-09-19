@@ -68,12 +68,16 @@ export interface LeadStat {
   wins: number;
 }
 
+export type MatchSource = "champions" | "showdown";
+
 export interface MatchRecord {
   id: string;
   result: MatchResult;
   opponentName: string;
   opponentPaste: string;
   replayUrl: string;
+  origin: MatchSource;
+  hasReplayArtifact: boolean;
   selected: string[];
   opponentSelected: string[];
   opponentPicks?: string[];
