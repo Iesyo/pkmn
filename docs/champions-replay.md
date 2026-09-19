@@ -32,7 +32,9 @@ flowchart TD
   - `.html`: replay reproducible mediante el visor oficial de Showdown.
 - Teams admite cargar el `.json` reconstruido desde **Replay Champions**. La
   partida conserva origen Champions porque no se guarda una URL pública de
-  Showdown.
+  Showdown. Al guardar, Teams persiste el protocolo validado —no HTML
+  arbitrario— y el historial ofrece **Ver**, que genera el visor HTML interno y
+  lo abre en una pestaña nueva.
 
 ## Requisitos locales
 
