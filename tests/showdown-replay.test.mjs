@@ -84,9 +84,13 @@ test("imports a replay reconstructed from Pokémon Champions video", async () =>
     replayUrl: "",
     showdownNames: ["iesyo"],
     teamSpecies: p1Team,
+    origin: "champions",
+    replayArtifact: replay,
   });
 
   assert.equal(match.replayUrl, "");
+  assert.equal(match.origin, "champions");
+  assert.deepEqual(match.replayArtifact, replay);
   assert.equal(match.result, "win");
   assert.equal(match.playerName, "IesYo");
   assert.deepEqual(match.selected, ["Kleavor", "Pelipper", "Sinistcha", "Venusaur"]);
@@ -109,6 +113,22 @@ test("validates reconstructed replay documents before importing them", async () 
   assert.equal(normalizeShowdownReplayDocument({ log: ["|start", "|win|IesYo"] }).log, "|start\n|win|IesYo");
   assert.throws(() => normalizeShowdownReplayDocument({}), /no contiene un registro/);
   assert.throws(() => normalizeShowdownReplayDocument("not-json"), /documento JSON válido/);
+});
+
+test("renders a reconstructed replay as safe Showdown-compatible HTML", async () => {
+  const { renderShowdownReplayHtml } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const html = renderShowdownReplayHtml({
+    format: "Champions <M-C>",
+    p1: "IesYo",
+    p2: "Rival",
+    log: "|start\n|message|</script><script>alert(1)</script>\n|win|IesYo",
+  }, "match-123");
+
+  assert.match(html, /class="battle-log-data"/);
+  assert.match(html, /replay-embed\.js/);
+  assert.match(html, /Champions &lt;M-C&gt;: IesYo vs\. Rival/);
+  assert.ok(html.includes("|message|<\\/script><script>alert(1)<\\/script>"));
+  assert.ok(!html.includes("|message|</script><script>alert(1)</script>"));
 });
 
 test("falls back to the saved roster and public switches when inputlog is absent", async () => {
