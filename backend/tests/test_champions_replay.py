@@ -8,6 +8,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from pkmn_vgc.champions_replay.cli import _seed_from_context
 from pkmn_vgc.champions_replay.detector import DetectorContext, OllamaVisionDetector, _extract_json
 from pkmn_vgc.champions_replay.models import BattleEvent, BattleSide, CapturedBattle, FrameDetections
 from pkmn_vgc.champions_replay.pipeline import (
@@ -31,6 +32,12 @@ class ChampionsReplayTests(unittest.TestCase):
         return CapturedBattle.from_mapping(
             json.loads((DATA / "champions_capture.json").read_text(encoding="utf-8"))
         )
+
+    def test_uses_english_as_the_capture_language_by_default(self) -> None:
+        _seed, context = _seed_from_context({}, "video")
+
+        self.assertEqual(DetectorContext().language, "en")
+        self.assertEqual(context.language, "en")
 
     def test_serializes_capture_to_showdown_contract(self) -> None:
         document = build_replay_document(self.capture())
