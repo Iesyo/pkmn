@@ -81,6 +81,9 @@ tiempo transcurrido, ETA, eventos detectados y frames omitidos. La frecuencia
 del vídeo original puede ser 60 FPS: por defecto sólo se envían 2 FPS al modelo
 visual. Si Ollama no entrega JSON válido, el detector reintenta una vez y omite
 ese frame; tres fallos consecutivos detienen el proceso con un error legible.
+El alias `qwen3-vl:4b` corresponde a la variante Thinking y algunas versiones
+de Ollama colocan su salida estructurada en `thinking` dejando `response` vacío;
+el detector acepta ambos campos sin exponer el razonamiento en el replay.
 
 ## En vivo con OBS Virtual Camera en Windows
 
