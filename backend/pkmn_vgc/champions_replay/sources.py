@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import BinaryIO, Iterator, Literal, Protocol
 
@@ -88,36 +90,39 @@ class _FfmpegMjpegSource:
             raise CaptureSourceError(
                 "FFmpeg no está instalado o no aparece en PATH; es necesario para leer vídeo y captura en vivo."
             )
-        process = subprocess.Popen(
-            self.command(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert process.stdout is not None
-        started = time.monotonic()
-        stopped_early = False
-        try:
-            for index, image in enumerate(iter_mjpeg(process.stdout)):
-                yield FramePacket(
-                    index=index,
-                    timestamp_ms=self._timestamp_ms(index, started),
-                    image=image,
-                )
-                if self.max_frames is not None and index + 1 >= self.max_frames:
-                    stopped_early = True
-                    break
-        except GeneratorExit:
-            stopped_early = True
-            raise
-        finally:
-            process.stdout.close()
-            if process.poll() is None:
-                process.terminate()
+        with tempfile.TemporaryFile() as stderr_stream:
+            process = subprocess.Popen(
+                self.command(),
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+            )
+            assert process.stdout is not None
+            started = time.monotonic()
+            stopped_early = False
             try:
-                _, stderr = process.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _, stderr = process.communicate()
+                for index, image in enumerate(iter_mjpeg(process.stdout)):
+                    yield FramePacket(
+                        index=index,
+                        timestamp_ms=self._timestamp_ms(index, started),
+                        image=image,
+                    )
+                    if self.max_frames is not None and index + 1 >= self.max_frames:
+                        stopped_early = True
+                        break
+            except GeneratorExit:
+                stopped_early = True
+                raise
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+                process.stdout.close()
+                stderr_stream.seek(0)
+                stderr = stderr_stream.read()
         if process.returncode and not stopped_early:
             detail = stderr.decode("utf-8", errors="replace").strip()
             raise CaptureSourceError(detail or "FFmpeg no pudo leer la fuente.")
@@ -131,6 +136,33 @@ class VideoFrameSource(_FfmpegMjpegSource):
         if not self.path.is_file():
             raise CaptureSourceError(f"No encontramos el vídeo: {self.path}")
         return ["-i", str(self.path)]
+
+    def estimated_frame_count(self) -> int | None:
+        self.input_arguments()
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            return self.max_frames
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(self.path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            duration_seconds = float(result.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return self.max_frames
+        if result.returncode or duration_seconds <= 0:
+            return self.max_frames
+        estimate = max(1, ceil(duration_seconds * self.sample_fps))
+        return min(estimate, self.max_frames) if self.max_frames is not None else estimate
 
 
 @dataclass(slots=True)
