@@ -157,6 +157,7 @@ export function ChampionsQuickMatchDialog({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           teamVersionId: version.id,
+          origin: "champions",
           result,
           selected,
           opponentSelected: rival,
