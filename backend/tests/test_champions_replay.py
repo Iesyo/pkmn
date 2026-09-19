@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from pkmn_vgc.champions_replay.cli import _seed_from_context
-from pkmn_vgc.champions_replay.detector import DetectorContext, OllamaVisionDetector, _extract_json
+from pkmn_vgc.champions_replay.detector import (
+    DetectionError,
+    DetectorContext,
+    OllamaVisionDetector,
+    _extract_json,
+)
 from pkmn_vgc.champions_replay.models import BattleEvent, BattleSide, CapturedBattle, FrameDetections
 from pkmn_vgc.champions_replay.pipeline import (
     CaptureAccumulator,
@@ -147,6 +154,48 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(detections.events[0].turn, 1)
         self.assertEqual(detections.events[0].timestamp_ms, 500)
 
+    def test_extracts_visual_json_after_reasoning_with_unrelated_braces(self) -> None:
+        parsed = _extract_json(
+            """<think>First consider {\"unrelated\": true}.</think>
+```json
+{"battle_started": false, "events": []}
+```"""
+        )
+
+        self.assertEqual(parsed, {"battle_started": False, "events": []})
+
+    def test_pipeline_skips_one_bad_detection_and_reports_progress(self) -> None:
+        frames = [
+            FramePacket(index=0, timestamp_ms=0, image=b"bad"),
+            FramePacket(index=1, timestamp_ms=500, image=b"start"),
+            FramePacket(index=2, timestamp_ms=1_000, image=b"finish"),
+        ]
+
+        class SequenceDetector:
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                if frame.index == 0:
+                    raise DetectionError("respuesta sin JSON")
+                if frame.index == 1:
+                    return FrameDetections(
+                        events=(BattleEvent(kind="turn", timestamp_ms=500, turn=1),),
+                        battle_started=True,
+                    )
+                return FrameDetections(winner="p1", battle_complete=True)
+
+        progress = []
+        warnings = []
+        captures = ReplayCapturePipeline(
+            frames,
+            SequenceDetector(),
+            CaptureSeed(p1_team=("Kleavor",), p2_team=("Miraidon",)),
+        ).capture(total_frames=3, on_progress=progress.append, on_warning=warnings.append)
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual([item.processed_frames for item in progress], [1, 2, 3])
+        self.assertEqual([item.skipped_frames for item in progress], [1, 1, 1])
+        self.assertEqual(progress[-1].fraction, 1.0)
+        self.assertEqual(len(warnings), 1)
+
     def test_splits_mjpeg_pipe_without_image_dependencies(self) -> None:
         first = b"\xff\xd8first\xff\xd9"
         second = b"\xff\xd8second\xff\xd9"
@@ -168,22 +217,38 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("video=OBS Virtual Camera", live_command)
         self.assertIn("fps=3", live_command)
 
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.run")
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffprobe")
+    def test_estimates_sampled_video_frames_with_ffprobe(
+        self,
+        _which: object,
+        run: MagicMock,
+    ) -> None:
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="10.1\n", stderr="")
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "battle.mp4"
+            video.touch()
+            source = VideoFrameSource(path=video, sample_fps=2, max_frames=15)
+
+            self.assertEqual(source.estimated_frame_count(), 15)
+
     def test_rejects_remote_ollama_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "localmente"):
             OllamaVisionDetector(endpoint="https://example.com")
 
     def test_calls_local_ollama_with_image_and_structured_output(self) -> None:
-        received: dict[str, object] = {}
+        received: list[dict[str, object]] = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - nombre definido por BaseHTTPRequestHandler
                 size = int(self.headers.get("content-length", "0"))
-                received.update(json.loads(self.rfile.read(size)))
+                received.append(json.loads(self.rfile.read(size)))
+                response = "no pude estructurar la lectura" if len(received) == 1 else json.dumps({
+                    "battle_started": True,
+                    "events": [{"kind": "turn", "turn": 1, "confidence": 0.95}],
+                })
                 body = json.dumps({
-                    "response": json.dumps({
-                        "battle_started": True,
-                        "events": [{"kind": "turn", "turn": 1, "confidence": 0.95}],
-                    })
+                    "response": response,
                 }).encode()
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
@@ -208,10 +273,12 @@ class ChampionsReplayTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-        self.assertEqual(received["model"], "qwen3-vl:4b")
-        self.assertEqual(received["format"], "json")
-        self.assertEqual(received["think"], False)
-        self.assertTrue(received["images"])
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[0]["model"], "qwen3-vl:4b")
+        self.assertEqual(received[0]["format"]["type"], "object")
+        self.assertEqual(received[0]["think"], False)
+        self.assertTrue(received[0]["images"])
+        self.assertIn("CORRECCIÓN", received[1]["prompt"])
         self.assertEqual(detections.events[0].timestamp_ms, 700)
 
 
