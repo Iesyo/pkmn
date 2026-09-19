@@ -181,6 +181,8 @@ export const matches = sqliteTable(
     opponentName: text("opponent_name").notNull().default("Rival"),
     opponentPaste: text("opponent_paste").notNull().default(""),
     replayUrl: text("replay_url").notNull().default(""),
+    origin: text("origin", { enum: ["champions", "showdown"] }).notNull().default("champions"),
+    replayArtifactJson: text("replay_artifact_json"),
     selectedJson: text("selected_json").notNull().default("[]"),
     opponentSelectedJson: text("opponent_selected_json")
       .notNull()
