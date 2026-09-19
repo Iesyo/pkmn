@@ -89,6 +89,44 @@ export function normalizeShowdownReplayUrl(value: string) {
 
 const MAX_REPLAY_BYTES = 5_000_000;
 
+function replayText(value: unknown, limit: number) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, limit) : undefined;
+}
+
+export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayDocument {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ReplayValidationError("El replay reconstruido debe ser un documento JSON válido.");
+  }
+  const rawReplay = value as Record<string, unknown>;
+  const log = Array.isArray(rawReplay.log)
+    ? rawReplay.log.filter((line): line is string => typeof line === "string").join("\n")
+    : typeof rawReplay.log === "string"
+      ? rawReplay.log
+      : "";
+  const byteLength = new TextEncoder().encode(log).byteLength;
+  if (byteLength > MAX_REPLAY_BYTES) {
+    throw new ReplayValidationError("El replay excede el tamaño permitido.", 413);
+  }
+  if (!log.trim()) {
+    throw new ReplayValidationError("El replay reconstruido no contiene un registro de batalla.", 422);
+  }
+
+  return {
+    log,
+    inputlog: replayText(rawReplay.inputlog, 10_000) ?? null,
+    uploadtime: typeof rawReplay.uploadtime === "number" || typeof rawReplay.uploadtime === "string"
+      ? rawReplay.uploadtime
+      : null,
+    p1: replayText(rawReplay.p1, 80),
+    p2: replayText(rawReplay.p2, 80),
+    p1rating: rawReplay.p1rating,
+    p2rating: rawReplay.p2rating,
+    format: replayText(rawReplay.format, 100),
+  };
+}
+
 export async function fetchShowdownReplay(value: string) {
   const urls = normalizeShowdownReplayUrl(value);
   let response: Response;
@@ -126,18 +164,13 @@ export async function fetchShowdownReplay(value: string) {
     throw new ReplayValidationError("El replay excede el tamaño permitido.", 413);
   }
 
-  let rawReplay: ShowdownReplayDocument & { log: unknown };
+  let rawReplay: unknown;
   try {
-    rawReplay = JSON.parse(body) as ShowdownReplayDocument & { log: unknown };
+    rawReplay = JSON.parse(body);
   } catch {
     throw new ReplayValidationError("Showdown devolvió un replay ilegible.", 502);
   }
-  const log = Array.isArray(rawReplay.log)
-    ? rawReplay.log.filter((line): line is string => typeof line === "string").join("\n")
-    : typeof rawReplay.log === "string"
-      ? rawReplay.log
-      : "";
-  return { urls, replay: { ...rawReplay, log } as ShowdownReplayDocument };
+  return { urls, replay: normalizeShowdownReplayDocument(rawReplay) };
 }
 
 function addUnique(list: string[], value: string) {

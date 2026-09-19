@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -71,6 +72,43 @@ test("imports a VGC replay without manual match data", async () => {
   assert.equal(match.rating, 1428);
   assert.equal(match.format, "gen9championsvgc2026regma");
   assert.deepEqual(match.warnings, []);
+});
+
+test("imports a replay reconstructed from Pokémon Champions video", async () => {
+  const { importShowdownReplay, normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const rawReplay = JSON.parse(
+    await readFile(new URL("../backend/tests/data/champions_replay.json", import.meta.url), "utf8"),
+  );
+  const replay = normalizeShowdownReplayDocument(rawReplay);
+  const match = importShowdownReplay(replay, {
+    replayUrl: "",
+    showdownNames: ["iesyo"],
+    teamSpecies: p1Team,
+  });
+
+  assert.equal(match.replayUrl, "");
+  assert.equal(match.result, "win");
+  assert.equal(match.playerName, "IesYo");
+  assert.deepEqual(match.selected, ["Kleavor", "Pelipper", "Sinistcha", "Venusaur"]);
+  assert.deepEqual(match.lead, ["Kleavor", "Pelipper"]);
+  assert.deepEqual(match.opponentSelected, p2Team);
+  assert.deepEqual(match.opponentPicks, ["Miraidon", "Amoonguss", "Incineroar", "Rillaboom"]);
+  assert.deepEqual(match.movesUsed, {
+    Kleavor: ["Stone Axe"],
+    Pelipper: ["Tailwind"],
+    Sinistcha: ["Matcha Gotcha"],
+    Venusaur: ["Sludge Bomb"],
+  });
+  assert.equal(match.format, "gen9championsvgc2026regmc");
+  assert.match(match.warnings.join(" "), /rating final/);
+});
+
+test("validates reconstructed replay documents before importing them", async () => {
+  const { normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+
+  assert.equal(normalizeShowdownReplayDocument({ log: ["|start", "|win|IesYo"] }).log, "|start\n|win|IesYo");
+  assert.throws(() => normalizeShowdownReplayDocument({}), /no contiene un registro/);
+  assert.throws(() => normalizeShowdownReplayDocument("not-json"), /documento JSON válido/);
 });
 
 test("falls back to the saved roster and public switches when inputlog is absent", async () => {

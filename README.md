@@ -15,6 +15,9 @@ histórico de equipos de Pokémon VGC.
 - Cobertura, debilidades, resistencias, inmunidades y puntos ciegos.
 - Vista defensiva base y Tera separadas.
 - Registro de partidas con replay, cuatro picks, dos leads y el equipo rival visto.
+- Primer corte del traductor Pokémon Champions → replay Showdown: acepta vídeo
+  o captura en vivo mediante FFmpeg, normaliza eventos con confianza y genera
+  JSON, log y HTML consumibles por Teams/Comparación.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los
@@ -54,10 +57,13 @@ docs/                decisiones técnicas
 tests/               pruebas del sitio y del parser TypeScript
 backend/tests/       pruebas del dominio Python
 battle_lab/          runners y contratos del Battle Lab en Colab
+backend/pkmn_vgc/champions_replay/  traductor local Champions → Showdown
 colab/               notebooks reproducibles
 ```
 
 La arquitectura completa está en [docs/architecture.md](docs/architecture.md).
+La captura y reconstrucción de Champions está documentada en
+[docs/champions-replay.md](docs/champions-replay.md).
 
 ## Desarrollo del sitio
 

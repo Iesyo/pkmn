@@ -1,0 +1,8 @@
+{
+  "log": "|t:|1789837200\n|player|p1|IesYo|1|\n|player|p2|Rival|2|\n|gametype|doubles\n|gen|9\n|tier|gen9championsvgc2026regmc\n|teamsize|p1|6\n|poke|p1|Kleavor, L50|\n|poke|p1|Pelipper, L50|\n|poke|p1|Venusaur, L50|\n|poke|p1|Sinistcha, L50|\n|poke|p1|Archaludon, L50|\n|poke|p1|Luxray, L50|\n|teamsize|p2|6\n|poke|p2|Incineroar, L50|\n|poke|p2|Rillaboom, L50|\n|poke|p2|Urshifu-Rapid-Strike, L50|\n|poke|p2|Farigiraf, L50|\n|poke|p2|Miraidon, L50|\n|poke|p2|Amoonguss, L50|\n|teampreview\n|start\n|switch|p1a: Kleavor|Kleavor, L50|145/145\n|switch|p1b: Pelipper|Pelipper, L50|135/135\n|switch|p2a: Miraidon|Miraidon, L50|100/100\n|switch|p2b: Amoonguss|Amoonguss, L50|100/100\n|turn|1\n|move|p1a: Kleavor|Stone Axe|p2a: Miraidon\n|-damage|p2a: Miraidon|65/100\n|move|p1b: Pelipper|Tailwind|p1b: Pelipper\n|-sidestart|p1: IesYo|move: Tailwind\n|move|p2a: Miraidon|Electro Drift|p1b: Pelipper\n|-damage|p1b: Pelipper|90/135\n|turn|2\n|switch|p1a: Sinistcha|Sinistcha, L50|120/120\n|switch|p2b: Incineroar|Incineroar, L50|100/100\n|move|p1a: Sinistcha|Matcha Gotcha|p2a: Miraidon\n|-damage|p2a: Miraidon|0/100\n|faint|p2a: Miraidon\n|turn|3\n|switch|p1b: Venusaur|Venusaur, L50|160/160\n|switch|p2a: Rillaboom|Rillaboom, L50|100/100\n|move|p1b: Venusaur|Sludge Bomb|p2a: Rillaboom\n|-damage|p2a: Rillaboom|0/100\n|faint|p2a: Rillaboom\n|win|IesYo",
+  "inputlog": ">p1 team 1243\n>p2 team 5612",
+  "uploadtime": 1789837200,
+  "p1": "IesYo",
+  "p2": "Rival",
+  "format": "gen9championsvgc2026regmc"
+}

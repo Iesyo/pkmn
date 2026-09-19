@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import { Gamepad2, Link2, Loader2, Plus } from "lucide-react";
+import { FileJson2, Gamepad2, Link2, Loader2, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ async function readResponse<T>(response: Response): Promise<T> {
 
 export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; onCreated?: () => void }) {
   const replayInputId = useId();
+  const reconstructedReplayInputId = useId();
   const [replayUrl, setReplayUrl] = useState("");
   const [replayDialogOpen, setReplayDialogOpen] = useState(false);
   const [championsDialogOpen, setChampionsDialogOpen] = useState(false);
@@ -30,6 +31,18 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
   const disabled = version.demo || !onCreated;
   const hasReplayInput = replayUrl.trim().length > 0;
   const championsMode = version.format === "champions" && !hasReplayInput;
+
+  async function readReplay(source: { replayUrl: string } | { replay: unknown }) {
+    const payload = await readResponse<{ match: ImportedReplayMatch }>(
+      await fetch("/api/replays", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...source, teamSpecies: version.pokemon.map((pokemon) => pokemon.species) }),
+      }),
+    );
+    setImportedReplay(payload.match);
+    setReplayDialogOpen(true);
+  }
 
   async function continueEntry(event: React.FormEvent) {
     event.preventDefault();
@@ -42,18 +55,31 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
 
     setReading(true);
     try {
-      const payload = await readResponse<{ match: ImportedReplayMatch }>(
-        await fetch("/api/replays", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ replayUrl: replayUrl.trim(), teamSpecies: version.pokemon.map((pokemon) => pokemon.species) }),
-        }),
-      );
-      setImportedReplay(payload.match);
-      setReplayDialogOpen(true);
+      await readReplay({ replayUrl: replayUrl.trim() });
     } catch (caught) {
       setImportedReplay(null);
       setError(caught instanceof Error ? caught.message : "No pudimos leer el replay.");
+    } finally {
+      setReading(false);
+    }
+  }
+
+  async function importReconstructedReplay(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    setError("");
+    setReading(true);
+    try {
+      if (file.size > 5_000_000) throw new Error("El replay reconstruido excede 5 MB.");
+      const replay = JSON.parse(await file.text()) as unknown;
+      await readReplay({ replay });
+    } catch (caught) {
+      setImportedReplay(null);
+      setError(caught instanceof SyntaxError
+        ? "El archivo no contiene un replay JSON válido."
+        : caught instanceof Error ? caught.message : "No pudimos leer el replay reconstruido.");
     } finally {
       setReading(false);
     }
@@ -98,13 +124,36 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
         </Button>
       </form>
       <div className="mt-1.5 flex items-center justify-between gap-3 text-[9px]">
-        <span className={error ? "text-rose-300" : "text-slate-600"}>
-          {error || (disabled
-            ? "Guarda un equipo real para habilitar el registro."
-            : championsMode
-              ? "Sin enlace abre el registro rápido Champions; pega un replay para importarlo automáticamente."
-              : "Resultado, rival, Team Preview, picks y leads se importan automáticamente.")}
-        </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={error ? "text-rose-300" : "text-slate-600"}>
+            {error || (disabled
+              ? "Guarda un equipo real para habilitar el registro."
+              : championsMode
+                ? "Sin enlace abre el registro rápido; también puedes cargar un replay reconstruido."
+                : "Resultado, rival, Team Preview, picks y leads se importan automáticamente.")}
+          </span>
+          {version.format === "champions" ? (
+            <>
+              <input
+                id={reconstructedReplayInputId}
+                type="file"
+                accept=".json,application/json"
+                onChange={importReconstructedReplay}
+                disabled={disabled || reading}
+                className="sr-only"
+              />
+              <label
+                htmlFor={reconstructedReplayInputId}
+                className={cn(
+                  "inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-amber-300/15 bg-amber-300/5 px-2 py-1 font-bold text-amber-200 transition hover:bg-amber-300/10",
+                  (disabled || reading) && "pointer-events-none opacity-40",
+                )}
+              >
+                <FileJson2 className="size-3" />Replay Champions
+              </label>
+            </>
+          ) : null}
+        </div>
         <span className="shrink-0 text-slate-700">{championsMode ? "Champions" : "Showdown"}</span>
       </div>
 
@@ -121,7 +170,7 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
 
       {importedReplay ? (
         <AddMatchDialog
-          key={importedReplay.replayUrl}
+          key={`${importedReplay.replayUrl || "champions-reconstructed"}-${importedReplay.playedAt ?? "undated"}-${importedReplay.opponentName}`}
           version={version}
           onCreated={() => {
             setReplayUrl("");

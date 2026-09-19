@@ -22,6 +22,9 @@ flowchart TD
     API --> D1[(D1 / SQLite alojado)]
     DRIVE[(Google Drive)] --> LAB[Battle Lab en Colab]
     LAB --> DRIVE
+    LIVE[OBS o vídeo Champions] --> CAP[Traductor local]
+    CAP --> REPLAY[Replay Showdown reconstruido]
+    REPLAY --> API
 ```
 
 - `app/` y `components/vgc/`: interfaz React/Vinext y adaptador alojado.
@@ -46,6 +49,10 @@ flowchart TD
   motor Showdown escucha únicamente en loopback dentro de Colab; Google Drive
   persiste equipos, resultados, replays y checkpoints, mientras Gradio será la
   única superficie web temporal en las fases interactivas.
+- `backend/pkmn_vgc/champions_replay/`: compañero local que obtiene frames de
+  vídeo u OBS mediante FFmpeg, normaliza observaciones visuales y genera un
+  documento de replay Showdown. El sitio sólo recibe el replay terminado; la
+  captura y la inferencia no se ejecutan dentro de Cloudflare.
 
 ## Invariantes
 
@@ -89,6 +96,9 @@ flowchart TD
     y separa el barrido de 40 rivales de la confirmación sobre los 10 matchups
     críticos del original. Un delta favorable solo se promueve como mejora
     confirmada cuando su IC95% queda completamente sobre cero.
+17. La captura de Champions sólo persiste hechos visibles. Una partida con
+    picks o eventos críticos ambiguos debe revisarse antes de alimentar las
+    estadísticas de la versión del Team.
 
 ## Modelo inicial
 

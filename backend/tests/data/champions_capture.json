@@ -1,0 +1,41 @@
+{
+  "p1": {
+    "name": "IesYo",
+    "team": ["Kleavor", "Pelipper", "Venusaur", "Sinistcha", "Archaludon", "Luxray"],
+    "selected": ["Kleavor", "Pelipper", "Sinistcha", "Venusaur"]
+  },
+  "p2": {
+    "name": "Rival",
+    "team": ["Incineroar", "Rillaboom", "Urshifu-Rapid-Strike", "Farigiraf", "Miraidon", "Amoonguss"],
+    "selected": ["Miraidon", "Amoonguss", "Incineroar", "Rillaboom"]
+  },
+  "winner": "p1",
+  "started_at": "2026-09-19T17:00:00+00:00",
+  "format": "gen9championsvgc2026regmc",
+  "source_mode": "fixture",
+  "events": [
+    {"kind": "switch", "timestamp_ms": 1000, "slot": "p1a", "species": "Kleavor", "health": "145/145", "confidence": 0.99},
+    {"kind": "switch", "timestamp_ms": 1100, "slot": "p1b", "species": "Pelipper", "health": "135/135", "confidence": 0.99},
+    {"kind": "switch", "timestamp_ms": 1200, "slot": "p2a", "species": "Miraidon", "health": "100/100", "confidence": 0.98},
+    {"kind": "switch", "timestamp_ms": 1300, "slot": "p2b", "species": "Amoonguss", "health": "100/100", "confidence": 0.98},
+    {"kind": "turn", "timestamp_ms": 2000, "turn": 1, "confidence": 1.0},
+    {"kind": "move", "timestamp_ms": 2500, "slot": "p1a", "target_slot": "p2a", "move": "Stone Axe", "confidence": 0.97},
+    {"kind": "damage", "timestamp_ms": 2800, "slot": "p2a", "health": "65/100", "confidence": 0.93},
+    {"kind": "move", "timestamp_ms": 3100, "slot": "p1b", "target_slot": "p1b", "move": "Tailwind", "confidence": 0.98},
+    {"kind": "sidestart", "timestamp_ms": 3300, "slot": "p1a", "value": "move: Tailwind", "confidence": 0.95},
+    {"kind": "move", "timestamp_ms": 3700, "slot": "p2a", "target_slot": "p1b", "move": "Electro Drift", "confidence": 0.96},
+    {"kind": "damage", "timestamp_ms": 4000, "slot": "p1b", "health": "90/135", "confidence": 0.94},
+    {"kind": "turn", "timestamp_ms": 5000, "turn": 2, "confidence": 1.0},
+    {"kind": "switch", "timestamp_ms": 5300, "slot": "p1a", "species": "Sinistcha", "health": "120/120", "confidence": 0.97},
+    {"kind": "switch", "timestamp_ms": 5500, "slot": "p2b", "species": "Incineroar", "health": "100/100", "confidence": 0.96},
+    {"kind": "move", "timestamp_ms": 5900, "slot": "p1a", "target_slot": "p2a", "move": "Matcha Gotcha", "confidence": 0.96},
+    {"kind": "damage", "timestamp_ms": 6200, "slot": "p2a", "health": "0/100", "confidence": 0.98},
+    {"kind": "faint", "timestamp_ms": 6400, "slot": "p2a", "confidence": 0.99},
+    {"kind": "turn", "timestamp_ms": 7000, "turn": 3, "confidence": 1.0},
+    {"kind": "switch", "timestamp_ms": 7300, "slot": "p1b", "species": "Venusaur", "health": "160/160", "confidence": 0.97},
+    {"kind": "switch", "timestamp_ms": 7500, "slot": "p2a", "species": "Rillaboom", "health": "100/100", "confidence": 0.96},
+    {"kind": "move", "timestamp_ms": 7900, "slot": "p1b", "target_slot": "p2a", "move": "Sludge Bomb", "confidence": 0.96},
+    {"kind": "damage", "timestamp_ms": 8200, "slot": "p2a", "health": "0/100", "confidence": 0.98},
+    {"kind": "faint", "timestamp_ms": 8400, "slot": "p2a", "confidence": 0.99}
+  ]
+}
