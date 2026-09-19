@@ -194,6 +194,30 @@ def _response_excerpt(value: str, *, limit: int = 240) -> str:
     return excerpt[:limit] or "<respuesta vacía>"
 
 
+def _ollama_output_candidates(body: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(body, Mapping):
+        raise DetectionError("Ollama devolvió una respuesta que no es un objeto JSON.")
+
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for field in ("response", "thinking"):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip() or value in seen:
+            continue
+        candidates.append((field, value))
+        seen.add(value)
+
+    if candidates:
+        return tuple(candidates)
+
+    done_reason = body.get("done_reason") or "desconocido"
+    eval_count = body.get("eval_count")
+    generated = f", tokens generados={eval_count}" if isinstance(eval_count, int) else ""
+    raise DetectionError(
+        f"Ollama devolvió response y thinking vacíos (fin={done_reason}{generated})."
+    )
+
+
 def _extract_json(value: str) -> Mapping[str, Any]:
     text = value.strip()
     decoder = json.JSONDecoder()
@@ -279,14 +303,20 @@ class OllamaVisionDetector:
                 raise DetectionError(
                     "No pudimos conectar con Ollama local. Verifica que esté iniciado y que el modelo esté descargado."
                 ) from error
-            response_text = body.get("response") if isinstance(body, Mapping) else None
-            if not isinstance(response_text, str):
-                raise DetectionError("Ollama no devolvió el campo response esperado.")
             try:
-                mapping = _extract_json(response_text)
-                return FrameDetections.from_mapping(mapping, timestamp_ms=frame.timestamp_ms)
-            except (DetectionError, TypeError, ValueError) as error:
-                last_error = error if isinstance(error, DetectionError) else DetectionError(str(error))
+                candidates = _ollama_output_candidates(body)
+            except DetectionError as error:
+                last_error = error
+                continue
+
+            candidate_errors: list[str] = []
+            for field, response_text in candidates:
+                try:
+                    mapping = _extract_json(response_text)
+                    return FrameDetections.from_mapping(mapping, timestamp_ms=frame.timestamp_ms)
+                except (DetectionError, TypeError, ValueError) as error:
+                    candidate_errors.append(f"{field}: {error}")
+            last_error = DetectionError("; ".join(candidate_errors))
         raise DetectionError(
             f"Frame {frame.index + 1}: Ollama no produjo observaciones válidas tras 2 intentos. {last_error}"
         ) from last_error
