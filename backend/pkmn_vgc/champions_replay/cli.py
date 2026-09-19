@@ -4,13 +4,14 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any, Mapping, Sequence
 
-from .detector import DetectorContext, OllamaVisionDetector
+from .detector import DetectionError, DetectorContext, OllamaVisionDetector
 from .models import CapturedBattle
-from .pipeline import CaptureSeed, ReplayCapturePipeline, review_capture
+from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
-from .sources import LiveFrameSource, VideoFrameSource
+from .sources import CaptureSourceError, LiveFrameSource, VideoFrameSource
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
@@ -72,6 +73,56 @@ def _write_captures(captures: Sequence[CapturedBattle], output: Path, force: boo
     return 0
 
 
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "--:--"
+    total = max(0, round(seconds))
+    hours, remainder = divmod(total, 3_600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
+class _ProgressPrinter:
+    def __init__(self, total_frames: int | None, *, model: str, sample_fps: float) -> None:
+        self.total_frames = total_frames
+        self.model = model
+        self.sample_fps = sample_fps
+        self.active_line = False
+
+    def start(self) -> None:
+        target = f"{self.total_frames} frames estimados" if self.total_frames else "duración desconocida"
+        print(f"Analizando {target} a {self.sample_fps:g} FPS con {self.model}...")
+
+    def update(self, progress: CaptureProgress) -> None:
+        elapsed = _format_duration(progress.elapsed_seconds)
+        if progress.fraction is None:
+            position = f"frame {progress.processed_frames}"
+            meter = ""
+        else:
+            filled = min(20, round(progress.fraction * 20))
+            meter = f"[{'#' * filled}{'-' * (20 - filled)}] "
+            position = (
+                f"{progress.processed_frames}/{progress.total_frames} "
+                f"({progress.fraction:.1%})"
+            )
+        eta = _format_duration(progress.eta_seconds)
+        line = (
+            f"\r{meter}{position} | transcurrido {elapsed} | ETA {eta} | "
+            f"eventos {progress.events_detected} | omitidos {progress.skipped_frames}"
+        )
+        print(f"{line:<125}", end="", flush=True)
+        self.active_line = True
+
+    def warning(self, message: str) -> None:
+        self.finish_line()
+        print(f"[WARNING] {message}", file=sys.stderr)
+
+    def finish_line(self) -> None:
+        if self.active_line:
+            print()
+            self.active_line = False
+
+
 def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--context", type=Path, help="JSON con Team conocido, jugadores, idioma y formato.")
     parser.add_argument("--output", type=Path, required=True, help="Ruta base de los archivos de salida.")
@@ -112,28 +163,45 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command == "events":
-        battle = CapturedBattle.from_mapping(_load_mapping(args.capture))
-        return _write_captures((battle,), args.output, args.force)
+    progress: _ProgressPrinter | None = None
+    try:
+        if args.command == "events":
+            battle = CapturedBattle.from_mapping(_load_mapping(args.capture))
+            return _write_captures((battle,), args.output, args.force)
 
-    context_value = _load_mapping(args.context) if args.context else {}
-    seed, detector_context = _seed_from_context(context_value, args.command)
-    detector = OllamaVisionDetector(model=args.model, endpoint=args.ollama_url, context=detector_context)
-    if args.command == "video":
-        source = VideoFrameSource(
-            path=args.video,
-            sample_fps=args.sample_fps,
-            max_frames=args.max_frames,
+        context_value = _load_mapping(args.context) if args.context else {}
+        seed, detector_context = _seed_from_context(context_value, args.command)
+        detector = OllamaVisionDetector(model=args.model, endpoint=args.ollama_url, context=detector_context)
+        if args.command == "video":
+            source = VideoFrameSource(
+                path=args.video,
+                sample_fps=args.sample_fps,
+                max_frames=args.max_frames,
+            )
+            total_frames = source.estimated_frame_count()
+        else:
+            source = LiveFrameSource(
+                input_name=args.source,
+                backend=args.backend,
+                sample_fps=args.sample_fps,
+                max_frames=args.max_frames,
+            )
+            total_frames = args.max_frames
+        progress = _ProgressPrinter(total_frames, model=args.model, sample_fps=args.sample_fps)
+        progress.start()
+        captures = ReplayCapturePipeline(source, detector, seed).capture(
+            max_battles=args.max_battles,
+            total_frames=total_frames,
+            on_progress=progress.update,
+            on_warning=progress.warning,
         )
-    else:
-        source = LiveFrameSource(
-            input_name=args.source,
-            backend=args.backend,
-            sample_fps=args.sample_fps,
-            max_frames=args.max_frames,
-        )
-    captures = ReplayCapturePipeline(source, detector, seed).capture(max_battles=args.max_battles)
-    return _write_captures(captures, args.output, args.force)
+        progress.finish_line()
+        return _write_captures(captures, args.output, args.force)
+    except (CaptureIncompleteError, CaptureSourceError, DetectionError, FileExistsError, ValueError) as error:
+        if progress:
+            progress.finish_line()
+        print(f"[ERROR] {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
