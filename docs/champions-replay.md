@@ -61,7 +61,7 @@ archivo es opcional; el rival puede quedar vacío hasta leer el Team Preview.
     "p1": ["Kleavor", "Pelipper", "Venusaur", "Sinistcha", "Archaludon", "Luxray"],
     "p2": []
   },
-  "language": "es",
+  "language": "en",
   "format": "gen9championsvgc2026regmc"
 }
 ```
@@ -103,8 +103,8 @@ rellena información oculta por inferencia.
 La tubería y el contrato están probados con un combate fixture de extremo a
 extremo. Antes de considerar fiable el reconocimiento visual faltan:
 
-1. calibrar el prompt y la frecuencia de muestreo con grabaciones reales en
-   español a 1080p/30fps;
+1. calibrar el prompt y la frecuencia de muestreo con grabaciones reales del
+   juego en inglés a 1080p/30fps;
 2. añadir detección barata de escenas para enviar al modelo sólo frames con
    Team Preview, mensajes o resultados;
 3. medir precisión por campo y preparar una revisión rápida de eventos dudosos;
