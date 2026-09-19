@@ -1,16 +1,40 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Callable, Iterable
 
-from .detector import FrameDetector
+from .detector import DetectionError, FrameDetector
 from .models import BattleEvent, BattleSide, CapturedBattle, FrameDetections, SideId, SourceMode
 from .sources import FrameSource
 
 
 class CaptureIncompleteError(RuntimeError):
     """La fuente terminó antes de reunir un combate utilizable."""
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureProgress:
+    processed_frames: int
+    total_frames: int | None
+    timestamp_ms: int
+    elapsed_seconds: float
+    events_detected: int
+    skipped_frames: int
+
+    @property
+    def fraction(self) -> float | None:
+        if not self.total_frames:
+            return None
+        return min(1.0, self.processed_frames / self.total_frames)
+
+    @property
+    def eta_seconds(self) -> float | None:
+        if not self.total_frames or self.processed_frames < 1:
+            return None
+        remaining = max(0, self.total_frames - self.processed_frames)
+        return self.elapsed_seconds / self.processed_frames * remaining
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,20 +176,67 @@ class ReplayCapturePipeline:
         self.detector = detector
         self.seed = seed
 
-    def capture(self, *, max_battles: int = 1) -> tuple[CapturedBattle, ...]:
+    def capture(
+        self,
+        *,
+        max_battles: int = 1,
+        total_frames: int | None = None,
+        on_progress: Callable[[CaptureProgress], None] | None = None,
+        on_warning: Callable[[str], None] | None = None,
+        max_consecutive_detection_errors: int = 3,
+    ) -> tuple[CapturedBattle, ...]:
         if max_battles < 1:
             raise ValueError("max_battles debe ser positivo.")
+        if max_consecutive_detection_errors < 1:
+            raise ValueError("max_consecutive_detection_errors debe ser positivo.")
         captures: list[CapturedBattle] = []
         accumulator = CaptureAccumulator(self.seed)
         awaiting_next_start = False
+        started = time.monotonic()
+        processed_frames = 0
+        skipped_frames = 0
+        consecutive_errors = 0
+
+        def report(frame_timestamp_ms: int) -> None:
+            if not on_progress:
+                return
+            completed_events = sum(len(capture.events) for capture in captures)
+            on_progress(
+                CaptureProgress(
+                    processed_frames=processed_frames,
+                    total_frames=total_frames,
+                    timestamp_ms=frame_timestamp_ms,
+                    elapsed_seconds=time.monotonic() - started,
+                    events_detected=completed_events + len(accumulator.events),
+                    skipped_frames=skipped_frames,
+                )
+            )
+
         for frame in self.source:
-            detections = self.detector.detect(frame)
+            processed_frames += 1
+            try:
+                detections = self.detector.detect(frame)
+            except DetectionError as error:
+                skipped_frames += 1
+                consecutive_errors += 1
+                if on_warning:
+                    on_warning(f"Frame {frame.index + 1} omitido: {error}")
+                report(frame.timestamp_ms)
+                if consecutive_errors >= max_consecutive_detection_errors:
+                    raise DetectionError(
+                        f"Ollama falló en {consecutive_errors} frames consecutivos; se detuvo para no "
+                        f"procesar el vídeo completo sin datos. Último error: {error}"
+                    ) from error
+                continue
+            consecutive_errors = 0
             if awaiting_next_start:
                 if not detections.battle_started:
+                    report(frame.timestamp_ms)
                     continue
                 accumulator = CaptureAccumulator(self.seed)
                 awaiting_next_start = False
             accumulator.apply(detections)
+            report(frame.timestamp_ms)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
                 captures.append(accumulator.finalize())
                 if len(captures) >= max_battles:
