@@ -81,22 +81,148 @@ Contexto conocido:
 """
 
 
+DETECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "players": {
+            "type": "object",
+            "properties": {
+                "p1": {"type": ["string", "null"]},
+                "p2": {"type": ["string", "null"]},
+            },
+            "required": ["p1", "p2"],
+            "additionalProperties": False,
+        },
+        "teams": {
+            "type": "object",
+            "properties": {
+                "p1": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+                "p2": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+            },
+            "required": ["p1", "p2"],
+            "additionalProperties": False,
+        },
+        "selected": {
+            "type": "object",
+            "properties": {
+                "p1": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+                "p2": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+            },
+            "required": ["p1", "p2"],
+            "additionalProperties": False,
+        },
+        "battle_started": {"type": "boolean"},
+        "battle_complete": {"type": "boolean"},
+        "winner": {"type": ["string", "null"], "enum": ["p1", "p2", None]},
+        "events": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "turn",
+                            "switch",
+                            "drag",
+                            "move",
+                            "damage",
+                            "heal",
+                            "status",
+                            "curestatus",
+                            "faint",
+                            "ability",
+                            "item",
+                            "enditem",
+                            "terastallize",
+                            "crit",
+                            "weather",
+                            "fieldstart",
+                            "fieldend",
+                            "sidestart",
+                            "sideend",
+                            "message",
+                        ],
+                    },
+                    "slot": {
+                        "type": ["string", "null"],
+                        "enum": ["p1a", "p1b", "p2a", "p2b", None],
+                    },
+                    "target_slot": {
+                        "type": ["string", "null"],
+                        "enum": ["p1a", "p1b", "p2a", "p2b", None],
+                    },
+                    "species": {"type": ["string", "null"]},
+                    "move": {"type": ["string", "null"]},
+                    "health": {"type": ["string", "null"]},
+                    "value": {"type": ["string", "null"]},
+                    "turn": {"type": ["integer", "null"], "minimum": 1},
+                    "amount": {"type": ["integer", "null"]},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": [
+                    "kind",
+                    "slot",
+                    "target_slot",
+                    "species",
+                    "move",
+                    "health",
+                    "value",
+                    "turn",
+                    "amount",
+                    "confidence",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": [
+        "players",
+        "teams",
+        "selected",
+        "battle_started",
+        "battle_complete",
+        "winner",
+        "events",
+    ],
+    "additionalProperties": False,
+}
+
+
+def _response_excerpt(value: str, *, limit: int = 240) -> str:
+    excerpt = " ".join(value.strip().split())
+    return excerpt[:limit] or "<respuesta vacía>"
+
+
 def _extract_json(value: str) -> Mapping[str, Any]:
     text = value.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1]).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end < start:
-        raise DetectionError("El modelo visual no devolvió JSON.")
-    try:
-        parsed = json.loads(text[start : end + 1])
-    except json.JSONDecodeError as error:
-        raise DetectionError(f"El modelo visual devolvió JSON inválido: {error.msg}.") from error
-    if not isinstance(parsed, Mapping):
-        raise DetectionError("La respuesta visual debe ser un objeto JSON.")
-    return parsed
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+    detection_keys = {
+        "players",
+        "teams",
+        "selected",
+        "battle_started",
+        "battle_complete",
+        "winner",
+        "events",
+    }
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError as error:
+            last_error = error
+            continue
+        if isinstance(parsed, Mapping) and detection_keys.intersection(parsed):
+            return parsed
+    excerpt = _response_excerpt(text)
+    if last_error:
+        raise DetectionError(
+            f"El modelo visual devolvió JSON inválido ({last_error.msg}). Respuesta: {excerpt}"
+        ) from last_error
+    raise DetectionError(f"El modelo visual no devolvió JSON. Respuesta: {excerpt}")
 
 
 class OllamaVisionDetector:
@@ -121,33 +247,46 @@ class OllamaVisionDetector:
             raise ValueError("Indica el modelo visual de Ollama.")
 
     def detect(self, frame: FramePacket) -> FrameDetections:
-        payload = {
-            "model": self.model,
-            "prompt": f"{DETECTION_PROMPT}{self.context.prompt_context()}",
-            "images": [base64.b64encode(frame.image).decode("ascii")],
-            "format": "json",
-            "stream": False,
-            "think": False,
-            "keep_alive": "10m",
-            "options": {"temperature": 0},
-        }
-        request = Request(
-            f"{self.endpoint}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - endpoint validated above
-                body = json.load(response)
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            raise DetectionError(f"Ollama respondió {error.code}: {detail[:300]}") from error
-        except (URLError, TimeoutError) as error:
-            raise DetectionError(
-                "No pudimos conectar con Ollama local. Verifica que esté iniciado y que el modelo esté descargado."
-            ) from error
-        response_text = body.get("response") if isinstance(body, Mapping) else None
-        if not isinstance(response_text, str):
-            raise DetectionError("Ollama no devolvió el campo response esperado.")
-        return FrameDetections.from_mapping(_extract_json(response_text), timestamp_ms=frame.timestamp_ms)
+        last_error: DetectionError | None = None
+        for attempt in range(2):
+            correction = (
+                "\nCORRECCIÓN: responde ahora únicamente con el objeto JSON solicitado, sin explicación ni Markdown."
+                if attempt else ""
+            )
+            payload = {
+                "model": self.model,
+                "prompt": f"{DETECTION_PROMPT}{self.context.prompt_context()}{correction}",
+                "images": [base64.b64encode(frame.image).decode("ascii")],
+                "format": DETECTION_SCHEMA,
+                "stream": False,
+                "think": False,
+                "keep_alive": "10m",
+                "options": {"temperature": 0},
+            }
+            request = Request(
+                f"{self.endpoint}/api/generate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"content-type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - endpoint validated above
+                    body = json.load(response)
+            except HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                raise DetectionError(f"Ollama respondió {error.code}: {detail[:300]}") from error
+            except (URLError, TimeoutError) as error:
+                raise DetectionError(
+                    "No pudimos conectar con Ollama local. Verifica que esté iniciado y que el modelo esté descargado."
+                ) from error
+            response_text = body.get("response") if isinstance(body, Mapping) else None
+            if not isinstance(response_text, str):
+                raise DetectionError("Ollama no devolvió el campo response esperado.")
+            try:
+                mapping = _extract_json(response_text)
+                return FrameDetections.from_mapping(mapping, timestamp_ms=frame.timestamp_ms)
+            except (DetectionError, TypeError, ValueError) as error:
+                last_error = error if isinstance(error, DetectionError) else DetectionError(str(error))
+        raise DetectionError(
+            f"Frame {frame.index + 1}: Ollama no produjo observaciones válidas tras 2 intentos. {last_error}"
+        ) from last_error
