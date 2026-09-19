@@ -3,10 +3,11 @@ import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
-import { collectScoutingReplayEvidence, fetchShowdownReplay, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
+import { collectScoutingReplayEvidence, fetchShowdownReplay, normalizeShowdownReplayDocument, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
 import type {
   MatchRecord,
   MatchResult,
+  MatchSource,
   MoveSet,
   PokemonSet,
   PokemonType,
@@ -61,6 +62,8 @@ interface MatchRow {
   opponent_name: string;
   opponent_paste: string;
   replay_url: string;
+  origin: MatchSource;
+  has_replay_artifact: number;
   selected_json: string;
   opponent_selected_json: string;
   lead_json: string;
@@ -188,6 +191,8 @@ function toMatch(row: MatchRow): MatchRecord {
     opponentName: row.opponent_name,
     opponentPaste: row.opponent_paste,
     replayUrl: row.replay_url,
+    origin: row.origin === "showdown" ? "showdown" : "champions",
+    hasReplayArtifact: Boolean(row.has_replay_artifact),
     selected: parseArray<string>(row.selected_json),
     opponentSelected: parseArray<string>(row.opponent_selected_json),
     lead: parseArray<string>(row.lead_json),
@@ -275,7 +280,7 @@ export async function listTeamGroups(): Promise<TeamGroup[]> {
     db.prepare("SELECT id, name, created_at, updated_at FROM teams ORDER BY updated_at DESC, name ASC").all<TeamRow>(),
     db.prepare("SELECT id, team_id, version_number, minor_version, format, mechanics_json, paste, paste_hash, created_at FROM team_versions ORDER BY team_id, version_number DESC, minor_version DESC").all<VersionRow>(),
     db.prepare("SELECT id, team_version_id, slot, nickname, species, item, ability, level, tera_type, mechanics_json, evs, nature, moves_json, types_json FROM pokemon_sets ORDER BY team_version_id, slot").all<PokemonRow>(),
-    db.prepare("SELECT id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at FROM matches ORDER BY played_at DESC").all<MatchRow>(),
+    db.prepare("SELECT id, team_version_id, result, opponent_name, opponent_paste, replay_url, origin, replay_artifact_json IS NOT NULL AS has_replay_artifact, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at FROM matches ORDER BY played_at DESC").all<MatchRow>(),
   ]);
 
   return teamResult.results.map((team) => ({
@@ -409,6 +414,8 @@ export interface CreateMatchInput {
   opponentName?: string;
   opponentPaste?: string;
   replayUrl?: string;
+  origin?: MatchSource;
+  replayArtifact?: unknown;
   selected?: string[];
   opponentSelected?: string[];
   lead?: string[];
@@ -422,11 +429,25 @@ export async function createMatch(input: CreateMatchInput) {
   if (input.result !== "win" && input.result !== "loss") {
     throw new DomainError("El resultado debe ser victoria o derrota.");
   }
-  if (
-    input.replayUrl &&
-    !input.replayUrl.startsWith("https://replay.pokemonshowdown.com/")
-  ) {
+  const replayUrl = input.replayUrl?.trim() || "";
+  if (replayUrl && !replayUrl.startsWith("https://replay.pokemonshowdown.com/")) {
     throw new DomainError("El replay debe pertenecer a replay.pokemonshowdown.com.");
+  }
+  const origin = input.origin ?? (replayUrl ? "showdown" : "champions");
+  if (origin !== "champions" && origin !== "showdown") {
+    throw new DomainError("El origen de la partida no es válido.");
+  }
+  if (origin === "showdown" && !replayUrl) {
+    throw new DomainError("Una partida de Showdown necesita la URL de su replay.");
+  }
+  if (origin === "champions" && replayUrl) {
+    throw new DomainError("Una partida de Champions no puede usar una URL pública de Showdown.");
+  }
+  const replayArtifact = input.replayArtifact === undefined || input.replayArtifact === null
+    ? null
+    : normalizeShowdownReplayDocument(input.replayArtifact);
+  if (replayArtifact && origin !== "champions") {
+    throw new DomainError("El replay reconstruido sólo puede guardarse con origen Champions.");
   }
   if ((input.opponentSelected?.length ?? 0) > 6) {
     throw new DomainError("El equipo rival puede contener como máximo 6 Pokémon.");
@@ -455,7 +476,9 @@ export async function createMatch(input: CreateMatchInput) {
     result: input.result,
     opponentName: input.opponentName?.trim() || "Rival",
     opponentPaste: input.opponentPaste?.trim() || "",
-    replayUrl: input.replayUrl?.trim() || "",
+    replayUrl,
+    origin,
+    hasReplayArtifact: Boolean(replayArtifact),
     selected: input.selected ?? [],
     opponentSelected: input.opponentSelected ?? [],
     lead: input.lead ?? [],
@@ -467,7 +490,7 @@ export async function createMatch(input: CreateMatchInput) {
 
   await db
     .prepare(
-      "INSERT INTO matches (id, team_version_id, result, opponent_name, opponent_paste, replay_url, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO matches (id, team_version_id, result, opponent_name, opponent_paste, replay_url, origin, replay_artifact_json, selected_json, opponent_selected_json, lead_json, moves_used_json, rating, notes, played_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(
       match.id,
@@ -476,6 +499,8 @@ export async function createMatch(input: CreateMatchInput) {
       match.opponentName,
       match.opponentPaste,
       match.replayUrl,
+      match.origin,
+      replayArtifact ? JSON.stringify(replayArtifact) : null,
       JSON.stringify(match.selected),
       JSON.stringify(match.opponentSelected),
       JSON.stringify(match.lead),
