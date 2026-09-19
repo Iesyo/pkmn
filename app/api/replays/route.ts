@@ -20,7 +20,8 @@ export async function POST(request: Request) {
       throw new ReplayValidationError("Envía una URL de Showdown o un replay reconstruido, no ambos.");
     }
 
-    const source = payload.replay !== undefined
+    const reconstructed = payload.replay !== undefined;
+    const source = reconstructed
       ? { replay: normalizeShowdownReplayDocument(payload.replay), replayUrl: "" }
       : await fetchShowdownReplay(payload.replayUrl ?? "").then(({ replay, urls }) => ({ replay, replayUrl: urls.replayUrl }));
 
@@ -28,6 +29,8 @@ export async function POST(request: Request) {
       replayUrl: source.replayUrl,
       showdownNames: await getShowdownNames(),
       teamSpecies,
+      origin: reconstructed ? "champions" : "showdown",
+      replayArtifact: reconstructed ? source.replay : null,
     });
     return Response.json({ match });
   } catch (error) {
