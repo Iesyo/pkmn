@@ -1,9 +1,18 @@
-import type { MatchRecord } from "./types";
+import type { MatchRecord, MatchSource } from "./types";
 
-export type MatchOrigin = "all" | "champions" | "showdown";
+export type MatchOrigin = "all" | MatchSource;
 
-export function getMatchOrigin(match: Pick<MatchRecord, "replayUrl">): Exclude<MatchOrigin, "all"> {
+type MatchOriginFields = Pick<MatchRecord, "replayUrl"> & Partial<Pick<MatchRecord, "origin">>;
+type MatchReplayFields = Pick<MatchRecord, "id" | "replayUrl"> & Partial<Pick<MatchRecord, "hasReplayArtifact">>;
+
+export function getMatchOrigin(match: MatchOriginFields): MatchSource {
+  if (match.origin === "champions" || match.origin === "showdown") return match.origin;
   return match.replayUrl.trim() ? "showdown" : "champions";
+}
+
+export function getMatchReplayHref(match: MatchReplayFields) {
+  if (match.replayUrl.trim()) return match.replayUrl;
+  return match.hasReplayArtifact ? `/api/matches/${encodeURIComponent(match.id)}/replay` : "";
 }
 
 export function filterMatchesByOrigin(matches: MatchRecord[], origin: MatchOrigin) {
