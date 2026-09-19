@@ -34,7 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { MatchQuickEntry } from "@/components/vgc/match-quick-entry";
-import { countMatchesByOrigin, filterMatchesByOrigin, getMatchOrigin, type MatchOrigin } from "@/lib/match-history";
+import { countMatchesByOrigin, filterMatchesByOrigin, getMatchOrigin, getMatchReplayHref, type MatchOrigin } from "@/lib/match-history";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { MatchRecord, TeamVersion } from "@/lib/types";
 
@@ -69,6 +69,23 @@ function OriginBadge({ match }: { match: MatchRecord }) {
     <Badge variant="outline" className="border-cyan-300/20 bg-cyan-300/8 text-[9px] text-cyan-200">Showdown</Badge>
   ) : (
     <Badge variant="outline" className="border-amber-300/20 bg-amber-300/8 text-[9px] text-amber-200">Champions</Badge>
+  );
+}
+
+function ReplayLink({ match }: { match: MatchRecord }) {
+  const href = getMatchReplayHref(match);
+  if (!href) return <span className="text-slate-700">—</span>;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title="Abrir replay en otra pestaña"
+      className="inline-flex items-center gap-1 font-semibold text-cyan-300 transition hover:text-cyan-200"
+    >
+      Ver <ExternalLink className="size-3" />
+    </a>
   );
 }
 
@@ -142,11 +159,7 @@ function MatchHistoryTable({
             <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
             <TableCell className="text-right">
               <div className="flex min-w-max items-center justify-end gap-1.5">
-                {match.replayUrl ? (
-                  <a href={match.replayUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-cyan-300 transition hover:text-cyan-200">
-                    Ver <ExternalLink className="size-3" />
-                  </a>
-                ) : <span className="text-slate-700">—</span>}
+                <ReplayLink match={match} />
                 {!version.demo ? (
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
