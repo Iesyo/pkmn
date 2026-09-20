@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 const CHAMPIONS_JOBS_LOOPBACK = "http://127.0.0.1:8770";
-const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/replays\/[1-9][0-9]*)?)?)$/;
+const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/retry|\/replays\/[1-9][0-9]*)?)?)$/;
 
 async function forward(
   request: Request,

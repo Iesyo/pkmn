@@ -214,6 +214,7 @@ class ReplayCapturePipeline:
         processed_frames = 0
         skipped_frames = 0
         consecutive_errors = 0
+        incomplete_battles = 0
 
         def reset_detector_battle_state() -> None:
             reset = getattr(self.detector, "reset_battle_state", None)
@@ -261,7 +262,21 @@ class ReplayCapturePipeline:
                 awaiting_next_start = False
             accumulator.apply(detections)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
-                captures.append(accumulator.finalize())
+                try:
+                    capture = accumulator.finalize()
+                except CaptureIncompleteError as error:
+                    incomplete_battles += 1
+                    if on_warning:
+                        on_warning(
+                            f"Cierre de batalla descartado ({incomplete_battles}): {error} "
+                            "El análisis continuará buscando la siguiente batalla."
+                        )
+                    accumulator = CaptureAccumulator(self.seed)
+                    awaiting_next_start = True
+                    reset_detector_battle_state()
+                    report(frame.timestamp_ms)
+                    continue
+                captures.append(capture)
                 accumulator = CaptureAccumulator(self.seed)
                 report(frame.timestamp_ms)
                 if max_battles and len(captures) >= max_battles:

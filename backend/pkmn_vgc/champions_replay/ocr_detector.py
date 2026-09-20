@@ -82,13 +82,36 @@ class RapidOcrEngine:
         self._np = np
         self._engine = RapidOCR(params={"Global.log_level": "ERROR"})
         self.min_confidence = min_confidence
+        self.rotation_quarter_turns = 0
+        self._orientation_locked = False
 
-    def read(self, image: bytes) -> tuple[OcrLine, ...]:
-        encoded = self._np.frombuffer(image, dtype=self._np.uint8)
-        decoded = self._cv2.imdecode(encoded, self._cv2.IMREAD_COLOR)
-        if decoded is None:
-            raise DetectionError("OCR no pudo decodificar el frame recibido de FFmpeg.")
+    @staticmethod
+    def _orientation_score(lines: Sequence[OcrLine], *, landscape: bool) -> tuple[float, int]:
+        """Favorece texto legible del HUD para orientar grabaciones de celular."""
 
+        battle_tokens = {
+            "battle",
+            "fight",
+            "pokemon",
+            "movetime",
+            "battleinfo",
+            "turn",
+            "used",
+            "fainted",
+            "sentout",
+            "lv50",
+        }
+        score = 2.0 if landscape else 0.0
+        battle_signals = 0
+        for line in lines:
+            key = _text_key(line.text)
+            score += min(0.5, line.confidence * len(key) / 20)
+            if any(token in key for token in battle_tokens):
+                battle_signals += 1
+                score += 5.0
+        return score, battle_signals
+
+    def _read_decoded(self, decoded: Any) -> tuple[OcrLine, ...]:
         height, width = decoded.shape[:2]
         try:
             result = self._engine(
@@ -124,6 +147,49 @@ class RapidOcrEngine:
                 )
             )
         return tuple(sorted(lines, key=lambda line: (line.top, line.left)))
+
+    def _rotate(self, decoded: Any, quarter_turns: int) -> Any:
+        if quarter_turns == 0:
+            return decoded
+        return self._np.ascontiguousarray(self._np.rot90(decoded, k=-quarter_turns))
+
+    def read(self, image: bytes) -> tuple[OcrLine, ...]:
+        encoded = self._np.frombuffer(image, dtype=self._np.uint8)
+        decoded = self._cv2.imdecode(encoded, self._cv2.IMREAD_COLOR)
+        if decoded is None:
+            raise DetectionError("OCR no pudo decodificar el frame recibido de FFmpeg.")
+
+        height, width = decoded.shape[:2]
+        if self._orientation_locked or width >= height:
+            if width >= height:
+                self.rotation_quarter_turns = 0
+                self._orientation_locked = True
+            return self._read_decoded(self._rotate(decoded, self.rotation_quarter_turns))
+
+        # Algunos screen recordings móviles conservan 1126x2436 aunque el
+        # juego y su texto estén girados. Probamos ambas orientaciones una sola
+        # vez y después reutilizamos la ganadora para no triplicar todo el OCR.
+        candidates = []
+        for quarter_turns in (0, 1, 3):
+            oriented = self._rotate(decoded, quarter_turns)
+            lines = self._read_decoded(oriented)
+            oriented_height, oriented_width = oriented.shape[:2]
+            score, battle_signals = self._orientation_score(
+                lines,
+                landscape=oriented_width >= oriented_height,
+            )
+            candidates.append((battle_signals, score, quarter_turns, lines))
+        battle_signals, _score, quarter_turns, lines = max(
+            candidates,
+            key=lambda candidate: (candidate[0], candidate[1]),
+        )
+        # Una notificación de WhatsApp puede ser el texto más legible del
+        # primer frame vertical. Sólo fijamos la rotación cuando aparecen
+        # señales propias del HUD; hasta entonces volvemos a evaluar.
+        if lines and battle_signals and (quarter_turns != 0 or battle_signals >= 2):
+            self.rotation_quarter_turns = quarter_turns
+            self._orientation_locked = True
+        return lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,9 +729,9 @@ class ChampionsTextParser:
 
     def _hud_species(self, lines: Sequence[OcrLine], side: str) -> list[tuple[str, OcrLine]]:
         if side == "p1":
-            candidates = [line for line in lines if line.center_y >= 0.82 and line.center_x <= 0.72]
+            candidates = [line for line in lines if line.center_y >= 0.55]
         else:
-            candidates = [line for line in lines if line.center_y <= 0.18 and line.center_x >= 0.43]
+            candidates = [line for line in lines if line.center_y <= 0.45]
 
         found: list[tuple[str, OcrLine]] = []
         seen: set[str] = set()
@@ -708,28 +774,28 @@ class ChampionsTextParser:
                 for index, (species, line) in enumerate(species_lines):
                     slot_lines.append((f"{side}{'ab'[index]}", species, line))
 
-            if side == "p1":
-                health_lines = [
-                    (line, health)
-                    for line, health in readings
-                    if line.center_y >= 0.9
-                    and line.center_x <= 0.55
-                ]
-            else:
-                health_lines = [
-                    (line, health)
-                    for line, health in readings
-                    if 0.08 <= line.center_y <= 0.145
-                    and line.center_x >= 0.43
-                ]
-
             for slot, species, species_line in slot_lines:
                 nearby = min(
-                    health_lines,
-                    key=lambda item: abs(item[0].center_x - species_line.center_x),
+                    (
+                        (line, health)
+                        for line, health in readings
+                        if -0.02 <= line.center_y - species_line.center_y <= 0.18
+                        and abs(line.center_x - species_line.center_x) < 0.2
+                    ),
+                    key=lambda item: (
+                        abs(item[0].center_x - species_line.center_x)
+                        + abs(item[0].center_y - species_line.center_y)
+                    ),
                     default=None,
                 )
-                health = nearby[1] if nearby and abs(nearby[0].center_x - species_line.center_x) < 0.16 else None
+                health = nearby[1] if nearby else None
+                legacy_hud_band = (
+                    side == "p1" and species_line.center_y >= 0.82
+                ) or (
+                    side == "p2" and species_line.center_y <= 0.18
+                )
+                if health is None and not legacy_hud_band:
+                    continue
                 observations[slot] = (species, health)
         return observations
 
@@ -756,7 +822,7 @@ class ChampionsTextParser:
             "snow",
         )
         for line in lines:
-            if not (0.56 <= line.center_y <= 0.86 and line.left <= 0.86):
+            if not (0.42 <= line.center_y <= 0.92 and line.left <= 0.92):
                 continue
             key = _text_key(line.text)
             lowered = f" {line.text.casefold()} "
@@ -1137,23 +1203,28 @@ class ChampionsTextParser:
                 )
         self._command_visible = command_visible
 
-        visible_text = " ".join(line.text.casefold() for line in lines)
-        if "battle has ended" in visible_text or "battle is over" in visible_text:
+        result_lines = [
+            line
+            for line in lines
+            if 0.15 <= line.center_y <= 0.85 and line.right - line.left >= 0.08
+        ]
+        result_text = " ".join(line.text.casefold() for line in result_lines)
+        if "battle has ended" in result_text or "battle is over" in result_text:
             self._pending_end = True
 
         winner = None
         if any(
-            phrase in visible_text
+            phrase in result_text
             for phrase in ("you won the battle", "you won against", "you defeated", "you beat ")
         ):
             winner = "p1"
-        elif "you lost" in visible_text or "you were defeated" in visible_text:
+        elif "you lost" in result_text or "you were defeated" in result_text:
             winner = "p2"
         else:
             win_words = {"win", "won", "victory"}
             loss_words = {"lose", "lost", "defeat", "defeated"}
-            wins = [line for line in lines if _text_key(line.text) in win_words]
-            losses = [line for line in lines if _text_key(line.text) in loss_words]
+            wins = [line for line in result_lines if _text_key(line.text) in win_words]
+            losses = [line for line in result_lines if _text_key(line.text) in loss_words]
             if wins and not losses:
                 winner = "p1"
             elif losses and not wins:
@@ -1208,6 +1279,7 @@ class ChampionsOcrDetector:
                 "frame": frame.index + 1,
                 "timestamp_ms": frame.timestamp_ms,
                 "elapsed_ms": round((time.monotonic() - started) * 1_000),
+                "rotation_degrees": int(getattr(self.engine, "rotation_quarter_turns", 0)) * 90,
                 "ocr": [asdict(line) for line in lines],
                 "detections": {
                     "battle_started": detections.battle_started,

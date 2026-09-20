@@ -13,6 +13,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     ChampionsTextParser,
     OcrLine,
     OcrTraceDetector,
+    RapidOcrEngine,
     _health_value,
 )
 from pkmn_vgc.champions_replay.sources import FramePacket, OcrTraceFrameSource
@@ -97,6 +98,45 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(detections.events[-1].kind, "turn")
         self.assertEqual(detections.events[-1].turn, 1)
 
+    def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
+        detections = self.parser().parse(
+            (
+                line("Steelix", x=0.55, y=0.24),
+                line("Drampa", x=0.76, y=0.24),
+                line("100%", x=0.60, y=0.31),
+                line("100%", x=0.81, y=0.31),
+                line("Delphox", x=0.12, y=0.63),
+                line("Victreebel", x=0.34, y=0.63),
+                line("152/152", x=0.17, y=0.70),
+                line("187/187", x=0.39, y=0.70),
+                line("FIGHT", x=0.8, y=0.76),
+                line("POKÉMON", x=0.8, y=0.84),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events if event.kind == "switch"],
+            [
+                ("p1a", "Delphox"),
+                ("p1b", "Victreebel"),
+                ("p2a", "Steelix"),
+                ("p2b", "Drampa"),
+            ],
+        )
+
+    def test_phone_orientation_prefers_battle_hud_over_notification_text(self) -> None:
+        notification = (line("WhatsApp", x=0.1, y=0.1), line("New message", x=0.1, y=0.2))
+        battle = (line("FIGHT", x=0.8, y=0.7), line("POKÉMON", x=0.8, y=0.9))
+
+        notification_score = RapidOcrEngine._orientation_score(notification, landscape=False)
+        battle_score = RapidOcrEngine._orientation_score(battle, landscape=True)
+
+        self.assertEqual(notification_score[1], 0)
+        self.assertGreater(battle_score[1], 0)
+        self.assertGreater(battle_score, notification_score)
+
     def test_parses_move_hp_change_deduplication_and_next_turn(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
@@ -141,6 +181,23 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.kind, event.slot, event.species, event.turn) for event in second.events],
         )
         self.assertEqual(second.events[-1].turn, 1)
+
+    def test_ignores_small_top_notification_that_contains_result_words(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+
+        notification = parser.parse(
+            (
+                line("WhatsApp", x=0.03, y=0.02, width=0.12),
+                line("You won the battle", x=0.03, y=0.07, width=0.32),
+                line("WIN", x=0.82, y=0.08, width=0.04),
+            ),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+
+        self.assertIsNone(notification.winner)
+        self.assertFalse(notification.battle_complete)
 
     def test_reconstructs_split_percentages_during_hp_animations(self) -> None:
         parser = self.parser()

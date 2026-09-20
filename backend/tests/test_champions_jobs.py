@@ -122,6 +122,46 @@ class ChampionsJobTests(unittest.TestCase):
             self.assertEqual(resumed["status"], "ready")
             resumed_manager.close(wait=True)
 
+    def test_retries_analysis_without_uploading_the_video_again(self) -> None:
+        attempts = 0
+
+        def flaky_processor(*args: object) -> tuple[ReplayDocument, ...]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("OCR temporal")
+            return fake_processor(*args)  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ChampionsJobManager(Path(directory), processor=flaky_processor)
+            job = manager.create_job(
+                filename="mobile.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(job["id"], offset=0, data=b"video")
+
+            deadline = time.monotonic() + 2
+            failed = manager.get_job(job["id"])
+            while failed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                failed = manager.get_job(job["id"])
+            self.assertEqual(failed["status"], "error")
+
+            retried = manager.retry_job(job["id"])
+            self.assertEqual(retried["status"], "queued")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(job["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(job["id"])
+
+            self.assertEqual(completed["status"], "ready")
+            self.assertEqual(completed["uploadedBytes"], 5)
+            self.assertEqual(attempts, 2)
+            manager.close(wait=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,13 @@ etc. La versión seleccionada aporta el Team propio y sus alias, mientras el
 rival se reconstruye desde lo visible. Cada resultado vuelve al formulario de
 revisión y no entra al historial hasta que el usuario lo confirma.
 
+Las grabaciones móviles verticales se orientan a partir del HUD de Champions,
+no del primer texto legible: una notificación del sistema o de WhatsApp no fija
+la rotación del vídeo. Los overlays pasajeros y los falsos cierres sin una
+batalla reconstruible se descartan y el análisis continúa. Si un trabajo ya
+cargado termina en **Error**, **Reintentar análisis** reutiliza el archivo
+guardado en la ROG sin transferirlo nuevamente.
+
 El servicio Python sólo escucha en loopback. La ruta web actúa como proxy de
 lista blanca para que la otra PC nunca acceda directamente al proceso local.
 La web de desarrollo no incluye autenticación LAN: debe usarse únicamente en

@@ -83,6 +83,14 @@ def get_job(job_id: str) -> dict[str, object]:
         raise _http_error(error) from error
 
 
+@app.post("/jobs/{job_id}/retry")
+def retry_job(job_id: str) -> dict[str, object]:
+    try:
+        return {"job": jobs.retry_job(job_id)}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
 @app.put("/jobs/{job_id}/chunks")
 async def append_chunk(
     job_id: str,

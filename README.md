@@ -23,7 +23,9 @@ histórico de equipos de Pokémon VGC.
 - Teams permite subir grabaciones Champions desde otra computadora de la misma
   red. La ROG recibe el archivo en fragmentos reanudables, lo procesa en una
   cola local persistente y presenta cada batalla detectada para revisión antes
-  de guardarla en el historial.
+  de guardarla en el historial. Las grabaciones móviles se orientan mediante el
+  HUD, ignoran notificaciones pasajeras y pueden reanalizarse sin volver a subir
+  el archivo.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los

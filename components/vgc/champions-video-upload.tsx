@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileVideo2, Loader2, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileVideo2, Loader2, RotateCcw, UploadCloud } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -104,6 +104,7 @@ export function ChampionsVideoUpload({
   const [jobs, setJobs] = useState<ChampionsVideoJob[]>([]);
   const [currentJobId, setCurrentJobId] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [readingReplay, setReadingReplay] = useState<number | null>(null);
   const [error, setError] = useState("");
   const currentJob = useMemo(
@@ -233,6 +234,22 @@ export function ChampionsVideoUpload({
     }
   }
 
+  async function retryAnalysis() {
+    if (!currentJob || currentJob.status !== "error" || retrying) return;
+    setRetrying(true);
+    setError("");
+    try {
+      const payload = await readJson<{ job: ChampionsVideoJob }>(
+        await fetch(`/api/champions-jobs/jobs/${currentJob.id}/retry`, { method: "POST" }),
+      );
+      mergeJob(payload.job);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos reintentar el análisis.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   const progress = Math.round((currentJob?.progress ?? 0) * 100);
 
   return (
@@ -345,7 +362,21 @@ export function ChampionsVideoUpload({
                 </div>
               ) : null}
               {currentJob.status === "error" ? (
-                <p className="flex items-start gap-2 rounded-xl border border-rose-300/15 bg-rose-300/6 p-3 text-[10px] text-rose-200"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{currentJob.error || "El procesamiento terminó con error."}</p>
+                <div className="grid gap-2 rounded-xl border border-rose-300/15 bg-rose-300/6 p-3 text-[10px] text-rose-200">
+                  <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{currentJob.error || "El procesamiento terminó con error."}</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void retryAnalysis()}
+                    disabled={retrying}
+                    className="w-fit gap-1.5 border-rose-200/20 bg-rose-200/5 text-rose-100 hover:bg-rose-200/10"
+                  >
+                    {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                    Reintentar análisis
+                  </Button>
+                  <p className="text-[9px] text-slate-500">Usa el vídeo que ya está guardado en la ROG; no vuelve a subirlo.</p>
+                </div>
               ) : null}
             </section>
           ) : (

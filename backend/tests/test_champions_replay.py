@@ -316,6 +316,43 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual([len(capture.events) for capture in captures], [1, 1])
         self.assertEqual(detector.reset_count, 3)
 
+    def test_pipeline_discards_a_false_notification_result_and_keeps_scanning(self) -> None:
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(4)
+        ]
+        detections = {
+            0: FrameDetections(
+                events=(BattleEvent(kind="message", timestamp_ms=0, value="WhatsApp notification."),),
+                battle_started=True,
+            ),
+            1: FrameDetections(winner="p1", battle_complete=True),
+            2: FrameDetections(
+                p2_team=("Miraidon",),
+                events=(BattleEvent(kind="turn", timestamp_ms=2_000, turn=1),),
+                battle_started=True,
+            ),
+            3: FrameDetections(winner="p2", battle_complete=True),
+        }
+
+        class ResettableSequenceDetector:
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                return detections[frame.index]
+
+            def reset_battle_state(self) -> None:
+                return None
+
+        warnings: list[str] = []
+        captures = ReplayCapturePipeline(
+            frames,
+            ResettableSequenceDetector(),
+            CaptureSeed(p1_team=("Kleavor",)),
+        ).capture(max_battles=0, on_warning=warnings.append)
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0].winner, "p2")
+        self.assertTrue(any("descartado" in warning for warning in warnings))
+
     def test_pipeline_rejects_negative_battle_limit(self) -> None:
         with self.assertRaisesRegex(ValueError, "usa 0"):
             ReplayCapturePipeline([], MagicMock(), CaptureSeed()).capture(max_battles=-1)

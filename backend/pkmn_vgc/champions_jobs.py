@@ -242,6 +242,33 @@ class ChampionsJobManager:
         with self._lock:
             return self._public(self._require(job_id))
 
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        """Reutiliza el vídeo ya cargado para repetir sólo el análisis."""
+
+        with self._lock:
+            job = self._require(job_id)
+            if job["status"] != "error":
+                raise ValueError("Sólo se puede reintentar un análisis que terminó con error.")
+            if not self._source_path(job).is_file():
+                raise ValueError("El vídeo original ya no está disponible en la ROG.")
+            job["status"] = "queued"
+            job["stage"] = "Esperando turno"
+            job["error"] = None
+            job["processed_frames"] = 0
+            job["total_frames"] = None
+            job["elapsed_seconds"] = 0.0
+            job["eta_seconds"] = None
+            job["events_detected"] = 0
+            job["battles_detected"] = 0
+            job["skipped_frames"] = 0
+            job["warnings"] = []
+            job["replay_files"] = []
+            job["updated_at"] = _now()
+            self._save_locked(job)
+            result = self._public(job)
+        self._enqueue(job_id)
+        return result
+
     def replay_document(self, job_id: str, replay_number: int) -> dict[str, Any]:
         with self._lock:
             job = self._require(job_id)
