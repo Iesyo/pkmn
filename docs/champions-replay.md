@@ -118,9 +118,29 @@ Ejecución completa:
 ```
 
 El comando calcula con `ffprobe` cuántos frames analizará y muestra porcentaje,
-tiempo transcurrido, ETA, eventos detectados y frames omitidos. Por defecto
+tiempo transcurrido, ETA, batallas terminadas, eventos detectados y frames omitidos. Por defecto
 analiza 2 FPS aunque el vídeo sea 60 FPS. Puede bajarse a `--sample-fps 1` en
 una CPU lenta; subirlo aumenta sensibilidad y costo casi linealmente.
+
+Si una grabación contiene varias batallas, `--max-battles 0` procesa el vídeo
+completo y genera un juego de artefactos por cada una. Los archivos se numeran
+como `sesion-001.json`, `sesion-001.log`, `sesion-001.html`, después
+`sesion-002.*`, etc. Al terminar una batalla se limpian turnos, Pokémon activos,
+mensajes, habilidades, terrenos y Mega Evolutions antes de aceptar la siguiente:
+
+```powershell
+.\.venv-champions\Scripts\champions-replay.exe video ".\captures\sesion-completa.mp4" `
+  --context ".\captures\champions-context.json" `
+  --output ".\replays\sesion-completa" `
+  --ocr-trace ".\replays\sesion-completa.trace.jsonl" `
+  --max-battles 0 `
+  --force
+```
+
+El mismo contexto se aplica a todas las batallas. Para un BO3 contra el mismo
+rival puede incluir ambos Teams; si el vídeo reúne rivales distintos, conviene
+dejar `teams.p2` y `aliases.p2` vacíos para que cada rival se reconstruya a
+partir de lo visible, manteniendo sólo el Team propio como contexto.
 
 Una prueba con `--max-frames` puede terminar con “fuente sin batalla completa”:
 eso es normal si esos primeros frames no incluyen el resultado. La traza sí se

@@ -22,6 +22,7 @@ class CaptureProgress:
     elapsed_seconds: float
     events_detected: int
     skipped_frames: int
+    battles_detected: int
 
     @property
     def fraction(self) -> float | None:
@@ -202,8 +203,8 @@ class ReplayCapturePipeline:
         on_warning: Callable[[str], None] | None = None,
         max_consecutive_detection_errors: int = 3,
     ) -> tuple[CapturedBattle, ...]:
-        if max_battles < 1:
-            raise ValueError("max_battles debe ser positivo.")
+        if max_battles < 0:
+            raise ValueError("max_battles no puede ser negativo; usa 0 para procesar todas las batallas.")
         if max_consecutive_detection_errors < 1:
             raise ValueError("max_consecutive_detection_errors debe ser positivo.")
         captures: list[CapturedBattle] = []
@@ -213,6 +214,11 @@ class ReplayCapturePipeline:
         processed_frames = 0
         skipped_frames = 0
         consecutive_errors = 0
+
+        def reset_detector_battle_state() -> None:
+            reset = getattr(self.detector, "reset_battle_state", None)
+            if callable(reset):
+                reset()
 
         def report(frame_timestamp_ms: int) -> None:
             if not on_progress:
@@ -226,6 +232,7 @@ class ReplayCapturePipeline:
                     elapsed_seconds=time.monotonic() - started,
                     events_detected=completed_events + len(accumulator.events),
                     skipped_frames=skipped_frames,
+                    battles_detected=len(captures),
                 )
             )
 
@@ -248,20 +255,24 @@ class ReplayCapturePipeline:
             consecutive_errors = 0
             if awaiting_next_start:
                 if not detections.battle_started:
+                    reset_detector_battle_state()
                     report(frame.timestamp_ms)
                     continue
-                accumulator = CaptureAccumulator(self.seed)
                 awaiting_next_start = False
             accumulator.apply(detections)
-            report(frame.timestamp_ms)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
                 captures.append(accumulator.finalize())
-                if len(captures) >= max_battles:
+                accumulator = CaptureAccumulator(self.seed)
+                report(frame.timestamp_ms)
+                if max_battles and len(captures) >= max_battles:
                     return tuple(captures)
                 awaiting_next_start = True
+                reset_detector_battle_state()
+                continue
+            report(frame.timestamp_ms)
 
-        if accumulator.winner and accumulator.has_battle_data:
+        if not awaiting_next_start and accumulator.winner and accumulator.has_battle_data:
             captures.append(accumulator.finalize())
         if not captures:
             raise CaptureIncompleteError("La fuente terminó sin una batalla completa.")
-        return tuple(captures[:max_battles])
+        return tuple(captures if max_battles == 0 else captures[:max_battles])

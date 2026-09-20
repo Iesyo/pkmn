@@ -273,7 +273,52 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual([item.processed_frames for item in progress], [1, 2, 3])
         self.assertEqual([item.skipped_frames for item in progress], [1, 1, 1])
         self.assertEqual(progress[-1].fraction, 1.0)
+        self.assertEqual(progress[-1].battles_detected, 1)
         self.assertEqual(len(warnings), 1)
+
+    def test_pipeline_captures_all_battles_without_duplicating_the_last_one(self) -> None:
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(5)
+        ]
+        detections = {
+            0: FrameDetections(
+                events=(BattleEvent(kind="turn", timestamp_ms=0, turn=1),),
+                battle_started=True,
+            ),
+            1: FrameDetections(winner="p1", battle_complete=True),
+            2: FrameDetections(winner="p1", battle_complete=True),
+            3: FrameDetections(
+                events=(BattleEvent(kind="turn", timestamp_ms=3_000, turn=1),),
+                battle_started=True,
+            ),
+            4: FrameDetections(winner="p2", battle_complete=True),
+        }
+
+        class ResettableSequenceDetector:
+            def __init__(self) -> None:
+                self.reset_count = 0
+
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                return detections[frame.index]
+
+            def reset_battle_state(self) -> None:
+                self.reset_count += 1
+
+        detector = ResettableSequenceDetector()
+        captures = ReplayCapturePipeline(
+            frames,
+            detector,
+            CaptureSeed(p1_team=("Kleavor",), p2_team=("Miraidon",)),
+        ).capture(max_battles=0)
+
+        self.assertEqual([capture.winner for capture in captures], ["p1", "p2"])
+        self.assertEqual([len(capture.events) for capture in captures], [1, 1])
+        self.assertEqual(detector.reset_count, 3)
+
+    def test_pipeline_rejects_negative_battle_limit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "usa 0"):
+            ReplayCapturePipeline([], MagicMock(), CaptureSeed()).capture(max_battles=-1)
 
     def test_splits_mjpeg_pipe_without_image_dependencies(self) -> None:
         first = b"\xff\xd8first\xff\xd9"

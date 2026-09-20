@@ -124,6 +124,24 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual([event.turn for event in next_turn.events if event.kind == "turn"], [2])
 
+    def test_reset_battle_state_allows_the_same_opening_in_a_second_battle(self) -> None:
+        parser = self.parser()
+
+        first = parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        parser.parse(
+            (line("WIN", x=0.25, y=0.2, width=0.2),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        parser.reset_battle_state()
+        second = parser.parse(self.command_frame(), timestamp_ms=2_000, source_frame=2)
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.turn) for event in first.events],
+            [(event.kind, event.slot, event.species, event.turn) for event in second.events],
+        )
+        self.assertEqual(second.events[-1].turn, 1)
+
     def test_reconstructs_split_percentages_during_hp_animations(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)

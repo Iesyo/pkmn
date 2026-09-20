@@ -129,7 +129,8 @@ class _ProgressPrinter:
         eta = _format_duration(progress.eta_seconds)
         line = (
             f"\r{meter}{position} | transcurrido {elapsed} | ETA {eta} | "
-            f"eventos {progress.events_detected} | omitidos {progress.skipped_frames}"
+            f"partidas {progress.battles_detected} | eventos {progress.events_detected} | "
+            f"omitidos {progress.skipped_frames}"
         )
         print(f"{line:<125}", end="", flush=True)
         self.active_line = True
@@ -149,7 +150,12 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", type=Path, required=True, help="Ruta base de los archivos de salida.")
     parser.add_argument("--sample-fps", type=float, default=2.0, help="Frames por segundo enviados al detector.")
     parser.add_argument("--max-frames", type=int, help="Límite opcional de frames para una prueba.")
-    parser.add_argument("--max-battles", type=int, default=1, help="Cantidad máxima de batallas a producir.")
+    parser.add_argument(
+        "--max-battles",
+        type=int,
+        default=1,
+        help="Cantidad máxima de batallas a producir; 0 procesa todas las encontradas.",
+    )
     parser.add_argument(
         "--detector",
         choices=["ocr", "ollama"],
@@ -204,7 +210,12 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("trace", type=Path)
     trace.add_argument("--context", type=Path, help="JSON con Teams, alias, jugadores, idioma y formato.")
     trace.add_argument("--output", type=Path, required=True, help="Ruta base de los archivos de salida.")
-    trace.add_argument("--max-battles", type=int, default=1, help="Cantidad máxima de batallas a producir.")
+    trace.add_argument(
+        "--max-battles",
+        type=int,
+        default=1,
+        help="Cantidad máxima de batallas a producir; 0 procesa todas las encontradas.",
+    )
     trace.add_argument("--force", action="store_true", help="Permite reemplazar artefactos existentes.")
     return parser
 

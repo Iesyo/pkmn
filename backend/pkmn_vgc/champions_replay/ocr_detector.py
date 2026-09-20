@@ -336,6 +336,11 @@ class ChampionsTextParser:
             _text_key(mega_forme): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
         }
+        self.reset_battle_state()
+
+    def reset_battle_state(self) -> None:
+        """Descarta el estado efímero antes de analizar otra batalla."""
+
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
@@ -1215,6 +1220,9 @@ class ChampionsOcrDetector:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         return detections
 
+    def reset_battle_state(self) -> None:
+        self.parser.reset_battle_state()
+
 
 class OcrTraceDetector:
     """Reaplica el parser a una traza sin repetir FFmpeg ni RapidOCR."""
@@ -1240,3 +1248,6 @@ class OcrTraceDetector:
             timestamp_ms=frame.timestamp_ms,
             source_frame=frame.index,
         )
+
+    def reset_battle_state(self) -> None:
+        self.parser.reset_battle_state()
