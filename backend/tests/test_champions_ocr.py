@@ -282,6 +282,31 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(detections.events, ())
 
+    def test_ignores_phone_move_menu_labels_even_with_ocr_punctuation(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Venusaur",)),
+            catalog=ChampionsCatalog(
+                species=("Venusaur",),
+                moves=("Giga Drain", "Sleep Powder"),
+            ),
+        )
+        parser._battle_open = True
+
+        detections = parser.parse(
+            (
+                line("Move Info", x=0.84, y=0.34),
+                line("Giga Drain!", x=0.76, y=0.44),
+                line("Venusaur used Sleep Powder!", x=0.18, y=0.70, width=0.38),
+            ),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.species, event.move) for event in detections.events],
+            [("move", "Venusaur", "Sleep Powder")],
+        )
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (
