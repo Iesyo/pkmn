@@ -23,6 +23,9 @@ flowchart TD
     DRIVE[(Google Drive)] --> LAB[Battle Lab en Colab]
     LAB --> DRIVE
     LIVE[OBS o vídeo Champions] --> CAP[Traductor local]
+    REMOTE[PC de juego] --> UPLOAD[Carga web fragmentada]
+    UPLOAD --> QUEUE[Cola local en la ROG]
+    QUEUE --> CAP
     CAP --> REPLAY[Replay Showdown reconstruido]
     REPLAY --> API
 ```
@@ -52,8 +55,14 @@ flowchart TD
 - `backend/pkmn_vgc/champions_replay/`: compañero local que obtiene frames de
   vídeo u OBS mediante FFmpeg, los lee con RapidOCR/ONNX Runtime, normaliza las
   observaciones y genera un documento de replay Showdown. La fuente live usa un
-  buffer del último frame para no acumular atraso. El sitio sólo recibe el
-  replay terminado; la captura no se ejecuta dentro de Cloudflare.
+  buffer del último frame para no acumular atraso. La captura no se ejecuta
+  dentro de Cloudflare: el adaptador alojado sólo recibe el replay terminado y
+  la ejecución local reenvía las cargas al compañero Python de la misma máquina.
+- `backend/pkmn_vgc/champions_jobs.py` y `champions_jobs_api.py`: receptor y
+  cola local persistente de vídeos. La ruta web `/api/champions-jobs/*` sólo
+  permite operaciones explícitas y las reenvía a `127.0.0.1:8770`; el servicio
+  Python nunca se expone directamente a la red. Cada vídeo se carga en
+  fragmentos de 8 MiB, se procesa a 2 FPS y puede producir varias batallas.
 
 ## Invariantes
 
@@ -100,6 +109,9 @@ flowchart TD
 17. La captura de Champions sólo persiste hechos visibles. Una partida con
     picks o eventos críticos ambiguos debe revisarse antes de alimentar las
     estadísticas de la versión del Team.
+18. Subir y procesar un vídeo no crea partidas automáticamente. Cada replay
+    reconstruido vuelve al formulario de revisión y sólo se persiste después de
+    la confirmación humana.
 
 ## Modelo inicial
 

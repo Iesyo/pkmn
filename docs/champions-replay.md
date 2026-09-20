@@ -47,6 +47,35 @@ Showdown. Al guardar, Teams persiste el protocolo validado —no HTML
 arbitrario— y el historial ofrece **Ver**, que genera el visor HTML interno y
 lo abre en una pestaña nueva.
 
+## Carga web desde otra computadora
+
+Al ejecutar `npm.cmd run dev` en la ROG, el sitio detecta
+`.venv-champions` e inicia automáticamente el receptor local en
+`127.0.0.1:8770`. Desde otra PC de la misma red se abre
+`http://IP-DE-LA-ROG:5173`, se selecciona el Team y se pulsa **Vídeo Champions**.
+
+La grabación se envía en fragmentos de 8 MiB. Si hay un fallo transitorio, cada
+fragmento se reintenta; si se cierra la página durante la carga, seleccionar de
+nuevo el mismo archivo continúa desde el último offset confirmado. El trabajo
+queda en `data/champions-jobs` con estos estados:
+
+1. **Recibiendo vídeo**;
+2. **Esperando turno**;
+3. **Analizando vídeo** con frames, ETA, eventos y batallas detectadas;
+4. **Replays listos** o **Error**.
+
+La cola procesa un vídeo a la vez para no saturar la ROG. Usa 2 FPS y detecta
+todas las batallas; un vídeo con varias genera `replay-001.*`, `replay-002.*`,
+etc. La versión seleccionada aporta el Team propio y sus alias, mientras el
+rival se reconstruye desde lo visible. Cada resultado vuelve al formulario de
+revisión y no entra al historial hasta que el usuario lo confirma.
+
+El servicio Python sólo escucha en loopback. La ruta web actúa como proxy de
+lista blanca para que la otra PC nunca acceda directamente al proceso local.
+La web de desarrollo no incluye autenticación LAN: debe usarse únicamente en
+una red privada de confianza y permitirse en el Firewall de Windows sólo para
+redes privadas.
+
 ## Instalación en Windows
 
 Requiere Python 3.12 o superior y FFmpeg disponible en `PATH`. Desde la raíz

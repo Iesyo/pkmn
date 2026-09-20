@@ -53,5 +53,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-champions/
 /data/*.db
 /data/*.db-*
+/data/champions-jobs/

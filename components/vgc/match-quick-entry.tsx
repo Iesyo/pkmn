@@ -10,6 +10,7 @@ import type { ImportedReplayMatch } from "@/lib/showdown-replay";
 import type { TeamVersion } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ChampionsQuickMatchDialog } from "./champions-quick-match";
+import { ChampionsVideoUpload } from "./champions-video-upload";
 import { AddMatchDialog } from "./team-dialogs";
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -151,6 +152,11 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
               >
                 <FileJson2 className="size-3" />Replay Champions
               </label>
+              <ChampionsVideoUpload
+                version={version}
+                disabled={disabled || reading}
+                onReplayReady={async (replay) => readReplay({ replay })}
+              />
             </>
           ) : null}
         </div>

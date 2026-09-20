@@ -20,6 +20,10 @@ histórico de equipos de Pokémon VGC.
 - Traductor Pokémon Champions → replay Showdown: acepta vídeo o captura live de
   OBS mediante FFmpeg, usa OCR local como detector rápido y genera JSON, log y
   HTML consumibles por Teams/Comparación. Ollama queda como fallback opcional.
+- Teams permite subir grabaciones Champions desde otra computadora de la misma
+  red. La ROG recibe el archivo en fragmentos reanudables, lo procesa en una
+  cola local persistente y presenta cada batalla detectada para revisión antes
+  de guardarla en el historial.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los
@@ -126,6 +130,15 @@ Para instalar también el capturador OCR de Pokémon Champions:
 ```bash
 pip install -e "backend[dev,champions]"
 ```
+
+En Windows, `npm.cmd run dev` detecta `.venv-champions`, inicia automáticamente
+la cola local en `127.0.0.1:8770` y mantiene Python oculto detrás de la web. Para
+subir una grabación desde otra PC de la misma red, abre
+`http://IP-DE-LA-ROG:5173`, selecciona una versión Champions y usa **Vídeo
+Champions**. Los archivos y trabajos sobreviven al cierre del diálogo en
+`data/champions-jobs`; `PKMN_CHAMPIONS_JOBS_PATH` permite mover ese directorio.
+La interfaz no tiene autenticación LAN, así que sólo debe exponerse en una red
+privada de confianza.
 
 Las trazas guardadas con `--ocr-trace` se pueden reprocesar rápidamente con
 `champions-replay trace`, sin ejecutar FFmpeg ni OCR otra vez. El contexto
