@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useId, useState } from "react";
-import { Check, Link2, Loader2, Plus, Save, Swords, UserRound } from "lucide-react";
+import { Check, ExternalLink, Link2, Loader2, Plus, Save, Swords, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl } from "@/lib/pokemon-data";
-import type { ImportedReplayMatch } from "@/lib/showdown-replay";
+import { renderShowdownReplayHtml, type ImportedReplayMatch } from "@/lib/showdown-replay";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion } from "@/lib/team-builder";
 import type { MatchResult, TeamGroup, TeamVersion } from "@/lib/types";
 
@@ -256,6 +256,14 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
     setLead((current) => current.includes(species) ? current.filter((entry) => entry !== species) : current.length < 2 ? [...current, species] : current);
   }
 
+  function validateReconstructedReplay() {
+    if (!initialReplay?.replayArtifact) return;
+    const html = renderShowdownReplayHtml(initialReplay.replayArtifact);
+    const previewUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    window.open(previewUrl, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(previewUrl), 60_000);
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -315,9 +323,16 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
               <PokemonPreview species={opponentPicks} tone="violet" />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="replay-url">{initialReplay?.origin === "champions" ? "Replay reconstruido" : "Replay de Showdown"}</Label>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="replay-url">{initialReplay?.origin === "champions" ? "Replay reconstruido" : "Replay de Showdown"}</Label>
+                {initialReplay?.replayArtifact ? (
+                  <Button type="button" size="sm" variant="outline" onClick={validateReconstructedReplay} className="h-7 gap-1.5 border-cyan-300/20 bg-cyan-300/5 px-2 text-[10px] text-cyan-100 hover:bg-cyan-300/10">
+                    <ExternalLink className="size-3" />Validar replay
+                  </Button>
+                ) : null}
+              </div>
               <Input id="replay-url" type="url" value={replayUrl} onChange={(event) => setReplayUrl(event.target.value)} readOnly={Boolean(initialReplay)} placeholder={initialReplay?.origin === "champions" ? "Se guardará con esta partida" : "https://replay.pokemonshowdown.com/..."} className="border-white/10 bg-white/5 read-only:cursor-default read-only:text-slate-400" />
-              {initialReplay?.replayArtifact ? <p className="text-[10px] text-slate-600">Podrás abrir este replay desde el historial en una pestaña nueva.</p> : null}
+              {initialReplay?.replayArtifact ? <p className="text-[10px] text-slate-600">Podrás abrir este replay ahora o después desde el historial en una pestaña nueva.</p> : null}
             </div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 4 picks</Label><span className="text-[10px] text-slate-600">{selected.length}/4</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleSelected(pokemon.species)} className={selected.includes(pokemon.species) ? "flex items-center gap-2 rounded-xl border border-cyan-300/35 bg-cyan-300/10 px-2 py-1.5 text-left text-xs text-cyan-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(pokemon.species)} alt="" width={34} height={34} unoptimized className="size-8 shrink-0 object-contain" /><span className="min-w-0 flex-1 truncate">{pokemon.species}</span>{selected.includes(pokemon.species) ? <Check className="size-3 shrink-0" /> : null}</button>)}</div><PokemonPreview species={selected} /></div>
             <div className="grid gap-2"><div className="flex items-center justify-between"><Label>Tus 2 leads</Label><span className="text-[10px] text-slate-600">{lead.length}/2</span></div><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{version.pokemon.filter((pokemon) => selected.includes(pokemon.species)).map((pokemon) => <button key={pokemon.id} type="button" onClick={() => toggleLead(pokemon.species)} className={lead.includes(pokemon.species) ? "flex items-center gap-2 rounded-xl border border-violet-300/35 bg-violet-300/10 px-2 py-1.5 text-left text-xs text-violet-100" : "flex items-center gap-2 rounded-xl border border-white/8 bg-white/3 px-2 py-1.5 text-left text-xs text-slate-400"}><Image src={getSpriteUrl(pokemon.species)} alt="" width={30} height={30} unoptimized className="size-7 shrink-0 object-contain" /><span className="truncate">{pokemon.species}</span></button>)}</div></div>
