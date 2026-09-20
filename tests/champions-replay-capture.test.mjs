@@ -24,7 +24,10 @@ test("accepts either a public replay URL or a reconstructed document", () => {
 
 test("persists reconstructed replay protocol and serves it as inline HTML", () => {
   assert.match(matchDialog, /replayArtifact: initialReplay\?\.replayArtifact/);
-  assert.match(matchDialog, /Podrás abrir este replay desde el historial en una pestaña nueva/);
+  assert.match(matchDialog, /Validar replay/);
+  assert.match(matchDialog, /renderShowdownReplayHtml\(initialReplay\.replayArtifact\)/);
+  assert.match(matchDialog, /URL\.createObjectURL/);
+  assert.match(matchDialog, /Podrás abrir este replay ahora o después desde el historial/);
   assert.match(replayMigration, /ADD `origin` text DEFAULT 'champions' NOT NULL/);
   assert.match(replayMigration, /ADD `replay_artifact_json` text/);
   assert.match(replayPageRoute, /renderShowdownReplayHtml/);
