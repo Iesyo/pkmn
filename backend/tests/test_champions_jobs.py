@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pkmn_vgc.champions_jobs import ChampionsJobManager
 from pkmn_vgc.champions_replay.models import ReplayDocument
@@ -38,6 +40,33 @@ def fake_processor(
 
 
 class ChampionsJobTests(unittest.TestCase):
+    def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
+        attempts = 0
+        real_replace = os.replace
+
+        def flaky_replace(source: object, target: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError(5, "Access is denied")
+            real_replace(source, target)  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ChampionsJobManager(Path(directory), processor=fake_processor)
+            with patch("pkmn_vgc.champions_jobs.os.replace", side_effect=flaky_replace):
+                job = manager.create_job(
+                    filename="session.mp4",
+                    size_bytes=5,
+                    team_version_id="version-1",
+                    context={},
+                )
+
+            job_directory = Path(directory) / job["id"]
+            self.assertEqual(attempts, 3)
+            self.assertTrue((job_directory / "job.json").is_file())
+            self.assertEqual(tuple(job_directory.glob("job.*.tmp")), ())
+            manager.close(wait=True)
+
     def test_uploads_in_resumable_chunks_and_persists_multiple_replays(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = ChampionsJobManager(Path(directory), processor=fake_processor)

@@ -459,9 +459,24 @@ class ChampionsJobManager:
         directory = self._job_directory(str(job["id"]))
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / "job.json"
-        temporary = directory / "job.json.tmp"
+        # A fixed ``job.json.tmp`` collides when the development server leaves
+        # two Python workers alive briefly during a restart. Windows can also
+        # hold the destination for a few milliseconds while antivirus or the
+        # UI reads it. A unique staging file plus bounded retries keeps the
+        # metadata atomic without turning a transient lock into a failed job.
+        temporary = directory / f"job.{uuid4().hex}.tmp"
         temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, target)
+        try:
+            for attempt in range(8):
+                try:
+                    os.replace(temporary, target)
+                    break
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(0.025 * (attempt + 1))
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def close(self, *, wait: bool = False) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=False)
