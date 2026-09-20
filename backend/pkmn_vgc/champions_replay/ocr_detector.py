@@ -633,6 +633,7 @@ class ChampionsTextParser:
         self._preview_ranks: dict[int, str] = {}
         self._preview_count = 0
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
+        self._pending_switch_timestamps: dict[str, int] = {}
         self._visible_messages: set[str] = set()
         self._visible_abilities: set[tuple[str, str, str]] = set()
         self._pending_abilities: dict[tuple[str, str, str], float] = {}
@@ -895,6 +896,7 @@ class ChampionsTextParser:
             # has no reliable doubles slot until a withdrawal or faint opens it.
             return ()
         slot = slots.pop(0)
+        self._pending_switch_timestamps.pop(slot, None)
         if self._active.get(slot) == species:
             return ()
         self._active[slot] = species
@@ -1482,7 +1484,18 @@ class ChampionsTextParser:
             side = self._side_for_player(withdrew.group(1))
             species = self._announced_species(withdrew.group(2), side) if side else None
             if side and species:
-                self._mark_slot_open(self._slot_for_species(species, side))
+                slot = self._slot_for_species(species, side)
+                self._mark_slot_open(slot)
+                self._pending_switch_timestamps[slot] = timestamp_ms
+                return ()
+
+        come_back = re.match(r"^(.+?),\s*come back[!.]?$", cleaned, re.IGNORECASE)
+        if come_back:
+            species = self._resolve_species(come_back.group(1), "p1")
+            if species:
+                slot = self._slot_for_species(species, "p1")
+                self._mark_slot_open(slot)
+                self._pending_switch_timestamps[slot] = timestamp_ms
                 return ()
 
         sent_out = re.match(r"^(.*?)\s*sent out\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
@@ -1517,7 +1530,7 @@ class ChampionsTextParser:
                     self._announced_slots[side][_text_key(sent_out.group(2))] = f"{side}a"
                 return ()
 
-        go = re.match(r"^Go!\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
+        go = re.match(r"^Go[!lI]\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if go:
             self._battle_open = True
             if " and " in go.group(1).casefold():
@@ -1620,7 +1633,9 @@ class ChampionsTextParser:
                     announced_forme=announced_forme,
                 )
 
-        move_match = re.match(r"^(The opposing )?(.+?) used (.+?)[!.]?$", cleaned, re.IGNORECASE)
+        # RapidOCR occasionally joins a Japanese nickname to ``used``. The
+        # move name at the end still gives us an unambiguous split point.
+        move_match = re.match(r"^(The opposing )?(.+?)\s*used\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if move_match:
             opposing = bool(move_match.group(1))
             side = "p2" if opposing else "p1"
@@ -1630,6 +1645,9 @@ class ChampionsTextParser:
             if not move or len(_text_key(move_raw)) < len(_text_key(move)) * 0.75:
                 return ()
             actor = self._resolve_species(actor_raw, side)
+            if actor is None:
+                announced_slot = self._announced_slot(side, actor_raw)
+                actor = self._active.get(announced_slot or "")
             learned_slot: str | None = None
             learned_switch = False
             evidence_key = (side, _text_key(actor_raw))
@@ -1782,6 +1800,17 @@ class ChampionsTextParser:
                 ),
             )
 
+        # A move name without an actor is an incomplete OCR fragment, not a
+        # protocol message. A later frame normally contains the complete line.
+        if self._moves.resolve(cleaned, allow_fuzzy=False):
+            return ()
+
+        # A free-form OCR sentence containing an unresolved non-Latin nickname
+        # is not safe Showdown protocol. Core events above are retained after
+        # alias/slot resolution; only the unverifiable flavor line is omitted.
+        if any(ord(character) > 127 and character.isalnum() for character in cleaned):
+            return ()
+
         return (
             BattleEvent(
                 kind="message",
@@ -1819,7 +1848,10 @@ class ChampionsTextParser:
                 events.append(
                     BattleEvent(
                         kind="switch",
-                        timestamp_ms=timestamp_ms,
+                        timestamp_ms=max(
+                            0,
+                            self._pending_switch_timestamps.pop(slot, timestamp_ms) - 1,
+                        ),
                         confidence=0.92,
                         slot=slot,  # type: ignore[arg-type]
                         species=species,
