@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import time
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Iterable
@@ -203,43 +201,17 @@ class ReplayCapturePipeline:
         self.detector = detector
         self.seed = seed
 
-    def _detection_tasks(
-        self,
-        *,
-        ocr_workers: int,
-        max_in_flight: int,
-    ) -> Iterable[tuple[FramePacket, Callable[[], FrameDetections]]]:
-        prepare = getattr(self.detector, "prepare", None)
-        parse_prepared = getattr(self.detector, "parse_prepared", None)
-        if (
-            ocr_workers == 1
-            or getattr(self.detector, "supports_parallel", True) is False
-            or not callable(prepare)
-            or not callable(parse_prepared)
-        ):
-            try:
-                for frame in self.source:
-                    yield frame, lambda frame=frame: self.detector.detect(frame)
-            finally:
-                close = getattr(self.detector, "close", None)
-                if callable(close):
-                    close()
-            return
+    def _detection_tasks(self) -> Iterable[tuple[FramePacket, Callable[[], FrameDetections]]]:
+        """Lee y analiza cada frame antes de avanzar al siguiente.
 
-        pending: deque[tuple[FramePacket, Future[object]]] = deque()
-        executor = ThreadPoolExecutor(max_workers=ocr_workers, thread_name_prefix="champions-ocr")
+        El parser mantiene estado entre frames (slots, aliases, turnos y HP),
+        por lo que una única secuencia es más importante que el throughput.
+        """
+
         try:
             for frame in self.source:
-                pending.append((frame, executor.submit(prepare, frame)))
-                if len(pending) < max_in_flight:
-                    continue
-                queued_frame, future = pending.popleft()
-                yield queued_frame, lambda future=future: parse_prepared(future.result())
-            while pending:
-                queued_frame, future = pending.popleft()
-                yield queued_frame, lambda future=future: parse_prepared(future.result())
+                yield frame, lambda frame=frame: self.detector.detect(frame)
         finally:
-            executor.shutdown(wait=True, cancel_futures=True)
             close = getattr(self.detector, "close", None)
             if callable(close):
                 close()
@@ -252,18 +224,11 @@ class ReplayCapturePipeline:
         on_progress: Callable[[CaptureProgress], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
         max_consecutive_detection_errors: int = 3,
-        ocr_workers: int = 1,
-        ocr_buffer_size: int | None = None,
     ) -> tuple[CapturedBattle, ...]:
         if max_battles < 0:
             raise ValueError("max_battles no puede ser negativo; usa 0 para procesar todas las batallas.")
         if max_consecutive_detection_errors < 1:
             raise ValueError("max_consecutive_detection_errors debe ser positivo.")
-        if not 1 <= ocr_workers <= 4:
-            raise ValueError("ocr_workers debe estar entre 1 y 4.")
-        if ocr_buffer_size is not None and ocr_buffer_size < ocr_workers:
-            raise ValueError("ocr_buffer_size no puede ser menor que ocr_workers.")
-        max_in_flight = ocr_buffer_size or ocr_workers * 4
         captures: list[CapturedBattle] = []
         accumulator = CaptureAccumulator(self.seed)
         awaiting_next_start = False
@@ -305,10 +270,7 @@ class ReplayCapturePipeline:
                 )
             )
 
-        for frame, resolve_detection in self._detection_tasks(
-            ocr_workers=ocr_workers,
-            max_in_flight=max_in_flight,
-        ):
+        for frame, resolve_detection in self._detection_tasks():
             processed_frames += 1
             try:
                 detections = resolve_detection()

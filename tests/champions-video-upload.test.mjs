@@ -20,14 +20,14 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(component, /job\.status === "uploading"/);
   assert.match(component, /job\.uploadedBytes/);
   assert.match(component, /maxBattles: 0/);
-  assert.match(component, /ocrWorkers/);
-  assert.match(component, /Workers OCR/);
+  assert.doesNotMatch(component, /ocrWorkers|Workers OCR/);
+  assert.match(component, /OCR secuencial/);
   assert.match(component, /Revisar partida/);
   assert.match(component, /Reintentar análisis/);
   assert.match(component, /Reanalizar vídeo/);
   assert.match(component, /Avisos del análisis/);
   assert.match(jobs, /ThreadPoolExecutor\(max_workers=1/);
-  assert.match(jobs, /ocr_workers=ocr_workers/);
+  assert.doesNotMatch(jobs, /champions-ocr|ocr_workers=ocr_workers/);
   assert.match(jobs, /reset_battle_state|ReplayCapturePipeline/);
   assert.match(jobs, /replay-\{index:03d\}/);
   assert.match(api, /@app\.put\("\/jobs\/\{job_id\}\/chunks"\)/);

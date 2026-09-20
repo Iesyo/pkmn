@@ -18,7 +18,6 @@ def fake_processor(
     _output_directory: Path,
     _sample_fps: float,
     _max_battles: int,
-    _ocr_workers: int,
     on_progress: object,
     _on_warning: object,
 ) -> tuple[ReplayDocument, ...]:
@@ -59,7 +58,6 @@ class ChampionsJobTests(unittest.TestCase):
                 Path(directory),
                 2.0,
                 0,
-                2,
                 MagicMock(),
                 MagicMock(),
             )
@@ -121,7 +119,7 @@ class ChampionsJobTests(unittest.TestCase):
             self.assertEqual(completed["status"], "ready")
             self.assertEqual(completed["replayCount"], 2)
             self.assertEqual(completed["battlesDetected"], 2)
-            self.assertEqual(completed["ocrWorkers"], 2)
+            self.assertNotIn("ocrWorkers", completed)
             self.assertEqual(manager.replay_document(job["id"], 1)["p2"], "Rival A")
             self.assertEqual(manager.replay_document(job["id"], 2)["p2"], "Rival B")
             self.assertTrue((Path(directory) / job["id"] / "output" / "replay-001.html").is_file())
@@ -207,7 +205,7 @@ class ChampionsJobTests(unittest.TestCase):
                 failed = manager.get_job(job["id"])
             self.assertEqual(failed["status"], "error")
 
-            retried = manager.retry_job(job["id"], ocr_workers=4)
+            retried = manager.retry_job(job["id"])
             self.assertEqual(retried["status"], "queued")
             deadline = time.monotonic() + 2
             completed = manager.get_job(job["id"])
@@ -217,7 +215,7 @@ class ChampionsJobTests(unittest.TestCase):
 
             self.assertEqual(completed["status"], "ready")
             self.assertEqual(completed["uploadedBytes"], 5)
-            self.assertEqual(completed["ocrWorkers"], 4)
+            self.assertNotIn("ocrWorkers", completed)
             self.assertEqual(attempts, 2)
             manager.close(wait=True)
 
@@ -238,11 +236,11 @@ class ChampionsJobTests(unittest.TestCase):
                 completed = manager.get_job(job["id"])
             self.assertEqual(completed["status"], "ready")
 
-            queued = manager.retry_job(job["id"], ocr_workers=1)
+            queued = manager.retry_job(job["id"])
 
             self.assertEqual(queued["status"], "queued")
             self.assertEqual(queued["uploadedBytes"], 5)
-            self.assertEqual(queued["ocrWorkers"], 1)
+            self.assertNotIn("ocrWorkers", queued)
             manager.close(wait=True)
 
 

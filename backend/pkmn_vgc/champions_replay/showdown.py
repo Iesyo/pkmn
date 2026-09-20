@@ -46,20 +46,20 @@ def _event_lines(
 
     if event.kind == "move":
         assert event.slot and event.move
-        actor_species = event.species or active.get(event.slot, "Pokémon")
+        actor_species = active.get(event.slot) or event.species or "Pokémon"
         target_species = active.get(event.target_slot or "", "Pokémon")
         target = _identifier(event.target_slot, target_species) if event.target_slot else ""
         return [f"|move|{_identifier(event.slot, actor_species)}|{event.move}|{target}"]
 
     if event.kind in {"damage", "heal"}:
         assert event.slot and event.health
-        species = event.species or active.get(event.slot, "Pokémon")
+        species = active.get(event.slot) or event.species or "Pokémon"
         tags = "".join(f"|{tag}" for tag in event.tags)
         return [f"|-{event.kind}|{_identifier(event.slot, species)}|{event.health}{tags}"]
 
     if event.kind in {"status", "curestatus", "ability", "item", "enditem", "terastallize"}:
         assert event.slot and event.value
-        species = event.species or active.get(event.slot, "Pokémon")
+        species = active.get(event.slot) or event.species or "Pokémon"
         return [f"|-{event.kind}|{_identifier(event.slot, species)}|{event.value}"]
 
     if event.kind == "mega":
@@ -74,7 +74,7 @@ def _event_lines(
 
     if event.kind in {"faint", "crit"}:
         assert event.slot
-        species = event.species or active.get(event.slot, "Pokémon")
+        species = active.get(event.slot) or event.species or "Pokémon"
         prefix = "" if event.kind == "faint" else "-"
         return [f"|{prefix}{event.kind}|{_identifier(event.slot, species)}"]
 
@@ -96,6 +96,27 @@ def _event_lines(
     return []
 
 
+def _event_order(event: BattleEvent) -> tuple[int, int, int]:
+    """Preserva tiempo/frame, pero da prioridad causal a entradas al campo."""
+
+    switch_priority = 0 if event.kind in {"switch", "drag"} else 1
+    return event.timestamp_ms, switch_priority, event.source_frame or -1
+
+
+def _activate_missing_slot(event: BattleEvent, active: dict[str, str]) -> list[str]:
+    """Evita protocolo inválido si OCR vio una acción antes que el send-out."""
+
+    if (
+        not event.slot
+        or not event.species
+        or event.slot in active
+        or event.kind in {"switch", "drag"}
+    ):
+        return []
+    active[event.slot] = event.species
+    return [f"|switch|{_identifier(event.slot, event.species)}|{event.species}, L50|100/100"]
+
+
 def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     """Convierte la evidencia normalizada en el protocolo público de Showdown."""
     lines = [
@@ -114,7 +135,8 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in sorted(battle.events, key=lambda entry: (entry.timestamp_ms, entry.source_frame or -1)):
+    for event in sorted(battle.events, key=_event_order):
+        lines.extend(_activate_missing_slot(event, active))
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")

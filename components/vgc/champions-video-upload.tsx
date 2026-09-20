@@ -38,7 +38,6 @@ interface ChampionsVideoJob {
   eventsDetected: number;
   battlesDetected: number;
   skippedFrames: number;
-  ocrWorkers: number;
   warnings: string[];
   replayCount: number;
   error: string | null;
@@ -106,7 +105,6 @@ export function ChampionsVideoUpload({
   const [currentJobId, setCurrentJobId] = useState("");
   const [uploading, setUploading] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const [ocrWorkers, setOcrWorkers] = useState<1 | 2 | 4>(2);
   const [readingReplay, setReadingReplay] = useState<number | null>(null);
   const [error, setError] = useState("");
   const currentJob = useMemo(
@@ -201,7 +199,6 @@ export function ChampionsVideoUpload({
               context: championsContext(version),
               sampleFps: 2,
               maxBattles: 0,
-              ocrWorkers,
             }),
           }),
         );
@@ -245,8 +242,6 @@ export function ChampionsVideoUpload({
       const payload = await readJson<{ job: ChampionsVideoJob }>(
         await fetch(`/api/champions-jobs/jobs/${currentJob.id}/retry`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ocrWorkers }),
         }),
       );
       mergeJob(payload.job);
@@ -309,28 +304,6 @@ export function ChampionsVideoUpload({
             </label>
           </div>
 
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2">
-            <span>
-              <span className="block text-[10px] font-bold text-slate-300">Workers OCR</span>
-              <span className="block text-[9px] text-slate-600">2 es el equilibrio recomendado; el parser conserva el orden.</span>
-            </span>
-            <div className="flex gap-1">
-              {([1, 2, 4] as const).map((workers) => (
-                <Button
-                  key={workers}
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setOcrWorkers(workers)}
-                  disabled={uploading || currentJob?.status === "analyzing"}
-                  className={cn("h-7 min-w-8 border-white/10 px-2 text-[10px]", ocrWorkers === workers && "border-cyan-300/40 bg-cyan-300/10 text-cyan-100")}
-                >
-                  {workers}×
-                </Button>
-              ))}
-            </div>
-          </div>
-
           {jobs.length > 1 ? (
             <div className="flex flex-wrap gap-1.5">
               {jobs.slice(0, 6).map((job) => (
@@ -354,7 +327,7 @@ export function ChampionsVideoUpload({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-black text-white">{currentJob.filename}</p>
                   <p className="mt-1 text-[10px] text-slate-500">
-                    {formatBytes(currentJob.uploadedBytes)} / {formatBytes(currentJob.sizeBytes)} · OCR {currentJob.ocrWorkers}×
+                    {formatBytes(currentJob.uploadedBytes)} / {formatBytes(currentJob.sizeBytes)} · OCR secuencial
                   </p>
                 </div>
                 <Badge variant="outline" className={cn("shrink-0 text-[9px]", statusTone(currentJob.status))}>{currentJob.stage}</Badge>

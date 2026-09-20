@@ -238,6 +238,45 @@ class ChampionsOcrTests(unittest.TestCase):
             [("move", "Sableye", "Rain Dance")],
         )
 
+    def test_parses_a_move_when_ocr_removes_the_space_after_used(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Kingambit",)),
+            catalog=ChampionsCatalog(
+                species=("Kingambit",),
+                moves=("Sucker Punch",),
+            ),
+        )
+        parser._battle_open = True
+
+        detections = parser.parse(
+            (line("The opposing Kingambit usedSucker Punch!", x=0.2, y=0.7, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.species, event.move) for event in detections.events],
+            [("move", "Kingambit", "Sucker Punch")],
+        )
+
+    def test_normalizes_known_nicknames_in_free_form_messages(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_team=("Sylveon",),
+                p1_aliases=(("Nico", "Sylveon"),),
+            ),
+            catalog=ChampionsCatalog(species=("Sylveon",)),
+        )
+        parser._battle_open = True
+
+        detections = parser.parse(
+            (line("Nico protected itself!", x=0.2, y=0.7, width=0.35),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(detections.events[0].value, "Sylveon protected itself!")
+
     def test_uses_the_recall_time_when_hud_confirms_a_switch_later(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(

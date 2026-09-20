@@ -174,13 +174,6 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
         help="Confianza mínima de texto para el detector OCR (0 a 1).",
     )
     parser.add_argument(
-        "--ocr-workers",
-        type=int,
-        choices=(1, 2, 4),
-        default=2,
-        help="Workers OCR ordenados para vídeo; 2 ofrece el mejor equilibrio local.",
-    )
-    parser.add_argument(
         "--no-visual-aliases",
         action="store_true",
         help="Compatibilidad: el OCR determinista ya no usa aliases mediante Ollama.",
@@ -301,7 +294,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             total_frames=total_frames,
             on_progress=progress.update,
             on_warning=progress.warning,
-            ocr_workers=args.ocr_workers if args.command == "video" else 1,
         )
         progress.finish_line()
         return _write_captures(captures, args.output, args.force)

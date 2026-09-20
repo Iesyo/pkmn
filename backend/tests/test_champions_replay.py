@@ -138,6 +138,94 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertIn("|switch|p2a: Metagross|Metagross-Mega, L50|100/100", document.log)
 
+    def test_places_a_late_resolved_switch_before_its_move(self) -> None:
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=(
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=1_000,
+                        source_frame=10,
+                        slot="p2a",
+                        species="Sableye",
+                        move="Light Screen",
+                    ),
+                    BattleEvent(
+                        kind="switch",
+                        timestamp_ms=1_000,
+                        source_frame=20,
+                        slot="p2a",
+                        species="Sableye",
+                    ),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertLess(
+            document.log.index("|switch|p2a: Sableye"),
+            document.log.index("|move|p2a: Sableye|Light Screen|"),
+        )
+
+    def test_keeps_the_active_species_when_an_event_contains_a_mixed_alias(self) -> None:
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=(
+                    BattleEvent(kind="switch", timestamp_ms=0, slot="p2a", species="Sableye"),
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=1,
+                        slot="p2a",
+                        species="しごでき",
+                        move="Light Screen",
+                    ),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|move|p2a: Sableye|Light Screen|", document.log)
+        self.assertNotIn("p2a: しごでき", document.log)
+
+    def test_activates_a_known_actor_before_an_orphan_action(self) -> None:
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=(
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=1_000,
+                        slot="p2a",
+                        species="Sableye",
+                        move="Light Screen",
+                    ),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertLess(
+            document.log.index("|switch|p2a: Sableye"),
+            document.log.index("|move|p2a: Sableye|Light Screen|"),
+        )
+
     def test_serializes_ability_driven_terrain_with_its_source(self) -> None:
         battle = self.capture()
         events = (
@@ -399,47 +487,39 @@ class ChampionsReplayTests(unittest.TestCase):
             ],
         )
 
-    def test_parallel_ocr_is_parsed_in_frame_order(self) -> None:
+    def test_video_ocr_is_strictly_sequential(self) -> None:
         frames = [
             FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
             for index in range(4)
         ]
 
-        class ParallelDetector:
+        class SequentialDetector:
             def __init__(self) -> None:
                 self.parsed: list[int] = []
-                self.threads: set[int] = set()
 
-            def prepare(self, frame: FramePacket) -> int:
-                self.threads.add(threading.get_ident())
+            def prepare(self, _frame: FramePacket) -> int:
+                raise AssertionError("No debe existir una cola OCR paralela.")
+
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                self.parsed.append(frame.index)
                 if frame.index == 0:
-                    time.sleep(0.03)
-                return frame.index
-
-            def parse_prepared(self, index: int) -> FrameDetections:
-                self.parsed.append(index)
-                if index == 0:
                     return FrameDetections(
                         events=(BattleEvent(kind="turn", timestamp_ms=0, turn=1),),
                         battle_started=True,
                     )
-                if index == 3:
+                if frame.index == 3:
                     return FrameDetections(winner="p1", battle_complete=True)
                 return FrameDetections(battle_started=True)
 
-            def detect(self, _frame: FramePacket) -> FrameDetections:
-                raise AssertionError("El camino secuencial no debe usarse.")
-
-        detector = ParallelDetector()
+        detector = SequentialDetector()
         captures = ReplayCapturePipeline(
             frames,
             detector,
             CaptureSeed(p1_team=("Kleavor",), p2_team=("Miraidon",)),
-        ).capture(ocr_workers=2, ocr_buffer_size=2)
+        ).capture()
 
         self.assertEqual(len(captures), 1)
         self.assertEqual(detector.parsed, [0, 1, 2, 3])
-        self.assertGreaterEqual(len(detector.threads), 2)
 
     def test_pipeline_flushes_pending_detector_data_before_finalizing(self) -> None:
         frames = [

@@ -584,6 +584,11 @@ class ChampionsTextParser:
         }
         self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
         self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
+        self._message_aliases: dict[str, str] = {
+            alias.casefold(): species
+            for alias, species in (*self.context.p1_aliases, *self.context.p2_aliases)
+            if alias.strip() and _text_key(alias) != _text_key(species)
+        }
         self._configured_aliases = {
             side: dict(values)
             for side, values in self._aliases.items()
@@ -850,12 +855,31 @@ class ChampionsTextParser:
         if key:
             self._aliases[side][key] = species
             self._bound_alias_keys[side].add(key)
+            if _text_key(value) != _text_key(species):
+                self._message_aliases[value.casefold()] = species
         slot = self._announced_slot(side, value)
         changed = bool(slot and self._active.get(slot) != species)
         if slot:
             self._active[slot] = species
             self._health.pop(slot, None)
         return slot, changed
+
+    def _canonical_message_aliases(self, value: str) -> str:
+        """Mantiene el log visible en especies canónicas, no nicknames."""
+
+        normalized = value
+        for alias, species in sorted(
+            self._message_aliases.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            normalized = re.sub(
+                rf"(?<!\w){re.escape(alias)}(?!\w)",
+                species,
+                normalized,
+                flags=re.IGNORECASE,
+            )
+        return normalized
 
     def _mark_slot_open(self, slot: str) -> None:
         side = slot[:2]
@@ -1645,7 +1669,7 @@ class ChampionsTextParser:
 
         # RapidOCR occasionally joins a Japanese nickname to ``used``. The
         # move name at the end still gives us an unambiguous split point.
-        move_match = re.match(r"^(The opposing )?(.+?)\s*used\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
+        move_match = re.match(r"^(The opposing )?(.+?)\s*used\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if move_match:
             opposing = bool(move_match.group(1))
             side = "p2" if opposing else "p1"
@@ -1682,7 +1706,10 @@ class ChampionsTextParser:
                     events.append(
                         BattleEvent(
                             kind="switch",
-                            timestamp_ms=min(item[1] for item in pending),
+                            # Alias inference can finish several frames after
+                            # the first stored move. Place the reconstructed
+                            # send-out immediately before that move.
+                            timestamp_ms=max(0, min(item[1] for item in pending) - 1),
                             confidence=confidence,
                             slot=slot,  # type: ignore[arg-type]
                             species=actor,
@@ -1814,6 +1841,8 @@ class ChampionsTextParser:
         # protocol message. A later frame normally contains the complete line.
         if self._moves.resolve(cleaned, allow_fuzzy=False):
             return ()
+
+        cleaned = self._canonical_message_aliases(cleaned)
 
         # A free-form OCR sentence containing an unresolved non-Latin nickname
         # is not safe Showdown protocol. Core events above are retained after
