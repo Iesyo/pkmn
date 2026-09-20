@@ -211,6 +211,77 @@ class ChampionsOcrTests(unittest.TestCase):
             ],
         )
 
+    def test_resolves_a_japanese_nickname_joined_to_used(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Rival"),
+            catalog=ChampionsCatalog(
+                species=("Sableye",),
+                moves=("Rain Dance",),
+                species_moves=(("Sableye", ("raindance",)),),
+            ),
+        )
+        parser.parse(
+            (line("Rival sent out しごでき and Helper!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        parser._bind_alias("p2", "しごでき", "Sableye")
+
+        detections = parser.parse(
+            (line("The opposing しできused Rain Dance!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.species, event.move) for event in detections.events],
+            [("move", "Sableye", "Rain Dance")],
+        )
+
+    def test_uses_the_recall_time_when_hud_confirms_a_switch_later(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p1_team=("Blaziken", "Torkoal"),
+                p1_aliases=(("Tonatiuh", "Blaziken"),),
+            ),
+            catalog=ChampionsCatalog(species=("Blaziken", "Torkoal")),
+        )
+        parser.parse(
+            (line("Blaziken", x=0.12, y=0.86),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        recalled = parser.parse(
+            (line("Tonatiuh, come back!", x=0.2, y=0.7, width=0.35),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        switched = parser.parse(
+            (line("Torkoal", x=0.12, y=0.86),),
+            timestamp_ms=2_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(recalled.events, ())
+        self.assertEqual(switched.events[0].kind, "switch")
+        self.assertEqual(switched.events[0].species, "Torkoal")
+        self.assertEqual(switched.events[0].timestamp_ms, 999)
+
+    def test_ignores_an_orphan_move_name_until_its_actor_is_visible(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(moves=("Burning Jealousy",)),
+        )
+        parser._battle_open = True
+
+        detections = parser.parse(
+            (line("Burning Jealousy", x=0.2, y=0.7, width=0.3),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(detections.events, ())
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (
