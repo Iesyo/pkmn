@@ -118,7 +118,7 @@ Ollama es opcional para el OCR general, pero permite reconocer la especie y el
 género mostrados en el icono situado junto a un nickname desconocido:
 
 ```powershell
-ollama pull qwen3-vl:4b
+ollama pull qwen3-vl:8b-instruct
 ```
 
 Las imágenes permanecen en la computadora: RapidOCR y Ollama son locales, y el

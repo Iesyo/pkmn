@@ -185,7 +185,11 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Desactiva la asociación puntual icono/nickname mediante Ollama.",
     )
-    parser.add_argument("--model", default="qwen3-vl:4b", help="Modelo visual disponible en Ollama.")
+    parser.add_argument(
+        "--model",
+        default="qwen3-vl:8b-instruct",
+        help="Modelo visual disponible en Ollama.",
+    )
     parser.add_argument(
         "--ollama-url",
         default=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),

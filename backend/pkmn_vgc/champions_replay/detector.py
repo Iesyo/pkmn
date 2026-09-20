@@ -283,6 +283,8 @@ def _extract_json(
 HUD_ALIAS_PROMPT = """Analiza exclusivamente los iconos del HUD de esta batalla DOBLE de Pokémon Champions.
 Cada nickname indicado aparece junto a un pequeño icono de su Pokémon y, cuando aplica, un símbolo de género.
 Asocia cada nickname con la especie visible. Usa nombres oficiales EN INGLÉS y no uses el nickname como especie.
+La imagen puede ser una composición con el frame completo arriba y una ampliación del HUD abajo.
+Usa los modelos 3D del frame completo para reconocer las especies y los iconos ampliados para asociarlas al nickname correcto.
 El HUD de p2 está arriba y el de p1 abajo; usa el icono inmediatamente a la izquierda de cada nickname.
 No intercambies las asociaciones por el orden de los modelos 3D que aparecen en el campo.
 No inventes asociaciones si el icono no se distingue. Devuelve exclusivamente JSON válido.
@@ -339,7 +341,7 @@ class OllamaHudAliasResolver:
     def __init__(
         self,
         *,
-        model: str = "qwen3-vl:4b",
+        model: str = "qwen3-vl:8b-instruct",
         endpoint: str = "http://127.0.0.1:11434",
         context: DetectorContext | None = None,
         timeout_seconds: float = 90,
@@ -469,7 +471,8 @@ class OllamaHudAliasResolver:
             )
 
         raise DetectionError(
-            f"Frame {frame.index + 1}: lectura visual de nicknames fallida tras 2 intentos. {last_error}"
+            f"Frame {frame.index + 1}: lectura visual de nicknames con {self.model} fallida "
+            f"tras 2 intentos. {last_error}"
         ) from last_error
 
 
@@ -479,7 +482,7 @@ class OllamaVisionDetector:
     def __init__(
         self,
         *,
-        model: str = "qwen3-vl:4b",
+        model: str = "qwen3-vl:8b-instruct",
         endpoint: str = "http://127.0.0.1:11434",
         context: DetectorContext | None = None,
         timeout_seconds: float = 90,

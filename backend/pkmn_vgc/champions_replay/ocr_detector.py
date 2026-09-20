@@ -239,7 +239,7 @@ class RapidOcrEngine:
         cropped = oriented[top:bottom, left:right]
         crop_height, crop_width = cropped.shape[:2]
         scale = min(max(1.0, 512 / max(1, crop_height)), 2000 / max(1, crop_width))
-        if scale > 1.05:
+        if abs(scale - 1.0) > 0.05:
             cropped = self._cv2.resize(
                 cropped,
                 None,
@@ -247,7 +247,52 @@ class RapidOcrEngine:
                 fy=scale,
                 interpolation=self._cv2.INTER_CUBIC,
             )
-        ok, jpeg = self._cv2.imencode(".jpg", cropped, [self._cv2.IMWRITE_JPEG_QUALITY, 92])
+        # El icono ampliado sirve para asociar nickname/slot, mientras que el
+        # frame completo conserva los modelos 3D que facilitan reconocer la
+        # especie. Una sola composición funciona con todas las versiones de la
+        # API local de Ollama y evita una segunda inferencia.
+        preview_scale = min(1.0, 1600 / max(1, width))
+        preview = oriented
+        if preview_scale < 0.99:
+            preview = self._cv2.resize(
+                oriented,
+                None,
+                fx=preview_scale,
+                fy=preview_scale,
+                interpolation=self._cv2.INTER_AREA,
+            )
+        preview = preview.copy()
+        cropped = cropped.copy()
+        self._cv2.putText(
+            preview,
+            "FULL BATTLE FRAME",
+            (24, 48),
+            self._cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 255, 255),
+            2,
+            self._cv2.LINE_AA,
+        )
+        self._cv2.putText(
+            cropped,
+            "HUD ZOOM - ICON IS LEFT OF NICKNAME",
+            (24, 48),
+            self._cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 255, 255),
+            2,
+            self._cv2.LINE_AA,
+        )
+        canvas_width = max(preview.shape[1], cropped.shape[1])
+        separator = 12
+        canvas_height = preview.shape[0] + separator + cropped.shape[0]
+        composed = self._np.zeros((canvas_height, canvas_width, 3), dtype=self._np.uint8)
+        preview_left = (canvas_width - preview.shape[1]) // 2
+        crop_left = (canvas_width - cropped.shape[1]) // 2
+        composed[: preview.shape[0], preview_left : preview_left + preview.shape[1]] = preview
+        composed[preview.shape[0] + separator :, crop_left : crop_left + cropped.shape[1]] = cropped
+
+        ok, jpeg = self._cv2.imencode(".jpg", composed, [self._cv2.IMWRITE_JPEG_QUALITY, 92])
         if not ok:
             return frame
         return FramePacket(

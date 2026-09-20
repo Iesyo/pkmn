@@ -673,7 +673,7 @@ class ChampionsReplayTests(unittest.TestCase):
             thread.join(timeout=2)
 
         self.assertEqual(len(received), 2)
-        self.assertEqual(received[0]["model"], "qwen3-vl:4b")
+        self.assertEqual(received[0]["model"], "qwen3-vl:8b-instruct")
         self.assertEqual(received[0]["format"]["type"], "object")
         self.assertEqual(received[0]["think"], False)
         self.assertTrue(received[0]["images"])

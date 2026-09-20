@@ -133,7 +133,7 @@ Para instalar también el capturador OCR de Pokémon Champions:
 
 ```bash
 pip install -e "backend[dev,champions]"
-ollama pull qwen3-vl:4b
+ollama pull qwen3-vl:8b-instruct
 ```
 
 En Windows, `npm.cmd run dev` detecta `.venv-champions`, inicia automáticamente
