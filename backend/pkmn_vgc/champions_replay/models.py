@@ -20,6 +20,7 @@ EventKind = Literal[
     "ability",
     "item",
     "enditem",
+    "mega",
     "terastallize",
     "crit",
     "weather",
@@ -44,6 +45,7 @@ VALID_EVENT_KINDS = {
     "ability",
     "item",
     "enditem",
+    "mega",
     "terastallize",
     "crit",
     "weather",
@@ -120,6 +122,7 @@ class BattleEvent:
     slot: BattleSlot | None = None
     target_slot: BattleSlot | None = None
     species: str | None = None
+    forme: str | None = None
     move: str | None = None
     health: str | None = None
     value: str | None = None
@@ -130,6 +133,7 @@ class BattleEvent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "species", _clean_text(self.species, limit=80))
+        object.__setattr__(self, "forme", _clean_text(self.forme, limit=80))
         object.__setattr__(self, "move", _clean_text(self.move, limit=100))
         object.__setattr__(self, "health", _clean_text(self.health, limit=30))
         object.__setattr__(self, "value", _clean_text(self.value, limit=160))
@@ -160,6 +164,10 @@ class BattleEvent:
             not self.slot or not self.value
         ):
             raise ValueError(f"El evento {self.kind} necesita slot y valor.")
+        if self.kind == "mega" and (
+            not self.slot or not self.species or not self.forme or not self.value
+        ):
+            raise ValueError("Una Mega Evolución necesita slot, especie, forma y megapiedra.")
         if self.kind in {"faint", "crit"} and not self.slot:
             raise ValueError(f"El evento {self.kind} necesita un slot.")
 
@@ -181,6 +189,7 @@ class BattleEvent:
             slot=value.get("slot") if value.get("slot") in VALID_SLOTS else None,
             target_slot=value.get("target_slot") if value.get("target_slot") in VALID_SLOTS else None,
             species=_clean_text(value.get("species"), limit=80),
+            forme=_clean_text(value.get("forme"), limit=80),
             move=_clean_text(value.get("move"), limit=100),
             health=_clean_text(value.get("health"), limit=30),
             value=_clean_text(value.get("value"), limit=160),
@@ -200,6 +209,7 @@ class BattleEvent:
             self.slot,
             self.target_slot,
             self.species,
+            self.forme,
             self.move,
             self.health,
             self.value,

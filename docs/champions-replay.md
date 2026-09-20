@@ -143,7 +143,12 @@ vídeo:
 explícito: el parser no adivina que un apodo parecido a una especie pertenece a
 esa especie. Las formas también deben declararse con su nombre de Showdown, por
 ejemplo `Indeedee-F`; el OCR puede leer `Indeedee`, pero el Team conocido
-conserva la forma correcta.
+conserva automáticamente la forma correcta. Si el Team del rival lleva la
+hembra, debe aparecer como `"Indeedee-F"` en `teams.p2`, no como `"Indeedee"`.
+
+Las Mega Evolutions visibles generan tanto `detailschange` como `-mega` en el
+protocolo de Showdown. Así, el replay cambia al sprite Mega y registra la
+megapiedra en lugar de conservar esos textos como mensajes genéricos.
 
 ## En vivo con OBS Virtual Camera en Windows
 

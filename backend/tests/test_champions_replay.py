@@ -80,6 +80,31 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("|switch|p1a: Kleavor", html)
         self.assertIn("https://play.pokemonshowdown.com/js/replay-embed.js", html)
 
+    def test_serializes_mega_evolution_as_a_permanent_forme_change(self) -> None:
+        battle = self.capture()
+        mega = BattleEvent(
+            kind="mega",
+            timestamp_ms=1_500,
+            slot="p1a",
+            species="Kleavor",
+            forme="Kleavor-Mega",
+            value="Kleavorite",
+        )
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=battle.p2,
+                events=(battle.events[0], mega),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|detailschange|p1a: Kleavor|Kleavor-Mega, L50", document.log)
+        self.assertIn("|-mega|p1a: Kleavor|Kleavor|Kleavorite", document.log)
+
     def test_writes_json_log_and_html_without_overwriting_by_default(self) -> None:
         document = build_replay_document(self.capture())
         with tempfile.TemporaryDirectory() as directory:

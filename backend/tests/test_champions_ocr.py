@@ -161,6 +161,94 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(detections.events[0].species, "Indeedee-F")
 
+    def test_parses_mega_reactions_with_nicknames_and_canonical_stones(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_team=("Gardevoir",),
+                p2_team=("Gardevoir",),
+                p1_aliases=(("Suzuko", "Gardevoir"),),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Gardevoir", "Gardevoir-Mega"),
+                mega_stones=(("Gardevoirite", "Gardevoir", "Gardevoir-Mega"),),
+            ),
+        )
+        parser.parse(
+            (
+                line("Gardevoir", x=0.62, y=0.04),
+                line("Gardevoir", x=0.08, y=0.86),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        opposing = parser.parse(
+            (
+                line(
+                    "The opposing Gardevoir's Gardevoirite is reacting to Hisagi-'s Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.62,
+                ),
+            ),
+            timestamp_ms=80_500,
+            source_frame=162,
+        )
+        local = parser.parse(
+            (
+                line(
+                    "Suzuko's Gardevoirite is reacting to Roku's Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.46,
+                ),
+            ),
+            timestamp_ms=173_000,
+            source_frame=347,
+        )
+
+        self.assertEqual(
+            [
+                (event.kind, event.slot, event.species, event.forme, event.value)
+                for event in (*opposing.events, *local.events)
+            ],
+            [
+                ("mega", "p2a", "Gardevoir", "Gardevoir-Mega", "Gardevoirite"),
+                ("mega", "p1a", "Gardevoir", "Gardevoir-Mega", "Gardevoirite"),
+            ],
+        )
+
+    def test_parses_explicit_mega_evolution_when_reaction_was_not_visible(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Gardevoir",)),
+            catalog=ChampionsCatalog(
+                species=("Gardevoir", "Gardevoir-Mega"),
+                mega_stones=(("Gardevoirite", "Gardevoir", "Gardevoir-Mega"),),
+            ),
+        )
+        parser.parse(
+            (line("Gardevoir", x=0.62, y=0.04),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        detections = parser.parse(
+            (
+                line(
+                    "The opposing Gardevoir has Mega Evolved into Mega Gardevoir!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.55,
+                ),
+            ),
+            timestamp_ms=90_000,
+            source_frame=181,
+        )
+
+        self.assertEqual(detections.events[0].kind, "mega")
+        self.assertEqual(detections.events[0].forme, "Gardevoir-Mega")
+        self.assertEqual(detections.events[0].value, "Gardevoirite")
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         faint = parser.parse(

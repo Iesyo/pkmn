@@ -130,6 +130,7 @@ class RapidOcrEngine:
 class ChampionsCatalog:
     species: tuple[str, ...] = ()
     moves: tuple[str, ...] = ()
+    mega_stones: tuple[tuple[str, str, str], ...] = ()
 
 
 def _dex_candidates() -> tuple[Path, ...]:
@@ -153,6 +154,7 @@ def load_champions_catalog() -> ChampionsCatalog:
             species_values = payload.get("species", {})
             champion_ids = payload.get("formats", {}).get("champions", ())
             moves_values = payload.get("moves", {})
+            items_values = payload.get("items", {})
             species = tuple(
                 entry["name"]
                 for species_id in champion_ids
@@ -164,7 +166,17 @@ def load_champions_catalog() -> ChampionsCatalog:
                 for entry in moves_values.values()
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             )
-            return ChampionsCatalog(species=species, moves=moves)
+            mega_stones = tuple(
+                (entry["name"], base_species, mega_forme)
+                for entry in items_values.values()
+                if isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("details"), dict)
+                and isinstance(entry["details"].get("megaStone"), dict)
+                for base_species, mega_forme in entry["details"]["megaStone"].items()
+                if isinstance(base_species, str) and isinstance(mega_forme, str)
+            )
+            return ChampionsCatalog(species=species, moves=moves, mega_stones=mega_stones)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return ChampionsCatalog()
@@ -297,10 +309,20 @@ class ChampionsTextParser:
             "p2": bool(self.context.p2_team),
         }
         self._aliases = {
-            "p1": self._canonical_aliases(self.context.p1_aliases),
-            "p2": self._canonical_aliases(self.context.p2_aliases),
+            "p1": self._team_form_aliases(self.context.p1_team),
+            "p2": self._team_form_aliases(self.context.p2_team),
         }
+        self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
+        self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
         self._moves = _NameMatcher(self.catalog.moves)
+        self._mega_stones = {
+            _text_key(item): (item, base_species, mega_forme)
+            for item, base_species, mega_forme in self.catalog.mega_stones
+        }
+        self._mega_formes = {
+            _text_key(mega_forme): (item, base_species, mega_forme)
+            for item, base_species, mega_forme in self.catalog.mega_stones
+        }
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
         self._visible_messages: set[str] = set()
@@ -309,6 +331,23 @@ class ChampionsTextParser:
         self._turn_has_activity = False
         self._battle_open = False
         self._pending_end = False
+        self._mega_seen: set[str] = set()
+
+    @staticmethod
+    def _team_form_aliases(team: Sequence[str]) -> dict[str, str]:
+        """Conserva formas de género que el HUD muestra sólo con el nombre base."""
+
+        candidates: dict[str, list[str]] = {}
+        for species in team:
+            if not species.endswith(("-F", "-M")):
+                continue
+            base = species[:-2]
+            candidates.setdefault(_text_key(base), []).append(species)
+        return {
+            base_key: formes[0]
+            for base_key, formes in candidates.items()
+            if len(formes) == 1
+        }
 
     def _canonical_aliases(
         self,
@@ -354,6 +393,51 @@ class ChampionsTextParser:
             if slot.startswith(side) and _text_key(active_species) == _text_key(species):
                 return slot
         return f"{side}a"
+
+    def _mega_event(
+        self,
+        *,
+        actor: str,
+        side: str,
+        item: str,
+        confidence: float,
+        timestamp_ms: int,
+        source_frame: int,
+        announced_forme: str | None = None,
+    ) -> tuple[BattleEvent, ...]:
+        slot = self._slot_for_species(actor, side)
+        if slot in self._mega_seen:
+            return ()
+
+        mega = self._mega_stones.get(_text_key(item))
+        if mega is None and announced_forme:
+            normalized_forme = announced_forme.strip()
+            if not normalized_forme.casefold().startswith("mega "):
+                normalized_forme = f"Mega {normalized_forme}"
+            words = normalized_forme.split()
+            suffix = words[-1] if words and words[-1] in {"X", "Y", "Z"} else None
+            base_words = words[1:-1] if suffix else words[1:]
+            candidate = f"{' '.join(base_words)}-Mega{f'-{suffix}' if suffix else ''}"
+            mega = self._mega_formes.get(_text_key(candidate))
+        if mega is None:
+            return ()
+
+        canonical_item, base_species, mega_forme = mega
+        if _text_key(base_species) != _text_key(actor):
+            return ()
+        self._mega_seen.add(slot)
+        return (
+            BattleEvent(
+                kind="mega",
+                timestamp_ms=timestamp_ms,
+                confidence=confidence,
+                slot=slot,  # type: ignore[arg-type]
+                species=actor,
+                forme=mega_forme,
+                value=canonical_item,
+                source_frame=source_frame,
+            ),
+        )
 
     def _hud_species(self, lines: Sequence[OcrLine], side: str) -> list[tuple[str, OcrLine]]:
         if side == "p1":
@@ -477,8 +561,46 @@ class ChampionsTextParser:
         source_frame: int,
     ) -> tuple[BattleEvent, ...]:
         cleaned = message.strip()
-        opposing_prefix = "the opposing "
         lowered = cleaned.casefold()
+
+        mega_reaction = re.match(
+            r"^(The opposing )?(.+?)[\'’]s (.+?) (?:is|i) reacting to .+?[\'’]s (?:Omni|Omi|Mega) Ring[!.]?$",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if mega_reaction:
+            opposing = bool(mega_reaction.group(1))
+            side = "p2" if opposing else "p1"
+            actor = self._resolve_species(mega_reaction.group(2), side)
+            if actor:
+                return self._mega_event(
+                    actor=actor,
+                    side=side,
+                    item=mega_reaction.group(3),
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                )
+
+        mega_evolved = re.match(
+            r"^(The opposing )?(.+?) has Mega Evolved into (Mega .+?)[!.]?$",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if mega_evolved:
+            opposing = bool(mega_evolved.group(1))
+            side = "p2" if opposing else "p1"
+            actor = self._resolve_species(mega_evolved.group(2), side)
+            if actor:
+                return self._mega_event(
+                    actor=actor,
+                    side=side,
+                    item="",
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                    announced_forme=mega_evolved.group(3),
+                )
 
         move_match = re.match(r"^(The opposing )?(.+?) used (.+?)[!.]?$", cleaned, re.IGNORECASE)
         if move_match:

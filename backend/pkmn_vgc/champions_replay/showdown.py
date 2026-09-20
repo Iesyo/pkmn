@@ -56,6 +56,15 @@ def _event_lines(event: BattleEvent, active: dict[str, str], side_names: dict[st
         species = event.species or active.get(event.slot, "Pokémon")
         return [f"|-{event.kind}|{_identifier(event.slot, species)}|{event.value}"]
 
+    if event.kind == "mega":
+        assert event.slot and event.species and event.forme and event.value
+        species = active.get(event.slot, event.species)
+        identifier = _identifier(event.slot, species)
+        return [
+            f"|detailschange|{identifier}|{event.forme}, L50",
+            f"|-mega|{identifier}|{event.species}|{event.value}",
+        ]
+
     if event.kind in {"faint", "crit"}:
         assert event.slot
         species = event.species or active.get(event.slot, "Pokémon")
