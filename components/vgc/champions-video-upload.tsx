@@ -369,6 +369,12 @@ export function ChampionsVideoUpload({
               {currentJob.status === "analyzing" || currentJob.status === "queued" ? (
                 <p className="flex items-center gap-2 text-[10px] text-amber-200"><Loader2 className="size-3 animate-spin" />Puedes cerrar esta ventana; la cola seguirá trabajando en la ROG.</p>
               ) : null}
+              {currentJob.warnings.length ? (
+                <div className="grid gap-1 rounded-xl border border-amber-300/15 bg-amber-300/[0.045] p-3 text-[10px] leading-4 text-amber-100">
+                  <p className="flex items-center gap-2 font-bold"><AlertTriangle className="size-3.5 shrink-0" />Avisos del análisis</p>
+                  {currentJob.warnings.map((warning, index) => <p key={`${index}-${warning}`}>{warning}</p>)}
+                </div>
+              ) : null}
               {currentJob.status === "ready" ? (
                 <div className="grid gap-2 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.045] p-3">
                   <p className="flex items-center gap-2 text-xs font-bold text-emerald-200"><CheckCircle2 className="size-4" />{currentJob.replayCount} replay{currentJob.replayCount === 1 ? "" : "s"} listo{currentJob.replayCount === 1 ? "" : "s"}</p>

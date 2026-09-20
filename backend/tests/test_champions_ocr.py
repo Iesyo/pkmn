@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -727,6 +728,63 @@ class ChampionsOcrTests(unittest.TestCase):
             detector._alias_future.result(timeout=1)  # type: ignore[union-attr]
             detections = detector.detect(FramePacket(index=3, timestamp_ms=1_500, image=b"jpeg"))
         finally:
+            detector.close()
+
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events],
+            [("p2a", "Metagross"), ("p2b", "Sableye")],
+        )
+
+    def test_detector_flushes_pending_visual_aliases_before_battle_reset(self) -> None:
+        hud = (
+            line("せんせい", x=0.629, y=0.05, width=0.052),
+            line("しごでき", x=0.799, y=0.05, width=0.051),
+            line("100%", x=0.682, y=0.11, width=0.053),
+            line("100%", x=0.851, y=0.11, width=0.053),
+        )
+        release = threading.Event()
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        line(
+                            "Rival sent out しごでき and せんせい!",
+                            x=0.2,
+                            y=0.7,
+                            width=0.5,
+                        ),
+                    )
+                return hud
+
+        class DelayedAliasResolver:
+            def resolve(
+                self,
+                _frame: FramePacket,
+                _candidates: tuple[tuple[str, str], ...],
+            ) -> tuple[HudAlias, ...]:
+                release.wait(timeout=1)
+                return (
+                    HudAlias("p2", "せんせい", "Metagross", "M", 0.98),
+                    HudAlias("p2", "しごでき", "Sableye", "F", 0.97),
+                )
+
+        detector = ChampionsOcrDetector(engine=FakeEngine(), alias_resolver=DelayedAliasResolver())
+        detector.parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Metagross", "Sableye")),
+        )
+        try:
+            detector.detect(FramePacket(index=0, timestamp_ms=0, image=b"jpeg"))
+            detector.detect(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"))
+            detector.detect(FramePacket(index=2, timestamp_ms=1_000, image=b"jpeg"))
+            release.set()
+            detections = detector.flush_pending()
+        finally:
+            release.set()
             detector.close()
 
         self.assertEqual(

@@ -202,6 +202,61 @@ class RapidOcrEngine:
             self._orientation_locked = True
         return lines
 
+    def prepare_hud_frame(
+        self,
+        frame: FramePacket,
+        lines: Sequence[OcrLine],
+        candidates: Sequence[tuple[str, str]],
+        *,
+        rotation_degrees: int,
+    ) -> FramePacket:
+        """Entrega a visión el HUD orientado y ampliado, no el frame móvil crudo."""
+
+        encoded = self._np.frombuffer(frame.image, dtype=self._np.uint8)
+        decoded = self._cv2.imdecode(encoded, self._cv2.IMREAD_COLOR)
+        if decoded is None:
+            return frame
+        oriented = self._rotate(decoded, (rotation_degrees // 90) % 4)
+        height, width = oriented.shape[:2]
+        sides = {side for side, _nickname in candidates}
+        nickname_keys = {_text_key(nickname) for _side, nickname in candidates}
+        labels = [line for line in lines if _text_key(line.text) in nickname_keys]
+
+        if sides == {"p2"}:
+            top, bottom = 0, max(1, round(height * 0.22))
+        elif sides == {"p1"}:
+            top, bottom = round(height * 0.68), height
+        else:
+            top, bottom = 0, height
+
+        if labels and len(sides) == 1:
+            left_ratio = max(0.0, min(line.left for line in labels) - 0.12)
+            right_ratio = min(1.0, max(line.right for line in labels) + 0.16)
+            left = round(width * left_ratio)
+            right = max(left + 1, round(width * right_ratio))
+        else:
+            left, right = 0, width
+        cropped = oriented[top:bottom, left:right]
+        crop_height, crop_width = cropped.shape[:2]
+        scale = min(max(1.0, 512 / max(1, crop_height)), 2000 / max(1, crop_width))
+        if scale > 1.05:
+            cropped = self._cv2.resize(
+                cropped,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=self._cv2.INTER_CUBIC,
+            )
+        ok, jpeg = self._cv2.imencode(".jpg", cropped, [self._cv2.IMWRITE_JPEG_QUALITY, 92])
+        if not ok:
+            return frame
+        return FramePacket(
+            index=frame.index,
+            timestamp_ms=frame.timestamp_ms,
+            image=jpeg.tobytes(),
+            mime_type="image/jpeg",
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ChampionsCatalog:
@@ -1642,6 +1697,7 @@ class ChampionsOcrDetector:
         self._visual_candidate_counts: dict[tuple[tuple[str, str], ...], int] = {}
         self._visual_attempted: set[tuple[tuple[str, str], ...]] = set()
         self._visual_warnings: deque[str] = deque()
+        self._alias_source: PreparedOcrFrame | None = None
 
     def _poll_visual_aliases(self) -> tuple[HudAlias, ...]:
         future = self._alias_future
@@ -1660,26 +1716,78 @@ class ChampionsOcrDetector:
 
     def _schedule_visual_aliases(
         self,
-        frame: FramePacket,
-        lines: Sequence[OcrLine],
-    ) -> None:
+        prepared: PreparedOcrFrame,
+    ) -> tuple[tuple[str, str], ...]:
         if self._alias_resolver is None or self._alias_executor is None or self._alias_future is not None:
-            return
+            return ()
+        frame = prepared.frame
+        lines = prepared.lines
         candidates = self.parser.visual_alias_candidates(lines)
         if not candidates:
-            return
+            return ()
         signature = tuple(candidates)
         count = self._visual_candidate_counts.get(signature, 0) + 1
         self._visual_candidate_counts[signature] = count
         if count < 2 or signature in self._visual_attempted:
-            return
+            return signature
         self._visual_attempted.add(signature)
+        vision_frame = frame
+        prepare_hud_frame = getattr(self.engine, "prepare_hud_frame", None)
+        if callable(prepare_hud_frame):
+            try:
+                vision_frame = prepare_hud_frame(
+                    frame,
+                    lines,
+                    candidates,
+                    rotation_degrees=prepared.rotation_degrees,
+                )
+            except Exception as error:  # el frame completo sigue siendo un fallback válido
+                self._visual_warnings.append(f"No pudimos ampliar el HUD; se usará el frame completo: {error}")
+        self._alias_source = prepared
         self._alias_future_generation = self._alias_generation
         self._alias_future = self._alias_executor.submit(
             self._alias_resolver.resolve,
-            frame,
+            vision_frame,
             candidates,
         )
+        return signature
+
+    def _write_trace(
+        self,
+        prepared: PreparedOcrFrame,
+        detections: FrameDetections,
+        *,
+        visual_aliases: Sequence[HudAlias] = (),
+        visual_candidates: Sequence[tuple[str, str]] = (),
+        phase: str = "frame",
+    ) -> None:
+        if not self.trace_path:
+            return
+        frame = prepared.frame
+        self.trace_path.parent.mkdir(parents=True, exist_ok=True)
+        record: dict[str, Any] = {
+            "frame": frame.index + 1,
+            "timestamp_ms": frame.timestamp_ms,
+            "elapsed_ms": prepared.elapsed_ms,
+            "rotation_degrees": prepared.rotation_degrees,
+            "phase": phase,
+            "ocr": [asdict(line) for line in prepared.lines],
+            "visual_alias_candidates": [
+                {"side": side, "nickname": nickname}
+                for side, nickname in visual_candidates
+            ],
+            "visual_aliases": [asdict(alias) for alias in visual_aliases],
+            "visual_alias_pending": self._alias_future is not None,
+            "detections": {
+                "team_preview": detections.team_preview,
+                "battle_started": detections.battle_started,
+                "battle_complete": detections.battle_complete,
+                "winner": detections.winner,
+                "events": [asdict(event) for event in detections.events],
+            },
+        }
+        with self.trace_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _read_frame(engine: OcrEngine, frame: FramePacket) -> PreparedOcrFrame:
@@ -1710,32 +1818,20 @@ class ChampionsOcrDetector:
         frame = prepared.frame
         lines = prepared.lines
         visual_aliases = self._poll_visual_aliases()
-        self._schedule_visual_aliases(frame, lines)
+        visual_candidates = self._schedule_visual_aliases(prepared)
         detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,
             source_frame=frame.index,
         )
-        if self.trace_path:
-            self.trace_path.parent.mkdir(parents=True, exist_ok=True)
-            record: dict[str, Any] = {
-                "frame": frame.index + 1,
-                "timestamp_ms": frame.timestamp_ms,
-                "elapsed_ms": prepared.elapsed_ms,
-                "rotation_degrees": prepared.rotation_degrees,
-                "ocr": [asdict(line) for line in lines],
-                "visual_aliases": [asdict(alias) for alias in visual_aliases],
-                "visual_alias_pending": self._alias_future is not None,
-                "detections": {
-                    "team_preview": detections.team_preview,
-                    "battle_started": detections.battle_started,
-                    "battle_complete": detections.battle_complete,
-                    "winner": detections.winner,
-                    "events": [asdict(event) for event in detections.events],
-                },
-            }
-            with self.trace_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._write_trace(
+            prepared,
+            detections,
+            visual_aliases=visual_aliases,
+            visual_candidates=visual_candidates,
+        )
+        if visual_aliases:
+            self._alias_source = None
         return detections
 
     def detect(self, frame: FramePacket) -> FrameDetections:
@@ -1745,7 +1841,45 @@ class ChampionsOcrDetector:
         self._alias_generation += 1
         self._visual_candidate_counts.clear()
         self._visual_attempted.clear()
+        self._alias_source = None
         self.parser.reset_battle_state()
+
+    def flush_pending(self) -> FrameDetections:
+        """Espera el refuerzo visual antes de cerrar y perder sus aliases."""
+
+        future = self._alias_future
+        source = self._alias_source
+        if future is None or source is None:
+            return FrameDetections()
+        generation = self._alias_future_generation
+        self._alias_future = None
+        self._alias_source = None
+        try:
+            aliases = future.result()
+        except Exception as error:  # el OCR determinista conserva el replay parcial
+            self._visual_warnings.append(f"Lectura visual de nicknames omitida: {error}")
+            return FrameDetections()
+        if generation != self._alias_generation:
+            return FrameDetections()
+        applied = self.parser.bind_visual_aliases(aliases)
+        if not applied:
+            self._visual_warnings.append(
+                "La lectura visual terminó, pero no produjo asociaciones válidas para el HUD."
+            )
+            return FrameDetections()
+        detections = self.parser.parse(
+            source.lines,
+            timestamp_ms=source.frame.timestamp_ms,
+            source_frame=source.frame.index,
+        )
+        self._write_trace(
+            source,
+            detections,
+            visual_aliases=applied,
+            visual_candidates=tuple((alias.side, alias.nickname) for alias in applied),
+            phase="visual_alias_flush",
+        )
+        return detections
 
     def pop_warnings(self) -> tuple[str, ...]:
         warnings = tuple(self._visual_warnings)

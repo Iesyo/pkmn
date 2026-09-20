@@ -370,82 +370,107 @@ class OllamaHudAliasResolver:
             {"side": side, "nickname": nickname}
             for (side, _key), nickname in requested.items()
         ]
-        payload = {
-            "model": self.model,
-            "prompt": (
-                f"{HUD_ALIAS_PROMPT}{json.dumps(candidate_context, ensure_ascii=False)}\n"
-                f"Contexto conocido: {self.context.prompt_context()}"
-            ),
-            "images": [base64.b64encode(frame.image).decode("ascii")],
-            "format": HUD_ALIAS_SCHEMA,
-            "stream": False,
-            "think": False,
-            "keep_alive": "10m",
-            "options": {"temperature": 0},
-        }
-        request = Request(
-            f"{self.endpoint}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - endpoint validated above
-                body = json.load(response)
-        except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
-            raise DetectionError(f"Ollama respondió {error.code} al leer aliases: {detail[:300]}") from error
-        except (URLError, TimeoutError) as error:
-            raise DetectionError(
-                "No pudimos usar Ollama para asociar los iconos del HUD con sus nicknames."
-            ) from error
-
-        candidate_errors: list[str] = []
-        mapping: Mapping[str, Any] | None = None
-        for field, response_text in _ollama_output_candidates(body):
-            try:
-                mapping = _extract_json(response_text, expected_keys={"aliases"})
-                break
-            except DetectionError as error:
-                candidate_errors.append(f"{field}: {error}")
-        if mapping is None:
-            raise DetectionError("; ".join(candidate_errors))
-
-        raw_aliases = mapping.get("aliases")
-        if not isinstance(raw_aliases, list):
-            return ()
-        aliases: list[HudAlias] = []
-        seen: set[tuple[str, str]] = set()
-        for value in raw_aliases:
-            if not isinstance(value, Mapping):
-                continue
-            side = value.get("side")
-            nickname_key = _alias_key(value.get("nickname"))
-            requested_nickname = requested.get((side, nickname_key)) if isinstance(side, str) else None
-            species = value.get("species")
-            confidence = value.get("confidence")
-            if (
-                side not in {"p1", "p2"}
-                or not requested_nickname
-                or not isinstance(species, str)
-                or not species.strip()
-                or not isinstance(confidence, (int, float))
-                or float(confidence) < 0.7
-                or (side, nickname_key) in seen
-            ):
-                continue
-            gender = value.get("gender")
-            aliases.append(
-                HudAlias(
-                    side=side,
-                    nickname=requested_nickname,
-                    species=species.strip(),
-                    gender=gender if gender in {"M", "F"} else None,
-                    confidence=max(0.0, min(1.0, float(confidence))),
-                )
+        last_error: DetectionError | None = None
+        for attempt in range(2):
+            correction = (
+                "\nCORRECCIÓN: la respuesta anterior no asoció ningún candidato. "
+                "Examina otra vez el icono inmediatamente a la izquierda de cada nickname y devuelve sólo JSON."
+                if attempt
+                else ""
             )
-            seen.add((side, nickname_key))
-        return tuple(aliases)
+            payload = {
+                "model": self.model,
+                "prompt": (
+                    f"{HUD_ALIAS_PROMPT}{json.dumps(candidate_context, ensure_ascii=False)}\n"
+                    f"Contexto conocido: {self.context.prompt_context()}{correction}"
+                ),
+                "images": [base64.b64encode(frame.image).decode("ascii")],
+                "format": HUD_ALIAS_SCHEMA,
+                "stream": False,
+                "think": False,
+                "keep_alive": "10m",
+                "options": {"temperature": 0},
+            }
+            request = Request(
+                f"{self.endpoint}/api/generate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"content-type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - endpoint validated above
+                    body = json.load(response)
+            except HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                raise DetectionError(f"Ollama respondió {error.code} al leer aliases: {detail[:300]}") from error
+            except (URLError, TimeoutError) as error:
+                last_error = DetectionError(
+                    "No pudimos usar Ollama para asociar los iconos del HUD con sus nicknames."
+                )
+                continue
+
+            try:
+                output_candidates = _ollama_output_candidates(body)
+            except DetectionError as error:
+                last_error = error
+                continue
+
+            candidate_errors: list[str] = []
+            mapping: Mapping[str, Any] | None = None
+            for field, response_text in output_candidates:
+                try:
+                    mapping = _extract_json(response_text, expected_keys={"aliases"})
+                    break
+                except DetectionError as error:
+                    candidate_errors.append(f"{field}: {error}")
+            if mapping is None:
+                last_error = DetectionError("; ".join(candidate_errors))
+                continue
+
+            raw_aliases = mapping.get("aliases")
+            if not isinstance(raw_aliases, list):
+                last_error = DetectionError("Ollama no devolvió la lista de aliases del HUD.")
+                continue
+            aliases: list[HudAlias] = []
+            seen: set[tuple[str, str]] = set()
+            for value in raw_aliases:
+                if not isinstance(value, Mapping):
+                    continue
+                side = value.get("side")
+                nickname_key = _alias_key(value.get("nickname"))
+                requested_nickname = requested.get((side, nickname_key)) if isinstance(side, str) else None
+                species = value.get("species")
+                confidence = value.get("confidence")
+                if (
+                    side not in {"p1", "p2"}
+                    or not requested_nickname
+                    or not isinstance(species, str)
+                    or not species.strip()
+                    or not isinstance(confidence, (int, float))
+                    or float(confidence) < 0.7
+                    or (side, nickname_key) in seen
+                ):
+                    continue
+                gender = value.get("gender")
+                aliases.append(
+                    HudAlias(
+                        side=side,
+                        nickname=requested_nickname,
+                        species=species.strip(),
+                        gender=gender if gender in {"M", "F"} else None,
+                        confidence=max(0.0, min(1.0, float(confidence))),
+                    )
+                )
+                seen.add((side, nickname_key))
+            if aliases:
+                return tuple(aliases)
+            last_error = DetectionError(
+                "Ollama no pudo asociar con confianza los nicknames visibles del HUD."
+            )
+
+        raise DetectionError(
+            f"Frame {frame.index + 1}: lectura visual de nicknames fallida tras 2 intentos. {last_error}"
+        ) from last_error
 
 
 class OllamaVisionDetector:

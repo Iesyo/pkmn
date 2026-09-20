@@ -25,6 +25,7 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(component, /Revisar partida/);
   assert.match(component, /Reintentar análisis/);
   assert.match(component, /Reanalizar vídeo/);
+  assert.match(component, /Avisos del análisis/);
   assert.match(jobs, /ThreadPoolExecutor\(max_workers=1/);
   assert.match(jobs, /ocr_workers=ocr_workers/);
   assert.match(jobs, /reset_battle_state|ReplayCapturePipeline/);

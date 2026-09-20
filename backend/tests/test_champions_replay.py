@@ -411,6 +411,32 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(detector.parsed, [0, 1, 2, 3])
         self.assertGreaterEqual(len(detector.threads), 2)
 
+    def test_pipeline_flushes_pending_detector_data_before_finalizing(self) -> None:
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(2)
+        ]
+
+        class PendingDetector:
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                if frame.index == 0:
+                    return FrameDetections(
+                        events=(BattleEvent(kind="turn", timestamp_ms=0, turn=1),),
+                        battle_started=True,
+                    )
+                return FrameDetections(winner="p1", battle_complete=True)
+
+            def flush_pending(self) -> FrameDetections:
+                return FrameDetections(p2_selected=("Metagross", "Sableye"))
+
+        captures = ReplayCapturePipeline(
+            frames,
+            PendingDetector(),
+            CaptureSeed(p1_team=("Kleavor",), p2_team=("Metagross", "Sableye")),
+        ).capture()
+
+        self.assertEqual(captures[0].p2.selected, ("Metagross", "Sableye"))
+
     def test_pipeline_discards_a_false_notification_result_and_keeps_scanning(self) -> None:
         frames = [
             FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
@@ -553,6 +579,40 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("せんせい", request["prompt"])
         self.assertIn("しごでき", request["prompt"])
         self.assertEqual(request["format"]["required"], ["aliases"])
+
+    @patch("pkmn_vgc.champions_replay.detector.urlopen")
+    def test_visual_hud_aliases_retry_an_empty_ollama_response(self, urlopen: MagicMock) -> None:
+        empty = {"response": "", "thinking": "", "done_reason": "stop", "eval_count": 0}
+        success = {
+            "response": json.dumps(
+                {
+                    "aliases": [
+                        {
+                            "side": "p2",
+                            "nickname": "せんせい",
+                            "species": "Metagross",
+                            "gender": "M",
+                            "confidence": 0.98,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        }
+        urlopen.side_effect = [
+            io.BytesIO(json.dumps(empty).encode()),
+            io.BytesIO(json.dumps(success).encode()),
+        ]
+
+        aliases = OllamaHudAliasResolver().resolve(
+            FramePacket(index=346, timestamp_ms=173_000, image=b"jpeg"),
+            (("p2", "せんせい"),),
+        )
+        second_request = json.loads(urlopen.call_args_list[1].args[0].data)
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(aliases[0].species, "Metagross")
+        self.assertIn("CORRECCIÓN", second_request["prompt"])
 
     @patch("pkmn_vgc.champions_replay.detector.urlopen")
     def test_reads_qwen_structured_output_from_thinking_field(self, urlopen: MagicMock) -> None:

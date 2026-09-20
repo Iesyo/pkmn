@@ -277,6 +277,17 @@ class ReplayCapturePipeline:
             if callable(reset):
                 reset()
 
+        def flush_detector_pending() -> None:
+            flush = getattr(self.detector, "flush_pending", None)
+            if callable(flush):
+                pending_detections = flush()
+                if isinstance(pending_detections, FrameDetections):
+                    accumulator.apply(pending_detections)
+            pop_warnings = getattr(self.detector, "pop_warnings", None)
+            if callable(pop_warnings) and on_warning:
+                for warning in pop_warnings():
+                    on_warning(warning)
+
         def report(frame_timestamp_ms: int) -> None:
             if not on_progress:
                 return
@@ -328,6 +339,7 @@ class ReplayCapturePipeline:
                 awaiting_next_start = False
             accumulator.apply(detections)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
+                flush_detector_pending()
                 try:
                     capture = accumulator.finalize()
                 except CaptureIncompleteError as error:
@@ -353,6 +365,7 @@ class ReplayCapturePipeline:
             report(frame.timestamp_ms)
 
         if not awaiting_next_start and accumulator.winner and accumulator.has_battle_data:
+            flush_detector_pending()
             captures.append(accumulator.finalize())
         if not captures:
             raise CaptureIncompleteError("La fuente terminó sin una batalla completa.")
