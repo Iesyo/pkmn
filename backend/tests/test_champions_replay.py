@@ -109,6 +109,35 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("|detailschange|p1a: Kleavor|Kleavor-Mega, L50", document.log)
         self.assertIn("|-mega|p1a: Kleavor|Kleavor|Kleavorite", document.log)
 
+    def test_keeps_a_mega_form_after_switching_out_and_back_in(self) -> None:
+        battle = self.capture()
+        events = (
+            BattleEvent(kind="switch", timestamp_ms=0, slot="p2a", species="Metagross"),
+            BattleEvent(
+                kind="mega",
+                timestamp_ms=1,
+                slot="p2a",
+                species="Metagross",
+                forme="Metagross-Mega",
+                value="Metagrossite",
+            ),
+            BattleEvent(kind="switch", timestamp_ms=2, slot="p2a", species="Sableye"),
+            BattleEvent(kind="switch", timestamp_ms=3, slot="p2a", species="Metagross"),
+        )
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Metagross", "Sableye"), ("Metagross", "Sableye")),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|switch|p2a: Metagross|Metagross-Mega, L50|100/100", document.log)
+
     def test_serializes_ability_driven_terrain_with_its_source(self) -> None:
         battle = self.capture()
         events = (
