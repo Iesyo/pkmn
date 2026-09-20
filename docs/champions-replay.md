@@ -141,7 +141,9 @@ vídeo:
 
 `aliases` traduce apodos visibles a especies canónicas. Es deliberadamente
 explícito: el parser no adivina que un apodo parecido a una especie pertenece a
-esa especie.
+esa especie. Las formas también deben declararse con su nombre de Showdown, por
+ejemplo `Indeedee-F`; el OCR puede leer `Indeedee`, pero el Team conocido
+conserva la forma correcta.
 
 ## En vivo con OBS Virtual Camera en Windows
 

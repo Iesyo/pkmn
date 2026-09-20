@@ -248,6 +248,33 @@ def _health_ratio(value: str) -> float:
     return int(current) / max(1, int(maximum))
 
 
+def _health_readings(lines: Sequence[OcrLine]) -> list[tuple[OcrLine, str]]:
+    """Une porcentajes que RapidOCR separa como `33` + `%`."""
+
+    percent_signs = [line for line in lines if line.text.strip() == "%"]
+    readings: list[tuple[OcrLine, str]] = []
+    for line in lines:
+        health = _health_value(line.text)
+        compact = line.text.replace(" ", "").replace("O", "0").replace("o", "0")
+        if health is None and re.fullmatch(r"\d{1,3}", compact):
+            suffix = min(
+                (
+                    candidate
+                    for candidate in percent_signs
+                    if candidate.left >= line.left
+                    and -0.02 <= candidate.left - line.right <= 0.04
+                    and abs(candidate.center_y - line.center_y) <= 0.035
+                ),
+                key=lambda candidate: abs(candidate.left - line.right),
+                default=None,
+            )
+            if suffix is not None:
+                health = _health_value(f"{compact}%")
+        if health:
+            readings.append((line, health))
+    return readings
+
+
 class ChampionsTextParser:
     """Convierte texto y posiciones OCR en observaciones de batalla con estado."""
 
@@ -353,6 +380,7 @@ class ChampionsTextParser:
             return {}
 
         observations: dict[str, tuple[str, str | None]] = {}
+        readings = _health_readings(lines)
         for side in ("p1", "p2"):
             species_lines = self._hud_species(lines, side)
             if not species_lines:
@@ -377,18 +405,16 @@ class ChampionsTextParser:
             if side == "p1":
                 health_lines = [
                     (line, health)
-                    for line in lines
+                    for line, health in readings
                     if line.center_y >= 0.9
                     and line.center_x <= 0.55
-                    and (health := _health_value(line.text))
                 ]
             else:
                 health_lines = [
                     (line, health)
-                    for line in lines
+                    for line, health in readings
                     if 0.08 <= line.center_y <= 0.145
                     and line.center_x >= 0.43
-                    and (health := _health_value(line.text))
                 ]
 
             for slot, species, species_line in slot_lines:

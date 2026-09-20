@@ -124,6 +124,43 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual([event.turn for event in next_turn.events if event.kind == "turn"], [2])
 
+    def test_reconstructs_split_percentages_during_hp_animations(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        split_percentage = (
+            line("Steelix", x=0.62, y=0.04),
+            line("33", x=0.69, y=0.11, width=0.04),
+            line("%", x=0.725, y=0.115, width=0.02),
+        )
+
+        detections = parser.parse(
+            split_percentage,
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(len(detections.events), 1)
+        self.assertEqual(detections.events[0].kind, "damage")
+        self.assertEqual(detections.events[0].slot, "p2a")
+        self.assertEqual(detections.events[0].health, "33/100")
+
+    def test_uses_known_gendered_form_when_hud_omits_the_suffix(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Indeedee-F",)),
+            catalog=ChampionsCatalog(species=("Indeedee", "Indeedee-F")),
+        )
+
+        detections = parser.parse(
+            (
+                line("Indeedee", x=0.62, y=0.04),
+                line("100%", x=0.69, y=0.11),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(detections.events[0].species, "Indeedee-F")
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         faint = parser.parse(
