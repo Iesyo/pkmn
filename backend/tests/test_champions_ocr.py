@@ -167,6 +167,50 @@ class ChampionsOcrTests(unittest.TestCase):
             [("switch", "Basculegion-F"), ("move", "Basculegion-F")],
         )
 
+    def test_historical_teammates_break_a_move_evidence_tie(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Rival"),
+            catalog=ChampionsCatalog(
+                species=("Metagross", "Sableye", "Grimmsnarl"),
+                moves=("Light Screen", "Rain Dance"),
+                species_moves=(
+                    ("Sableye", ("lightscreen", "raindance")),
+                    ("Grimmsnarl", ("lightscreen", "raindance")),
+                ),
+                species_teammates=(
+                    ("Metagross", "Sableye", 20),
+                    ("Grimmsnarl", "Metagross", 1),
+                ),
+            ),
+        )
+        parser.parse(
+            (line("Rival sent out しこてき and せんせい!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        parser._bind_alias("p2", "せんせい", "Metagross")
+
+        ambiguous = parser.parse(
+            (line("The opposing しでき used Light Screen!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        resolved = parser.parse(
+            (line("The opposing しでき used Rain Dance!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=2_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(ambiguous.events, ())
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.move) for event in resolved.events],
+            [
+                ("switch", "p2a", "Sableye", None),
+                ("move", "p2a", "Sableye", "Light Screen"),
+                ("move", "p2a", "Sableye", "Rain Dance"),
+            ],
+        )
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (
