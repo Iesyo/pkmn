@@ -55,7 +55,7 @@ def _default_processor(
         context=detector_context,
         trace_path=trace_path,
         alias_resolver=OllamaHudAliasResolver(
-            model=os.getenv("PKMN_CHAMPIONS_VISION_MODEL", "qwen3-vl:8b-instruct"),
+            model=os.getenv("PKMN_CHAMPIONS_VISION_MODEL", "qwen3-vl:4b"),
             endpoint=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
             context=detector_context,
         ),

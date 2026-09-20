@@ -800,7 +800,7 @@ class ChampionsOcrTests(unittest.TestCase):
         )
 
         self.assertEqual(default.detector, "ocr")
-        self.assertEqual(default.model, "qwen3-vl:8b-instruct")
+        self.assertEqual(default.model, "qwen3-vl:4b")
         self.assertEqual(ollama.detector, "ollama")
 
     def test_cli_accepts_trace_and_windows_bom_context_with_aliases(self) -> None:

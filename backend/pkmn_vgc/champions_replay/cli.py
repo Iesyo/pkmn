@@ -187,7 +187,7 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--model",
-        default="qwen3-vl:8b-instruct",
+        default="qwen3-vl:4b",
         help="Modelo visual disponible en Ollama.",
     )
     parser.add_argument(

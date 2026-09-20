@@ -10,6 +10,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 
 from pkmn_vgc.champions_replay.cli import _seed_from_context
 from pkmn_vgc.champions_replay.detector import (
@@ -616,6 +617,36 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("CORRECCIÓN", second_request["prompt"])
 
     @patch("pkmn_vgc.champions_replay.detector.urlopen")
+    def test_visual_hud_aliases_report_an_ollama_timeout(self, urlopen: MagicMock) -> None:
+        urlopen.side_effect = [TimeoutError(), TimeoutError()]
+
+        with self.assertRaisesRegex(
+            DetectionError,
+            "Ollama agotó 12 segundos leyendo el HUD con qwen3-vl:4b",
+        ):
+            OllamaHudAliasResolver(timeout_seconds=12).resolve(
+                FramePacket(index=196, timestamp_ms=98_000, image=b"jpeg"),
+                (("p2", "せんせい"),),
+            )
+
+        self.assertEqual(urlopen.call_count, 2)
+
+    @patch("pkmn_vgc.champions_replay.detector.urlopen")
+    def test_visual_hud_aliases_report_an_ollama_connection_error(self, urlopen: MagicMock) -> None:
+        urlopen.side_effect = [URLError("connection refused"), URLError("connection refused")]
+
+        with self.assertRaisesRegex(
+            DetectionError,
+            "No pudimos conectar con Ollama para leer el HUD.*connection refused",
+        ):
+            OllamaHudAliasResolver().resolve(
+                FramePacket(index=196, timestamp_ms=98_000, image=b"jpeg"),
+                (("p2", "せんせい"),),
+            )
+
+        self.assertEqual(urlopen.call_count, 2)
+
+    @patch("pkmn_vgc.champions_replay.detector.urlopen")
     def test_reads_qwen_structured_output_from_thinking_field(self, urlopen: MagicMock) -> None:
         body = {
             "response": "",
@@ -674,7 +705,7 @@ class ChampionsReplayTests(unittest.TestCase):
             thread.join(timeout=2)
 
         self.assertEqual(len(received), 2)
-        self.assertEqual(received[0]["model"], "qwen3-vl:8b-instruct")
+        self.assertEqual(received[0]["model"], "qwen3-vl:4b")
         self.assertEqual(received[0]["format"]["type"], "object")
         self.assertEqual(received[0]["think"], False)
         self.assertTrue(received[0]["images"])

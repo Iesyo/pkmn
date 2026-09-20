@@ -336,10 +336,10 @@ class OllamaHudAliasResolver:
     def __init__(
         self,
         *,
-        model: str = "qwen3-vl:8b-instruct",
+        model: str = "qwen3-vl:4b",
         endpoint: str = "http://127.0.0.1:11434",
         context: DetectorContext | None = None,
-        timeout_seconds: float = 90,
+        timeout_seconds: float = 180,
     ) -> None:
         parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -403,9 +403,15 @@ class OllamaHudAliasResolver:
             except HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace")
                 raise DetectionError(f"Ollama respondió {error.code} al leer aliases: {detail[:300]}") from error
-            except (URLError, TimeoutError) as error:
+            except TimeoutError as error:
                 last_error = DetectionError(
-                    "No pudimos usar Ollama para asociar los iconos del HUD con sus nicknames."
+                    f"Ollama agotó {self.timeout_seconds:g} segundos leyendo el HUD con {self.model}."
+                )
+                continue
+            except URLError as error:
+                reason = getattr(error, "reason", error)
+                last_error = DetectionError(
+                    f"No pudimos conectar con Ollama para leer el HUD ({reason})."
                 )
                 continue
 
@@ -480,7 +486,7 @@ class OllamaVisionDetector:
     def __init__(
         self,
         *,
-        model: str = "qwen3-vl:8b-instruct",
+        model: str = "qwen3-vl:4b",
         endpoint: str = "http://127.0.0.1:11434",
         context: DetectorContext | None = None,
         timeout_seconds: float = 90,
