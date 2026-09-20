@@ -301,6 +301,60 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual(hud_confirmation.events, ())
 
+    def test_delays_psychic_surge_and_terrain_until_indeedee_has_a_slot(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="Hisagi-",
+                p2_team=("Indeedee-F", "Gardevoir"),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Indeedee", "Indeedee-F", "Gardevoir"),
+                abilities=("Psychic Surge",),
+            ),
+        )
+
+        ability_overlay = parser.parse(
+            (
+                line("Indeedee's", x=0.838, y=0.363, width=0.085),
+                line("Psychic Surge", x=0.818, y=0.399, width=0.108),
+            ),
+            timestamp_ms=61_500,
+            source_frame=124,
+        )
+        terrain_message = parser.parse(
+            (
+                line("Indeedee's", x=0.838, y=0.363, width=0.085),
+                line("Psychic Surge", x=0.818, y=0.399, width=0.108),
+                line("The battlefield got weird!", x=0.153, y=0.727, width=0.223),
+            ),
+            timestamp_ms=62_000,
+            source_frame=125,
+        )
+        active_hud = parser.parse(
+            (
+                line("Indeedee", x=0.62, y=0.04),
+                line("100%", x=0.69, y=0.11),
+            ),
+            timestamp_ms=68_500,
+            source_frame=138,
+        )
+
+        self.assertEqual(ability_overlay.events, ())
+        self.assertEqual(terrain_message.events, ())
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.value) for event in active_hud.events],
+            [
+                ("switch", "p2a", "Indeedee-F", None),
+                ("ability", "p2a", "Indeedee-F", "Psychic Surge"),
+                ("fieldstart", None, None, "move: Psychic Terrain"),
+            ],
+        )
+        self.assertEqual(
+            active_hud.events[2].tags,
+            ("[from] ability: Psychic Surge", "[of] p2a: Indeedee-F"),
+        )
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         faint = parser.parse(

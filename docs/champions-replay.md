@@ -150,6 +150,11 @@ Las Mega Evolutions visibles generan tanto `detailschange` como `-mega` en el
 protocolo de Showdown. Así, el replay cambia al sprite Mega y registra la
 megapiedra en lugar de conservar esos textos como mensajes genéricos.
 
+Las tarjetas laterales de habilidades se cotejan con el catálogo local. Si una
+habilidad activa un terreno, el replay conserva ambos eventos y su relación;
+por ejemplo, `Psychic Surge` de `Indeedee-F` seguido de `Psychic Terrain` con
+la habilidad y el slot como fuente.
+
 ## En vivo con OBS Virtual Camera en Windows
 
 Primero se puede confirmar el nombre exacto del dispositivo:

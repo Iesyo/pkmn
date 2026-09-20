@@ -130,6 +130,7 @@ class RapidOcrEngine:
 class ChampionsCatalog:
     species: tuple[str, ...] = ()
     moves: tuple[str, ...] = ()
+    abilities: tuple[str, ...] = ()
     mega_stones: tuple[tuple[str, str, str], ...] = ()
 
 
@@ -154,6 +155,7 @@ def load_champions_catalog() -> ChampionsCatalog:
             species_values = payload.get("species", {})
             champion_ids = payload.get("formats", {}).get("champions", ())
             moves_values = payload.get("moves", {})
+            ability_values = payload.get("abilities", {})
             items_values = payload.get("items", {})
             species = tuple(
                 entry["name"]
@@ -166,6 +168,11 @@ def load_champions_catalog() -> ChampionsCatalog:
                 for entry in moves_values.values()
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             )
+            abilities = tuple(
+                entry["name"]
+                for entry in ability_values.values()
+                if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+            )
             mega_stones = tuple(
                 (entry["name"], base_species, mega_forme)
                 for entry in items_values.values()
@@ -176,7 +183,12 @@ def load_champions_catalog() -> ChampionsCatalog:
                 for base_species, mega_forme in entry["details"]["megaStone"].items()
                 if isinstance(base_species, str) and isinstance(mega_forme, str)
             )
-            return ChampionsCatalog(species=species, moves=moves, mega_stones=mega_stones)
+            return ChampionsCatalog(
+                species=species,
+                moves=moves,
+                abilities=abilities,
+                mega_stones=mega_stones,
+            )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return ChampionsCatalog()
@@ -315,6 +327,7 @@ class ChampionsTextParser:
         self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
         self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
         self._moves = _NameMatcher(self.catalog.moves)
+        self._abilities = _NameMatcher(self.catalog.abilities)
         self._mega_stones = {
             _text_key(item): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
@@ -327,6 +340,10 @@ class ChampionsTextParser:
         self._health: dict[str, str] = {}
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
         self._visible_messages: set[str] = set()
+        self._visible_abilities: set[tuple[str, str, str]] = set()
+        self._pending_abilities: dict[tuple[str, str, str], float] = {}
+        self._pending_fieldstarts: set[str] = set()
+        self._recent_field_sources: dict[str, tuple[str, str, str, int]] = {}
         self._turn = 0
         self._command_visible = False
         self._turn_has_activity = False
@@ -443,6 +460,155 @@ class ChampionsTextParser:
                 species=species,
                 source_frame=source_frame,
             ),
+        )
+
+    def _ability_actor(self, value: str) -> tuple[str, str] | None:
+        raw = re.sub(r"[\'’]s$", "", value.strip(), flags=re.IGNORECASE)
+        candidates: list[tuple[str, str]] = []
+        has_known_team = any(self._known_teams.values())
+        for side in ("p1", "p2"):
+            if has_known_team and not self._known_teams[side]:
+                continue
+            species = self._resolve_species(raw, side)
+            if species:
+                candidates.append((side, species))
+        active = [
+            candidate
+            for candidate in candidates
+            if any(
+                slot.startswith(candidate[0])
+                and _text_key(active_species) == _text_key(candidate[1])
+                for slot, active_species in self._active.items()
+            )
+        ]
+        if len(active) == 1:
+            return active[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    @staticmethod
+    def _terrain_for_ability(ability: str) -> str | None:
+        return {
+            "electricsurge": "Electric Terrain",
+            "grassysurge": "Grassy Terrain",
+            "mistysurge": "Misty Terrain",
+            "psychicsurge": "Psychic Terrain",
+        }.get(_text_key(ability))
+
+    def _ability_events(
+        self,
+        lines: Sequence[OcrLine],
+        *,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> tuple[BattleEvent, ...]:
+        overlay = [
+            line
+            for line in lines
+            if line.left >= 0.68 and 0.28 <= line.center_y <= 0.52
+        ]
+        visible: set[tuple[str, str, str]] = set()
+        for actor_line in overlay:
+            if not re.search(r"[\'’]s$", actor_line.text, re.IGNORECASE):
+                continue
+            actor = self._ability_actor(actor_line.text)
+            if not actor:
+                continue
+            ability_line = min(
+                (
+                    candidate
+                    for candidate in overlay
+                    if candidate.top >= actor_line.bottom - 0.015
+                    and 0 <= candidate.center_y - actor_line.center_y <= 0.12
+                    and abs(candidate.center_x - actor_line.center_x) <= 0.12
+                ),
+                key=lambda candidate: candidate.center_y - actor_line.center_y,
+                default=None,
+            )
+            if ability_line is None:
+                continue
+            ability = self._abilities.resolve(ability_line.text, threshold=0.78)
+            if not ability:
+                continue
+            side, species = actor
+            key = (side, species, ability)
+            visible.add(key)
+            if key not in self._visible_abilities:
+                self._pending_abilities[key] = min(actor_line.confidence, ability_line.confidence)
+        self._visible_abilities = visible
+        return self._flush_pending_abilities(
+            timestamp_ms=timestamp_ms,
+            source_frame=source_frame,
+        )
+
+    def _flush_pending_abilities(
+        self,
+        *,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> tuple[BattleEvent, ...]:
+        events: list[BattleEvent] = []
+        for key, confidence in tuple(self._pending_abilities.items()):
+            side, species, ability = key
+            slot = next(
+                (
+                    active_slot
+                    for active_slot, active_species in self._active.items()
+                    if active_slot.startswith(side)
+                    and _text_key(active_species) == _text_key(species)
+                ),
+                None,
+            )
+            if slot is None:
+                continue
+            events.append(
+                BattleEvent(
+                    kind="ability",
+                    timestamp_ms=timestamp_ms,
+                    confidence=confidence,
+                    slot=slot,  # type: ignore[arg-type]
+                    species=species,
+                    value=ability,
+                    source_frame=source_frame,
+                )
+            )
+            terrain = self._terrain_for_ability(ability)
+            if terrain:
+                self._recent_field_sources[terrain] = (ability, slot, species, timestamp_ms)
+                if terrain in self._pending_fieldstarts:
+                    events.append(
+                        self._fieldstart_event(
+                            terrain,
+                            confidence=confidence,
+                            timestamp_ms=timestamp_ms,
+                            source_frame=source_frame,
+                        )
+                    )
+                    self._pending_fieldstarts.remove(terrain)
+            del self._pending_abilities[key]
+        return tuple(events)
+
+    def _fieldstart_event(
+        self,
+        terrain: str,
+        *,
+        confidence: float,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> BattleEvent:
+        tags: tuple[str, ...] = ()
+        source = self._recent_field_sources.get(terrain)
+        if source and timestamp_ms - source[3] <= 15_000:
+            ability, slot, species, _ = source
+            tags = (f"[from] ability: {ability}", f"[of] {slot}: {species}")
+        return BattleEvent(
+            kind="fieldstart",
+            timestamp_ms=timestamp_ms,
+            confidence=confidence,
+            value=f"move: {terrain}",
+            tags=tags,
+            source_frame=source_frame,
         )
 
     def _mega_event(
@@ -614,6 +780,32 @@ class ChampionsTextParser:
     ) -> tuple[BattleEvent, ...]:
         cleaned = message.strip()
         lowered = cleaned.casefold()
+
+        terrain = None
+        if "battlefield got weird" in lowered:
+            terrain = "Psychic Terrain"
+        elif "electric current ran across the battlefield" in lowered:
+            terrain = "Electric Terrain"
+        elif "grass grew to cover the battlefield" in lowered:
+            terrain = "Grassy Terrain"
+        elif "mist swirled around the battlefield" in lowered:
+            terrain = "Misty Terrain"
+        if terrain:
+            pending_source = any(
+                self._terrain_for_ability(ability) == terrain
+                for _side, _species, ability in self._pending_abilities
+            )
+            if pending_source:
+                self._pending_fieldstarts.add(terrain)
+                return ()
+            return (
+                self._fieldstart_event(
+                    terrain,
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                ),
+            )
 
         withdrew = re.match(r"^(.*?)\s*withdrew\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if withdrew:
@@ -862,6 +1054,15 @@ class ChampionsTextParser:
                         source_frame=source_frame,
                     )
                 )
+
+        ability_events = self._ability_events(
+            lines,
+            timestamp_ms=timestamp_ms,
+            source_frame=source_frame,
+        )
+        events.extend(ability_events)
+        if self._visible_abilities:
+            self._battle_open = True
 
         message_lines = self._message_lines(lines)
         current_messages = {_text_key(line.text) for line in message_lines}

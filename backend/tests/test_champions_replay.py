@@ -106,6 +106,42 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("|detailschange|p1a: Kleavor|Kleavor-Mega, L50", document.log)
         self.assertIn("|-mega|p1a: Kleavor|Kleavor|Kleavorite", document.log)
 
+    def test_serializes_ability_driven_terrain_with_its_source(self) -> None:
+        battle = self.capture()
+        events = (
+            BattleEvent(kind="switch", timestamp_ms=0, slot="p2a", species="Indeedee-F"),
+            BattleEvent(
+                kind="ability",
+                timestamp_ms=1,
+                slot="p2a",
+                species="Indeedee-F",
+                value="Psychic Surge",
+            ),
+            BattleEvent(
+                kind="fieldstart",
+                timestamp_ms=2,
+                value="move: Psychic Terrain",
+                tags=("[from] ability: Psychic Surge", "[of] p2a: Indeedee-F"),
+            ),
+        )
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=battle.p2,
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|-ability|p2a: Indeedee-F|Psychic Surge", document.log)
+        self.assertIn(
+            "|-fieldstart|move: Psychic Terrain|[from] ability: Psychic Surge|[of] p2a: Indeedee-F",
+            document.log,
+        )
+
     def test_writes_json_log_and_html_without_overwriting_by_default(self) -> None:
         document = build_replay_document(self.capture())
         with tempfile.TemporaryDirectory() as directory:
