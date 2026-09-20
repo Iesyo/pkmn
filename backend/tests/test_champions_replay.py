@@ -15,6 +15,7 @@ from pkmn_vgc.champions_replay.cli import _seed_from_context
 from pkmn_vgc.champions_replay.detector import (
     DetectionError,
     DetectorContext,
+    OllamaHudAliasResolver,
     OllamaVisionDetector,
     _extract_json,
 )
@@ -512,6 +513,46 @@ class ChampionsReplayTests(unittest.TestCase):
     def test_rejects_remote_ollama_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "localmente"):
             OllamaVisionDetector(endpoint="https://example.com")
+        with self.assertRaisesRegex(ValueError, "localmente"):
+            OllamaHudAliasResolver(endpoint="https://example.com")
+
+    @patch("pkmn_vgc.champions_replay.detector.urlopen")
+    def test_reads_visual_hud_aliases_and_rejects_unrequested_names(self, urlopen: MagicMock) -> None:
+        body = {
+            "response": json.dumps(
+                {
+                    "aliases": [
+                        {
+                            "side": "p2",
+                            "nickname": "せんせい",
+                            "species": "Metagross",
+                            "gender": "M",
+                            "confidence": 0.98,
+                        },
+                        {
+                            "side": "p2",
+                            "nickname": "inventado",
+                            "species": "Sableye",
+                            "gender": None,
+                            "confidence": 0.99,
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        }
+        urlopen.return_value = io.BytesIO(json.dumps(body).encode())
+
+        aliases = OllamaHudAliasResolver().resolve(
+            FramePacket(index=346, timestamp_ms=173_000, image=b"jpeg"),
+            (("p2", "せんせい"), ("p2", "しごでき")),
+        )
+        request = json.loads(urlopen.call_args.args[0].data)
+
+        self.assertEqual([(alias.nickname, alias.species) for alias in aliases], [("せんせい", "Metagross")])
+        self.assertIn("せんせい", request["prompt"])
+        self.assertIn("しごでき", request["prompt"])
+        self.assertEqual(request["format"]["required"], ["aliases"])
 
     @patch("pkmn_vgc.champions_replay.detector.urlopen")
     def test_reads_qwen_structured_output_from_thinking_field(self, urlopen: MagicMock) -> None:

@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
+from .champions_replay.detector import OllamaHudAliasResolver
 from .champions_replay.models import ReplayDocument
 from .champions_replay.ocr_detector import ChampionsOcrDetector
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
@@ -53,6 +54,11 @@ def _default_processor(
     detector = ChampionsOcrDetector(
         context=detector_context,
         trace_path=trace_path,
+        alias_resolver=OllamaHudAliasResolver(
+            model=os.getenv("PKMN_CHAMPIONS_VISION_MODEL", "qwen3-vl:4b"),
+            endpoint=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
+            context=detector_context,
+        ),
     )
     captures = ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,

@@ -19,8 +19,9 @@ histórico de equipos de Pokémon VGC.
   abren desde el historial en una pestaña nueva con el visor de Showdown.
 - Traductor Pokémon Champions → replay Showdown: acepta vídeo o captura live de
   OBS mediante FFmpeg, usa OCR local paralelo y ordenado para vídeo, aprende
-  nicknames del Team Preview y genera JSON, log y HTML consumibles por
-  Teams/Comparación. Ollama queda como fallback opcional.
+  nicknames del Team Preview y asocia los iconos del HUD con nicknames rivales
+  mediante una lectura visual puntual en paralelo. Genera JSON, log y HTML
+  consumibles por Teams/Comparación; Ollama nunca reemplaza el OCR continuo.
 - Teams permite subir grabaciones Champions desde otra computadora de la misma
   red. La ROG recibe el archivo en fragmentos reanudables, lo procesa en una
   cola local persistente y presenta cada batalla detectada para revisión antes
@@ -132,6 +133,7 @@ Para instalar también el capturador OCR de Pokémon Champions:
 
 ```bash
 pip install -e "backend[dev,champions]"
+ollama pull qwen3-vl:4b
 ```
 
 En Windows, `npm.cmd run dev` detecta `.venv-champions`, inicia automáticamente

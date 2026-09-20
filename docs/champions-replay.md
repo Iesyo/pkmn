@@ -13,6 +13,8 @@ flowchart TD
     LIVE[OBS o capturadora] --> FRAMES[Frames FFmpeg]
     VIDEO[Vídeo grabado] --> FRAMES
     FRAMES --> OCR[RapidOCR local]
+    FRAMES --> HUD[Icono + nickname puntual]
+    HUD --> OCR
     OCR --> EVENTS[Eventos con confianza]
     EVENTS --> REPLAY[Replay Showdown]
     REPLAY --> STATS[Teams y Comparación]
@@ -23,6 +25,11 @@ flowchart TD
 - `ChampionsOcrDetector` usa RapidOCR y ONNX Runtime localmente. Lee el HUD y
   los mensajes en inglés, corrige errores comunes de HP, reconcilia nombres con
   el Pokédex incluido y produce eventos deterministas.
+- Cuando el OCR encuentra durante dos frames un nickname desconocido junto a
+  su barra de HP, `OllamaHudAliasResolver` analiza una sola imagen en segundo
+  plano, asocia el icono y el género visibles con una especie y valida el
+  resultado contra el catálogo Champions. El OCR continúa mientras tanto y la
+  asociación se reutiliza durante el resto de la batalla.
 - `VideoFrameSource` procesa grabaciones a una frecuencia configurable. La
   entrada puede ser 60 FPS; no es necesario analizar los 60 frames de cada
   segundo. En vídeo, dos workers ejecutan RapidOCR en paralelo con un buffer
@@ -36,8 +43,10 @@ flowchart TD
   - `.json`: contrato consumido por la aplicación;
   - `.log`: protocolo de batalla de Showdown;
   - `.html`: replay reproducible mediante el visor de Showdown.
-- `OllamaVisionDetector` sigue disponible con `--detector ollama`, pero ya no es
-  el detector por defecto.
+- `OllamaVisionDetector` completo sigue disponible con `--detector ollama`,
+  pero ya no es el detector por defecto. El modo OCR sólo usa el modelo visual
+  para aliases desconocidos; `--no-visual-aliases` permite desactivar ese
+  refuerzo.
 - `--ocr-trace` guarda un JSONL por frame con texto, coordenadas, tiempo de OCR
   y eventos. El subcomando `trace` vuelve a aplicar el parser a ese archivo en
   segundos, sin repetir FFmpeg ni OCR.
@@ -105,14 +114,16 @@ No hace falta activar el entorno ni cambiar la política de ejecución de
 PowerShell. Los modelos pequeños de RapidOCR quedan instalados dentro del
 entorno local.
 
-Ollama es opcional. Sólo para comparar el fallback visual anterior:
+Ollama es opcional para el OCR general, pero permite reconocer la especie y el
+género mostrados en el icono situado junto a un nickname desconocido:
 
 ```powershell
 ollama pull qwen3-vl:4b
 ```
 
-Las imágenes permanecen en la computadora: RapidOCR es local y el fallback de
-Ollama rechaza endpoints remotos.
+Las imágenes permanecen en la computadora: RapidOCR y Ollama son locales, y el
+detector rechaza endpoints remotos. Si Ollama no está disponible, el trabajo
+continúa con OCR y deja una advertencia para revisión manual.
 
 ## Contexto conocido
 
@@ -206,9 +217,11 @@ vídeo:
 
 `aliases` traduce apodos visibles a especies canónicas. El Team Preview aprende
 automáticamente los nicknames propios por la posición de las seis filas; los
-alias que no aparezcan allí siguen siendo explícitos. Una Mega Stone también
-puede revelar de forma inequívoca la especie base de un nickname rival. El
-parser no completa especies ambiguas por parecido. Las formas deben declararse
+aliases rivales también pueden aprenderse del icono, nickname y género visibles
+en el HUD de batalla. Una Mega Stone puede revelar de forma inequívoca la
+especie base si la lectura visual no está disponible. El parser no acepta una
+especie visual que no exista en el catálogo ni completa especies ambiguas por
+parecido. Las formas deben declararse
 con su nombre de Showdown, por ejemplo `Indeedee-F`; el OCR puede leer
 `Indeedee`, pero el Team conocido conserva automáticamente la forma correcta.
 Si el Team del rival lleva la hembra, debe aparecer como `"Indeedee-F"` en
@@ -252,8 +265,9 @@ sólo declara hechos visibles: turnos, entradas al campo, movimientos
 confirmados, HP, estados, KO, clima y resultado. Nunca rellena información
 oculta por inferencia.
 
-El OCR ya reconoce texto del HUD y mensajes; todavía no identifica los iconos
-del Team Preview. Hasta implementar ese clasificador, conviene proporcionar el
+El OCR ya reconoce texto del HUD y mensajes, y la lectura visual identifica los
+iconos que aparecen junto a nicknames durante la batalla. Todavía no clasifica
+los seis iconos sin texto del Team Preview, por lo que conviene proporcionar el
 Team propio en `--context`. Los Pokémon rivales se agregan cuando aparecen en
 campo. Una captura se marca para revisión si no contiene seis Pokémon o cuatro
 picks por lado, o si un evento crítico queda por debajo de 75% de confianza.

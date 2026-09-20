@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -18,6 +18,23 @@ class DetectionError(RuntimeError):
 
 class FrameDetector(Protocol):
     def detect(self, frame: FramePacket) -> FrameDetections: ...
+
+
+@dataclass(frozen=True, slots=True)
+class HudAlias:
+    side: str
+    nickname: str
+    species: str
+    gender: str | None = None
+    confidence: float = 0.0
+
+
+class HudAliasResolver(Protocol):
+    def resolve(
+        self,
+        frame: FramePacket,
+        candidates: Sequence[tuple[str, str]],
+    ) -> tuple[HudAlias, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,11 +245,15 @@ def _ollama_output_candidates(body: object) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _extract_json(value: str) -> Mapping[str, Any]:
+def _extract_json(
+    value: str,
+    *,
+    expected_keys: set[str] | None = None,
+) -> Mapping[str, Any]:
     text = value.strip()
     decoder = json.JSONDecoder()
     last_error: json.JSONDecodeError | None = None
-    detection_keys = {
+    detection_keys = expected_keys or {
         "players",
         "teams",
         "selected",
@@ -257,6 +278,174 @@ def _extract_json(value: str) -> Mapping[str, Any]:
             f"El modelo visual devolvió JSON inválido ({last_error.msg}). Respuesta: {excerpt}"
         ) from last_error
     raise DetectionError(f"El modelo visual no devolvió JSON. Respuesta: {excerpt}")
+
+
+HUD_ALIAS_PROMPT = """Analiza exclusivamente los iconos del HUD de esta batalla DOBLE de Pokémon Champions.
+Cada nickname indicado aparece junto a un pequeño icono de su Pokémon y, cuando aplica, un símbolo de género.
+Asocia cada nickname con la especie visible. Usa nombres oficiales EN INGLÉS y no uses el nickname como especie.
+El HUD de p2 está arriba y el de p1 abajo; usa el icono inmediatamente a la izquierda de cada nickname.
+No intercambies las asociaciones por el orden de los modelos 3D que aparecen en el campo.
+No inventes asociaciones si el icono no se distingue. Devuelve exclusivamente JSON válido.
+
+Esquema:
+{
+  "aliases": [
+    {
+      "side": "p1|p2",
+      "nickname": "texto exacto recibido",
+      "species": "English species",
+      "gender": "M|F|null",
+      "confidence": 0.0
+    }
+  ]
+}
+
+Candidatos visibles:
+"""
+
+
+HUD_ALIAS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "aliases": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "side": {"type": "string", "enum": ["p1", "p2"]},
+                    "nickname": {"type": "string"},
+                    "species": {"type": "string"},
+                    "gender": {"type": ["string", "null"], "enum": ["M", "F", None]},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": ["side", "nickname", "species", "gender", "confidence"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["aliases"],
+    "additionalProperties": False,
+}
+
+
+def _alias_key(value: object) -> str:
+    return "".join(character for character in str(value).casefold() if character.isalnum())
+
+
+class OllamaHudAliasResolver:
+    """Lectura visual puntual del icono unido a cada nickname del HUD."""
+
+    def __init__(
+        self,
+        *,
+        model: str = "qwen3-vl:4b",
+        endpoint: str = "http://127.0.0.1:11434",
+        context: DetectorContext | None = None,
+        timeout_seconds: float = 90,
+    ) -> None:
+        parsed = urlparse(endpoint if "://" in endpoint else f"http://{endpoint}")
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("El detector de aliases debe ejecutarse localmente en localhost.")
+        self.endpoint = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        self.model = model.strip()
+        self.context = context or DetectorContext()
+        self.timeout_seconds = timeout_seconds
+        if not self.model:
+            raise ValueError("Indica el modelo visual de Ollama.")
+
+    def resolve(
+        self,
+        frame: FramePacket,
+        candidates: Sequence[tuple[str, str]],
+    ) -> tuple[HudAlias, ...]:
+        requested = {
+            (side, _alias_key(nickname)): nickname
+            for side, nickname in candidates
+            if side in {"p1", "p2"} and _alias_key(nickname)
+        }
+        if not requested:
+            return ()
+        candidate_context = [
+            {"side": side, "nickname": nickname}
+            for (side, _key), nickname in requested.items()
+        ]
+        payload = {
+            "model": self.model,
+            "prompt": (
+                f"{HUD_ALIAS_PROMPT}{json.dumps(candidate_context, ensure_ascii=False)}\n"
+                f"Contexto conocido: {self.context.prompt_context()}"
+            ),
+            "images": [base64.b64encode(frame.image).decode("ascii")],
+            "format": HUD_ALIAS_SCHEMA,
+            "stream": False,
+            "think": False,
+            "keep_alive": "10m",
+            "options": {"temperature": 0},
+        }
+        request = Request(
+            f"{self.endpoint}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310 - endpoint validated above
+                body = json.load(response)
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise DetectionError(f"Ollama respondió {error.code} al leer aliases: {detail[:300]}") from error
+        except (URLError, TimeoutError) as error:
+            raise DetectionError(
+                "No pudimos usar Ollama para asociar los iconos del HUD con sus nicknames."
+            ) from error
+
+        candidate_errors: list[str] = []
+        mapping: Mapping[str, Any] | None = None
+        for field, response_text in _ollama_output_candidates(body):
+            try:
+                mapping = _extract_json(response_text, expected_keys={"aliases"})
+                break
+            except DetectionError as error:
+                candidate_errors.append(f"{field}: {error}")
+        if mapping is None:
+            raise DetectionError("; ".join(candidate_errors))
+
+        raw_aliases = mapping.get("aliases")
+        if not isinstance(raw_aliases, list):
+            return ()
+        aliases: list[HudAlias] = []
+        seen: set[tuple[str, str]] = set()
+        for value in raw_aliases:
+            if not isinstance(value, Mapping):
+                continue
+            side = value.get("side")
+            nickname_key = _alias_key(value.get("nickname"))
+            requested_nickname = requested.get((side, nickname_key)) if isinstance(side, str) else None
+            species = value.get("species")
+            confidence = value.get("confidence")
+            if (
+                side not in {"p1", "p2"}
+                or not requested_nickname
+                or not isinstance(species, str)
+                or not species.strip()
+                or not isinstance(confidence, (int, float))
+                or float(confidence) < 0.7
+                or (side, nickname_key) in seen
+            ):
+                continue
+            gender = value.get("gender")
+            aliases.append(
+                HudAlias(
+                    side=side,
+                    nickname=requested_nickname,
+                    species=species.strip(),
+                    gender=gender if gender in {"M", "F"} else None,
+                    confidence=max(0.0, min(1.0, float(confidence))),
+                )
+            )
+            seen.add((side, nickname_key))
+        return tuple(aliases)
 
 
 class OllamaVisionDetector:

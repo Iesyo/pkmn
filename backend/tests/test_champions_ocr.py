@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, build_parser
-from pkmn_vgc.champions_replay.detector import DetectorContext
+from pkmn_vgc.champions_replay.detector import DetectorContext, HudAlias
 from pkmn_vgc.champions_replay.ocr_detector import (
     ChampionsCatalog,
     ChampionsOcrDetector,
@@ -281,6 +281,51 @@ class ChampionsOcrTests(unittest.TestCase):
                 ("mega", "p2b", "Metagross", "Metagross-Mega"),
             ],
         )
+
+    def test_visual_hud_aliases_bind_japanese_nicknames_to_their_icons(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Metagross", "Sableye", "Indeedee", "Indeedee-F")),
+        )
+        hud = (
+            line("せんせい", x=0.629, y=0.05, width=0.052),
+            line("しごでき", x=0.799, y=0.05, width=0.051),
+            line("100%", x=0.682, y=0.11, width=0.053),
+            line("100%", x=0.851, y=0.11, width=0.053),
+        )
+        parser.parse(
+            (line("Rival sent out しごでき and せんせい!", x=0.2, y=0.7, width=0.5),),
+            timestamp_ms=88_500,
+            source_frame=177,
+        )
+
+        self.assertEqual(
+            parser.visual_alias_candidates(hud),
+            (("p2", "せんせい"), ("p2", "しごでき")),
+        )
+        applied = parser.bind_visual_aliases(
+            (
+                HudAlias("p2", "せんせい", "Metagross", "M", 0.98),
+                HudAlias("p2", "しごでき", "Sableye", "F", 0.97),
+            )
+        )
+        detections = parser.parse(hud, timestamp_ms=173_000, source_frame=346)
+
+        self.assertEqual([alias.species for alias in applied], ["Metagross", "Sableye"])
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events],
+            [("p2a", "Metagross"), ("p2b", "Sableye")],
+        )
+
+    def test_visual_hud_gender_selects_the_canonical_gendered_form(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Indeedee", "Indeedee-F")),
+        )
+
+        applied = parser.bind_visual_aliases(
+            (HudAlias("p2", "Helper", "Indeedee", "F", 0.96),)
+        )
+
+        self.assertEqual(applied[0].species, "Indeedee-F")
 
     def test_ignores_small_top_notification_that_contains_result_words(self) -> None:
         parser = self.parser()
@@ -634,6 +679,61 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(record["ocr"][0]["text"], "The opposing Umbreon fainted!")
         self.assertEqual(record["detections"]["events"][0]["kind"], "faint")
 
+    def test_detector_resolves_stable_unknown_hud_aliases_in_the_background(self) -> None:
+        hud = (
+            line("せんせい", x=0.629, y=0.05, width=0.052),
+            line("しごでき", x=0.799, y=0.05, width=0.051),
+            line("100%", x=0.682, y=0.11, width=0.053),
+            line("100%", x=0.851, y=0.11, width=0.053),
+        )
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                self.calls += 1
+                if self.calls == 1:
+                    return (
+                        line(
+                            "Rival sent out しごでき and せんせい!",
+                            x=0.2,
+                            y=0.7,
+                            width=0.5,
+                        ),
+                    )
+                return hud
+
+        class FakeAliasResolver:
+            def resolve(
+                self,
+                _frame: FramePacket,
+                _candidates: tuple[tuple[str, str], ...],
+            ) -> tuple[HudAlias, ...]:
+                return (
+                    HudAlias("p2", "せんせい", "Metagross", "M", 0.98),
+                    HudAlias("p2", "しごでき", "Sableye", "F", 0.97),
+                )
+
+        detector = ChampionsOcrDetector(engine=FakeEngine(), alias_resolver=FakeAliasResolver())
+        detector.parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Metagross", "Sableye")),
+        )
+        try:
+            detector.detect(FramePacket(index=0, timestamp_ms=0, image=b"jpeg"))
+            detector.detect(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"))
+            detector.detect(FramePacket(index=2, timestamp_ms=1_000, image=b"jpeg"))
+            self.assertIsNotNone(detector._alias_future)
+            detector._alias_future.result(timeout=1)  # type: ignore[union-attr]
+            detections = detector.detect(FramePacket(index=3, timestamp_ms=1_500, image=b"jpeg"))
+        finally:
+            detector.close()
+
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events],
+            [("p2a", "Metagross"), ("p2b", "Sableye")],
+        )
+
     def test_cli_uses_ocr_by_default_and_keeps_ollama_as_an_option(self) -> None:
         parser = build_parser()
         default = parser.parse_args(["video", "battle.mp4", "--output", "replay"])
@@ -684,6 +784,45 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(frame_count, 1)
         self.assertEqual(frame.index, 8)
         self.assertEqual(detections.winner, "p2")
+
+    def test_ocr_trace_reuses_visual_aliases_without_calling_ollama_again(self) -> None:
+        hud = (
+            line("せんせい", x=0.629, y=0.05, width=0.052),
+            line("100%", x=0.682, y=0.11, width=0.053),
+        )
+        record = {
+            "frame": 200,
+            "timestamp_ms": 99_500,
+            "ocr": [
+                {
+                    "text": value.text,
+                    "confidence": value.confidence,
+                    "left": value.left,
+                    "top": value.top,
+                    "right": value.right,
+                    "bottom": value.bottom,
+                }
+                for value in hud
+            ],
+            "visual_aliases": [
+                {
+                    "side": "p2",
+                    "nickname": "せんせい",
+                    "species": "Metagross",
+                    "gender": "M",
+                    "confidence": 0.98,
+                }
+            ],
+        }
+
+        detections = OcrTraceDetector().detect(
+            FramePacket(index=199, timestamp_ms=99_500, image=json.dumps(record).encode())
+        )
+
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events],
+            [("p2a", "Metagross")],
+        )
 
 
 if __name__ == "__main__":

@@ -6,13 +6,15 @@ import re
 import threading
 import time
 import unicodedata
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
-from .detector import DetectionError, DetectorContext
+from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import BattleEvent, FrameDetections
 from .sources import FramePacket
 
@@ -913,6 +915,100 @@ class ChampionsTextParser:
             found.append((species, line))
         return found[:2]
 
+    def visual_alias_candidates(self, lines: Sequence[OcrLine]) -> tuple[tuple[str, str], ...]:
+        """Encuentra nicknames desconocidos colocados junto a una barra de HP.
+
+        El icono queda inmediatamente a la izquierda del texto. La geometría
+        evita enviar mensajes, temporizadores o notificaciones al modelo visual.
+        """
+
+        text_keys = {_text_key(line.text) for line in lines}
+        if text_keys.intersection({"close", "hidesummary", "helditem", "movesmore"}):
+            return ()
+
+        candidates: list[tuple[str, str, float]] = []
+        seen: set[tuple[str, str]] = set()
+        for health_line, _health in _health_readings(lines):
+            if health_line.center_y <= 0.24:
+                side = "p2"
+                label_band = (0.025, 0.11)
+            elif health_line.center_y >= 0.76:
+                side = "p1"
+                label_band = (0.80, 0.90)
+            else:
+                continue
+            label = min(
+                (
+                    line
+                    for line in lines
+                    if label_band[0] <= line.center_y <= label_band[1]
+                    and 0.025 <= health_line.center_y - line.center_y <= 0.15
+                    and abs(health_line.center_x - line.center_x) <= 0.14
+                    and line.confidence >= 0.7
+                    and not _health_value(line.text)
+                    and _text_key(line.text) not in _UI_TEXT
+                    and self._resolve_species(line.text, side) is None
+                    and self._announced_slot(side, line.text) is not None
+                ),
+                key=lambda line: (
+                    abs(health_line.center_x - line.center_x)
+                    + abs(health_line.center_y - line.center_y)
+                ),
+                default=None,
+            )
+            if label is None:
+                continue
+            key = (side, _text_key(label.text))
+            if not key[1] or key in seen:
+                continue
+            seen.add(key)
+            candidates.append((side, label.text, label.center_x))
+        return tuple(
+            (side, nickname)
+            for side, nickname, _x in sorted(candidates, key=lambda value: (value[0], value[2]))
+        )
+
+    def bind_visual_aliases(self, aliases: Sequence[HudAlias]) -> tuple[HudAlias, ...]:
+        """Valida especies visuales contra el catálogo y aprende sus aliases."""
+
+        applied: list[HudAlias] = []
+        for alias in aliases:
+            if alias.side not in {"p1", "p2"} or alias.confidence < 0.7:
+                continue
+            raw_species = re.sub(
+                r"(?:\s*\((?:female|male)\)|[-\s]+(?:female|male))\s*$",
+                "",
+                alias.species.strip(),
+                flags=re.IGNORECASE,
+            )
+            canonical = None
+            if alias.gender in {"F", "M"}:
+                canonical = self._species.resolve(
+                    f"{raw_species}-{alias.gender}",
+                    allow_fuzzy=False,
+                )
+            canonical = canonical or self._species.resolve(raw_species, allow_fuzzy=False)
+            canonical = canonical or self._species.resolve(raw_species, threshold=0.92)
+            if not canonical:
+                continue
+            nickname_key = _text_key(alias.nickname)
+            if not nickname_key:
+                continue
+            # La geometría del HUD decide p2a/p2b. El orden textual del anuncio
+            # rival puede venir invertido, así que aquí aprendemos sólo el alias
+            # y dejamos que ``parse`` emita los switches con sus slots visuales.
+            self._aliases[alias.side][nickname_key] = canonical
+            applied.append(
+                HudAlias(
+                    side=alias.side,
+                    nickname=alias.nickname,
+                    species=canonical,
+                    gender=alias.gender,
+                    confidence=alias.confidence,
+                )
+            )
+        return tuple(applied)
+
     def _hud_observations(self, lines: Sequence[OcrLine]) -> dict[str, tuple[str, str | None]]:
         text_keys = {_text_key(line.text) for line in lines}
         if text_keys.intersection({"close", "hidesummary", "helditem", "movesmore"}):
@@ -1517,6 +1613,7 @@ class ChampionsOcrDetector:
         trace_path: Path | None = None,
         min_confidence: float = 0.5,
         engine_factory: Callable[[], OcrEngine] | None = None,
+        alias_resolver: HudAliasResolver | None = None,
     ) -> None:
         if engine is not None:
             self.engine = engine
@@ -1533,6 +1630,56 @@ class ChampionsOcrDetector:
         self._primary_engine_claimed = False
         self.parser = ChampionsTextParser(context=context)
         self.trace_path = trace_path
+        self._alias_resolver = alias_resolver
+        self._alias_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="champions-hud-vision")
+            if alias_resolver is not None
+            else None
+        )
+        self._alias_future: Future[tuple[HudAlias, ...]] | None = None
+        self._alias_future_generation = 0
+        self._alias_generation = 0
+        self._visual_candidate_counts: dict[tuple[tuple[str, str], ...], int] = {}
+        self._visual_attempted: set[tuple[tuple[str, str], ...]] = set()
+        self._visual_warnings: deque[str] = deque()
+
+    def _poll_visual_aliases(self) -> tuple[HudAlias, ...]:
+        future = self._alias_future
+        if future is None or not future.done():
+            return ()
+        generation = self._alias_future_generation
+        self._alias_future = None
+        try:
+            aliases = future.result()
+        except Exception as error:  # el refuerzo visual nunca debe abortar el OCR
+            self._visual_warnings.append(f"Lectura visual de nicknames omitida: {error}")
+            return ()
+        if generation != self._alias_generation:
+            return ()
+        return self.parser.bind_visual_aliases(aliases)
+
+    def _schedule_visual_aliases(
+        self,
+        frame: FramePacket,
+        lines: Sequence[OcrLine],
+    ) -> None:
+        if self._alias_resolver is None or self._alias_executor is None or self._alias_future is not None:
+            return
+        candidates = self.parser.visual_alias_candidates(lines)
+        if not candidates:
+            return
+        signature = tuple(candidates)
+        count = self._visual_candidate_counts.get(signature, 0) + 1
+        self._visual_candidate_counts[signature] = count
+        if count < 2 or signature in self._visual_attempted:
+            return
+        self._visual_attempted.add(signature)
+        self._alias_future_generation = self._alias_generation
+        self._alias_future = self._alias_executor.submit(
+            self._alias_resolver.resolve,
+            frame,
+            candidates,
+        )
 
     @staticmethod
     def _read_frame(engine: OcrEngine, frame: FramePacket) -> PreparedOcrFrame:
@@ -1562,6 +1709,8 @@ class ChampionsOcrDetector:
     def parse_prepared(self, prepared: PreparedOcrFrame) -> FrameDetections:
         frame = prepared.frame
         lines = prepared.lines
+        visual_aliases = self._poll_visual_aliases()
+        self._schedule_visual_aliases(frame, lines)
         detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,
@@ -1575,6 +1724,8 @@ class ChampionsOcrDetector:
                 "elapsed_ms": prepared.elapsed_ms,
                 "rotation_degrees": prepared.rotation_degrees,
                 "ocr": [asdict(line) for line in lines],
+                "visual_aliases": [asdict(alias) for alias in visual_aliases],
+                "visual_alias_pending": self._alias_future is not None,
                 "detections": {
                     "team_preview": detections.team_preview,
                     "battle_started": detections.battle_started,
@@ -1591,7 +1742,20 @@ class ChampionsOcrDetector:
         return self.parse_prepared(self._read_frame(self.engine, frame))
 
     def reset_battle_state(self) -> None:
+        self._alias_generation += 1
+        self._visual_candidate_counts.clear()
+        self._visual_attempted.clear()
         self.parser.reset_battle_state()
+
+    def pop_warnings(self) -> tuple[str, ...]:
+        warnings = tuple(self._visual_warnings)
+        self._visual_warnings.clear()
+        return warnings
+
+    def close(self) -> None:
+        if self._alias_executor is not None:
+            self._alias_executor.shutdown(wait=False, cancel_futures=True)
+            self._alias_executor = None
 
 
 class OcrTraceDetector:
@@ -1611,8 +1775,21 @@ class OcrTraceDetector:
                 for item in values
                 if (line := OcrLine.from_mapping(item)).text
             )
+            visual_values = payload.get("visual_aliases")
+            visual_aliases = tuple(
+                HudAlias(
+                    side=str(item.get("side") or ""),
+                    nickname=str(item.get("nickname") or ""),
+                    species=str(item.get("species") or ""),
+                    gender=item.get("gender") if item.get("gender") in {"M", "F"} else None,
+                    confidence=float(item.get("confidence") or 0),
+                )
+                for item in visual_values
+                if isinstance(item, dict)
+            ) if isinstance(visual_values, list) else ()
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
+        self.parser.bind_visual_aliases(visual_aliases)
         return self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,

@@ -216,8 +216,13 @@ class ReplayCapturePipeline:
             or not callable(prepare)
             or not callable(parse_prepared)
         ):
-            for frame in self.source:
-                yield frame, lambda frame=frame: self.detector.detect(frame)
+            try:
+                for frame in self.source:
+                    yield frame, lambda frame=frame: self.detector.detect(frame)
+            finally:
+                close = getattr(self.detector, "close", None)
+                if callable(close):
+                    close()
             return
 
         pending: deque[tuple[FramePacket, Future[object]]] = deque()
@@ -234,6 +239,9 @@ class ReplayCapturePipeline:
                 yield queued_frame, lambda future=future: parse_prepared(future.result())
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
+            close = getattr(self.detector, "close", None)
+            if callable(close):
+                close()
 
     def capture(
         self,
@@ -305,6 +313,10 @@ class ReplayCapturePipeline:
                     ) from error
                 continue
             consecutive_errors = 0
+            pop_warnings = getattr(self.detector, "pop_warnings", None)
+            if callable(pop_warnings) and on_warning:
+                for warning in pop_warnings():
+                    on_warning(warning)
             if awaiting_next_start:
                 if detections.team_preview:
                     accumulator.apply(detections)

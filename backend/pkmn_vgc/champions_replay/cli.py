@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
 
-from .detector import DetectionError, DetectorContext, OllamaVisionDetector
+from .detector import DetectionError, DetectorContext, OllamaHudAliasResolver, OllamaVisionDetector
 from .models import CapturedBattle
 from .ocr_detector import ChampionsOcrDetector, OcrTraceDetector
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
@@ -180,6 +180,11 @@ def _common_capture_arguments(parser: argparse.ArgumentParser) -> None:
         default=2,
         help="Workers OCR ordenados para vídeo; 2 ofrece el mejor equilibrio local.",
     )
+    parser.add_argument(
+        "--no-visual-aliases",
+        action="store_true",
+        help="Desactiva la asociación puntual icono/nickname mediante Ollama.",
+    )
     parser.add_argument("--model", default="qwen3-vl:4b", help="Modelo visual disponible en Ollama.")
     parser.add_argument(
         "--ollama-url",
@@ -262,8 +267,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 context=detector_context,
                 trace_path=args.ocr_trace,
                 min_confidence=args.ocr_min_confidence,
+                alias_resolver=(
+                    None
+                    if args.no_visual_aliases
+                    else OllamaHudAliasResolver(
+                        model=args.model,
+                        endpoint=args.ollama_url,
+                        context=detector_context,
+                    )
+                ),
             )
-            detector_label = "OCR local"
+            detector_label = "OCR local" if args.no_visual_aliases else "OCR local + aliases visuales"
         if args.command != "trace":
             sample_fps = args.sample_fps
             if args.command == "video":
