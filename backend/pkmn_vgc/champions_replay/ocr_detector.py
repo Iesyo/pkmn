@@ -1380,6 +1380,10 @@ class ChampionsTextParser:
 
     def _message_lines(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
         messages: list[OcrLine] = []
+        move_menu_visible = any(
+            _text_key(line.text) in {"moveinfo", "movesmore"}
+            for line in lines
+        )
         keywords = (
             " used ",
             " fainted",
@@ -1402,6 +1406,12 @@ class ChampionsTextParser:
         )
         for line in lines:
             if not (0.42 <= line.center_y <= 0.92 and line.left <= 0.92):
+                continue
+            # The phone recording keeps the move-selection sidebar visible on
+            # the right. Its move names are UI labels, not battle messages;
+            # exclude the whole menu even if OCR invents punctuation that
+            # would otherwise make a label look like a dialogue sentence.
+            if move_menu_visible and line.left >= 0.68:
                 continue
             key = _text_key(line.text)
             lowered = f" {line.text.casefold()} "
