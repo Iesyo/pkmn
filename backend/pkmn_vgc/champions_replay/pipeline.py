@@ -109,6 +109,11 @@ class CaptureAccumulator:
             _merge_species(self.p2_selected, detections.p2_selected, limit=4)
 
         for event in detections.events:
+            if event.slot and event.species:
+                selected = self.p1_selected if event.slot.startswith("p1") else self.p2_selected
+                team = self.p1_team if event.slot.startswith("p1") else self.p2_team
+                _merge_species(selected, (event.species,), limit=4)
+                _merge_species(team, (event.species,), limit=6)
             if event.kind in {"damage", "heal"}:
                 health_key = (event.kind, event.slot, event.species)
                 previous_health = self._last_health_event.get(health_key)
@@ -135,10 +140,6 @@ class CaptureAccumulator:
             if event.kind == "turn":
                 self._turn_seen = True
             if event.kind in {"switch", "drag"} and event.slot and event.species:
-                selected = self.p1_selected if event.slot.startswith("p1") else self.p2_selected
-                team = self.p1_team if event.slot.startswith("p1") else self.p2_team
-                _merge_species(selected, (event.species,), limit=4)
-                _merge_species(team, (event.species,), limit=6)
                 if not self._turn_seen:
                     lead = self.p1_lead if event.slot.startswith("p1") else self.p2_lead
                     _merge_species(lead, (event.species,), limit=2)
@@ -163,7 +164,7 @@ class CaptureAccumulator:
         return CapturedBattle(
             p1=BattleSide(self.p1_name, tuple(self.p1_team), ordered_selection(self.p1_lead, self.p1_selected)),
             p2=BattleSide(self.p2_name, tuple(self.p2_team), ordered_selection(self.p2_lead, self.p2_selected)),
-            events=tuple(self.events),
+            events=tuple(sorted(self.events, key=lambda event: event.timestamp_ms)),
             winner=self.winner,
             started_at=self.started_at,
             format=self.seed.format,

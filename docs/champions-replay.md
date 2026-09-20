@@ -13,9 +13,8 @@ flowchart TD
     LIVE[OBS o capturadora] --> FRAMES[Frames FFmpeg]
     VIDEO[Vídeo grabado] --> FRAMES
     FRAMES --> OCR[RapidOCR local]
-    FRAMES --> HUD[Icono + nickname puntual]
-    HUD --> OCR
-    OCR --> EVENTS[Eventos con confianza]
+    OCR --> RULES[Catálogo y evidencia]
+    RULES --> EVENTS[Eventos con confianza]
     EVENTS --> REPLAY[Replay Showdown]
     REPLAY --> STATS[Teams y Comparación]
 ```
@@ -25,11 +24,12 @@ flowchart TD
 - `ChampionsOcrDetector` usa RapidOCR y ONNX Runtime localmente. Lee el HUD y
   los mensajes en inglés, corrige errores comunes de HP, reconcilia nombres con
   el Pokédex incluido y produce eventos deterministas.
-- Cuando el OCR encuentra durante dos frames un nickname desconocido junto a
-  su barra de HP, `OllamaHudAliasResolver` analiza una sola imagen en segundo
-  plano, asocia el icono y el género visibles con una especie y valida el
-  resultado contra el catálogo Champions. El OCR continúa mientras tanto y la
-  asociación se reutiliza durante el resto de la batalla.
+- Cuando aparece un nickname desconocido, el parser conserva sus movimientos y
+  combina cada nueva evidencia con los learnsets y habilidades legales del
+  catálogo Champions. Sólo aprende el alias cuando queda una especie posible;
+  entonces recupera también los movimientos que estaban pendientes. El Team
+  rival conocido, las formas Mega y los aliases explícitos reducen candidatos,
+  incluyendo formas con género como `Basculegion-F`.
 - `VideoFrameSource` procesa grabaciones a una frecuencia configurable. La
   entrada puede ser 60 FPS; no es necesario analizar los 60 frames de cada
   segundo. En vídeo, dos workers ejecutan RapidOCR en paralelo con un buffer
@@ -44,9 +44,8 @@ flowchart TD
   - `.log`: protocolo de batalla de Showdown;
   - `.html`: replay reproducible mediante el visor de Showdown.
 - `OllamaVisionDetector` completo sigue disponible con `--detector ollama`,
-  pero ya no es el detector por defecto. El modo OCR sólo usa el modelo visual
-  para aliases desconocidos; `--no-visual-aliases` permite desactivar ese
-  refuerzo.
+  únicamente como herramienta experimental de compatibilidad. El flujo OCR
+  usado por vídeo, web y OBS no inicia Ollama ni carga un modelo generativo.
 - `--ocr-trace` guarda un JSONL por frame con texto, coordenadas, tiempo de OCR
   y eventos. El subcomando `trace` vuelve a aplicar el parser a ese archivo en
   segundos, sin repetir FFmpeg ni OCR.
@@ -110,20 +109,10 @@ git pull origin desarrollo
 .\.venv-champions\Scripts\champions-replay.exe --help
 ```
 
-No hace falta activar el entorno ni cambiar la política de ejecución de
-PowerShell. Los modelos pequeños de RapidOCR quedan instalados dentro del
-entorno local.
-
-Ollama es opcional para el OCR general, pero permite reconocer la especie y el
-género mostrados en el icono situado junto a un nickname desconocido:
-
-```powershell
-ollama pull qwen3-vl:4b
-```
-
-Las imágenes permanecen en la computadora: RapidOCR y Ollama son locales, y el
-detector rechaza endpoints remotos. Si Ollama no está disponible, el trabajo
-continúa con OCR y deja una advertencia para revisión manual.
+No hace falta activar el entorno, cambiar la política de ejecución de
+PowerShell ni instalar Ollama. Los modelos pequeños de RapidOCR quedan dentro
+del entorno local; la reconstrucción y la inferencia de aliases no salen de la
+computadora.
 
 ## Contexto conocido
 

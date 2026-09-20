@@ -5,9 +5,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from pkmn_vgc.champions_jobs import ChampionsJobManager
+from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor
 from pkmn_vgc.champions_replay.models import ReplayDocument
 from pkmn_vgc.champions_replay.pipeline import CaptureProgress
 
@@ -40,6 +40,33 @@ def fake_processor(
 
 
 class ChampionsJobTests(unittest.TestCase):
+    @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
+    @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
+    @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
+    def test_web_processor_uses_deterministic_ocr_without_ollama(
+        self,
+        source_type: MagicMock,
+        detector_type: MagicMock,
+        pipeline_type: MagicMock,
+    ) -> None:
+        source_type.return_value.estimated_frame_count.return_value = 0
+        pipeline_type.return_value.capture.return_value = ()
+
+        with tempfile.TemporaryDirectory() as directory:
+            documents = _default_processor(
+                Path(directory) / "video.mp4",
+                {},
+                Path(directory),
+                2.0,
+                0,
+                2,
+                MagicMock(),
+                MagicMock(),
+            )
+
+        self.assertEqual(documents, ())
+        self.assertNotIn("alias_resolver", detector_type.call_args.kwargs)
+
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0
         real_replace = os.replace

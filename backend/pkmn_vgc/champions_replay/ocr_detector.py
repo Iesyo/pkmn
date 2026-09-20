@@ -308,6 +308,8 @@ class ChampionsCatalog:
     species: tuple[str, ...] = ()
     moves: tuple[str, ...] = ()
     abilities: tuple[str, ...] = ()
+    species_moves: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    species_abilities: tuple[tuple[str, tuple[str, ...]], ...] = ()
     mega_stones: tuple[tuple[str, str, str], ...] = ()
 
 
@@ -350,6 +352,38 @@ def load_champions_catalog() -> ChampionsCatalog:
                 for entry in ability_values.values()
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             )
+            species_moves = tuple(
+                (
+                    entry["name"],
+                    tuple(
+                        move
+                        for move in entry.get("championsMoves", ())
+                        if isinstance(move, str)
+                    ),
+                )
+                for species_id in champion_ids
+                if isinstance((entry := species_values.get(species_id)), dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("championsMoves"), list)
+                and entry["championsMoves"]
+            )
+            species_abilities = tuple(
+                (
+                    entry["name"],
+                    tuple(
+                        ability
+                        for ability in entry.get("abilities", ())
+                        if isinstance(ability, str)
+                    ),
+                )
+                for species_id in champion_ids
+                if isinstance((entry := species_values.get(species_id)), dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("abilities"), list)
+                and entry["abilities"]
+                and isinstance(entry.get("championsMoves"), list)
+                and entry["championsMoves"]
+            )
             mega_stones = tuple(
                 (entry["name"], base_species, mega_forme)
                 for entry in items_values.values()
@@ -364,6 +398,8 @@ def load_champions_catalog() -> ChampionsCatalog:
                 species=species,
                 moves=moves,
                 abilities=abilities,
+                species_moves=species_moves,
+                species_abilities=species_abilities,
                 mega_stones=mega_stones,
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -507,8 +543,24 @@ class ChampionsTextParser:
             side: dict(values)
             for side, values in self._aliases.items()
         }
+        self._configured_bound_alias_keys = {
+            "p1": {_text_key(alias) for alias, _species in self.context.p1_aliases},
+            "p2": {_text_key(alias) for alias, _species in self.context.p2_aliases},
+        }
+        self._bound_alias_keys = {
+            side: set(values)
+            for side, values in self._configured_bound_alias_keys.items()
+        }
         self._moves = _NameMatcher(self.catalog.moves)
         self._abilities = _NameMatcher(self.catalog.abilities)
+        self._species_by_move: dict[str, set[str]] = {}
+        for species, moves in self.catalog.species_moves:
+            for move in moves:
+                self._species_by_move.setdefault(_text_key(move), set()).add(species)
+        self._species_by_ability: dict[str, set[str]] = {}
+        for species, abilities in self.catalog.species_abilities:
+            for ability in abilities:
+                self._species_by_ability.setdefault(_text_key(ability), set()).add(species)
         self._mega_stones = {
             _text_key(item): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
@@ -543,6 +595,71 @@ class ChampionsTextParser:
         self._battle_open = False
         self._pending_end = False
         self._mega_seen: set[str] = set()
+        self._alias_evidence: dict[tuple[str, str], set[str]] = {}
+        self._pending_alias_moves: dict[
+            tuple[str, str],
+            list[tuple[str, int, float, int]],
+        ] = {}
+
+    def _infer_alias(
+        self,
+        side: str,
+        nickname: str,
+        candidates: set[str],
+    ) -> tuple[str | None, str | None, bool]:
+        """Reduce candidatos con evidencia de batalla y aprende al quedar uno.
+
+        No adivina entre formas que comparten exactamente los mismos datos. En
+        esos casos espera otra pista (Mega, habilidad, alias configurado, etc.).
+        """
+
+        nickname_key = _text_key(nickname)
+        if not nickname_key or not candidates:
+            return None, None, False
+        known_team = set(self.context.p1_team if side == "p1" else self.context.p2_team)
+        if known_team:
+            candidates &= known_team
+        assigned = {
+            species
+            for alias_key, species in self._aliases[side].items()
+            if alias_key != nickname_key and alias_key in self._bound_alias_keys[side]
+        }
+        candidates -= assigned
+        evidence_key = (side, nickname_key)
+        previous = self._alias_evidence.get(evidence_key)
+        narrowed = candidates if previous is None else previous & candidates
+        if not narrowed:
+            return None, None, False
+        self._alias_evidence[evidence_key] = narrowed
+        if len(narrowed) != 1:
+            return None, None, False
+        species = next(iter(narrowed))
+        slot, changed = self._bind_alias(side, nickname, species)
+        return species, slot, changed
+
+    def _infer_alias_from_move(
+        self,
+        side: str,
+        nickname: str,
+        move: str,
+    ) -> tuple[str | None, str | None, bool]:
+        return self._infer_alias(
+            side,
+            nickname,
+            set(self._species_by_move.get(_text_key(move), ())),
+        )
+
+    def _infer_alias_from_ability(
+        self,
+        side: str,
+        nickname: str,
+        ability: str,
+    ) -> tuple[str | None, str | None, bool]:
+        return self._infer_alias(
+            side,
+            nickname,
+            set(self._species_by_ability.get(_text_key(ability), ())),
+        )
 
     @staticmethod
     def _team_form_aliases(team: Sequence[str]) -> dict[str, str]:
@@ -647,6 +764,7 @@ class ChampionsTextParser:
         key = _text_key(value)
         if key:
             self._aliases[side][key] = species
+            self._bound_alias_keys[side].add(key)
         slot = self._announced_slot(side, value)
         changed = bool(slot and self._active.get(slot) != species)
         if slot:
@@ -708,7 +826,7 @@ class ChampionsTextParser:
             ),
         )
 
-    def _ability_actor(self, value: str) -> tuple[str, str] | None:
+    def _ability_actor(self, value: str, ability: str | None = None) -> tuple[str, str] | None:
         raw = re.sub(r"[\'’]s$", "", value.strip(), flags=re.IGNORECASE)
         candidates: list[tuple[str, str]] = []
         has_known_team = any(self._known_teams.values())
@@ -731,6 +849,17 @@ class ChampionsTextParser:
             return active[0]
         if len(candidates) == 1:
             return candidates[0]
+        if ability:
+            announced_sides = [
+                side
+                for side in ("p1", "p2")
+                if self._announced_slot(side, raw) is not None
+            ]
+            if len(announced_sides) == 1:
+                side = announced_sides[0]
+                species, _slot, _changed = self._infer_alias_from_ability(side, raw, ability)
+                if species:
+                    return side, species
         return None
 
     @staticmethod
@@ -758,9 +887,6 @@ class ChampionsTextParser:
         for actor_line in overlay:
             if not re.search(r"[\'’]s$", actor_line.text, re.IGNORECASE):
                 continue
-            actor = self._ability_actor(actor_line.text)
-            if not actor:
-                continue
             ability_line = min(
                 (
                     candidate
@@ -776,6 +902,9 @@ class ChampionsTextParser:
                 continue
             ability = self._abilities.resolve(ability_line.text, threshold=0.78)
             if not ability:
+                continue
+            actor = self._ability_actor(actor_line.text, ability)
+            if not actor:
                 continue
             side, species = actor
             key = (side, species, ability)
@@ -986,6 +1115,7 @@ class ChampionsTextParser:
         )
         if _text_key(p2_name) != _text_key(self._player_names["p2"]):
             self._aliases["p2"] = dict(self._configured_aliases["p2"])
+            self._bound_alias_keys["p2"] = set(self._configured_bound_alias_keys["p2"])
         self._player_names.update({"p1": p1_name, "p2": p2_name})
 
         return FrameDetections(
@@ -1299,6 +1429,8 @@ class ChampionsTextParser:
                 slots = self._open_slots[side]
                 if slots:
                     self._announced_slots[side][_text_key(sent_out.group(2))] = slots[0]
+                elif not any(slot.startswith(side) for slot in self._active):
+                    self._announced_slots[side][_text_key(sent_out.group(2))] = f"{side}a"
                 return ()
 
         go = re.match(r"^Go!\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
@@ -1407,26 +1539,60 @@ class ChampionsTextParser:
         move_match = re.match(r"^(The opposing )?(.+?) used (.+?)[!.]?$", cleaned, re.IGNORECASE)
         if move_match:
             opposing = bool(move_match.group(1))
-            actor = self._resolve_species(move_match.group(2), "p2" if opposing else "p1")
-            if actor:
-                side = self._side_for_species(actor, opposing=opposing)
-                move_raw = move_match.group(3).strip()
-                move = self._moves.resolve(move_raw, threshold=0.72)
-                if not move:
-                    return ()
-                if len(_text_key(move_raw)) < len(_text_key(move)) * 0.75:
-                    return ()
-                return (
-                    BattleEvent(
-                        kind="move",
-                        timestamp_ms=timestamp_ms,
-                        confidence=confidence,
-                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
-                        species=actor,
-                        move=move,
-                        source_frame=source_frame,
-                    ),
+            side = "p2" if opposing else "p1"
+            actor_raw = move_match.group(2).strip()
+            move_raw = move_match.group(3).strip()
+            move = self._moves.resolve(move_raw, threshold=0.72)
+            if not move or len(_text_key(move_raw)) < len(_text_key(move)) * 0.75:
+                return ()
+            actor = self._resolve_species(actor_raw, side)
+            learned_slot: str | None = None
+            learned_switch = False
+            evidence_key = (side, _text_key(actor_raw))
+            if actor is None:
+                pending = self._pending_alias_moves.setdefault(evidence_key, [])
+                observation = (move, timestamp_ms, confidence, source_frame)
+                if observation not in pending:
+                    pending.append(observation)
+                actor, learned_slot, learned_switch = self._infer_alias_from_move(
+                    side,
+                    actor_raw,
+                    move,
                 )
+            if actor:
+                actor_side = self._side_for_species(actor, opposing=opposing)
+                pending = self._pending_alias_moves.pop(evidence_key, [])
+                if not pending:
+                    pending = [(move, timestamp_ms, confidence, source_frame)]
+                events: list[BattleEvent] = []
+                slot = learned_slot or self._slot_for_species(actor, actor_side)
+                if learned_switch and slot:
+                    events.append(
+                        BattleEvent(
+                            kind="switch",
+                            timestamp_ms=min(item[1] for item in pending),
+                            confidence=confidence,
+                            slot=slot,  # type: ignore[arg-type]
+                            species=actor,
+                            source_frame=source_frame,
+                        )
+                    )
+                events.extend(
+                    [
+                        BattleEvent(
+                            kind="move",
+                            timestamp_ms=move_timestamp,
+                            confidence=move_confidence,
+                            slot=slot,  # type: ignore[arg-type]
+                            species=actor,
+                            move=pending_move,
+                            source_frame=move_frame,
+                        )
+                        for pending_move, move_timestamp, move_confidence, move_frame in pending
+                    ]
+                )
+                return tuple(events)
+            return ()
 
         faint_match = re.match(r"^(The opposing )?(.+?) fainted[!.]?$", cleaned, re.IGNORECASE)
         if faint_match:

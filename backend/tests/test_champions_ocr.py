@@ -99,6 +99,74 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(detections.events[-1].kind, "turn")
         self.assertEqual(detections.events[-1].turn, 1)
 
+    def test_infers_an_unknown_opponent_nickname_from_move_evidence(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_name="IesYo", p2_name="Rival"),
+            catalog=ChampionsCatalog(
+                species=("Kingambit", "Sableye"),
+                moves=("Protect", "Kowtow Cleave"),
+                species_moves=(
+                    ("Kingambit", ("protect", "kowtowcleave")),
+                    ("Sableye", ("protect",)),
+                ),
+            ),
+        )
+        parser.parse(
+            (line("Rival sent out せんせい and しごでき!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        ambiguous = parser.parse(
+            (line("The opposing せんせい used Protect!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        resolved = parser.parse(
+            (line("The opposing せんせい used Kowtow Cleave!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=2_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(ambiguous.events, ())
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.move) for event in resolved.events],
+            [
+                ("switch", "p2a", "Kingambit", None),
+                ("move", "p2a", "Kingambit", "Protect"),
+                ("move", "p2a", "Kingambit", "Kowtow Cleave"),
+            ],
+        )
+
+    def test_known_opponent_team_disambiguates_gendered_form_without_visual_model(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Rival", p2_team=("Basculegion-F",)),
+            catalog=ChampionsCatalog(
+                species=("Basculegion", "Basculegion-F"),
+                moves=("Wave Crash",),
+                species_moves=(
+                    ("Basculegion", ("wavecrash",)),
+                    ("Basculegion-F", ("wavecrash",)),
+                ),
+            ),
+        )
+        parser.parse(
+            (line("Rival sent out ニックネーム!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        resolved = parser.parse(
+            (line("The opposing ニックネーム used Wave Crash!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.species) for event in resolved.events],
+            [("switch", "Basculegion-F"), ("move", "Basculegion-F")],
+        )
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (
