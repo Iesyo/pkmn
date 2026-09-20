@@ -6,7 +6,7 @@ import re
 import threading
 import time
 import unicodedata
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
@@ -310,6 +310,7 @@ class ChampionsCatalog:
     abilities: tuple[str, ...] = ()
     species_moves: tuple[tuple[str, tuple[str, ...]], ...] = ()
     species_abilities: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    species_teammates: tuple[tuple[str, str, int], ...] = ()
     mega_stones: tuple[tuple[str, str, str], ...] = ()
 
 
@@ -318,6 +319,49 @@ def _dex_candidates() -> tuple[Path, ...]:
     return (
         module.parents[3] / "public" / "data" / "showdown-dex.json.gz",
         module.parent / "data" / "showdown-dex.json.gz",
+    )
+
+
+def _tournament_candidates() -> tuple[Path, ...]:
+    module = Path(__file__).resolve()
+    return tuple(sorted((module.parents[3] / "data").glob("tournament-teams-*.json")))
+
+
+def _historical_teammates(species: Sequence[str]) -> tuple[tuple[str, str, int], ...]:
+    """Cuenta parejas vistas en los equipos reales incluidos en la app."""
+
+    canonical = {_text_key(value): value for value in species}
+    pair_counts: Counter[tuple[str, str]] = Counter()
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            names = value.get("pokemonNames")
+            if isinstance(names, list):
+                team = sorted(
+                    {
+                        resolved
+                        for name in names
+                        if isinstance(name, str)
+                        and (resolved := canonical.get(_text_key(name))) is not None
+                    }
+                )
+                for index, first in enumerate(team):
+                    for second in team[index + 1 :]:
+                        pair_counts[(first, second)] += 1
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for path in _tournament_candidates():
+        try:
+            visit(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return tuple(
+        (first, second, count)
+        for (first, second), count in sorted(pair_counts.items())
     )
 
 
@@ -400,6 +444,7 @@ def load_champions_catalog() -> ChampionsCatalog:
                 abilities=abilities,
                 species_moves=species_moves,
                 species_abilities=species_abilities,
+                species_teammates=_historical_teammates(species),
                 mega_stones=mega_stones,
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -561,6 +606,10 @@ class ChampionsTextParser:
         for species, abilities in self.catalog.species_abilities:
             for ability in abilities:
                 self._species_by_ability.setdefault(_text_key(ability), set()).add(species)
+        self._teammate_counts = {
+            tuple(sorted((first, second))): count
+            for first, second, count in self.catalog.species_teammates
+        }
         self._mega_stones = {
             _text_key(item): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
@@ -596,6 +645,7 @@ class ChampionsTextParser:
         self._pending_end = False
         self._mega_seen: set[str] = set()
         self._alias_evidence: dict[tuple[str, str], set[str]] = {}
+        self._alias_evidence_labels: dict[tuple[str, str], set[str]] = {}
         self._pending_alias_moves: dict[
             tuple[str, str],
             list[tuple[str, int, float, int]],
@@ -606,6 +656,7 @@ class ChampionsTextParser:
         side: str,
         nickname: str,
         candidates: set[str],
+        evidence: str,
     ) -> tuple[str | None, str | None, bool]:
         """Reduce candidatos con evidencia de batalla y aprende al quedar uno.
 
@@ -626,11 +677,37 @@ class ChampionsTextParser:
         }
         candidates -= assigned
         evidence_key = (side, nickname_key)
+        self._alias_evidence_labels.setdefault(evidence_key, set()).add(evidence)
         previous = self._alias_evidence.get(evidence_key)
         narrowed = candidates if previous is None else previous & candidates
         if not narrowed:
             return None, None, False
         self._alias_evidence[evidence_key] = narrowed
+        if (
+            len(narrowed) > 1
+            and not self._known_teams[side]
+            and len(self._alias_evidence_labels[evidence_key]) >= 2
+        ):
+            observed_teammates = {
+                species
+                for alias_key, species in self._aliases[side].items()
+                if alias_key != nickname_key and alias_key in self._bound_alias_keys[side]
+            }
+            scores = {
+                species: sum(
+                    self._teammate_counts.get(tuple(sorted((species, teammate))), 0)
+                    for teammate in observed_teammates
+                    if teammate != species
+                )
+                for species in narrowed
+            }
+            ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+            if ranked:
+                top_species, top_score = ranked[0]
+                runner_up = ranked[1][1] if len(ranked) > 1 else 0
+                if top_score >= 3 and top_score >= max(1, runner_up * 2):
+                    narrowed = {top_species}
+                    self._alias_evidence[evidence_key] = narrowed
         if len(narrowed) != 1:
             return None, None, False
         species = next(iter(narrowed))
@@ -647,6 +724,7 @@ class ChampionsTextParser:
             side,
             nickname,
             set(self._species_by_move.get(_text_key(move), ())),
+            f"move:{_text_key(move)}",
         )
 
     def _infer_alias_from_ability(
@@ -659,6 +737,7 @@ class ChampionsTextParser:
             side,
             nickname,
             set(self._species_by_ability.get(_text_key(ability), ())),
+            f"ability:{_text_key(ability)}",
         )
 
     @staticmethod
@@ -747,16 +826,21 @@ class ChampionsTextParser:
         exact = self._announced_slots[side].get(value_key)
         if exact:
             return exact
-        if len(value_key) < 4:
+        if len(value_key) < 3:
             return None
-        score, slot = max(
+        ranked = sorted(
             (
                 (SequenceMatcher(None, value_key, alias_key).ratio(), candidate_slot)
                 for alias_key, candidate_slot in self._announced_slots[side].items()
             ),
-            default=(0.0, ""),
+            reverse=True,
         )
-        return slot if score >= 0.64 else None
+        if not ranked:
+            return None
+        score, slot = ranked[0]
+        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+        threshold = 0.55 if len(value_key) <= 3 else 0.64
+        return slot if score >= threshold and score - runner_up >= 0.15 else None
 
     def _bind_alias(self, side: str, value: str, species: str) -> tuple[str | None, bool]:
         """Aprende un nickname cuando el juego revela después su especie."""
