@@ -549,15 +549,13 @@ class ChampionsReplayTests(unittest.TestCase):
                 {
                     "aliases": [
                         {
-                            "side": "p2",
-                            "nickname": "せんせい",
+                            "candidate_id": "p2-1",
                             "species": "Metagross",
                             "gender": "M",
                             "confidence": 0.98,
                         },
                         {
-                            "side": "p2",
-                            "nickname": "inventado",
+                            "candidate_id": "p2-99",
                             "species": "Sableye",
                             "gender": None,
                             "confidence": 0.99,
@@ -579,6 +577,10 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("せんせい", request["prompt"])
         self.assertIn("しごでき", request["prompt"])
         self.assertEqual(request["format"]["required"], ["aliases"])
+        self.assertEqual(
+            request["format"]["properties"]["aliases"]["items"]["properties"]["candidate_id"]["enum"],
+            ["p2-1", "p2-2"],
+        )
 
     @patch("pkmn_vgc.champions_replay.detector.urlopen")
     def test_visual_hud_aliases_retry_an_empty_ollama_response(self, urlopen: MagicMock) -> None:
@@ -588,8 +590,7 @@ class ChampionsReplayTests(unittest.TestCase):
                 {
                     "aliases": [
                         {
-                            "side": "p2",
-                            "nickname": "せんせい",
+                            "candidate_id": "p2-1",
                             "species": "Metagross",
                             "gender": "M",
                             "confidence": 0.98,

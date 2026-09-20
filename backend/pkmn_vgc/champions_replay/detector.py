@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
@@ -287,14 +288,13 @@ La imagen puede ser una composición con el frame completo arriba y una ampliaci
 Usa los modelos 3D del frame completo para reconocer las especies y los iconos ampliados para asociarlas al nickname correcto.
 El HUD de p2 está arriba y el de p1 abajo; usa el icono inmediatamente a la izquierda de cada nickname.
 No intercambies las asociaciones por el orden de los modelos 3D que aparecen en el campo.
-No inventes asociaciones si el icono no se distingue. Devuelve exclusivamente JSON válido.
+Devuelve el candidate_id recibido sin volver a escribir ni traducir el nickname. Devuelve exclusivamente JSON válido.
 
 Esquema:
 {
-  "aliases": [
+    "aliases": [
     {
-      "side": "p1|p2",
-      "nickname": "texto exacto recibido",
+      "candidate_id": "p2-1",
       "species": "English species",
       "gender": "M|F|null",
       "confidence": 0.0
@@ -315,13 +315,12 @@ HUD_ALIAS_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "side": {"type": "string", "enum": ["p1", "p2"]},
-                    "nickname": {"type": "string"},
+                    "candidate_id": {"type": "string"},
                     "species": {"type": "string"},
                     "gender": {"type": ["string", "null"], "enum": ["M", "F", None]},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 },
-                "required": ["side", "nickname", "species", "gender", "confidence"],
+                "required": ["candidate_id", "species", "gender", "confidence"],
                 "additionalProperties": False,
             },
         },
@@ -329,10 +328,6 @@ HUD_ALIAS_SCHEMA: dict[str, Any] = {
     "required": ["aliases"],
     "additionalProperties": False,
 }
-
-
-def _alias_key(value: object) -> str:
-    return "".join(character for character in str(value).casefold() if character.isalnum())
 
 
 class OllamaHudAliasResolver:
@@ -361,22 +356,25 @@ class OllamaHudAliasResolver:
         frame: FramePacket,
         candidates: Sequence[tuple[str, str]],
     ) -> tuple[HudAlias, ...]:
-        requested = {
-            (side, _alias_key(nickname)): nickname
-            for side, nickname in candidates
-            if side in {"p1", "p2"} and _alias_key(nickname)
-        }
+        requested: dict[str, tuple[str, str]] = {}
+        for index, (side, nickname) in enumerate(candidates, start=1):
+            if side in {"p1", "p2"} and nickname.strip():
+                requested[f"{side}-{index}"] = (side, nickname)
         if not requested:
             return ()
         candidate_context = [
-            {"side": side, "nickname": nickname}
-            for (side, _key), nickname in requested.items()
+            {"candidate_id": candidate_id, "side": side, "nickname": nickname}
+            for candidate_id, (side, nickname) in requested.items()
         ]
+        response_schema = deepcopy(HUD_ALIAS_SCHEMA)
+        aliases_schema = response_schema["properties"]["aliases"]
+        aliases_schema["maxItems"] = len(requested)
+        aliases_schema["items"]["properties"]["candidate_id"]["enum"] = list(requested)
         last_error: DetectionError | None = None
         for attempt in range(2):
             correction = (
                 "\nCORRECCIÓN: la respuesta anterior no asoció ningún candidato. "
-                "Examina otra vez el icono inmediatamente a la izquierda de cada nickname y devuelve sólo JSON."
+                "Examina otra vez cada icono, conserva su candidate_id y devuelve tu mejor identificación en JSON."
                 if attempt
                 else ""
             )
@@ -387,7 +385,7 @@ class OllamaHudAliasResolver:
                     f"Contexto conocido: {self.context.prompt_context()}{correction}"
                 ),
                 "images": [base64.b64encode(frame.image).decode("ascii")],
-                "format": HUD_ALIAS_SCHEMA,
+                "format": response_schema,
                 "stream": False,
                 "think": False,
                 "keep_alive": "10m",
@@ -434,25 +432,24 @@ class OllamaHudAliasResolver:
                 last_error = DetectionError("Ollama no devolvió la lista de aliases del HUD.")
                 continue
             aliases: list[HudAlias] = []
-            seen: set[tuple[str, str]] = set()
+            seen: set[str] = set()
             for value in raw_aliases:
                 if not isinstance(value, Mapping):
                     continue
-                side = value.get("side")
-                nickname_key = _alias_key(value.get("nickname"))
-                requested_nickname = requested.get((side, nickname_key)) if isinstance(side, str) else None
+                candidate_id = value.get("candidate_id")
+                requested_candidate = requested.get(candidate_id) if isinstance(candidate_id, str) else None
                 species = value.get("species")
                 confidence = value.get("confidence")
                 if (
-                    side not in {"p1", "p2"}
-                    or not requested_nickname
+                    requested_candidate is None
                     or not isinstance(species, str)
                     or not species.strip()
                     or not isinstance(confidence, (int, float))
                     or float(confidence) < 0.7
-                    or (side, nickname_key) in seen
+                    or candidate_id in seen
                 ):
                     continue
+                side, requested_nickname = requested_candidate
                 gender = value.get("gender")
                 aliases.append(
                     HudAlias(
@@ -463,11 +460,12 @@ class OllamaHudAliasResolver:
                         confidence=max(0.0, min(1.0, float(confidence))),
                     )
                 )
-                seen.add((side, nickname_key))
+                seen.add(candidate_id)
             if aliases:
                 return tuple(aliases)
             last_error = DetectionError(
-                "Ollama no pudo asociar con confianza los nicknames visibles del HUD."
+                "Ollama devolvió aliases sin una asociación utilizable: "
+                f"{_response_excerpt(json.dumps(raw_aliases, ensure_ascii=False), limit=420)}"
             )
 
         raise DetectionError(
