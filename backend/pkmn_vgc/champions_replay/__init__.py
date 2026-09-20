@@ -7,7 +7,7 @@ from .models import (
     FrameDetections,
     ReplayDocument,
 )
-from .ocr_detector import ChampionsOcrDetector, ChampionsTextParser, OcrLine
+from .ocr_detector import ChampionsOcrDetector, ChampionsTextParser, OcrLine, OcrTraceDetector
 from .showdown import build_replay_document, render_replay_html
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "ChampionsTextParser",
     "FrameDetections",
     "OcrLine",
+    "OcrTraceDetector",
     "ReplayDocument",
     "build_replay_document",
     "render_replay_html",

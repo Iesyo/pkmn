@@ -44,6 +44,19 @@ class OcrLine:
     def center_y(self) -> float:
         return (self.top + self.bottom) / 2
 
+    @classmethod
+    def from_mapping(cls, value: object) -> OcrLine:
+        if not isinstance(value, dict):
+            raise ValueError("Cada línea OCR debe ser un objeto JSON.")
+        return cls(
+            text=_clean_ocr_text(value.get("text")),
+            confidence=max(0.0, min(1.0, float(value.get("confidence", 0)))),
+            left=max(0.0, min(1.0, float(value.get("left", 0)))),
+            top=max(0.0, min(1.0, float(value.get("top", 0)))),
+            right=max(0.0, min(1.0, float(value.get("right", 0)))),
+            bottom=max(0.0, min(1.0, float(value.get("bottom", 0)))),
+        )
+
 
 class OcrEngine(Protocol):
     def read(self, image: bytes) -> tuple[OcrLine, ...]: ...
@@ -67,7 +80,7 @@ class RapidOcrEngine:
 
         self._cv2 = cv2
         self._np = np
-        self._engine = RapidOCR()
+        self._engine = RapidOCR(params={"Global.log_level": "ERROR"})
         self.min_confidence = min_confidence
 
     def read(self, image: bytes) -> tuple[OcrLine, ...]:
@@ -166,13 +179,21 @@ class _NameMatcher:
                 unique[key] = value
         self._values = unique
 
-    def resolve(self, value: str, *, threshold: float = 0.78) -> str | None:
+    def resolve(
+        self,
+        value: str,
+        *,
+        threshold: float = 0.78,
+        allow_fuzzy: bool = True,
+    ) -> str | None:
         key = _text_key(value)
         if len(key) < 3:
             return None
         exact = self._values.get(key)
         if exact:
             return exact
+        if not allow_fuzzy:
+            return None
 
         best_name: str | None = None
         best_score = threshold
@@ -199,6 +220,8 @@ _UI_TEXT = {
 
 def _health_value(value: str) -> str | None:
     compact = value.replace(" ", "").replace("O", "0").replace("o", "0")
+    if re.fullmatch(r"\d{1,2}:\d{2}", compact):
+        return None
     percentage = re.fullmatch(r"(\d{1,3})\s*%", compact)
     if percentage:
         current = min(100, int(percentage.group(1)))
@@ -212,7 +235,7 @@ def _health_value(value: str) -> str | None:
 
     # RapidOCR puede leer la barra inclinada como un 1: 187/187 -> 1871187.
     digits = "".join(character for character in compact if character.isdigit())
-    for size in range(4, 0, -1):
+    for size in range(4, 1, -1):
         if len(digits) in {size * 2, size * 2 + 1} and digits[:size] == digits[-size:]:
             current = int(digits[:size])
             if current > 0:
@@ -242,6 +265,14 @@ class ChampionsTextParser:
             "p1": _NameMatcher(self.context.p1_team or self.catalog.species),
             "p2": _NameMatcher(self.context.p2_team or self.catalog.species),
         }
+        self._known_teams = {
+            "p1": bool(self.context.p1_team),
+            "p2": bool(self.context.p2_team),
+        }
+        self._aliases = {
+            "p1": self._canonical_aliases(self.context.p1_aliases),
+            "p2": self._canonical_aliases(self.context.p2_aliases),
+        }
         self._moves = _NameMatcher(self.catalog.moves)
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
@@ -252,12 +283,31 @@ class ChampionsTextParser:
         self._battle_open = False
         self._pending_end = False
 
+    def _canonical_aliases(
+        self,
+        aliases: Sequence[tuple[str, str]],
+    ) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for alias, species in aliases:
+            alias_key = _text_key(alias)
+            canonical = self._species.resolve(species, threshold=0.9) or species.strip()
+            if alias_key and canonical:
+                result[alias_key] = canonical
+        return result
+
     def _resolve_species(self, value: str, side: str | None = None) -> str | None:
         if side in self._side_species:
-            resolved = self._side_species[side].resolve(value)
+            alias = self._aliases[side].get(_text_key(value))
+            if alias:
+                return alias
+            resolved = self._side_species[side].resolve(
+                value,
+                allow_fuzzy=self._known_teams[side],
+            )
             if resolved:
                 return resolved
-        return self._species.resolve(value)
+            return None
+        return self._species.resolve(value, allow_fuzzy=False)
 
     def _side_for_species(self, species: str, *, opposing: bool = False) -> str:
         if opposing:
@@ -298,6 +348,10 @@ class ChampionsTextParser:
         return found[:2]
 
     def _hud_observations(self, lines: Sequence[OcrLine]) -> dict[str, tuple[str, str | None]]:
+        text_keys = {_text_key(line.text) for line in lines}
+        if text_keys.intersection({"close", "hidesummary", "helditem", "movesmore"}):
+            return {}
+
         observations: dict[str, tuple[str, str | None]] = {}
         for side in ("p1", "p2"):
             species_lines = self._hud_species(lines, side)
@@ -324,13 +378,17 @@ class ChampionsTextParser:
                 health_lines = [
                     (line, health)
                     for line in lines
-                    if line.center_y >= 0.88 and (health := _health_value(line.text))
+                    if line.center_y >= 0.9
+                    and line.center_x <= 0.55
+                    and (health := _health_value(line.text))
                 ]
             else:
                 health_lines = [
                     (line, health)
                     for line in lines
-                    if line.center_y <= 0.22 and line.center_x >= 0.43 and (health := _health_value(line.text))
+                    if 0.08 <= line.center_y <= 0.145
+                    and line.center_x >= 0.43
+                    and (health := _health_value(line.text))
                 ]
 
             for slot, species, species_line in slot_lines:
@@ -373,9 +431,14 @@ class ChampionsTextParser:
                 continue
             if line.center_y >= 0.82 and self._resolve_species(line.text):
                 continue
-            if any(keyword in lowered for keyword in keywords) or (
+            looks_like_battle_text = any(keyword in lowered for keyword in keywords) or (
                 len(line.text) >= 8 and line.text.rstrip().endswith(("!", ".", "?"))
-            ):
+            )
+            opens_battle = any(
+                keyword in lowered
+                for keyword in (" sent out ", "sent out ", " go! ", " used ", " fainted")
+            )
+            if looks_like_battle_text and (self._battle_open or opens_battle):
                 messages.append(line)
         return sorted(messages, key=lambda line: (line.top, line.left))
 
@@ -394,11 +457,15 @@ class ChampionsTextParser:
         move_match = re.match(r"^(The opposing )?(.+?) used (.+?)[!.]?$", cleaned, re.IGNORECASE)
         if move_match:
             opposing = bool(move_match.group(1))
-            actor = self._resolve_species(move_match.group(2), "p2" if opposing else None)
+            actor = self._resolve_species(move_match.group(2), "p2" if opposing else "p1")
             if actor:
                 side = self._side_for_species(actor, opposing=opposing)
                 move_raw = move_match.group(3).strip()
-                move = self._moves.resolve(move_raw, threshold=0.72) or move_raw
+                move = self._moves.resolve(move_raw, threshold=0.72)
+                if not move:
+                    return ()
+                if len(_text_key(move_raw)) < len(_text_key(move)) * 0.75:
+                    return ()
                 return (
                     BattleEvent(
                         kind="move",
@@ -414,7 +481,7 @@ class ChampionsTextParser:
         faint_match = re.match(r"^(The opposing )?(.+?) fainted[!.]?$", cleaned, re.IGNORECASE)
         if faint_match:
             opposing = bool(faint_match.group(1))
-            species = self._resolve_species(faint_match.group(2), "p2" if opposing else None)
+            species = self._resolve_species(faint_match.group(2), "p2" if opposing else "p1")
             if species:
                 side = self._side_for_species(species, opposing=opposing)
                 return (
@@ -441,7 +508,7 @@ class ChampionsTextParser:
             if not status_match:
                 continue
             opposing = bool(status_match.group(1))
-            species = self._resolve_species(status_match.group(2), "p2" if opposing else None)
+            species = self._resolve_species(status_match.group(2), "p2" if opposing else "p1")
             if species:
                 side = self._side_for_species(species, opposing=opposing)
                 return (
@@ -466,7 +533,7 @@ class ChampionsTextParser:
             if not cure_match:
                 continue
             opposing = bool(cure_match.group(1))
-            species = self._resolve_species(cure_match.group(2), "p2" if opposing else None)
+            species = self._resolve_species(cure_match.group(2), "p2" if opposing else "p1")
             if species:
                 side = self._side_for_species(species, opposing=opposing)
                 return (
@@ -626,10 +693,27 @@ class ChampionsTextParser:
             self._pending_end = True
 
         winner = None
-        if any(key in {"win", "victory"} for key in text_keys) or "you won the battle" in visible_text:
+        if any(
+            phrase in visible_text
+            for phrase in ("you won the battle", "you won against", "you defeated", "you beat ")
+        ):
             winner = "p1"
-        elif any(key in {"lose", "defeat"} for key in text_keys) or "you lost the battle" in visible_text:
+        elif "you lost" in visible_text or "you were defeated" in visible_text:
             winner = "p2"
+        else:
+            win_words = {"win", "won", "victory"}
+            loss_words = {"lose", "lost", "defeat", "defeated"}
+            wins = [line for line in lines if _text_key(line.text) in win_words]
+            losses = [line for line in lines if _text_key(line.text) in loss_words]
+            if wins and not losses:
+                winner = "p1"
+            elif losses and not wins:
+                winner = "p2"
+            elif wins and losses:
+                local_won = any(line.center_x < 0.5 for line in wins)
+                local_lost = any(line.center_x < 0.5 for line in losses)
+                if local_won != local_lost:
+                    winner = "p1" if local_won else "p2"
 
         if observations or events:
             self._battle_open = True
@@ -686,3 +770,29 @@ class ChampionsOcrDetector:
             with self.trace_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         return detections
+
+
+class OcrTraceDetector:
+    """Reaplica el parser a una traza sin repetir FFmpeg ni RapidOCR."""
+
+    def __init__(self, *, context: DetectorContext | None = None) -> None:
+        self.parser = ChampionsTextParser(context=context)
+
+    def detect(self, frame: FramePacket) -> FrameDetections:
+        try:
+            payload = json.loads(frame.image.decode("utf-8-sig"))
+            values = payload.get("ocr")
+            if not isinstance(values, list):
+                raise ValueError("falta la lista ocr")
+            lines = tuple(
+                line
+                for item in values
+                if (line := OcrLine.from_mapping(item)).text
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
+        return self.parser.parse(
+            lines,
+            timestamp_ms=frame.timestamp_ms,
+            source_frame=frame.index,
+        )

@@ -26,6 +26,8 @@ class DetectorContext:
     p2_name: str = "Rival"
     p1_team: tuple[str, ...] = ()
     p2_team: tuple[str, ...] = ()
+    p1_aliases: tuple[tuple[str, str], ...] = ()
+    p2_aliases: tuple[tuple[str, str], ...] = ()
     language: str = "en"
 
     def prompt_context(self) -> str:
@@ -34,6 +36,10 @@ class DetectorContext:
                 "perspective": "p1 es el jugador local y p2 es el rival",
                 "players": {"p1": self.p1_name, "p2": self.p2_name},
                 "known_teams": {"p1": self.p1_team, "p2": self.p2_team},
+                "known_aliases": {
+                    "p1": dict(self.p1_aliases),
+                    "p2": dict(self.p2_aliases),
+                },
                 "game_language": self.language,
             },
             ensure_ascii=False,

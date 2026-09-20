@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -165,6 +166,39 @@ class VideoFrameSource(_FfmpegMjpegSource):
             return self.max_frames
         estimate = max(1, ceil(duration_seconds * self.sample_fps))
         return min(estimate, self.max_frames) if self.max_frames is not None else estimate
+
+
+@dataclass(slots=True)
+class OcrTraceFrameSource:
+    path: Path = Path()
+
+    def _lines(self) -> Iterator[tuple[int, bytes]]:
+        if not self.path.is_file():
+            raise CaptureSourceError(f"No encontramos la traza OCR: {self.path}")
+        with self.path.open("rb") as stream:
+            for line_number, raw in enumerate(stream, start=1):
+                if raw.strip():
+                    yield line_number, raw
+
+    def estimated_frame_count(self) -> int:
+        return sum(1 for _line_number, _raw in self._lines())
+
+    def __iter__(self) -> Iterator[FramePacket]:
+        for line_number, raw in self._lines():
+            try:
+                payload = json.loads(raw.decode("utf-8-sig"))
+                frame_number = max(1, int(payload.get("frame", line_number)))
+                timestamp_ms = max(0, int(payload.get("timestamp_ms", 0)))
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+                raise CaptureSourceError(
+                    f"La línea {line_number} de {self.path} no es una traza OCR válida: {error}"
+                ) from error
+            yield FramePacket(
+                index=frame_number - 1,
+                timestamp_ms=timestamp_ms,
+                image=raw,
+                mime_type="application/x-ndjson",
+            )
 
 
 @dataclass(slots=True)

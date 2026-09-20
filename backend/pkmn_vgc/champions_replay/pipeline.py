@@ -76,6 +76,7 @@ class CaptureAccumulator:
     complete: bool = False
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     _last_event_at: dict[tuple[object, ...], int] = field(default_factory=dict)
+    _last_health_event: dict[tuple[object, ...], tuple[int, int]] = field(default_factory=dict)
     _turn_seen: bool = False
 
     def __post_init__(self) -> None:
@@ -99,6 +100,17 @@ class CaptureAccumulator:
         _merge_species(self.p2_selected, detections.p2_selected, limit=4)
 
         for event in detections.events:
+            if event.kind in {"damage", "heal"}:
+                health_key = (event.kind, event.slot, event.species)
+                previous_health = self._last_health_event.get(health_key)
+                if previous_health and event.timestamp_ms - previous_health[1] <= 1_500:
+                    previous_index = previous_health[0]
+                    previous_event = self.events[previous_index]
+                    self._last_event_at.pop(previous_event.signature(), None)
+                    self.events[previous_index] = event
+                    self._last_event_at[event.signature()] = event.timestamp_ms
+                    self._last_health_event[health_key] = (previous_index, event.timestamp_ms)
+                    continue
             signature = event.signature()
             previous = self._last_event_at.get(signature)
             if previous is not None and event.timestamp_ms - previous <= self.dedupe_window_ms:
@@ -106,6 +118,11 @@ class CaptureAccumulator:
                 continue
             self._last_event_at[signature] = event.timestamp_ms
             self.events.append(event)
+            if event.kind in {"damage", "heal"}:
+                self._last_health_event[(event.kind, event.slot, event.species)] = (
+                    len(self.events) - 1,
+                    event.timestamp_ms,
+                )
             if event.kind == "turn":
                 self._turn_seen = True
             if event.kind in {"switch", "drag"} and event.slot and event.species:

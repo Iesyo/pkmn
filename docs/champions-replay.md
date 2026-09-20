@@ -38,8 +38,8 @@ flowchart TD
 - `OllamaVisionDetector` sigue disponible con `--detector ollama`, pero ya no es
   el detector por defecto.
 - `--ocr-trace` guarda un JSONL por frame con texto, coordenadas, tiempo de OCR
-  y eventos. Sirve para corregir un caso real sin volver a adivinar qué leyó el
-  motor.
+  y eventos. El subcomando `trace` vuelve a aplicar el parser a ese archivo en
+  segundos, sin repetir FFmpeg ni OCR.
 
 Teams admite cargar el `.json` reconstruido desde **Replay Champions**. La
 partida conserva origen Champions porque no se guarda una URL pública de
@@ -85,6 +85,10 @@ archivo es opcional; todos los nombres del juego deben estar en inglés.
     "p1": ["Kleavor", "Pelipper", "Venusaur", "Sinistcha", "Archaludon", "Luxray"],
     "p2": []
   },
+  "aliases": {
+    "p1": {"Scizor Jr.": "Kleavor"},
+    "p2": {}
+  },
   "language": "en",
   "format": "gen9championsvgc2026regmc"
 }
@@ -121,6 +125,23 @@ una CPU lenta; subirlo aumenta sensibilidad y costo casi linealmente.
 Una prueba con `--max-frames` puede terminar con “fuente sin batalla completa”:
 eso es normal si esos primeros frames no incluyen el resultado. La traza sí se
 conserva y permite revisar lo leído.
+
+### Reprocesar una traza existente
+
+Si el vídeo ya produjo `champions-real-001.trace.jsonl`, cualquier corrección
+del parser o del archivo de contexto puede probarse sin analizar otra vez el
+vídeo:
+
+```powershell
+.\.venv-champions\Scripts\champions-replay.exe trace ".\replays\champions-real-001.trace.jsonl" `
+  --context ".\captures\champions-context.json" `
+  --output ".\replays\champions-real-001-fixed" `
+  --force
+```
+
+`aliases` traduce apodos visibles a especies canónicas. Es deliberadamente
+explícito: el parser no adivina que un apodo parecido a una especie pertenece a
+esa especie.
 
 ## En vivo con OBS Virtual Camera en Windows
 

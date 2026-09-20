@@ -5,16 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pkmn_vgc.champions_replay.cli import build_parser
+from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, build_parser
 from pkmn_vgc.champions_replay.detector import DetectorContext
 from pkmn_vgc.champions_replay.ocr_detector import (
     ChampionsCatalog,
     ChampionsOcrDetector,
     ChampionsTextParser,
     OcrLine,
+    OcrTraceDetector,
     _health_value,
 )
-from pkmn_vgc.champions_replay.sources import FramePacket
+from pkmn_vgc.champions_replay.sources import FramePacket, OcrTraceFrameSource
 
 
 def line(
@@ -71,6 +72,8 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(_health_value("100%"), "100/100")
         self.assertEqual(_health_value("141/198"), "141/198")
         self.assertEqual(_health_value("1871187"), "187/187")
+        self.assertIsNone(_health_value("33"))
+        self.assertIsNone(_health_value("06:45"))
         self.assertIsNone(_health_value("Battle Info"))
 
     def test_reads_active_slots_health_and_first_turn_from_hud(self) -> None:
@@ -139,6 +142,70 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(result.winner, "p1")
         self.assertTrue(result.battle_complete)
 
+    def test_recognizes_real_loss_message_and_two_sided_result_screen(self) -> None:
+        parser = self.parser()
+        message_result = parser.parse(
+            (line("You lost to Hisagi-!", x=0.25, y=0.7, width=0.3),),
+            timestamp_ms=3_000,
+            source_frame=5,
+        )
+        screen_result = self.parser().parse(
+            (
+                line("LOST...", x=0.2, y=0.3, width=0.15),
+                line("WON!", x=0.7, y=0.3, width=0.15),
+            ),
+            timestamp_ms=3_500,
+            source_frame=6,
+        )
+
+        self.assertEqual(message_result.winner, "p2")
+        self.assertTrue(message_result.battle_complete)
+        self.assertEqual(screen_result.winner, "p2")
+
+    def test_uses_explicit_nickname_aliases_without_guessing_unknown_names(self) -> None:
+        context = DetectorContext(
+            p1_team=("Basculegion",),
+            p2_team=("Gardevoir",),
+            p1_aliases=(("Revenant", "Basculegion"),),
+        )
+        catalog = ChampionsCatalog(
+            species=("Basculegion", "Gardevoir", "Trevenant"),
+            moves=("Wave Crash", "Psywave"),
+        )
+        parser = ChampionsTextParser(context=context, catalog=catalog)
+        detections = parser.parse(
+            (
+                line("Revenant", x=0.12, y=0.86),
+                line("198/198", x=0.14, y=0.93),
+                line("Revenant used Wave Crash!", x=0.12, y=0.7, width=0.35),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        without_alias = ChampionsTextParser(catalog=catalog).parse(
+            (line("Revenant", x=0.12, y=0.86),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(detections.events[0].species, "Basculegion")
+        self.assertEqual(detections.events[1].move, "Wave Crash")
+        self.assertEqual(without_alias.events, ())
+
+    def test_ignores_battle_info_overlay_and_truncated_moves(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        overlay = (
+            line("Close", x=0.7, y=0.92),
+            line("Delphox", x=0.08, y=0.86),
+            line("06:45", x=0.06, y=0.93),
+            line("Delphox used Rock", x=0.12, y=0.7, width=0.3),
+        )
+
+        detections = parser.parse(overlay, timestamp_ms=1_000, source_frame=1)
+
+        self.assertEqual(detections.events, ())
+
     def test_detector_writes_an_optional_jsonl_trace(self) -> None:
         class FakeEngine:
             def read(self, _image: bytes) -> tuple[OcrLine, ...]:
@@ -170,6 +237,47 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(default.detector, "ocr")
         self.assertEqual(ollama.detector, "ollama")
+
+    def test_cli_accepts_trace_and_windows_bom_context_with_aliases(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["trace", "battle.trace.jsonl", "--output", "replay"])
+        with tempfile.TemporaryDirectory() as directory:
+            context_path = Path(directory) / "context.json"
+            context_path.write_text(
+                '\ufeff{"aliases":{"p1":{"Revenant":"Basculegion"}}}',
+                encoding="utf-8",
+            )
+            _seed, context = _seed_from_context(_load_mapping(context_path), "video")
+
+        self.assertEqual(args.command, "trace")
+        self.assertEqual(context.p1_aliases, (("Revenant", "Basculegion"),))
+
+    def test_replays_ocr_trace_without_loading_an_ocr_engine(self) -> None:
+        record = {
+            "frame": 9,
+            "timestamp_ms": 4_000,
+            "ocr": [
+                {
+                    "text": "You lost to Rival!",
+                    "confidence": 0.99,
+                    "left": 0.2,
+                    "top": 0.7,
+                    "right": 0.5,
+                    "bottom": 0.74,
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "battle.trace.jsonl"
+            trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+            source = OcrTraceFrameSource(trace)
+            frame = next(iter(source))
+            detections = OcrTraceDetector().detect(frame)
+            frame_count = source.estimated_frame_count()
+
+        self.assertEqual(frame_count, 1)
+        self.assertEqual(frame.index, 8)
+        self.assertEqual(detections.winner, "p2")
 
 
 if __name__ == "__main__":

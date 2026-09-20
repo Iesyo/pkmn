@@ -9,15 +9,15 @@ from typing import Any, Mapping, Sequence
 
 from .detector import DetectionError, DetectorContext, OllamaVisionDetector
 from .models import CapturedBattle
-from .ocr_detector import ChampionsOcrDetector
+from .ocr_detector import ChampionsOcrDetector, OcrTraceDetector
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
-from .sources import CaptureSourceError, LiveFrameSource, VideoFrameSource
+from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"No pudimos leer {path}: {error}") from error
     if not isinstance(value, Mapping):
@@ -31,9 +31,20 @@ def _species(value: object) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in value if str(item).strip())[:6]
 
 
+def _aliases(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        return ()
+    return tuple(
+        (alias.strip(), species.strip())
+        for raw_alias, raw_species in value.items()
+        if (alias := str(raw_alias).strip()) and (species := str(raw_species).strip())
+    )
+
+
 def _seed_from_context(value: Mapping[str, Any], source_mode: str) -> tuple[CaptureSeed, DetectorContext]:
     players = value.get("players") if isinstance(value.get("players"), Mapping) else {}
     teams = value.get("teams") if isinstance(value.get("teams"), Mapping) else {}
+    aliases = value.get("aliases") if isinstance(value.get("aliases"), Mapping) else {}
     p1_name = str(players.get("p1") or "Player")
     p2_name = str(players.get("p2") or "Rival")
     p1_team = _species(teams.get("p1"))
@@ -51,6 +62,8 @@ def _seed_from_context(value: Mapping[str, Any], source_mode: str) -> tuple[Capt
         p2_name=p2_name,
         p1_team=p1_team,
         p2_team=p2_team,
+        p1_aliases=_aliases(aliases.get("p1")),
+        p2_aliases=_aliases(aliases.get("p2")),
         language=str(value.get("language") or "en"),
     )
     return seed, context
@@ -84,7 +97,13 @@ def _format_duration(seconds: float | None) -> str:
 
 
 class _ProgressPrinter:
-    def __init__(self, total_frames: int | None, *, detector: str, sample_fps: float) -> None:
+    def __init__(
+        self,
+        total_frames: int | None,
+        *,
+        detector: str,
+        sample_fps: float | None,
+    ) -> None:
         self.total_frames = total_frames
         self.detector = detector
         self.sample_fps = sample_fps
@@ -92,7 +111,8 @@ class _ProgressPrinter:
 
     def start(self) -> None:
         target = f"{self.total_frames} frames estimados" if self.total_frames else "duración desconocida"
-        print(f"Analizando {target} a {self.sample_fps:g} FPS con {self.detector}...")
+        rate = f" a {self.sample_fps:g} FPS" if self.sample_fps is not None else ""
+        print(f"Analizando {target}{rate} con {self.detector}...")
 
     def update(self, progress: CaptureProgress) -> None:
         elapsed = _format_duration(progress.elapsed_seconds)
@@ -176,6 +196,16 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("source", help="Nombre o ruta de la fuente para FFmpeg.")
     live.add_argument("--backend", choices=["auto", "dshow", "v4l2", "avfoundation", "lavfi"], default="auto")
     _common_capture_arguments(live)
+
+    trace = subparsers.add_parser(
+        "trace",
+        help="Reprocesa una traza OCR existente sin volver a leer el vídeo.",
+    )
+    trace.add_argument("trace", type=Path)
+    trace.add_argument("--context", type=Path, help="JSON con Teams, alias, jugadores, idioma y formato.")
+    trace.add_argument("--output", type=Path, required=True, help="Ruta base de los archivos de salida.")
+    trace.add_argument("--max-battles", type=int, default=1, help="Cantidad máxima de batallas a producir.")
+    trace.add_argument("--force", action="store_true", help="Permite reemplazar artefactos existentes.")
     return parser
 
 
@@ -188,8 +218,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _write_captures((battle,), args.output, args.force)
 
         context_value = _load_mapping(args.context) if args.context else {}
-        seed, detector_context = _seed_from_context(context_value, args.command)
-        if args.detector == "ollama":
+        source_mode = "video" if args.command == "trace" else args.command
+        seed, detector_context = _seed_from_context(context_value, source_mode)
+        sample_fps: float | None = None
+        if args.command == "trace":
+            detector = OcrTraceDetector(context=detector_context)
+            source = OcrTraceFrameSource(path=args.trace)
+            total_frames = source.estimated_frame_count()
+            detector_label = "parser de traza OCR"
+        elif args.detector == "ollama":
             detector = OllamaVisionDetector(
                 model=args.model,
                 endpoint=args.ollama_url,
@@ -209,25 +246,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 min_confidence=args.ocr_min_confidence,
             )
             detector_label = "OCR local"
-        if args.command == "video":
-            source = VideoFrameSource(
-                path=args.video,
-                sample_fps=args.sample_fps,
-                max_frames=args.max_frames,
-            )
-            total_frames = source.estimated_frame_count()
-        else:
-            source = LiveFrameSource(
-                input_name=args.source,
-                backend=args.backend,
-                sample_fps=args.sample_fps,
-                max_frames=args.max_frames,
-            )
-            total_frames = args.max_frames
+        if args.command != "trace":
+            sample_fps = args.sample_fps
+            if args.command == "video":
+                source = VideoFrameSource(
+                    path=args.video,
+                    sample_fps=args.sample_fps,
+                    max_frames=args.max_frames,
+                )
+                total_frames = source.estimated_frame_count()
+            else:
+                source = LiveFrameSource(
+                    input_name=args.source,
+                    backend=args.backend,
+                    sample_fps=args.sample_fps,
+                    max_frames=args.max_frames,
+                )
+                total_frames = args.max_frames
         progress = _ProgressPrinter(
             total_frames,
             detector=detector_label,
-            sample_fps=args.sample_fps,
+            sample_fps=sample_fps,
         )
         progress.start()
         captures = ReplayCapturePipeline(source, detector, seed).capture(

@@ -127,6 +127,10 @@ Para instalar también el capturador OCR de Pokémon Champions:
 pip install -e "backend[dev,champions]"
 ```
 
+Las trazas guardadas con `--ocr-trace` se pueden reprocesar rápidamente con
+`champions-replay trace`, sin ejecutar FFmpeg ni OCR otra vez. El contexto
+acepta alias explícitos para traducir apodos de Pokémon a especies canónicas.
+
 Sin instalar dependencias externas se pueden ejecutar las pruebas del parser y
 repositorio porque usan `unittest` y `sqlite3` de la biblioteca estándar:
 

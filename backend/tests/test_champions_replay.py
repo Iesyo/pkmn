@@ -103,6 +103,23 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertEqual(len(accumulator.events), 1)
 
+    def test_accumulator_collapses_interleaved_hp_animation_frames(self) -> None:
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(kind="damage", timestamp_ms=1_000, slot="p2a", health="4/100"),
+                    BattleEvent(kind="damage", timestamp_ms=1_000, slot="p2b", health="69/100"),
+                    BattleEvent(kind="damage", timestamp_ms=1_500, slot="p2a", health="2/100"),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.slot, event.health) for event in accumulator.events],
+            [("p2a", "2/100"), ("p2b", "69/100")],
+        )
+
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [
             FramePacket(index=0, timestamp_ms=0, image=b"first"),
