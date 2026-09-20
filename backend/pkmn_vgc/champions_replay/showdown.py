@@ -27,15 +27,21 @@ def _selection_code(side: BattleSide) -> str:
     return "".join(indexes[:4])
 
 
-def _event_lines(event: BattleEvent, active: dict[str, str], side_names: dict[str, str]) -> list[str]:
+def _event_lines(
+    event: BattleEvent,
+    active: dict[str, str],
+    side_names: dict[str, str],
+    mega_formes: dict[tuple[str, str], str],
+) -> list[str]:
     if event.kind == "turn":
         return [f"|turn|{event.turn}"]
 
     if event.kind in {"switch", "drag"}:
         assert event.slot and event.species
         active[event.slot] = event.species
+        details_species = mega_formes.get((event.slot[:2], event.species), event.species)
         return [
-            f"|{event.kind}|{_identifier(event.slot, event.species)}|{event.species}, L50|{_health(event.health)}"
+            f"|{event.kind}|{_identifier(event.slot, event.species)}|{details_species}, L50|{_health(event.health)}"
         ]
 
     if event.kind == "move":
@@ -60,6 +66,7 @@ def _event_lines(event: BattleEvent, active: dict[str, str], side_names: dict[st
         assert event.slot and event.species and event.forme and event.value
         species = active.get(event.slot, event.species)
         identifier = _identifier(event.slot, species)
+        mega_formes[(event.slot[:2], event.species)] = event.forme
         return [
             f"|detailschange|{identifier}|{event.forme}, L50",
             f"|-mega|{identifier}|{event.species}|{event.value}",
@@ -105,9 +112,10 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     lines.extend(["|teampreview", "|start"])
 
     active: dict[str, str] = {}
+    mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
     for event in sorted(battle.events, key=lambda entry: (entry.timestamp_ms, entry.source_frame or -1)):
-        lines.extend(_event_lines(event, active, side_names))
+        lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")
 
