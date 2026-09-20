@@ -79,6 +79,7 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn('class="battle-log-data"', html)
         self.assertIn("|switch|p1a: Kleavor", html)
         self.assertIn("https://play.pokemonshowdown.com/js/replay-embed.js", html)
+        self.assertIn("upgrade-insecure-requests", html)
 
     def test_serializes_mega_evolution_as_a_permanent_forme_change(self) -> None:
         battle = self.capture()

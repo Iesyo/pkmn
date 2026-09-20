@@ -325,6 +325,7 @@ class ChampionsTextParser:
         }
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
+        self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
         self._visible_messages: set[str] = set()
         self._turn = 0
         self._command_visible = False
@@ -393,6 +394,56 @@ class ChampionsTextParser:
             if slot.startswith(side) and _text_key(active_species) == _text_key(species):
                 return slot
         return f"{side}a"
+
+    def _side_for_player(self, value: str) -> str | None:
+        player = _text_key(value)
+        if player and player == _text_key(self.context.p1_name):
+            return "p1"
+        if player and player == _text_key(self.context.p2_name):
+            return "p2"
+        return None
+
+    def _mark_slot_open(self, slot: str) -> None:
+        side = slot[:2]
+        if side in self._open_slots and slot not in self._open_slots[side]:
+            self._open_slots[side].append(slot)
+
+    def _announced_species(self, value: str, side: str) -> str | None:
+        # Champions sometimes appends a battle-only form in parentheses, e.g.
+        # ``Basculegion (Basculegion-M)``. The team context owns the canonical
+        # species/form that Showdown should receive.
+        candidate = re.sub(r"\s+\([^()]+\)\s*$", "", value.strip())
+        return self._resolve_species(candidate, side)
+
+    def _announced_switch(
+        self,
+        *,
+        side: str,
+        species: str,
+        confidence: float,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> tuple[BattleEvent, ...]:
+        slots = self._open_slots[side]
+        if not slots:
+            # Initial leads are placed from HUD geometry. A text announcement
+            # has no reliable doubles slot until a withdrawal or faint opens it.
+            return ()
+        slot = slots.pop(0)
+        if self._active.get(slot) == species:
+            return ()
+        self._active[slot] = species
+        self._health.pop(slot, None)
+        return (
+            BattleEvent(
+                kind="switch",
+                timestamp_ms=timestamp_ms,
+                confidence=confidence,
+                slot=slot,  # type: ignore[arg-type]
+                species=species,
+                source_frame=source_frame,
+            ),
+        )
 
     def _mega_event(
         self,
@@ -523,6 +574,7 @@ class ChampionsTextParser:
             "asleep",
             "woke up",
             "frozen",
+            "withdrew",
             "sent out",
             "go!",
             "tailwind",
@@ -562,6 +614,44 @@ class ChampionsTextParser:
     ) -> tuple[BattleEvent, ...]:
         cleaned = message.strip()
         lowered = cleaned.casefold()
+
+        withdrew = re.match(r"^(.*?)\s*withdrew\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
+        if withdrew:
+            side = self._side_for_player(withdrew.group(1))
+            species = self._announced_species(withdrew.group(2), side) if side else None
+            if side and species:
+                self._mark_slot_open(self._slot_for_species(species, side))
+                return ()
+
+        sent_out = re.match(r"^(.*?)\s*sent out\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
+        if sent_out:
+            side = self._side_for_player(sent_out.group(1))
+            # A doubles lead announcement contains two species but no dependable
+            # slot mapping. Replacement announcements contain exactly one.
+            if side and " and " not in sent_out.group(2).casefold():
+                species = self._announced_species(sent_out.group(2), side)
+                if species:
+                    return self._announced_switch(
+                        side=side,
+                        species=species,
+                        confidence=confidence,
+                        timestamp_ms=timestamp_ms,
+                        source_frame=source_frame,
+                    )
+            if side:
+                return ()
+
+        go = re.match(r"^Go!\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
+        if go:
+            species = self._announced_species(go.group(1), "p1")
+            if species:
+                return self._announced_switch(
+                    side="p1",
+                    species=species,
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                )
 
         mega_reaction = re.match(
             r"^(The opposing )?(.+?)[\'’]s (.+?) (?:is|i) reacting to .+?[\'’]s (?:Omni|Omi|Mega) Ring[!.]?$",
@@ -632,12 +722,14 @@ class ChampionsTextParser:
             species = self._resolve_species(faint_match.group(2), "p2" if opposing else "p1")
             if species:
                 side = self._side_for_species(species, opposing=opposing)
+                slot = self._slot_for_species(species, side)
+                self._mark_slot_open(slot)
                 return (
                     BattleEvent(
                         kind="faint",
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
-                        slot=self._slot_for_species(species, side),  # type: ignore[arg-type]
+                        slot=slot,  # type: ignore[arg-type]
                         species=species,
                         source_frame=source_frame,
                     ),
@@ -753,6 +845,9 @@ class ChampionsTextParser:
             previous_species = self._active.get(slot)
             if previous_species != species:
                 self._active[slot] = species
+                if slot in self._open_slots[slot[:2]]:
+                    self._open_slots[slot[:2]].remove(slot)
+                self._health.pop(slot, None)
                 changed_slots.add(slot)
                 if health:
                     self._health[slot] = health

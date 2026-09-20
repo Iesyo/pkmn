@@ -249,6 +249,58 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(detections.events[0].forme, "Gardevoir-Mega")
         self.assertEqual(detections.events[0].value, "Gardevoirite")
 
+    def test_uses_withdrawal_and_send_out_text_for_the_switch_timing(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="Hisagi-",
+                p1_team=("Basculegion",),
+                p2_team=("Armarouge", "Ninetales-Alola"),
+                p1_aliases=(("Revenant", "Basculegion"),),
+                p2_aliases=(("Ninetales", "Ninetales-Alola"),),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Basculegion", "Armarouge", "Ninetales-Alola"),
+                moves=("Wave Crash",),
+            ),
+        )
+        parser.parse(
+            (line("Armarouge", x=0.62, y=0.04),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        withdrew = parser.parse(
+            (line("Hisagi-withdrew Armarouge!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=163_500,
+            source_frame=328,
+        )
+        switched = parser.parse(
+            (line("Hisagi- sent out Ninetales!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=167_500,
+            source_frame=336,
+        )
+        moved = parser.parse(
+            (line("Revenant used Wave Crash!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=184_000,
+            source_frame=369,
+        )
+
+        self.assertEqual(withdrew.events, ())
+        self.assertEqual(
+            [(event.kind, event.slot, event.species) for event in switched.events],
+            [("switch", "p2a", "Ninetales-Alola")],
+        )
+        self.assertEqual(moved.events[0].kind, "move")
+        self.assertLess(switched.events[0].timestamp_ms, moved.events[0].timestamp_ms)
+
+        hud_confirmation = parser.parse(
+            (line("Ninetales", x=0.62, y=0.04),),
+            timestamp_ms=187_000,
+            source_frame=375,
+        )
+        self.assertEqual(hud_confirmation.events, ())
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         faint = parser.parse(

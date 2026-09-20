@@ -126,6 +126,7 @@ test("renders a reconstructed replay as safe Showdown-compatible HTML", async ()
 
   assert.match(html, /class="battle-log-data"/);
   assert.match(html, /replay-embed\.js/);
+  assert.match(html, /upgrade-insecure-requests/);
   assert.match(html, /Champions &lt;M-C&gt;: IesYo vs\. Rival/);
   assert.ok(html.includes("|message|<\\/script><script>alert(1)<\\/script>"));
   assert.ok(!html.includes("|message|</script><script>alert(1)</script>"));

@@ -152,6 +152,7 @@ export function renderShowdownReplayHtml(value: unknown, replayId = "champions-r
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests" />
   <title>${title}</title>
   <style>
     html,body{font-family:Verdana,sans-serif;font-size:10pt;margin:0;padding:0;background:#eef2f5}

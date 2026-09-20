@@ -134,6 +134,7 @@ def render_replay_html(document: ReplayDocument, *, replay_id: str = "champions-
     protocol = document.log.replace("/", r"\/")
     return f"""<!DOCTYPE html>
 <meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests" />
 <title>{title}</title>
 <style>
 html,body{{font-family:Verdana,sans-serif;font-size:10pt;margin:0;padding:0;background:#eef2f5}}
