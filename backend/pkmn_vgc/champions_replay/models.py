@@ -229,6 +229,7 @@ class FrameDetections:
     p2_selected: tuple[str, ...] = ()
     events: tuple[BattleEvent, ...] = ()
     winner: SideId | None = None
+    team_preview: bool = False
     battle_started: bool = False
     battle_complete: bool = False
 
@@ -253,6 +254,7 @@ class FrameDetections:
             p2_selected=_clean_species(selected.get("p2"))[:4],
             events=tuple(events),
             winner=winner if winner in {"p1", "p2"} else None,
+            team_preview=bool(value.get("team_preview")),
             battle_started=bool(value.get("battle_started")),
             battle_complete=bool(value.get("battle_complete")),
         )

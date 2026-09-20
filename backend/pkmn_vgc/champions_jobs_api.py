@@ -18,6 +18,11 @@ class CreateJobBody(BaseModel):
     context: dict[str, Any]
     sampleFps: float = Field(default=2.0, ge=0.25, le=10)
     maxBattles: int = Field(default=0, ge=0)
+    ocrWorkers: int = Field(default=2, ge=1, le=4)
+
+
+class RetryJobBody(BaseModel):
+    ocrWorkers: int | None = Field(default=None, ge=1, le=4)
 
 
 jobs = ChampionsJobManager(
@@ -64,6 +69,7 @@ def create_job(body: CreateJobBody) -> dict[str, object]:
                 context=body.context,
                 sample_fps=body.sampleFps,
                 max_battles=body.maxBattles,
+                ocr_workers=body.ocrWorkers,
             )
         }
     except Exception as error:
@@ -84,9 +90,14 @@ def get_job(job_id: str) -> dict[str, object]:
 
 
 @app.post("/jobs/{job_id}/retry")
-def retry_job(job_id: str) -> dict[str, object]:
+def retry_job(job_id: str, body: RetryJobBody | None = None) -> dict[str, object]:
     try:
-        return {"job": jobs.retry_job(job_id)}
+        return {
+            "job": jobs.retry_job(
+                job_id,
+                ocr_workers=body.ocrWorkers if body else None,
+            )
+        }
     except Exception as error:
         raise _http_error(error) from error
 

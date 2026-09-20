@@ -182,6 +182,106 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual(second.events[-1].turn, 1)
 
+    def test_team_preview_learns_nicknames_and_pick_order_without_fake_hp(self) -> None:
+        team = ("Blaziken", "Kingambit", "Basculegion", "Sylveon", "Torkoal", "Venusaur")
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=team),
+            catalog=ChampionsCatalog(species=team),
+        )
+        preview = parser.parse(
+            (
+                line("Roku", x=0.21, y=0.055),
+                line("Latte", x=0.79, y=0.055),
+                line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+                line("to send into battle.", x=0.38, y=0.215, width=0.16),
+                line("Tonatiuh", x=0.145, y=0.125),
+                line("Kingambit", x=0.145, y=0.24),
+                line("Revenant", x=0.145, y=0.36),
+                line("Nico", x=0.145, y=0.475),
+                line("Gridnel", x=0.145, y=0.59),
+                line("Venusaur", x=0.145, y=0.71),
+                line("1", x=0.125, y=0.125, width=0.02),
+                line("2", x=0.125, y=0.36, width=0.02),
+                line("4", x=0.125, y=0.475, width=0.02),
+                line("3", x=0.125, y=0.71, width=0.02),
+                line("4/4", x=0.17, y=0.83, width=0.04),
+            ),
+            timestamp_ms=45_500,
+            source_frame=91,
+        )
+        leads = parser.parse(
+            (
+                line(
+                    "Go! Tonatiuh and Revenant the Paldea Champion!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.55,
+                ),
+            ),
+            timestamp_ms=92_500,
+            source_frame=185,
+        )
+        hud = parser.parse(
+            (
+                line("Tonatiuh", x=0.12, y=0.63),
+                line("Revenant", x=0.34, y=0.63),
+                line("180/180", x=0.17, y=0.70),
+                line("198/198", x=0.39, y=0.70),
+            ),
+            timestamp_ms=93_000,
+            source_frame=186,
+        )
+
+        self.assertTrue(preview.team_preview)
+        self.assertFalse(preview.battle_started)
+        self.assertEqual(preview.events, ())
+        self.assertEqual(preview.p1_name, "Roku")
+        self.assertEqual(preview.p2_name, "Latte")
+        self.assertEqual(
+            preview.p1_selected,
+            ("Blaziken", "Basculegion", "Venusaur", "Sylveon"),
+        )
+        self.assertEqual(leads.events, ())
+        self.assertEqual(
+            [(event.slot, event.species) for event in hud.events],
+            [("p1a", "Blaziken"), ("p1b", "Basculegion")],
+        )
+
+    def test_mega_stone_reveals_an_unknown_opponent_nickname_and_slot(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Rival"),
+            catalog=ChampionsCatalog(
+                species=("Metagross", "Metagross-Mega"),
+                mega_stones=(("Metagrossite", "Metagross", "Metagross-Mega"),),
+            ),
+        )
+        opening = parser.parse(
+            (line("Rival sent out Helper and Sensei!", x=0.15, y=0.72, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+        revealed = parser.parse(
+            (
+                line(
+                    "The opposing Sensei's Metagrossite is reacting to Rival's Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.7,
+                ),
+            ),
+            timestamp_ms=2_000,
+            source_frame=4,
+        )
+
+        self.assertEqual(opening.events, ())
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.forme) for event in revealed.events],
+            [
+                ("switch", "p2b", "Metagross", None),
+                ("mega", "p2b", "Metagross", "Metagross-Mega"),
+            ],
+        )
+
     def test_ignores_small_top_notification_that_contains_result_words(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)

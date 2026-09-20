@@ -42,6 +42,7 @@ def _default_processor(
     output_directory: Path,
     sample_fps: float,
     max_battles: int,
+    ocr_workers: int,
     on_progress: Callable[[CaptureProgress], None],
     on_warning: Callable[[str], None],
 ) -> tuple[ReplayDocument, ...]:
@@ -58,6 +59,7 @@ def _default_processor(
         total_frames=source.estimated_frame_count(),
         on_progress=on_progress,
         on_warning=on_warning,
+        ocr_workers=ocr_workers,
     )
     return tuple(build_replay_document(capture) for capture in captures)
 
@@ -68,6 +70,7 @@ Processor = Callable[
         Mapping[str, Any],
         Path,
         float,
+        int,
         int,
         Callable[[CaptureProgress], None],
         Callable[[str], None],
@@ -105,6 +108,7 @@ class ChampionsJobManager:
                 continue
             if not isinstance(value, dict) or value.get("id") != metadata_path.parent.name:
                 continue
+            value.setdefault("ocr_workers", 2)
             part_path = metadata_path.parent / "upload.part"
             source_path = metadata_path.parent / str(value.get("source_path") or "")
             if part_path.is_file():
@@ -139,6 +143,7 @@ class ChampionsJobManager:
         context: Mapping[str, Any],
         sample_fps: float = 2.0,
         max_battles: int = 0,
+        ocr_workers: int = 2,
     ) -> dict[str, Any]:
         safe_filename, suffix = _safe_filename(filename)
         if size_bytes < 1:
@@ -154,6 +159,8 @@ class ChampionsJobManager:
             raise ValueError("sample_fps debe estar entre 0.25 y 10.")
         if max_battles < 0:
             raise ValueError("max_battles no puede ser negativo; usa 0 para procesar todas.")
+        if not 1 <= ocr_workers <= 4:
+            raise ValueError("ocr_workers debe estar entre 1 y 4.")
 
         job_id = uuid4().hex[:16]
         created_at = _now()
@@ -169,6 +176,7 @@ class ChampionsJobManager:
             "context": dict(context),
             "sample_fps": sample_fps,
             "max_battles": max_battles,
+            "ocr_workers": ocr_workers,
             "processed_frames": 0,
             "total_frames": None,
             "elapsed_seconds": 0.0,
@@ -242,15 +250,19 @@ class ChampionsJobManager:
         with self._lock:
             return self._public(self._require(job_id))
 
-    def retry_job(self, job_id: str) -> dict[str, Any]:
+    def retry_job(self, job_id: str, *, ocr_workers: int | None = None) -> dict[str, Any]:
         """Reutiliza el vídeo ya cargado para repetir sólo el análisis."""
 
         with self._lock:
             job = self._require(job_id)
-            if job["status"] != "error":
-                raise ValueError("Sólo se puede reintentar un análisis que terminó con error.")
+            if job["status"] not in {"error", "ready"}:
+                raise ValueError("Sólo se puede reanalizar un trabajo terminado.")
             if not self._source_path(job).is_file():
                 raise ValueError("El vídeo original ya no está disponible en la ROG.")
+            if ocr_workers is not None:
+                if not 1 <= ocr_workers <= 4:
+                    raise ValueError("ocr_workers debe estar entre 1 y 4.")
+                job["ocr_workers"] = ocr_workers
             job["status"] = "queued"
             job["stage"] = "Esperando turno"
             job["error"] = None
@@ -313,6 +325,7 @@ class ChampionsJobManager:
             context = dict(job["context"])
             sample_fps = float(job["sample_fps"])
             max_battles = int(job["max_battles"])
+            ocr_workers = int(job.get("ocr_workers") or 2)
             output_directory = self._job_directory(job_id) / "output"
             output_directory.mkdir(exist_ok=True)
 
@@ -333,6 +346,7 @@ class ChampionsJobManager:
                 output_directory,
                 sample_fps,
                 max_battles,
+                ocr_workers,
                 on_progress,
                 on_warning,
             )
@@ -415,6 +429,7 @@ class ChampionsJobManager:
             "eventsDetected": job.get("events_detected") or 0,
             "battlesDetected": job.get("battles_detected") or 0,
             "skippedFrames": job.get("skipped_frames") or 0,
+            "ocrWorkers": int(job.get("ocr_workers") or 2),
             "warnings": list(job.get("warnings") or []),
             "replayCount": len(job.get("replay_files") or []),
             "error": job.get("error"),

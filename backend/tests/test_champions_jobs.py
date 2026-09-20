@@ -16,6 +16,7 @@ def fake_processor(
     _output_directory: Path,
     _sample_fps: float,
     _max_battles: int,
+    _ocr_workers: int,
     on_progress: object,
     _on_warning: object,
 ) -> tuple[ReplayDocument, ...]:
@@ -64,6 +65,7 @@ class ChampionsJobTests(unittest.TestCase):
             self.assertEqual(completed["status"], "ready")
             self.assertEqual(completed["replayCount"], 2)
             self.assertEqual(completed["battlesDetected"], 2)
+            self.assertEqual(completed["ocrWorkers"], 2)
             self.assertEqual(manager.replay_document(job["id"], 1)["p2"], "Rival A")
             self.assertEqual(manager.replay_document(job["id"], 2)["p2"], "Rival B")
             self.assertTrue((Path(directory) / job["id"] / "output" / "replay-001.html").is_file())
@@ -149,7 +151,7 @@ class ChampionsJobTests(unittest.TestCase):
                 failed = manager.get_job(job["id"])
             self.assertEqual(failed["status"], "error")
 
-            retried = manager.retry_job(job["id"])
+            retried = manager.retry_job(job["id"], ocr_workers=4)
             self.assertEqual(retried["status"], "queued")
             deadline = time.monotonic() + 2
             completed = manager.get_job(job["id"])
@@ -159,7 +161,32 @@ class ChampionsJobTests(unittest.TestCase):
 
             self.assertEqual(completed["status"], "ready")
             self.assertEqual(completed["uploadedBytes"], 5)
+            self.assertEqual(completed["ocrWorkers"], 4)
             self.assertEqual(attempts, 2)
+            manager.close(wait=True)
+
+    def test_reanalyzes_a_ready_job_without_uploading_again(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ChampionsJobManager(Path(directory), processor=fake_processor)
+            job = manager.create_job(
+                filename="two-battles.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(job["id"], offset=0, data=b"video")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(job["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(job["id"])
+            self.assertEqual(completed["status"], "ready")
+
+            queued = manager.retry_job(job["id"], ocr_workers=1)
+
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(queued["uploadedBytes"], 5)
+            self.assertEqual(queued["ocrWorkers"], 1)
             manager.close(wait=True)
 
 

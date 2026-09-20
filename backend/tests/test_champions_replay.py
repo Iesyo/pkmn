@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -314,7 +315,100 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertEqual([capture.winner for capture in captures], ["p1", "p2"])
         self.assertEqual([len(capture.events) for capture in captures], [1, 1])
-        self.assertEqual(detector.reset_count, 3)
+        self.assertEqual(detector.reset_count, 2)
+
+    def test_pipeline_keeps_the_next_team_preview_while_waiting_for_battle_start(self) -> None:
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(6)
+        ]
+        detections = {
+            0: FrameDetections(
+                p1_selected=("Kleavor", "Pelipper", "Venusaur", "Sinistcha"),
+                team_preview=True,
+            ),
+            1: FrameDetections(
+                events=(BattleEvent(kind="turn", timestamp_ms=1_000, turn=1),),
+                battle_started=True,
+            ),
+            2: FrameDetections(winner="p1", battle_complete=True),
+            3: FrameDetections(
+                p1_selected=("Archaludon", "Luxray", "Pelipper", "Kleavor"),
+                team_preview=True,
+            ),
+            4: FrameDetections(
+                events=(BattleEvent(kind="turn", timestamp_ms=4_000, turn=1),),
+                battle_started=True,
+            ),
+            5: FrameDetections(winner="p2", battle_complete=True),
+        }
+
+        class PreviewSequenceDetector:
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                return detections[frame.index]
+
+            def reset_battle_state(self) -> None:
+                return None
+
+        captures = ReplayCapturePipeline(
+            frames,
+            PreviewSequenceDetector(),
+            CaptureSeed(
+                p1_team=("Kleavor", "Pelipper", "Venusaur", "Sinistcha", "Archaludon", "Luxray"),
+                p2_team=("Miraidon",),
+            ),
+        ).capture(max_battles=0)
+
+        self.assertEqual(len(captures), 2)
+        self.assertEqual(
+            [capture.p1.selected for capture in captures],
+            [
+                ("Kleavor", "Pelipper", "Venusaur", "Sinistcha"),
+                ("Archaludon", "Luxray", "Pelipper", "Kleavor"),
+            ],
+        )
+
+    def test_parallel_ocr_is_parsed_in_frame_order(self) -> None:
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(4)
+        ]
+
+        class ParallelDetector:
+            def __init__(self) -> None:
+                self.parsed: list[int] = []
+                self.threads: set[int] = set()
+
+            def prepare(self, frame: FramePacket) -> int:
+                self.threads.add(threading.get_ident())
+                if frame.index == 0:
+                    time.sleep(0.03)
+                return frame.index
+
+            def parse_prepared(self, index: int) -> FrameDetections:
+                self.parsed.append(index)
+                if index == 0:
+                    return FrameDetections(
+                        events=(BattleEvent(kind="turn", timestamp_ms=0, turn=1),),
+                        battle_started=True,
+                    )
+                if index == 3:
+                    return FrameDetections(winner="p1", battle_complete=True)
+                return FrameDetections(battle_started=True)
+
+            def detect(self, _frame: FramePacket) -> FrameDetections:
+                raise AssertionError("El camino secuencial no debe usarse.")
+
+        detector = ParallelDetector()
+        captures = ReplayCapturePipeline(
+            frames,
+            detector,
+            CaptureSeed(p1_team=("Kleavor",), p2_team=("Miraidon",)),
+        ).capture(ocr_workers=2, ocr_buffer_size=2)
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(detector.parsed, [0, 1, 2, 3])
+        self.assertGreaterEqual(len(detector.threads), 2)
 
     def test_pipeline_discards_a_false_notification_result_and_keeps_scanning(self) -> None:
         frames = [

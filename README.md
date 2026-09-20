@@ -18,14 +18,15 @@ histórico de equipos de Pokémon VGC.
 - Los replays reconstruidos de Champions quedan ligados a la partida y se
   abren desde el historial en una pestaña nueva con el visor de Showdown.
 - Traductor Pokémon Champions → replay Showdown: acepta vídeo o captura live de
-  OBS mediante FFmpeg, usa OCR local como detector rápido y genera JSON, log y
-  HTML consumibles por Teams/Comparación. Ollama queda como fallback opcional.
+  OBS mediante FFmpeg, usa OCR local paralelo y ordenado para vídeo, aprende
+  nicknames del Team Preview y genera JSON, log y HTML consumibles por
+  Teams/Comparación. Ollama queda como fallback opcional.
 - Teams permite subir grabaciones Champions desde otra computadora de la misma
   red. La ROG recibe el archivo en fragmentos reanudables, lo procesa en una
   cola local persistente y presenta cada batalla detectada para revisión antes
   de guardarla en el historial. Las grabaciones móviles se orientan mediante el
-  HUD, ignoran notificaciones pasajeras y pueden reanalizarse sin volver a subir
-  el archivo.
+  HUD, ignoran notificaciones pasajeras y pueden reanalizarse —incluso después
+  de quedar listas— sin volver a subir el archivo.
 - Best/Worst Matchups y Highest/Lowest Attendance calculados por Pokémon rival.
 - Historial vinculado a la versión exacta del equipo.
 - War Room separado de Scouting para auditar un Team contra M-C, preparar los

@@ -3,13 +3,14 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 from .detector import DetectionError, DetectorContext
 from .models import BattleEvent, FrameDetections
@@ -56,6 +57,14 @@ class OcrLine:
             right=max(0.0, min(1.0, float(value.get("right", 0)))),
             bottom=max(0.0, min(1.0, float(value.get("bottom", 0)))),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedOcrFrame:
+    frame: FramePacket
+    lines: tuple[OcrLine, ...]
+    elapsed_ms: int
+    rotation_degrees: int
 
 
 class OcrEngine(Protocol):
@@ -392,6 +401,10 @@ class ChampionsTextParser:
         }
         self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
         self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
+        self._configured_aliases = {
+            side: dict(values)
+            for side, values in self._aliases.items()
+        }
         self._moves = _NameMatcher(self.catalog.moves)
         self._abilities = _NameMatcher(self.catalog.abilities)
         self._mega_stones = {
@@ -409,6 +422,13 @@ class ChampionsTextParser:
 
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
+        self._player_names = {
+            "p1": self.context.p1_name,
+            "p2": self.context.p2_name,
+        }
+        self._announced_slots: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
+        self._preview_ranks: dict[int, str] = {}
+        self._preview_count = 0
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
         self._visible_messages: set[str] = set()
         self._visible_abilities: set[tuple[str, str, str]] = set()
@@ -452,9 +472,21 @@ class ChampionsTextParser:
 
     def _resolve_species(self, value: str, side: str | None = None) -> str | None:
         if side in self._side_species:
-            alias = self._aliases[side].get(_text_key(value))
+            value_key = _text_key(value)
+            alias = self._aliases[side].get(value_key)
             if alias:
                 return alias
+            if len(value_key) >= 4:
+                fuzzy_alias = max(
+                    (
+                        (SequenceMatcher(None, value_key, alias_key).ratio(), species)
+                        for alias_key, species in self._aliases[side].items()
+                        if abs(len(alias_key) - len(value_key)) <= max(3, len(value_key) // 2)
+                    ),
+                    default=(0.0, ""),
+                )
+                if fuzzy_alias[0] >= 0.74:
+                    return fuzzy_alias[1]
             resolved = self._side_species[side].resolve(
                 value,
                 allow_fuzzy=self._known_teams[side],
@@ -485,11 +517,40 @@ class ChampionsTextParser:
 
     def _side_for_player(self, value: str) -> str | None:
         player = _text_key(value)
-        if player and player == _text_key(self.context.p1_name):
+        if player and player == _text_key(self._player_names["p1"]):
             return "p1"
-        if player and player == _text_key(self.context.p2_name):
+        if player and player == _text_key(self._player_names["p2"]):
             return "p2"
         return None
+
+    def _announced_slot(self, side: str, value: str) -> str | None:
+        value_key = _text_key(value)
+        exact = self._announced_slots[side].get(value_key)
+        if exact:
+            return exact
+        if len(value_key) < 4:
+            return None
+        score, slot = max(
+            (
+                (SequenceMatcher(None, value_key, alias_key).ratio(), candidate_slot)
+                for alias_key, candidate_slot in self._announced_slots[side].items()
+            ),
+            default=(0.0, ""),
+        )
+        return slot if score >= 0.64 else None
+
+    def _bind_alias(self, side: str, value: str, species: str) -> tuple[str | None, bool]:
+        """Aprende un nickname cuando el juego revela después su especie."""
+
+        key = _text_key(value)
+        if key:
+            self._aliases[side][key] = species
+        slot = self._announced_slot(side, value)
+        changed = bool(slot and self._active.get(slot) != species)
+        if slot:
+            self._active[slot] = species
+            self._health.pop(slot, None)
+        return slot, changed
 
     def _mark_slot_open(self, slot: str) -> None:
         side = slot[:2]
@@ -501,7 +562,19 @@ class ChampionsTextParser:
         # ``Basculegion (Basculegion-M)``. The team context owns the canonical
         # species/form that Showdown should receive.
         candidate = re.sub(r"\s+\([^()]+\)\s*$", "", value.strip())
-        return self._resolve_species(candidate, side)
+        resolved = self._resolve_species(candidate, side)
+        if resolved:
+            return resolved
+        candidate_key = _text_key(candidate)
+        named_values = {
+            **{_text_key(species): species for species in self.context.p1_team if side == "p1"},
+            **{_text_key(species): species for species in self.context.p2_team if side == "p2"},
+            **self._aliases[side],
+        }
+        for name_key, species in sorted(named_values.items(), key=lambda item: len(item[0]), reverse=True):
+            if candidate_key.startswith(f"{name_key}the"):
+                return species
+        return None
 
     def _announced_switch(
         self,
@@ -727,6 +800,100 @@ class ChampionsTextParser:
             ),
         )
 
+    @staticmethod
+    def _is_team_preview(lines: Sequence[OcrLine]) -> bool:
+        keys = {_text_key(line.text) for line in lines}
+        return any(key.startswith("select4pokemon") for key in keys) and any(
+            "sendintobattle" in key for key in keys
+        )
+
+    def _preview_detections(self, lines: Sequence[OcrLine]) -> FrameDetections:
+        """Lee nicknames, jugadores y orden de picks del selector 4/6.
+
+        Champions coloca las seis filas propias siempre en las mismas bandas.
+        Asociarlas con el Team conocido evita depender de que el HUD muestre la
+        especie en lugar del nickname durante la batalla.
+        """
+
+        row_centers = (0.145, 0.26, 0.38, 0.495, 0.61, 0.73)
+        roster = self.context.p1_team[:6]
+        for index, center_y in enumerate(row_centers[: len(roster)]):
+            label = min(
+                (
+                    line
+                    for line in lines
+                    if 0.09 <= line.center_x <= 0.25
+                    and abs(line.center_y - center_y) <= 0.04
+                    and not re.fullmatch(r"[0-4]", line.text.strip())
+                    and not re.fullmatch(r"[0-4]\s*/\s*4", line.text.strip())
+                ),
+                key=lambda line: abs(line.center_y - center_y),
+                default=None,
+            )
+            if label is None:
+                continue
+            self._bind_alias("p1", label.text, roster[index])
+
+        count = next(
+            (
+                int(match.group(1))
+                for line in lines
+                if (match := re.fullmatch(r"([0-4])\s*/\s*4", line.text.strip()))
+            ),
+            self._preview_count,
+        )
+        if count < self._preview_count or count == 0:
+            self._preview_ranks.clear()
+        self._preview_count = count
+
+        for line in lines:
+            rank_match = re.fullmatch(r"([1-4])", line.text.strip())
+            if not rank_match or not 0.08 <= line.center_x <= 0.17:
+                continue
+            row_index = min(
+                range(len(row_centers)),
+                key=lambda index: abs(line.center_y - row_centers[index]),
+            )
+            if row_index >= len(roster) or abs(line.center_y - row_centers[row_index]) > 0.05:
+                continue
+            self._preview_ranks[int(rank_match.group(1))] = roster[row_index]
+
+        selected = tuple(
+            self._preview_ranks[rank]
+            for rank in sorted(self._preview_ranks)
+            if rank <= count and rank in self._preview_ranks
+        )
+
+        p1_name = min(
+            (
+                line.text
+                for line in lines
+                if 0.15 <= line.center_x <= 0.4 and 0.035 <= line.center_y <= 0.12
+            ),
+            key=len,
+            default=self._player_names["p1"],
+        )
+        p2_name = min(
+            (
+                line.text
+                for line in lines
+                if 0.65 <= line.center_x <= 0.92 and 0.035 <= line.center_y <= 0.12
+            ),
+            key=len,
+            default=self._player_names["p2"],
+        )
+        if _text_key(p2_name) != _text_key(self._player_names["p2"]):
+            self._aliases["p2"] = dict(self._configured_aliases["p2"])
+        self._player_names.update({"p1": p1_name, "p2": p2_name})
+
+        return FrameDetections(
+            p1_name=p1_name,
+            p2_name=p2_name,
+            p1_team=tuple(roster),
+            p1_selected=selected,
+            team_preview=True,
+        )
+
     def _hud_species(self, lines: Sequence[OcrLine], side: str) -> list[tuple[str, OcrLine]]:
         if side == "p1":
             candidates = [line for line in lines if line.center_y >= 0.55]
@@ -841,6 +1008,28 @@ class ChampionsTextParser:
                 messages.append(line)
         return sorted(messages, key=lambda line: (line.top, line.left))
 
+    def _lead_announcement_events(
+        self,
+        *,
+        side: str,
+        value: str,
+        confidence: float,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> tuple[BattleEvent, ...]:
+        actors = [part.strip() for part in re.split(r"\s+and\s+", value, flags=re.IGNORECASE)]
+        if len(actors) != 2:
+            return ()
+        for index, actor in enumerate(actors):
+            slot = f"{side}{'ab'[index]}"
+            actor_key = _text_key(actor)
+            if actor_key:
+                self._announced_slots[side][actor_key] = slot
+        # El orden del anuncio de p2 no coincide siempre con la geometría del
+        # HUD local. Guardamos los nicknames para inferencias posteriores y
+        # dejamos que las barras de HP asignen los slots visibles.
+        return ()
+
     def _message_event(
         self,
         message: str,
@@ -889,9 +1078,19 @@ class ChampionsTextParser:
         sent_out = re.match(r"^(.*?)\s*sent out\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if sent_out:
             side = self._side_for_player(sent_out.group(1))
+            if side:
+                self._battle_open = True
             # A doubles lead announcement contains two species but no dependable
-            # slot mapping. Replacement announcements contain exactly one.
-            if side and " and " not in sent_out.group(2).casefold():
+            # slot mapping unless both names are kept in their displayed order.
+            if side and " and " in sent_out.group(2).casefold():
+                return self._lead_announcement_events(
+                    side=side,
+                    value=sent_out.group(2),
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                )
+            if side:
                 species = self._announced_species(sent_out.group(2), side)
                 if species:
                     return self._announced_switch(
@@ -901,11 +1100,22 @@ class ChampionsTextParser:
                         timestamp_ms=timestamp_ms,
                         source_frame=source_frame,
                     )
-            if side:
+                slots = self._open_slots[side]
+                if slots:
+                    self._announced_slots[side][_text_key(sent_out.group(2))] = slots[0]
                 return ()
 
         go = re.match(r"^Go!\s*(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if go:
+            self._battle_open = True
+            if " and " in go.group(1).casefold():
+                return self._lead_announcement_events(
+                    side="p1",
+                    value=go.group(1),
+                    confidence=confidence,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                )
             species = self._announced_species(go.group(1), "p1")
             if species:
                 return self._announced_switch(
@@ -924,9 +1134,26 @@ class ChampionsTextParser:
         if mega_reaction:
             opposing = bool(mega_reaction.group(1))
             side = "p2" if opposing else "p1"
-            actor = self._resolve_species(mega_reaction.group(2), side)
+            actor_raw = mega_reaction.group(2)
+            actor = self._resolve_species(actor_raw, side)
+            mega = self._mega_stones.get(_text_key(mega_reaction.group(3)))
+            learned_switch: tuple[BattleEvent, ...] = ()
+            if actor is None and mega is not None:
+                actor = mega[1]
+                slot, changed = self._bind_alias(side, actor_raw, actor)
+                if slot and changed:
+                    learned_switch = (
+                        BattleEvent(
+                            kind="switch",
+                            timestamp_ms=timestamp_ms,
+                            confidence=confidence,
+                            slot=slot,  # type: ignore[arg-type]
+                            species=actor,
+                            source_frame=source_frame,
+                        ),
+                    )
             if actor:
-                return self._mega_event(
+                return learned_switch + self._mega_event(
                     actor=actor,
                     side=side,
                     item=mega_reaction.group(3),
@@ -943,16 +1170,42 @@ class ChampionsTextParser:
         if mega_evolved:
             opposing = bool(mega_evolved.group(1))
             side = "p2" if opposing else "p1"
-            actor = self._resolve_species(mega_evolved.group(2), side)
+            actor_raw = mega_evolved.group(2)
+            actor = self._resolve_species(actor_raw, side)
+            announced_forme = mega_evolved.group(3)
+            learned_switch: tuple[BattleEvent, ...] = ()
+            if actor is None:
+                normalized_forme = announced_forme.strip()
+                if not normalized_forme.casefold().startswith("mega "):
+                    normalized_forme = f"Mega {normalized_forme}"
+                words = normalized_forme.split()
+                suffix = words[-1] if words and words[-1] in {"X", "Y", "Z"} else None
+                base_words = words[1:-1] if suffix else words[1:]
+                candidate = f"{' '.join(base_words)}-Mega{f'-{suffix}' if suffix else ''}"
+                mega = self._mega_formes.get(_text_key(candidate))
+                if mega is not None:
+                    actor = mega[1]
+                    slot, changed = self._bind_alias(side, actor_raw, actor)
+                    if slot and changed:
+                        learned_switch = (
+                            BattleEvent(
+                                kind="switch",
+                                timestamp_ms=timestamp_ms,
+                                confidence=confidence,
+                                slot=slot,  # type: ignore[arg-type]
+                                species=actor,
+                                source_frame=source_frame,
+                            ),
+                        )
             if actor:
-                return self._mega_event(
+                return learned_switch + self._mega_event(
                     actor=actor,
                     side=side,
                     item="",
                     confidence=confidence,
                     timestamp_ms=timestamp_ms,
                     source_frame=source_frame,
-                    announced_forme=mega_evolved.group(3),
+                    announced_forme=announced_forme,
                 )
 
         move_match = re.match(r"^(The opposing )?(.+?) used (.+?)[!.]?$", cleaned, re.IGNORECASE)
@@ -1100,6 +1353,9 @@ class ChampionsTextParser:
         timestamp_ms: int,
         source_frame: int,
     ) -> FrameDetections:
+        if self._is_team_preview(lines):
+            return self._preview_detections(lines)
+
         events: list[BattleEvent] = []
         observations = self._hud_observations(lines)
         changed_slots: set[str] = set()
@@ -1260,14 +1516,52 @@ class ChampionsOcrDetector:
         engine: OcrEngine | None = None,
         trace_path: Path | None = None,
         min_confidence: float = 0.5,
+        engine_factory: Callable[[], OcrEngine] | None = None,
     ) -> None:
-        self.engine = engine or RapidOcrEngine(min_confidence=min_confidence)
+        if engine is not None:
+            self.engine = engine
+        elif engine_factory is not None:
+            self.engine = engine_factory()
+        else:
+            self.engine = RapidOcrEngine(min_confidence=min_confidence)
+        self._engine_factory = engine_factory
+        if engine is None and engine_factory is None:
+            self._engine_factory = lambda: RapidOcrEngine(min_confidence=min_confidence)
+        self.supports_parallel = callable(self._engine_factory)
+        self._worker_engines = threading.local()
+        self._engine_claim_lock = threading.Lock()
+        self._primary_engine_claimed = False
         self.parser = ChampionsTextParser(context=context)
         self.trace_path = trace_path
 
-    def detect(self, frame: FramePacket) -> FrameDetections:
+    @staticmethod
+    def _read_frame(engine: OcrEngine, frame: FramePacket) -> PreparedOcrFrame:
         started = time.monotonic()
-        lines = self.engine.read(frame.image)
+        lines = engine.read(frame.image)
+        return PreparedOcrFrame(
+            frame=frame,
+            lines=lines,
+            elapsed_ms=round((time.monotonic() - started) * 1_000),
+            rotation_degrees=int(getattr(engine, "rotation_quarter_turns", 0)) * 90,
+        )
+
+    def prepare(self, frame: FramePacket) -> PreparedOcrFrame:
+        """Ejecuta sólo OCR; es seguro llamarlo desde workers independientes."""
+
+        engine = getattr(self._worker_engines, "engine", None)
+        if engine is None:
+            with self._engine_claim_lock:
+                if not self._primary_engine_claimed:
+                    engine = self.engine
+                    self._primary_engine_claimed = True
+                else:
+                    engine = self._engine_factory() if callable(self._engine_factory) else self.engine
+            self._worker_engines.engine = engine
+        return self._read_frame(engine, frame)
+
+    def parse_prepared(self, prepared: PreparedOcrFrame) -> FrameDetections:
+        frame = prepared.frame
+        lines = prepared.lines
         detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,
@@ -1278,10 +1572,11 @@ class ChampionsOcrDetector:
             record: dict[str, Any] = {
                 "frame": frame.index + 1,
                 "timestamp_ms": frame.timestamp_ms,
-                "elapsed_ms": round((time.monotonic() - started) * 1_000),
-                "rotation_degrees": int(getattr(self.engine, "rotation_quarter_turns", 0)) * 90,
+                "elapsed_ms": prepared.elapsed_ms,
+                "rotation_degrees": prepared.rotation_degrees,
                 "ocr": [asdict(line) for line in lines],
                 "detections": {
+                    "team_preview": detections.team_preview,
                     "battle_started": detections.battle_started,
                     "battle_complete": detections.battle_complete,
                     "winner": detections.winner,
@@ -1291,6 +1586,9 @@ class ChampionsOcrDetector:
             with self.trace_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         return detections
+
+    def detect(self, frame: FramePacket) -> FrameDetections:
+        return self.parse_prepared(self._read_frame(self.engine, frame))
 
     def reset_battle_state(self) -> None:
         self.parser.reset_battle_state()

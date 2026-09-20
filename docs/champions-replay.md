@@ -25,7 +25,8 @@ flowchart TD
   el Pokédex incluido y produce eventos deterministas.
 - `VideoFrameSource` procesa grabaciones a una frecuencia configurable. La
   entrada puede ser 60 FPS; no es necesario analizar los 60 frames de cada
-  segundo.
+  segundo. En vídeo, dos workers ejecutan RapidOCR en paralelo con un buffer
+  acotado y el parser consume siempre los resultados en orden de frame.
 - `LiveFrameSource` lee OBS Virtual Camera mediante FFmpeg y conserva sólo el
   frame más reciente. Si el OCR tarda, descarta imágenes viejas en vez de
   acumular retraso.
@@ -64,17 +65,22 @@ queda en `data/champions-jobs` con estos estados:
 3. **Analizando vídeo** con frames, ETA, eventos y batallas detectadas;
 4. **Replays listos** o **Error**.
 
-La cola procesa un vídeo a la vez para no saturar la ROG. Usa 2 FPS y detecta
-todas las batallas; un vídeo con varias genera `replay-001.*`, `replay-002.*`,
-etc. La versión seleccionada aporta el Team propio y sus alias, mientras el
-rival se reconstruye desde lo visible. Cada resultado vuelve al formulario de
+La cola procesa un vídeo a la vez para no saturar la ROG. Usa 2 FPS, dos
+workers OCR por defecto y detecta todas las batallas; un vídeo con varias
+genera `replay-001.*`, `replay-002.*`, etc. La interfaz permite elegir 1×, 2×
+o 4×; 2× es el equilibrio recomendado para evitar sobresuscribir ONNX Runtime.
+La versión seleccionada aporta el Team propio y sus alias, mientras el rival
+se reconstruye desde lo visible. Cada resultado vuelve al formulario de
 revisión y no entra al historial hasta que el usuario lo confirma.
 
 Las grabaciones móviles verticales se orientan a partir del HUD de Champions,
 no del primer texto legible: una notificación del sistema o de WhatsApp no fija
 la rotación del vídeo. Los overlays pasajeros y los falsos cierres sin una
-batalla reconstruible se descartan y el análisis continúa. Si un trabajo ya
-cargado termina en **Error**, **Reintentar análisis** reutiliza el archivo
+batalla reconstruible se descartan y el análisis continúa. El Team Preview
+4/6 se reconoce como una etapa propia: su contador no se confunde con HP, el
+orden 1–4 se conserva y los nicknames propios se asocian con el Team conocido
+por la posición de cada fila. Tanto **Reintentar análisis** tras un error como
+**Reanalizar vídeo** sobre un resultado existente reutilizan el archivo
 guardado en la ROG sin transferirlo nuevamente.
 
 El servicio Python sólo escucha en loopback. La ruta web actúa como proxy de
@@ -150,13 +156,16 @@ Ejecución completa:
   --context ".\captures\champions-context.json" `
   --output ".\replays\champions-real-001" `
   --ocr-trace ".\replays\champions-real-001.trace.jsonl" `
+  --ocr-workers 2 `
   --force
 ```
 
 El comando calcula con `ffprobe` cuántos frames analizará y muestra porcentaje,
-tiempo transcurrido, ETA, batallas terminadas, eventos detectados y frames omitidos. Por defecto
-analiza 2 FPS aunque el vídeo sea 60 FPS. Puede bajarse a `--sample-fps 1` en
-una CPU lenta; subirlo aumenta sensibilidad y costo casi linealmente.
+tiempo transcurrido, ETA, batallas terminadas, eventos detectados y frames
+omitidos. Por defecto analiza 2 FPS aunque el vídeo sea 60 FPS y usa dos
+workers OCR. `--ocr-workers 1`, `2` o `4` controla el paralelismo sin cambiar
+el orden de eventos. Puede bajarse a `--sample-fps 1` en una CPU lenta; subirlo
+aumenta sensibilidad y costo casi linealmente.
 
 Si una grabación contiene varias batallas, `--max-battles 0` procesa el vídeo
 completo y genera un juego de artefactos por cada una. Los archivos se numeran
@@ -195,12 +204,15 @@ vídeo:
   --force
 ```
 
-`aliases` traduce apodos visibles a especies canónicas. Es deliberadamente
-explícito: el parser no adivina que un apodo parecido a una especie pertenece a
-esa especie. Las formas también deben declararse con su nombre de Showdown, por
-ejemplo `Indeedee-F`; el OCR puede leer `Indeedee`, pero el Team conocido
-conserva automáticamente la forma correcta. Si el Team del rival lleva la
-hembra, debe aparecer como `"Indeedee-F"` en `teams.p2`, no como `"Indeedee"`.
+`aliases` traduce apodos visibles a especies canónicas. El Team Preview aprende
+automáticamente los nicknames propios por la posición de las seis filas; los
+alias que no aparezcan allí siguen siendo explícitos. Una Mega Stone también
+puede revelar de forma inequívoca la especie base de un nickname rival. El
+parser no completa especies ambiguas por parecido. Las formas deben declararse
+con su nombre de Showdown, por ejemplo `Indeedee-F`; el OCR puede leer
+`Indeedee`, pero el Team conocido conserva automáticamente la forma correcta.
+Si el Team del rival lleva la hembra, debe aparecer como `"Indeedee-F"` en
+`teams.p2`, no como `"Indeedee"`.
 
 Las Mega Evolutions visibles generan tanto `detailschange` como `-mega` en el
 protocolo de Showdown. Así, el replay cambia al sprite Mega y registra la
