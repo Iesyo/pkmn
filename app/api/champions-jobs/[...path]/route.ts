@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 const CHAMPIONS_JOBS_LOOPBACK = "http://127.0.0.1:8770";
-const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/retry|\/replays\/[1-9][0-9]*)?)?)$/;
+const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/retry|\/diagnostics|\/replays\/[1-9][0-9]*)?)?)$/;
 
 async function forward(
   request: Request,
@@ -33,12 +33,15 @@ async function forward(
       cache: "no-store",
       signal: AbortSignal.timeout(method === "PUT" ? 120_000 : 30_000),
     });
+    const responseHeaders: Record<string, string> = {
+      "content-type": upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    };
+    const contentDisposition = upstream.headers.get("content-disposition");
+    if (contentDisposition) responseHeaders["content-disposition"] = contentDisposition;
     return new Response(await upstream.arrayBuffer(), {
       status: upstream.status,
-      headers: {
-        "content-type": upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
-        "cache-control": "no-store",
-      },
+      headers: responseHeaders,
     });
   } catch (error) {
     console.error("Champions video queue loopback proxy failed", { relativePath, error });

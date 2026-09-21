@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileVideo2, Loader2, RotateCcw, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileVideo2, Loader2, RotateCcw, UploadCloud } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,7 @@ interface ChampionsVideoJob {
   skippedFrames: number;
   warnings: string[];
   replayCount: number;
+  archivedRunCount: number;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -376,6 +377,11 @@ export function ChampionsVideoUpload({
                       {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
                       Reanalizar vídeo
                     </Button>
+                    <Button asChild type="button" size="sm" variant="outline" className="gap-1.5 border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/[0.07]">
+                      <a href={`/api/champions-jobs/jobs/${currentJob.id}/diagnostics`} download>
+                        <Download className="size-3" />Descargar diagnóstico
+                      </a>
+                    </Button>
                   </div>
                   <p className="text-[9px] text-slate-500">Revisar abre el registro existente; la partida sólo se guarda cuando confirmas sus datos.</p>
                 </div>
@@ -393,6 +399,11 @@ export function ChampionsVideoUpload({
                   >
                     {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
                     Reintentar análisis
+                  </Button>
+                  <Button asChild type="button" size="sm" variant="outline" className="w-fit gap-1.5 border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/[0.07]">
+                    <a href={`/api/champions-jobs/jobs/${currentJob.id}/diagnostics`} download>
+                      <Download className="size-3" />Descargar diagnóstico
+                    </a>
                   </Button>
                   <p className="text-[9px] text-slate-500">Usa el vídeo que ya está guardado en la ROG; no vuelve a subirlo.</p>
                 </div>

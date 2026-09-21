@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -70,42 +72,23 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(documents, ())
         self.assertNotIn("alias_resolver", detector_type.call_args.kwargs)
 
-    @patch("pkmn_vgc.champions_jobs.load_trace_aliases")
     @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
     @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
     @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
-    def test_web_processor_rebuilds_from_the_trace_with_final_aliases(
+    def test_web_processor_reads_the_video_only_once(
         self,
         source_type: MagicMock,
         detector_type: MagicMock,
         pipeline_type: MagicMock,
-        load_aliases: MagicMock,
     ) -> None:
         source_type.return_value.estimated_frame_count.return_value = 1
-        provisional = CapturedBattle(
+        final = CapturedBattle(
             p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
-            p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+            p2=BattleSide("Rival final", ("Metagross",), ("Metagross",)),
             events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
             winner="p1",
         )
-        final = CapturedBattle(
-            p1=provisional.p1,
-            p2=BattleSide("Rival final", ("Metagross",), ("Metagross",)),
-            events=provisional.events,
-            winner="p1",
-        )
-        pipeline_type.return_value.capture.side_effect = [
-            (provisional,),
-            (final,),
-        ]
-        def fake_detector(**kwargs: object) -> MagicMock:
-            Path(kwargs["trace_path"]).write_text("{}\n", encoding="utf-8")
-            return MagicMock()
-
-        detector_type.side_effect = fake_detector
-        load_aliases.return_value = {
-            0: {"p1": (), "p2": (("せんせい", "Metagross"),)}
-        }
+        pipeline_type.return_value.capture.return_value = (final,)
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -120,7 +103,9 @@ class ChampionsJobTests(unittest.TestCase):
             )
 
         self.assertEqual(documents[0].p2, "Rival final")
-        self.assertEqual(pipeline_type.return_value.capture.call_count, 2)
+        self.assertEqual(source_type.call_count, 1)
+        self.assertEqual(detector_type.call_count, 1)
+        self.assertEqual(pipeline_type.return_value.capture.call_count, 1)
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0
@@ -186,6 +171,48 @@ class ChampionsJobTests(unittest.TestCase):
             restored = ChampionsJobManager(Path(directory), processor=fake_processor)
             self.assertEqual(restored.get_job(job["id"])["replayCount"], 2)
             restored.close(wait=True)
+
+    def test_reanalysis_archives_the_previous_trace_and_replays(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = ChampionsJobManager(root, processor=fake_processor)
+            job = manager.create_job(
+                filename="session.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(job["id"], offset=0, data=b"video")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(job["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(job["id"])
+            self.assertEqual(completed["status"], "ready")
+
+            output = root / job["id"] / "output"
+            (output / "ocr.trace.jsonl").write_text("previous trace\n", encoding="utf-8")
+            previous_log = (output / "replay-001.log").read_text(encoding="utf-8")
+
+            retried = manager.retry_job(job["id"])
+            archives = tuple((output / "history").iterdir())
+
+            self.assertEqual(retried["archivedRunCount"], 1)
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(
+                (archives[0] / "ocr.trace.jsonl").read_text(encoding="utf-8"),
+                "previous trace\n",
+            )
+            self.assertEqual(
+                (archives[0] / "replay-001.log").read_text(encoding="utf-8"),
+                previous_log,
+            )
+            with zipfile.ZipFile(io.BytesIO(manager.diagnostics_archive(job["id"]))) as bundle:
+                names = set(bundle.namelist())
+            self.assertIn("job.json", names)
+            self.assertIn(f"output/history/{archives[0].name}/ocr.trace.jsonl", names)
+            self.assertNotIn("source.mp4", names)
+            manager.close(wait=True)
 
     def test_rejects_out_of_order_or_oversized_uploads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from .champions_jobs import ChampionsJobManager
@@ -109,3 +109,18 @@ def get_replay(job_id: str, replay_number: int) -> dict[str, object]:
         return {"replay": jobs.replay_document(job_id, replay_number)}
     except Exception as error:
         raise _http_error(error) from error
+
+
+@app.get("/jobs/{job_id}/diagnostics")
+def get_diagnostics(job_id: str) -> Response:
+    try:
+        content = jobs.diagnostics_archive(job_id)
+    except Exception as error:
+        raise _http_error(error) from error
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="champions-diagnostics-{job_id}.zip"',
+        },
+    )

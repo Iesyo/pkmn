@@ -931,6 +931,32 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(record["ocr"][0]["text"], "The opposing Umbreon fainted!")
         self.assertEqual(record["detections"]["events"][0]["kind"], "faint")
 
+    def test_detector_resets_the_in_memory_timeline_between_battles(self) -> None:
+        class FakeEngine:
+            def read(self, image: bytes) -> tuple[OcrLine, ...]:
+                return (line(image.decode(), x=0.2, y=0.7),)
+
+        detector = ChampionsOcrDetector(
+            context=DetectorContext(p2_team=("Umbreon", "Drampa")),
+            engine=FakeEngine(),
+        )
+        detector.detect(
+            FramePacket(index=0, timestamp_ms=0, image=b"The opposing Umbreon fainted!")
+        )
+        detector.reset_battle_state()
+        detector.detect(
+            FramePacket(
+                index=1,
+                timestamp_ms=1_000,
+                image=b"The opposing Drampa fainted!",
+            )
+        )
+
+        finalized = detector.materialize_timeline()
+
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0].events[0].species, "Drampa")
+
     def test_detector_resolves_stable_unknown_hud_aliases_in_the_background(self) -> None:
         hud = (
             line("せんせい", x=0.629, y=0.05, width=0.052),
@@ -1206,6 +1232,149 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(dict(aliases[0]["p2"]), {"Ace": "Metagross", "Shade": "Sableye"})
         self.assertEqual(dict(aliases[1]["p2"]), {"Ace": "Sableye"})
+
+    def test_single_video_pass_joins_the_timeline_with_late_aliases(self) -> None:
+        frames = tuple(
+            FramePacket(index=index, timestamp_ms=index * 500, image=str(index).encode())
+            for index in range(6)
+        )
+        ocr = {
+            0: (line("Rival sent out しごでき and せんせい!", x=0.2, y=0.7, width=0.5),),
+            1: (
+                line("せんせい", x=0.629, y=0.05, width=0.052),
+                line("しごでき", x=0.799, y=0.05, width=0.051),
+                line("100%", x=0.682, y=0.11, width=0.053),
+                line("100%", x=0.851, y=0.11, width=0.053),
+                line("Venusaur", x=0.08, y=0.86),
+                line("Sylveon", x=0.29, y=0.86),
+                line("200/200", x=0.13, y=0.93),
+                line("190/190", x=0.34, y=0.93),
+            ),
+            2: (
+                line("FIGHT", x=0.86, y=0.70),
+                line("POKÉMON", x=0.84, y=0.90),
+            ),
+            3: (
+                line("しごでき's", x=0.72, y=0.30, width=0.12),
+                line("Prankster", x=0.72, y=0.36, width=0.12),
+            ),
+            4: (
+                line(
+                    "The opposing せんせい used Psychic Fangs!",
+                    x=0.2,
+                    y=0.7,
+                    width=0.5,
+                ),
+            ),
+            5: (line("You won the battle!", x=0.2, y=0.7, width=0.35),),
+        }
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self, image: bytes) -> tuple[OcrLine, ...]:
+                self.calls += 1
+                return ocr[int(image.decode())]
+
+        context = DetectorContext(
+            p1_name="Player",
+            p2_name="Rival",
+            p1_team=("Venusaur", "Sylveon"),
+            p2_team=("Metagross", "Sableye"),
+        )
+        engine = FakeEngine()
+        captures = ReplayCapturePipeline(
+            frames,
+            ChampionsOcrDetector(context=context, engine=engine),
+            CaptureSeed(
+                p1_name="Player",
+                p2_name="Rival",
+                p1_team=context.p1_team,
+                p2_team=context.p2_team,
+            ),
+        ).capture()
+
+        log = build_replay_document(captures[0]).log
+        turn = log.index("|turn|1")
+        self.assertEqual(engine.calls, len(frames))
+        self.assertLess(log.index("|switch|p2a: Metagross"), turn)
+        self.assertLess(log.index("|switch|p2b: Sableye"), turn)
+        self.assertLess(
+            log.index("|-ability|p2b: Sableye|Prankster"),
+            log.index("|move|p2a: Metagross|Psychic Fangs"),
+        )
+
+    def test_single_visible_opponent_keeps_its_hud_slot_and_restores_the_other_lead(self) -> None:
+        frames = tuple(
+            FramePacket(index=index, timestamp_ms=index * 500, image=str(index).encode())
+            for index in range(6)
+        )
+        ocr = {
+            0: (line("Rival sent out Shade and Sensei!", x=0.2, y=0.7, width=0.5),),
+            # RapidOCR missed Sensei's label, but both HP bars are visible and
+            # Shade is geometrically the right-hand opponent (p2b).
+            1: (
+                line("Shade", x=0.799, y=0.05, width=0.051),
+                line("100%", x=0.682, y=0.11, width=0.053),
+                line("100%", x=0.851, y=0.11, width=0.053),
+                line("Venusaur", x=0.08, y=0.86),
+                line("Sylveon", x=0.29, y=0.86),
+                line("200/200", x=0.13, y=0.93),
+                line("190/190", x=0.34, y=0.93),
+            ),
+            2: (
+                line("FIGHT", x=0.86, y=0.70),
+                line("POKÉMON", x=0.84, y=0.90),
+            ),
+            3: (
+                line(
+                    "The opposing Sensei's Metagrossite is reacting to Rival's Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.7,
+                ),
+            ),
+            4: (
+                line(
+                    "The opposing Shade used Light Screen!",
+                    x=0.2,
+                    y=0.7,
+                    width=0.5,
+                ),
+            ),
+            5: (line("You won the battle!", x=0.2, y=0.7, width=0.35),),
+        }
+
+        class FakeEngine:
+            def read(self, image: bytes) -> tuple[OcrLine, ...]:
+                return ocr[int(image.decode())]
+
+        context = DetectorContext(
+            p1_name="Player",
+            p2_name="Rival",
+            p1_team=("Venusaur", "Sylveon"),
+            p2_team=("Metagross", "Sableye"),
+            p2_aliases=(("Sensei", "Metagross"), ("Shade", "Sableye")),
+        )
+        capture = ReplayCapturePipeline(
+            frames,
+            ChampionsOcrDetector(context=context, engine=FakeEngine()),
+            CaptureSeed(
+                p1_name="Player",
+                p2_name="Rival",
+                p1_team=context.p1_team,
+                p2_team=context.p2_team,
+            ),
+        ).capture()[0]
+
+        log = build_replay_document(capture).log
+        turn = log.index("|turn|1")
+        self.assertLess(log.index("|switch|p2a: Metagross"), turn)
+        self.assertLess(log.index("|switch|p2b: Sableye"), turn)
+        self.assertIn("|-mega|p2a: Metagross|Metagross|Metagrossite", log)
+        self.assertIn("|move|p2b: Sableye|Light Screen|", log)
+        self.assertNotIn("Sableye|Metagrossite", log)
 
     def test_final_trace_pass_places_both_leads_before_turn_one(self) -> None:
         def record(

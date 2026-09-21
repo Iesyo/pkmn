@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,14 +14,10 @@ from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import ReplayDocument
-from .champions_replay.ocr_detector import (
-    ChampionsOcrDetector,
-    OcrTraceDetector,
-    load_trace_aliases,
-)
+from .champions_replay.ocr_detector import ChampionsOcrDetector
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
-from .champions_replay.sources import OcrTraceFrameSource, VideoFrameSource
+from .champions_replay.sources import VideoFrameSource
 
 
 ALLOWED_VIDEO_SUFFIXES = {".mkv", ".mov", ".mp4", ".webm"}
@@ -57,33 +55,13 @@ def _default_processor(
         context=detector_context,
         trace_path=trace_path,
     )
-    provisional_captures = ReplayCapturePipeline(source, detector, seed).capture(
+    captures = ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,
         total_frames=source.estimated_frame_count(),
         on_progress=on_progress,
         on_warning=on_warning,
     )
-    aliases_by_battle = load_trace_aliases(trace_path)
-    if not aliases_by_battle:
-        return tuple(build_replay_document(capture) for capture in provisional_captures)
-
-    # Segunda pasada: el OCR ya terminó y cada batalla conoce desde su primer
-    # frame el mapa completo mote -> especie. Así se conserva el orden original
-    # y ninguna asociación tardía inserta switches dentro de un turno.
-    trace_source = OcrTraceFrameSource(path=trace_path)
-    final_captures = ReplayCapturePipeline(
-        trace_source,
-        OcrTraceDetector(
-            context=detector_context,
-            aliases_by_battle=aliases_by_battle,
-        ),
-        seed,
-    ).capture(
-        max_battles=max_battles,
-        total_frames=trace_source.estimated_frame_count(),
-        on_warning=on_warning,
-    )
-    return tuple(build_replay_document(capture) for capture in final_captures)
+    return tuple(build_replay_document(capture) for capture in captures)
 
 
 Processor = Callable[
@@ -276,6 +254,11 @@ class ChampionsJobManager:
                 raise ValueError("Sólo se puede reanalizar un trabajo terminado.")
             if not self._source_path(job).is_file():
                 raise ValueError("El vídeo original ya no está disponible en la ROG.")
+            archive = self._archive_output(job_id)
+            if archive is not None:
+                archives = list(job.get("analysis_archives") or [])
+                archives.append(str(archive.relative_to(self._job_directory(job_id))))
+                job["analysis_archives"] = archives
             job["status"] = "queued"
             job["stage"] = "Esperando turno"
             job["error"] = None
@@ -310,6 +293,27 @@ class ChampionsJobManager:
         if not isinstance(value, dict):
             raise RuntimeError("El replay generado no contiene un objeto JSON.")
         return value
+
+    def diagnostics_archive(self, job_id: str) -> bytes:
+        """Empaqueta metadatos, trazas y replays sin incluir el vídeo."""
+
+        with self._lock:
+            self._require(job_id)
+            directory = self._job_directory(job_id)
+            candidates = [directory / "job.json"]
+            output = directory / "output"
+            if output.is_dir():
+                candidates.extend(
+                    path
+                    for path in output.rglob("*")
+                    if path.is_file() and path.suffix.casefold() in {".jsonl", ".json", ".log"}
+                )
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in candidates:
+                    if path.is_file():
+                        archive.write(path, path.relative_to(directory).as_posix())
+            return buffer.getvalue()
 
     def _enqueue(self, job_id: str) -> None:
         with self._lock:
@@ -442,6 +446,7 @@ class ChampionsJobManager:
             "skippedFrames": job.get("skipped_frames") or 0,
             "warnings": list(job.get("warnings") or []),
             "replayCount": len(job.get("replay_files") or []),
+            "archivedRunCount": len(job.get("analysis_archives") or []),
             "error": job.get("error"),
             "createdAt": job["created_at"],
             "updatedAt": job["updated_at"],
@@ -452,6 +457,20 @@ class ChampionsJobManager:
 
     def _source_path(self, job: Mapping[str, Any]) -> Path:
         return self._job_directory(str(job["id"])) / str(job["source_path"])
+
+    def _archive_output(self, job_id: str) -> Path | None:
+        """Conserva la traza y los replays actuales antes de reanalizar."""
+
+        output = self._job_directory(job_id) / "output"
+        files = tuple(path for path in output.iterdir() if path.is_file()) if output.is_dir() else ()
+        if not files:
+            return None
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        archive = output / "history" / f"{timestamp}-{uuid4().hex[:8]}"
+        archive.mkdir(parents=True)
+        for path in files:
+            path.replace(archive / path.name)
+        return archive
 
     def _require(self, job_id: str) -> dict[str, Any]:
         try:

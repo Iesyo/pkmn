@@ -54,8 +54,11 @@ flowchart TD
   única superficie web temporal en las fases interactivas.
 - `backend/pkmn_vgc/champions_replay/`: compañero local que obtiene frames de
   vídeo u OBS mediante FFmpeg, los lee con RapidOCR/ONNX Runtime, normaliza las
-  observaciones y genera un documento de replay Showdown. La fuente live usa un
-  buffer del último frame para no acumular atraso. La captura no se ejecuta
+  observaciones y genera un documento de replay Showdown. El vídeo/OCR se lee
+  una sola vez y de forma secuencial: un carril conserva la cronología con
+  nicknames y otro resuelve el mapa nickname → especie, que se aplica al cerrar
+  cada batalla. La fuente live usa un buffer del último frame para no acumular
+  atraso. La captura no se ejecuta
   dentro de Cloudflare: el adaptador alojado sólo recibe el replay terminado y
   la ejecución local reenvía las cargas al compañero Python de la misma máquina.
 - `backend/pkmn_vgc/champions_jobs.py` y `champions_jobs_api.py`: receptor y

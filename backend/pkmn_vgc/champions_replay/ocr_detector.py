@@ -69,6 +69,15 @@ class PreparedOcrFrame:
     rotation_degrees: int
 
 
+@dataclass(frozen=True, slots=True)
+class OcrTimelineFrame:
+    """OCR cronológico mínimo; no conserva el JPEG ni resuelve identidades."""
+
+    timestamp_ms: int
+    source_frame: int
+    lines: tuple[OcrLine, ...]
+
+
 class OcrEngine(Protocol):
     def read(self, image: bytes) -> tuple[OcrLine, ...]: ...
 
@@ -661,6 +670,8 @@ class ChampionsTextParser:
             "p2": self.context.p2_name,
         }
         self._announced_slots: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
+        self._announced_leads: dict[str, tuple[str, ...]] = {"p1": (), "p2": ()}
+        self._hud_alias_slots: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
         self._preview_ranks: dict[int, str] = {}
         self._preview_count = 0
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
@@ -855,7 +866,11 @@ class ChampionsTextParser:
 
     def _announced_slot(self, side: str, value: str) -> str | None:
         value_key = _text_key(value)
-        exact = self._announced_slots[side].get(value_key)
+        slots = {
+            **self._announced_slots[side],
+            **self._hud_alias_slots[side],
+        }
+        exact = slots.get(value_key)
         if exact:
             return exact
         if len(value_key) < 3:
@@ -863,7 +878,7 @@ class ChampionsTextParser:
         ranked = sorted(
             (
                 (SequenceMatcher(None, value_key, alias_key).ratio(), candidate_slot)
-                for alias_key, candidate_slot in self._announced_slots[side].items()
+                for alias_key, candidate_slot in slots.items()
             ),
             reverse=True,
         )
@@ -1403,18 +1418,40 @@ class ChampionsTextParser:
             if not species_lines:
                 continue
 
+            side_readings = sorted(
+                (
+                    (line, health)
+                    for line, health in readings
+                    if (side == "p2" and line.center_y <= 0.24)
+                    or (side == "p1" and line.center_y >= 0.76)
+                ),
+                key=lambda item: item[0].center_x,
+            )
+
             slot_lines: list[tuple[str, str, OcrLine]] = []
             if len(species_lines) == 1:
                 species, line = species_lines[0]
-                existing = next(
+                slot = next(
                     (
                         slot
                         for slot, active_species in self._active.items()
                         if slot.startswith(side) and _text_key(active_species) == _text_key(species)
                     ),
-                    f"{side}a",
+                    None,
                 )
-                slot_lines.append((existing, species, line))
+                if slot is None and len(side_readings) >= 2:
+                    nearest_index = min(
+                        range(len(side_readings)),
+                        key=lambda index: (
+                            abs(side_readings[index][0].center_x - line.center_x)
+                            + abs(side_readings[index][0].center_y - line.center_y)
+                        ),
+                    )
+                    slot = f"{side}{'a' if nearest_index == 0 else 'b'}"
+                if slot is None:
+                    midpoint = 0.24 if side == "p1" else 0.75
+                    slot = f"{side}{'a' if line.center_x < midpoint else 'b'}"
+                slot_lines.append((slot, species, line))
             else:
                 for index, (species, line) in enumerate(species_lines):
                     slot_lines.append((f"{side}{'ab'[index]}", species, line))
@@ -1442,7 +1479,73 @@ class ChampionsTextParser:
                 if health is None and not legacy_hud_band:
                     continue
                 observations[slot] = (species, health)
-        return observations
+                announced_key = self._matching_announced_lead_key(side, species_line.text)
+                if announced_key:
+                    self._hud_alias_slots[side][announced_key] = slot
+
+            self._complete_announced_lead_observations(
+                side,
+                observations,
+                side_readings,
+            )
+        return dict(sorted(observations.items()))
+
+    def _matching_announced_lead_key(self, side: str, value: str) -> str | None:
+        value_key = _text_key(value)
+        leads = self._announced_leads[side]
+        if value_key in leads:
+            return value_key
+        if len(value_key) < 3:
+            return None
+        ranked = sorted(
+            (
+                (SequenceMatcher(None, value_key, lead_key).ratio(), lead_key)
+                for lead_key in leads
+            ),
+            reverse=True,
+        )
+        if not ranked:
+            return None
+        score, lead_key = ranked[0]
+        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+        return lead_key if score >= 0.64 and score - runner_up >= 0.15 else None
+
+    def _complete_announced_lead_observations(
+        self,
+        side: str,
+        observations: dict[str, tuple[str, str | None]],
+        side_readings: Sequence[tuple[OcrLine, str]],
+    ) -> None:
+        """Recupera el lead que OCR omitió usando el slot geométrico restante."""
+
+        leads = self._announced_leads[side]
+        if self._turn or len(leads) != 2:
+            return
+        mapped = self._hud_alias_slots[side]
+        known = [(lead_key, mapped[lead_key]) for lead_key in leads if lead_key in mapped]
+        if len(known) == 1:
+            known_slot = known[0][1]
+            remaining_slot = f"{side}{'b' if known_slot.endswith('a') else 'a'}"
+            remaining_key = next(lead_key for lead_key in leads if lead_key != known[0][0])
+            mapped[remaining_key] = remaining_slot
+
+        health_by_slot = {
+            f"{side}{'a' if index == 0 else 'b'}": health
+            for index, (_line, health) in enumerate(side_readings[:2])
+        }
+        observed_species = {
+            _text_key(species)
+            for slot, (species, _health) in observations.items()
+            if slot.startswith(side)
+        }
+        for lead_key in leads:
+            slot = mapped.get(lead_key)
+            species = self._aliases[side].get(lead_key)
+            species_key = _text_key(species or "")
+            if not slot or not species or species_key in observed_species:
+                continue
+            observations[slot] = (species, health_by_slot.get(slot))
+            observed_species.add(species_key)
 
     def _message_lines(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
         messages: list[OcrLine] = []
@@ -1508,6 +1611,11 @@ class ChampionsTextParser:
         actors = [part.strip() for part in re.split(r"\s+and\s+", value, flags=re.IGNORECASE)]
         if len(actors) != 2:
             return ()
+        self._announced_leads[side] = tuple(
+            actor_key
+            for actor in actors
+            if (actor_key := _text_key(actor))
+        )
         for index, actor in enumerate(actors):
             slot = f"{side}{'ab'[index]}"
             actor_key = _text_key(actor)
@@ -2078,6 +2186,7 @@ class ChampionsOcrDetector:
         engine_factory: Callable[[], OcrEngine] | None = None,
         alias_resolver: HudAliasResolver | None = None,
     ) -> None:
+        self._base_context = context or DetectorContext()
         if engine is not None:
             self.engine = engine
         elif engine_factory is not None:
@@ -2091,7 +2200,8 @@ class ChampionsOcrDetector:
         self._worker_engines = threading.local()
         self._engine_claim_lock = threading.Lock()
         self._primary_engine_claimed = False
-        self.parser = ChampionsTextParser(context=context)
+        self.parser = ChampionsTextParser(context=self._base_context)
+        self._timeline: list[OcrTimelineFrame] = []
         self.trace_path = trace_path
         self._trace_battle_index = 0
         self._alias_resolver = alias_resolver
@@ -2228,6 +2338,15 @@ class ChampionsOcrDetector:
     def parse_prepared(self, prepared: PreparedOcrFrame) -> FrameDetections:
         frame = prepared.frame
         lines = prepared.lines
+        # Este carril guarda la partida exactamente en el orden del OCR y con
+        # los motes originales. Sólo retiene texto/posición, nunca los JPEG.
+        self._timeline.append(
+            OcrTimelineFrame(
+                timestamp_ms=frame.timestamp_ms,
+                source_frame=frame.index,
+                lines=lines,
+            )
+        )
         visual_aliases = self._poll_visual_aliases()
         visual_candidates = self._schedule_visual_aliases(prepared)
         detections = self.parser.parse(
@@ -2255,6 +2374,47 @@ class ChampionsOcrDetector:
         self._visual_attempted.clear()
         self._alias_source = None
         self.parser.reset_battle_state()
+        self._timeline.clear()
+
+    @staticmethod
+    def _merge_aliases(
+        configured: Sequence[tuple[str, str]],
+        learned: Mapping[str, str],
+    ) -> tuple[tuple[str, str], ...]:
+        merged = {alias.casefold(): (alias, species) for alias, species in configured}
+        for alias, species in learned.items():
+            merged[alias.casefold()] = (alias, species)
+        return tuple(merged.values())
+
+    def materialize_timeline(self) -> tuple[FrameDetections, ...]:
+        """Aplica el mapa final mote -> especie al carril cronológico en memoria.
+
+        No vuelve a leer el vídeo, no ejecuta OCR y no usa la traza JSONL. El
+        parser final recibe todos los aliases desde el primer frame, por lo que
+        aprender una identidad tarde no puede mover un lead dentro de un turno.
+        """
+
+        learned = self.parser.resolved_aliases()
+        context = replace(
+            self._base_context,
+            p1_aliases=self._merge_aliases(
+                self._base_context.p1_aliases,
+                learned["p1"],
+            ),
+            p2_aliases=self._merge_aliases(
+                self._base_context.p2_aliases,
+                learned["p2"],
+            ),
+        )
+        timeline_parser = ChampionsTextParser(context=context)
+        return tuple(
+            timeline_parser.parse(
+                frame.lines,
+                timestamp_ms=frame.timestamp_ms,
+                source_frame=frame.source_frame,
+            )
+            for frame in self._timeline
+        )
 
     def flush_pending(self) -> FrameDetections:
         """Espera el refuerzo visual antes de cerrar y perder sus aliases."""

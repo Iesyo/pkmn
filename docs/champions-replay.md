@@ -13,9 +13,11 @@ flowchart TD
     LIVE[OBS o capturadora] --> FRAMES[Frames FFmpeg]
     VIDEO[Vídeo grabado] --> FRAMES
     FRAMES --> OCR[RapidOCR local]
-    OCR --> RULES[Catálogo y evidencia]
-    RULES --> EVENTS[Eventos con confianza]
-    EVENTS --> REPLAY[Replay Showdown]
+    OCR --> TIMELINE[Cronología con motes]
+    OCR --> ALIASES[Mapa mote → especie]
+    TIMELINE --> JOIN[Unión final]
+    ALIASES --> JOIN
+    JOIN --> REPLAY[Replay Showdown]
     REPLAY --> STATS[Teams y Comparación]
 ```
 
@@ -32,8 +34,12 @@ flowchart TD
   incluyendo formas con género como `Basculegion-F`.
 - `VideoFrameSource` procesa grabaciones a una frecuencia configurable. La
   entrada puede ser 60 FPS; no es necesario analizar los 60 frames de cada
-  segundo. En vídeo, dos workers ejecutan RapidOCR en paralelo con un buffer
-  acotado y el parser consume siempre los resultados en orden de frame.
+  segundo. Cada frame muestreado pasa una sola vez por RapidOCR y el parser lo
+  consume secuencialmente para conservar slots, HP, aliases y turnos.
+- Durante ese único recorrido, un carril guarda en memoria las observaciones
+  OCR originales con timestamp y número de frame, mientras otro resuelve el
+  mapa de nicknames por batalla y lado. Al detectar el resultado se aplica el
+  mapa completo a la cronología; no se vuelve a leer el vídeo ni la traza.
 - `LiveFrameSource` lee OBS Virtual Camera mediante FFmpeg y conserva sólo el
   frame más reciente. Si el OCR tarda, descarta imágenes viejas en vez de
   acumular retraso.
@@ -73,13 +79,16 @@ queda en `data/champions-jobs` con estos estados:
 3. **Analizando vídeo** con frames, ETA, eventos y batallas detectadas;
 4. **Replays listos** o **Error**.
 
-La cola procesa un vídeo a la vez para no saturar la ROG. Usa 2 FPS, dos
-workers OCR por defecto y detecta todas las batallas; un vídeo con varias
-genera `replay-001.*`, `replay-002.*`, etc. La interfaz permite elegir 1×, 2×
-o 4×; 2× es el equilibrio recomendado para evitar sobresuscribir ONNX Runtime.
-La versión seleccionada aporta el Team propio y sus alias, mientras el rival
-se reconstruye desde lo visible. Cada resultado vuelve al formulario de
-revisión y no entra al historial hasta que el usuario lo confirma.
+La cola procesa un vídeo a la vez para no saturar la ROG. Usa 2 FPS y ejecuta
+el OCR de forma estrictamente secuencial para conservar el orden de los
+acontecimientos. En ese mismo recorrido mantiene dos carriles lógicos: uno
+registra los eventos con los motes visibles y el otro construye la relación
+mote → especie. La sustitución se hace al cerrar cada batalla, sin una segunda
+vuelta al vídeo. Un vídeo con varias batallas genera `replay-001.*`,
+`replay-002.*`, etc. La versión seleccionada aporta el Team propio y sus alias,
+mientras el rival se reconstruye desde lo visible. Cada resultado vuelve al
+formulario de revisión y no entra al historial hasta que el usuario lo
+confirma.
 
 Las grabaciones móviles verticales se orientan a partir del HUD de Champions,
 no del primer texto legible: una notificación del sistema o de WhatsApp no fija
@@ -90,6 +99,12 @@ orden 1–4 se conserva y los nicknames propios se asocian con el Team conocido
 por la posición de cada fila. Tanto **Reintentar análisis** tras un error como
 **Reanalizar vídeo** sobre un resultado existente reutilizan el archivo
 guardado en la ROG sin transferirlo nuevamente.
+
+Antes de iniciar una reanalización, los replays, trazas y logs de la corrida
+vigente se mueven a `output/history/<fecha>-<id>/`. **Descargar diagnóstico**
+genera un ZIP con `job.json` y los artefactos de la corrida actual y las
+anteriores, pero nunca incluye el vídeo original. Esto permite revisar una
+regresión sin destruir la evidencia de intentos previos.
 
 El servicio Python sólo escucha en loopback. La ruta web actúa como proxy de
 lista blanca para que la otra PC nunca acceda directamente al proceso local.
@@ -156,16 +171,15 @@ Ejecución completa:
   --context ".\captures\champions-context.json" `
   --output ".\replays\champions-real-001" `
   --ocr-trace ".\replays\champions-real-001.trace.jsonl" `
-  --ocr-workers 2 `
   --force
 ```
 
 El comando calcula con `ffprobe` cuántos frames analizará y muestra porcentaje,
 tiempo transcurrido, ETA, batallas terminadas, eventos detectados y frames
-omitidos. Por defecto analiza 2 FPS aunque el vídeo sea 60 FPS y usa dos
-workers OCR. `--ocr-workers 1`, `2` o `4` controla el paralelismo sin cambiar
-el orden de eventos. Puede bajarse a `--sample-fps 1` en una CPU lenta; subirlo
-aumenta sensibilidad y costo casi linealmente.
+omitidos. Por defecto analiza 2 FPS aunque el vídeo sea 60 FPS. Puede bajarse a
+`--sample-fps 1` en una CPU lenta; subirlo aumenta sensibilidad y costo casi
+linealmente. El OCR permanece secuencial porque el parser mantiene estado entre
+frames.
 
 Si una grabación contiene varias batallas, `--max-battles 0` procesa el vídeo
 completo y genera un juego de artefactos por cada una. Los archivos se numeran
@@ -213,6 +227,8 @@ especie visual que no exista en el catálogo ni completa especies ambiguas por
 parecido. Las formas deben declararse
 con su nombre de Showdown, por ejemplo `Indeedee-F`; el OCR puede leer
 `Indeedee`, pero el Team conocido conserva automáticamente la forma correcta.
+La traza JSONL se conserva para diagnóstico y reproceso manual; el flujo web
+normal no la necesita para realizar la unión final de identidades.
 Si el Team del rival lleva la hembra, debe aparecer como `"Indeedee-F"` en
 `teams.p2`, no como `"Indeedee"`.
 

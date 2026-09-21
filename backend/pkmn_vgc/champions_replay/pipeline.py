@@ -254,6 +254,35 @@ class ReplayCapturePipeline:
                 for warning in pop_warnings():
                     on_warning(warning)
 
+        def materialize_timeline() -> CaptureAccumulator:
+            """Une el carril cronológico con el mapa final de motes."""
+
+            materialize = getattr(self.detector, "materialize_timeline", None)
+            if not callable(materialize):
+                return accumulator
+            try:
+                final_detections = materialize()
+                rebuilt = CaptureAccumulator(self.seed)
+                for detections in final_detections:
+                    if not isinstance(detections, FrameDetections):
+                        raise TypeError("el detector devolvió una detección final inválida")
+                    rebuilt.apply(detections)
+            except Exception as error:
+                if on_warning:
+                    on_warning(
+                        "No se pudo aplicar el mapa final de motes; se conserva "
+                        f"la captura provisional: {error}"
+                    )
+                return accumulator
+            if not rebuilt.winner or not rebuilt.has_battle_data:
+                if on_warning:
+                    on_warning(
+                        "El carril cronológico final quedó incompleto; se conserva "
+                        "la captura provisional."
+                    )
+                return accumulator
+            return rebuilt
+
         def report(frame_timestamp_ms: int) -> None:
             if not on_progress:
                 return
@@ -303,8 +332,9 @@ class ReplayCapturePipeline:
             accumulator.apply(detections)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
                 flush_detector_pending()
+                finalized_accumulator = materialize_timeline()
                 try:
-                    capture = accumulator.finalize()
+                    capture = finalized_accumulator.finalize()
                 except CaptureIncompleteError as error:
                     incomplete_battles += 1
                     if on_warning:
@@ -329,7 +359,7 @@ class ReplayCapturePipeline:
 
         if not awaiting_next_start and accumulator.winner and accumulator.has_battle_data:
             flush_detector_pending()
-            captures.append(accumulator.finalize())
+            captures.append(materialize_timeline().finalize())
         if not captures:
             raise CaptureIncompleteError("La fuente terminó sin una batalla completa.")
         return tuple(captures if max_battles == 0 else captures[:max_battles])
