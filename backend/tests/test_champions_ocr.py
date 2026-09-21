@@ -22,7 +22,10 @@ from pkmn_vgc.champions_replay.ocr_detector import (
 )
 from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
 from pkmn_vgc.champions_replay.showdown import build_replay_document
-from pkmn_vgc.champions_replay.team_preview import ChampionsTeamPreviewResolver
+from pkmn_vgc.champions_replay.team_preview import (
+    ChampionsTeamPreviewResolver,
+    looks_like_a_nickname,
+)
 from pkmn_vgc.champions_replay.sources import FramePacket, OcrTraceFrameSource
 
 
@@ -464,6 +467,104 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(parser._identity_for_value("p2", garbled), identity)
         parser._infer_alias_from_move("p2", garbled, "Kowtow Cleave")
         self.assertEqual(parser.resolved_aliases()["p2"].get(garbled), "Kingambit")
+
+    def test_a_two_character_fragment_cannot_name_a_pokemon(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=1)
+        # La tarjeta dibuja el símbolo de género junto al mote y el OCR lo lee
+        # como un número corto. Aunque quede atado a una especie, con dos
+        # caracteres no puede nombrar a nadie ni ocupar un slot del HUD.
+        parser._bind_alias("p1", "07", "Victreebel")
+        noisy = self.command_frame() + (line("07", x=0.02, y=0.86, width=0.02),)
+
+        detections = parser.parse(noisy, timestamp_ms=2_000, source_frame=2)
+
+        self.assertIsNone(parser._resolve_species("07", "p1"))
+        self.assertEqual([event for event in detections.events if event.kind == "switch"], [])
+
+    def test_the_gender_glyph_is_not_taken_for_a_nickname(self) -> None:
+        for glyph in ("07", "37", "97", "f", "3", "♂"):
+            self.assertFalse(looks_like_a_nickname(glyph), glyph)
+        for nickname in ("Destroya", "Frida", "Rex"):
+            self.assertTrue(looks_like_a_nickname(nickname), nickname)
+
+        parser = self.parser()
+        # El símbolo cae en la misma banda que el mote y más cerca del centro de
+        # la fila, así que ganaba el desempate por cercanía.
+        parser._preview_detections(
+            (
+                line("Destroya", x=0.10, y=0.13),
+                line("07", x=0.21, y=0.125, width=0.02),
+                line("Frida", x=0.10, y=0.245),
+            )
+        )
+
+        self.assertEqual(
+            parser.resolved_aliases()["p1"],
+            {"destroya": "Delphox", "frida": "Victreebel"},
+        )
+
+    def ability_parser(self) -> ChampionsTextParser:
+        return ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="IesYo",
+                p2_name="Rival",
+                p1_team=("Tyranitar", "Sinistcha"),
+                p2_team=(),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Tyranitar", "Sinistcha"),
+                abilities=("Sand Stream",),
+                species_abilities=(("Tyranitar", ("sandstream",)),),
+            ),
+        )
+
+    @staticmethod
+    def ability_frame() -> tuple[OcrLine, ...]:
+        return (
+            line("Tyranitar's", x=0.70, y=0.30),
+            line("Sand Stream", x=0.70, y=0.36),
+        )
+
+    def test_an_ability_is_not_pinned_on_whoever_holds_the_slot(self) -> None:
+        parser = self.ability_parser()
+        parser._turn = 3
+        # El rótulo de habilidad no lleva el prefijo del rival, así que el lado
+        # se deduce del roster. Con Tyranitar en los dos equipos caía en p1, y
+        # buscar su slot devolvía p1a, que ocupaba otro Pokémon.
+        parser._active["p1a"] = "Sinistcha"
+
+        detections = parser.parse(self.ability_frame(), timestamp_ms=0, source_frame=0)
+
+        self.assertEqual([event for event in detections.events if event.kind == "ability"], [])
+
+    def test_an_ability_is_written_once_its_pokemon_is_on_the_field(self) -> None:
+        parser = self.ability_parser()
+        parser._turn = 3
+        parser._active["p1a"] = "Tyranitar"
+
+        detections = parser.parse(self.ability_frame(), timestamp_ms=0, source_frame=0)
+
+        self.assertEqual(
+            [(event.slot, event.species, event.value)
+             for event in detections.events if event.kind == "ability"],
+            [("p1a", "Tyranitar", "Sand Stream")],
+        )
+
+    def test_a_pending_ability_does_not_survive_its_turn(self) -> None:
+        parser = self.ability_parser()
+        parser._turn = 3
+        parser._active["p1a"] = "Sinistcha"
+        announced = parser.parse(self.ability_frame(), timestamp_ms=0, source_frame=0)
+        self.assertEqual([event for event in announced.events if event.kind == "ability"], [])
+        # Turnos después entra el Tyranitar del jugador. La habilidad era de otro
+        # y esperar más sólo la coloca en el momento equivocado.
+        parser._turn = 6
+        parser._active["p1a"] = "Tyranitar"
+
+        detections = parser.parse((), timestamp_ms=60_000, source_frame=120)
+
+        self.assertEqual([event for event in detections.events if event.kind == "ability"], [])
 
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(

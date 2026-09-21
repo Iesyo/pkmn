@@ -17,7 +17,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, FrameDetections, is_actor_identity
 from .sources import FramePacket
-from .team_preview import TeamPreviewResolver
+from .team_preview import TeamPreviewResolver, looks_like_a_nickname
 
 
 def _text_key(value: str) -> str:
@@ -743,7 +743,7 @@ class ChampionsTextParser:
         self._pending_switch_timestamps: dict[str, int] = {}
         self._visible_messages: set[str] = set()
         self._visible_abilities: set[tuple[str, str, str]] = set()
-        self._pending_abilities: dict[tuple[str, str, str], float] = {}
+        self._pending_abilities: dict[tuple[str, str, str], tuple[float, int]] = {}
         self._pending_fieldstarts: set[str] = set()
         self._recent_field_sources: dict[str, tuple[str, str, str, int]] = {}
         self._turn = 0
@@ -975,6 +975,12 @@ class ChampionsTextParser:
     def _resolve_species(self, value: str, side: str | None = None) -> str | None:
         if side in self._side_species:
             value_key = _text_key(value)
+            # Tres caracteres es el suelo que ya usan el resto de resolutores.
+            # Sin él, la búsqueda exacta de alias dejaba que un fragmento de dos
+            # —el símbolo de género del panel, leído ’07’ o ’37’— nombrara a un
+            # Pokémon y ocupara un slot del HUD.
+            if len(value_key) < 3:
+                return None
             alias = self._aliases[side].get(value_key)
             if alias:
                 return alias
@@ -1411,7 +1417,10 @@ class ChampionsTextParser:
             key = (side, species, ability)
             visible.add(key)
             if key not in self._visible_abilities:
-                self._pending_abilities[key] = min(actor_line.confidence, ability_line.confidence)
+                self._pending_abilities[key] = (
+                    min(actor_line.confidence, ability_line.confidence),
+                    self._turn,
+                )
         self._visible_abilities = visible
         return self._flush_pending_abilities(
             timestamp_ms=timestamp_ms,
@@ -1425,12 +1434,25 @@ class ChampionsTextParser:
         source_frame: int,
     ) -> tuple[BattleEvent, ...]:
         events: list[BattleEvent] = []
-        for key, confidence in tuple(self._pending_abilities.items()):
+        for key, (confidence, turn) in tuple(self._pending_abilities.items()):
             side, species, ability = key
+            # Una habilidad pertenece al turno en que el juego la anunció. Si al
+            # cambiar de turno sigue sin encontrar a su Pokémon en el campo, la
+            # lectura fue de otro y esperar más sólo la coloca en el momento
+            # equivocado.
+            if turn != self._turn:
+                del self._pending_abilities[key]
+                continue
             slot = self._slot_for_species(species, side)
-            if slot not in self._active:
-                slot = None
-            if slot is None:
+            # El rótulo de habilidad no lleva el prefijo del rival, así que el
+            # lado se deduce y con la misma especie en los dos equipos puede
+            # caer en el que no juega. Buscar el slot devuelve el primero del
+            # lado cuando no encuentra a nadie, y eso le colgaba la habilidad
+            # al ocupante que hubiera. Se espera a que esté en el campo.
+            occupant = self._active.get(slot) if slot else None
+            if occupant is None or _text_key(self._canonical_actor(occupant)) != _text_key(
+                self._canonical_actor(species)
+            ):
                 continue
             events.append(
                 BattleEvent(
@@ -1550,7 +1572,7 @@ class ChampionsTextParser:
                     for line in lines
                     if 0.09 <= line.center_x <= 0.25
                     and abs(line.center_y - center_y) <= 0.04
-                    and not re.fullmatch(r"[0-4]", line.text.strip())
+                    and looks_like_a_nickname(line.text)
                     and not re.fullmatch(r"[0-4]\s*/\s*4", line.text.strip())
                 ),
                 key=lambda line: abs(line.center_y - center_y),

@@ -116,6 +116,21 @@ def _color_distance(first: Sequence[float], second: Sequence[float]) -> float:
     return math.sqrt(sum((left - right) ** 2 for left, right in zip(first, second, strict=True)))
 
 
+def looks_like_a_nickname(value: str) -> bool:
+    """Si un texto de la tarjeta puede ser el mote o es otra cosa.
+
+    La tarjeta dibuja el símbolo de género pegado al nombre, y el OCR lo
+    devuelve como ’07’, ’37’ o ’f’. Los dos lectores del Team Preview se
+    quedaban con él en cuanto el mote real no se leía en ese frame, y quedaba
+    atado a la especie de esa fila: en batalla ese mismo símbolo volvía a
+    aparecer en el HUD y ocupaba un slot.
+    """
+
+    stripped = value.strip()
+    letters = sum(1 for character in stripped if character.isalpha())
+    return letters >= 2 and len(stripped) >= 3
+
+
 class ChampionsTeamPreviewResolver:
     """Lee el roster rival desde sprites y placas de tipo del Team Preview.
 
@@ -983,7 +998,7 @@ class ChampionsTeamPreviewResolver:
             best: str | None = None
             for line in lines:
                 text = (getattr(line, "text", "") or "").strip()
-                if not text:
+                if not looks_like_a_nickname(text):
                     continue
                 centre_x = (line.left + line.right) / 2 * width  # type: ignore[attr-defined]
                 centre_y = (line.top + line.bottom) / 2 * height  # type: ignore[attr-defined]
