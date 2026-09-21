@@ -83,6 +83,9 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertIsNone(_health_value("33"))
         self.assertIsNone(_health_value("06:45"))
         self.assertIsNone(_health_value("Battle Info"))
+        # RapidOCR pega el `%` al número y devuelve "779" por "77": recortar
+        # eso al 100% inventaba una curación a tope que nadie vio en pantalla.
+        self.assertIsNone(_health_value("779%"))
 
     def test_reads_active_slots_health_and_first_turn_from_hud(self) -> None:
         detections = self.parser().parse(
@@ -391,6 +394,76 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.kind, event.species, event.move) for event in detections.events],
             [("move", "Venusaur", "Sleep Powder")],
         )
+
+    def test_one_readable_bar_does_not_feed_both_opponent_slots(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        action = tuple(
+            item
+            for item in self.command_frame()
+            if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+        )
+        # Sólo queda legible la barra de Steelix. La de Drampa cae dentro de la
+        # ventana de búsqueda del otro nombre y acababa escrita en los dos.
+        partial = tuple(item for item in action if not (item.text == "100%" and item.left > 0.85))
+        partial = tuple(
+            line("33%", x=0.69, y=0.11) if item.text == "100%" else item for item in partial
+        )
+
+        detections = parser.parse(partial, timestamp_ms=1_000, source_frame=1)
+
+        self.assertEqual(
+            [
+                (event.kind, event.slot, event.health)
+                for event in detections.events
+                if event.kind in {"damage", "heal"}
+            ],
+            [("damage", "p2a", "33/100")],
+        )
+
+    def test_a_stray_fragment_does_not_push_the_partner_to_the_other_slot(self) -> None:
+        parser = self.parser()
+        parser.parse(
+            (line("IesYo sent out Delphox and Victreebel!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=1)
+        # Un resto de interfaz fuera del HUD, sin barra propia, que se parece
+        # lo justo a un lead anunciado. El slot sale del orden de la lista, así
+        # que se llevaba p1a y empujaba a Delphox al slot de su compañero.
+        noisy = self.command_frame() + (line("Victroeboi", x=0.02, y=0.58),)
+
+        detections = parser.parse(noisy, timestamp_ms=2_000, source_frame=2)
+
+        self.assertEqual([event for event in detections.events if event.kind == "switch"], [])
+
+    def test_ocr_variants_of_one_nickname_keep_their_own_identity(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_name="IesYo", p2_name="Rival"),
+            catalog=ChampionsCatalog(
+                species=("Kingambit", "Sableye"),
+                moves=("Kowtow Cleave",),
+                species_moves=(
+                    ("Kingambit", ("kowtowcleave",)),
+                    ("Sableye", ("kowtowcleave",)),
+                ),
+            ),
+        )
+        identity = parser._new_identity("p2", "せんtせl", "p2a")
+        parser._set_identity_species(identity, "Kingambit")
+        for variant in ("せんtせl", "せんtl", "tんtl"):
+            parser._bind_alias("p2", variant, "Kingambit")
+
+        # Esta lectura empata con otras dos del mismo mote. Comparando lecturas
+        # en vez de identidades, el empate tumbaba la identidad que las tres
+        # señalaban; la especie correcta quedaba descartada por estar ya
+        # asignada y el mote acababa en el compañero.
+        garbled = "せtんttl"
+
+        self.assertEqual(parser._identity_for_value("p2", garbled), identity)
+        parser._infer_alias_from_move("p2", garbled, "Kowtow Cleave")
+        self.assertEqual(parser.resolved_aliases()["p2"].get(garbled), "Kingambit")
 
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(

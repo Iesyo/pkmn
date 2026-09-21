@@ -28,6 +28,7 @@ from pkmn_vgc.champions_replay.pipeline import (
     review_capture,
 )
 from pkmn_vgc.champions_replay.showdown import (
+    _with_known_health,
     build_replay_document,
     render_replay_html,
     write_replay_artifacts,
@@ -137,6 +138,74 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
         self.assertIn("|switch|p2a: Metagross|Metagross-Mega, L50|100/100", document.log)
+
+    def test_completes_the_health_of_switches_the_hud_did_not_accompany(self) -> None:
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide(
+                    "IesYo",
+                    ("Basculegion", "Venusaur"),
+                    ("Basculegion", "Venusaur"),
+                ),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=(
+                    BattleEvent(
+                        kind="switch",
+                        timestamp_ms=1_000,
+                        slot="p1a",
+                        species="Basculegion",
+                        health="195/195",
+                    ),
+                    BattleEvent(
+                        kind="damage",
+                        timestamp_ms=2_000,
+                        slot="p1a",
+                        species="Basculegion",
+                        health="13/195",
+                    ),
+                    # Los tres cambios de abajo llegan sin HP porque el juego los
+                    # anunció por texto y el HUD no acompañó.
+                    BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Venusaur"),
+                    BattleEvent(kind="switch", timestamp_ms=4_000, slot="p2a", species="Sableye"),
+                    BattleEvent(
+                        kind="damage",
+                        timestamp_ms=5_000,
+                        slot="p1a",
+                        species="Venusaur",
+                        health="104/156",
+                    ),
+                    BattleEvent(kind="switch", timestamp_ms=6_000, slot="p1a", species="Basculegion"),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        # Vuelve al campo: conserva la última vida que se le vio.
+        self.assertIn("|switch|p1a: Basculegion|Basculegion, L50|13/195", document.log)
+        # Primera entrada: a tope, con el máximo que el log revela más adelante.
+        self.assertIn("|switch|p1a: Venusaur|Venusaur, L50|156/156", document.log)
+        # Del rival sólo se conoce el porcentaje, y nunca se leyó: queda el relleno.
+        self.assertIn("|switch|p2a: Sableye|Sableye, L50|100/100", document.log)
+
+    def test_a_bad_health_reading_does_not_decide_the_maximum(self) -> None:
+        events = (
+            BattleEvent(kind="switch", timestamp_ms=1_000, slot="p1a", species="Venusaur"),
+            BattleEvent(
+                kind="damage", timestamp_ms=2_000, slot="p1a", species="Venusaur", health="104/156"
+            ),
+            BattleEvent(
+                kind="damage", timestamp_ms=3_000, slot="p1a", species="Venusaur", health="56/150"
+            ),
+            BattleEvent(
+                kind="damage", timestamp_ms=4_000, slot="p1a", species="Venusaur", health="7/156"
+            ),
+        )
+
+        self.assertEqual(_with_known_health(events)[0].health, "156/156")
 
     def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import html
 import json
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, BattleSide, CapturedBattle, ReplayDocument
@@ -34,6 +37,65 @@ def _named_species(event: BattleEvent, active: dict[str, str]) -> str:
 
 def _health(value: str | None) -> str:
     return value or "100/100"
+
+
+def _health_key(slot: str, species: str) -> tuple[str, str]:
+    return slot[:2], _base_species(species)
+
+
+def _health_maximums(events: Sequence[BattleEvent]) -> dict[tuple[str, str], str]:
+    """Máximo de cada Pokémon, votado entre todas las lecturas del combate.
+
+    El HUD lo repite en cada daño y en cada curación, así que una lectura mala
+    pierde frente a las buenas.
+    """
+
+    active: dict[str, str] = {}
+    readings: dict[tuple[str, str], Counter[str]] = {}
+    for event in events:
+        if event.kind in {"switch", "drag"} and event.slot and event.species:
+            active[event.slot] = event.species
+        if not event.slot or not event.health:
+            continue
+        species = active.get(event.slot) or event.species
+        maximum = event.health.partition("/")[2]
+        if not species or not maximum.isdigit():
+            continue
+        readings.setdefault(_health_key(event.slot, species), Counter())[maximum] += 1
+    return {key: counts.most_common(1)[0][0] for key, counts in readings.items()}
+
+
+def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
+    """Completa la vida de los cambios que el HUD no acompañó.
+
+    Un Pokémon conserva su vida al salir del campo, así que quien vuelve entra
+    con la última que se le vio. Y quien pisa el campo por primera vez entra a
+    tope, para lo que basta el máximo que el propio log revela en cuanto
+    recibe daño. Rellenar con 100/100 lo hacía reaparecer lleno y le cambiaba
+    el máximo a mitad del log.
+    """
+
+    maximums = _health_maximums(events)
+    active: dict[str, str] = {}
+    health: dict[tuple[str, str], str] = {}
+    completed: list[BattleEvent] = []
+    for event in events:
+        if event.kind in {"switch", "drag"} and event.slot and event.species:
+            active[event.slot] = event.species
+            key = _health_key(event.slot, event.species)
+            current = event.health or health.get(key)
+            if not current:
+                maximum = maximums.get(key)
+                current = f"{maximum}/{maximum}" if maximum else None
+            if current:
+                health[key] = current
+                event = replace(event, health=current)
+        elif event.slot and event.health:
+            species = active.get(event.slot) or event.species
+            if species:
+                health[_health_key(event.slot, species)] = event.health
+        completed.append(event)
+    return tuple(completed)
 
 
 def _selection_code(side: BattleSide) -> str:
@@ -135,7 +197,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in battle.events:
+    for event in _with_known_health(battle.events):
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")

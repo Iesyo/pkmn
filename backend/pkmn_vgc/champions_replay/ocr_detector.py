@@ -524,7 +524,11 @@ def _health_value(value: str) -> str | None:
         return None
     percentage = re.fullmatch(r"(\d{1,3})\s*%", compact)
     if percentage:
-        current = min(100, int(percentage.group(1)))
+        current = int(percentage.group(1))
+        # Una barra nunca pasa del 100%. Recortar la lectura ahí convertía un
+        # dígito pegado por el OCR ("77" leído "779") en una curación a tope.
+        if current > 100:
+            return None
         return f"{current}/100"
 
     fraction = re.fullmatch(r"(\d{1,4})\D+(\d{1,4})", compact)
@@ -573,6 +577,42 @@ def _health_readings(lines: Sequence[OcrLine]) -> list[tuple[OcrLine, str]]:
         if health:
             readings.append((line, health))
     return readings
+
+
+def _paired_health(
+    species_lines: Sequence[OcrLine],
+    readings: Sequence[tuple[OcrLine, str]],
+) -> dict[int, str]:
+    """Da cada barra de vida a un solo nombre del HUD.
+
+    La ventana de búsqueda alcanza a los dos nombres del lado. Cuando el OCR
+    sólo leía una de las dos barras, el mismo valor acababa escrito en los dos
+    slots y la vida del compañero salía como daño o curación del otro.
+    """
+
+    candidates = sorted(
+        (
+            (
+                abs(reading.center_x - line.center_x)
+                + abs(reading.center_y - line.center_y),
+                index,
+                position,
+                health,
+            )
+            for index, line in enumerate(species_lines)
+            for position, (reading, health) in enumerate(readings)
+            if -0.02 <= reading.center_y - line.center_y <= 0.18
+            and abs(reading.center_x - line.center_x) < 0.2
+        )
+    )
+    paired: dict[int, str] = {}
+    taken: set[int] = set()
+    for _distance, index, position, health in candidates:
+        if index in paired or position in taken:
+            continue
+        paired[index] = health
+        taken.add(position)
+    return paired
 
 
 class ChampionsTextParser:
@@ -981,12 +1021,18 @@ class ChampionsTextParser:
         if identity:
             return identity
         if len(value_key) >= 3:
+            # El desempate va por identidad, no por lectura. El OCR escribe el
+            # mismo mote de muchas formas; comparando lecturas, dos variantes
+            # del mismo Pokémon empataban y tumbaban su propia identidad.
+            best: dict[str, float] = {}
+            for alias_key, candidate in self._identity_by_alias[side].items():
+                if abs(len(alias_key) - len(value_key)) > max(3, len(value_key) // 2):
+                    continue
+                score = SequenceMatcher(None, value_key, alias_key).ratio()
+                if score > best.get(candidate, 0.0):
+                    best[candidate] = score
             ranked = sorted(
-                (
-                    (SequenceMatcher(None, value_key, alias_key).ratio(), candidate)
-                    for alias_key, candidate in self._identity_by_alias[side].items()
-                    if abs(len(alias_key) - len(value_key)) <= max(3, len(value_key) // 2)
-                ),
+                ((score, candidate) for candidate, score in best.items()),
                 reverse=True,
             )
             if ranked:
@@ -1588,6 +1634,7 @@ class ChampionsTextParser:
         else:
             candidates = [line for line in lines if line.center_y <= 0.45]
 
+        readings = _health_readings(lines)
         found: list[tuple[str, str | None, OcrLine]] = []
         seen: set[str] = set()
         for line in sorted(candidates, key=lambda item: item.center_x):
@@ -1598,6 +1645,14 @@ class ChampionsTextParser:
             identity = self._identity_for_value(side, line.text)
             key = _text_key(species or identity or line.text)
             if (not species and not announced and not identity) or key in seen:
+                continue
+            # El slot sale del orden de esta lista, así que un fragmento suelto
+            # que luego se descarta por no tener barra propia empujaba al
+            # compañero al slot equivocado y lo duplicaba en los dos.
+            if not _paired_health([line], readings) and not (
+                (side == "p1" and line.center_y >= 0.82)
+                or (side == "p2" and line.center_y <= 0.18)
+            ):
                 continue
             seen.add(key)
             found.append((line.text, species, line))
@@ -1755,21 +1810,12 @@ class ChampionsTextParser:
                 for index, (label, species, line) in enumerate(species_lines):
                     slot_lines.append((f"{side}{'ab'[index]}", label, species, line))
 
-            for slot, label, species, species_line in slot_lines:
-                nearby = min(
-                    (
-                        (line, health)
-                        for line, health in readings
-                        if -0.02 <= line.center_y - species_line.center_y <= 0.18
-                        and abs(line.center_x - species_line.center_x) < 0.2
-                    ),
-                    key=lambda item: (
-                        abs(item[0].center_x - species_line.center_x)
-                        + abs(item[0].center_y - species_line.center_y)
-                    ),
-                    default=None,
-                )
-                health = nearby[1] if nearby else None
+            paired = _paired_health(
+                [species_line for _slot, _label, _species, species_line in slot_lines],
+                readings,
+            )
+            for index, (slot, label, species, species_line) in enumerate(slot_lines):
+                health = paired.get(index)
                 legacy_hud_band = (
                     side == "p1" and species_line.center_y >= 0.82
                 ) or (
