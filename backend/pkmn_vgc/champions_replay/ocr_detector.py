@@ -1538,11 +1538,41 @@ class ChampionsTextParser:
             for slot, (species, _health) in observations.items()
             if slot.startswith(side)
         }
+        # El anuncio y el HUD pueden deformar el mismo mote de maneras
+        # distintas. Si el mapa final sólo deja una especie aún no observada,
+        # esa identidad pertenece al único slot anunciado que falta. Esto usa
+        # evidencia ya aprendida de la batalla; no inventa un Pokémon del team.
+        missing_slots = {
+            slot
+            for lead_key in leads
+            if (slot := mapped.get(lead_key)) is not None
+            and slot not in observations
+        }
+        remaining_alias_species = {
+            _text_key(species): species
+            for species in self._aliases[side].values()
+            if _text_key(species) not in observed_species
+        }
+        inferred_species = (
+            next(iter(remaining_alias_species.values()))
+            if len(missing_slots) == 1 and len(remaining_alias_species) == 1
+            else None
+        )
         for lead_key in leads:
             slot = mapped.get(lead_key)
             species = self._aliases[side].get(lead_key)
+            if slot in missing_slots and species is None and inferred_species:
+                species = inferred_species
+                self._aliases[side][lead_key] = species
+                self._bound_alias_keys[side].add(lead_key)
+                self._message_aliases[side][lead_key.casefold()] = species
             species_key = _text_key(species or "")
-            if not slot or not species or species_key in observed_species:
+            if (
+                not slot
+                or slot in observations
+                or not species
+                or species_key in observed_species
+            ):
                 continue
             observations[slot] = (species, health_by_slot.get(slot))
             observed_species.add(species_key)
@@ -2022,6 +2052,10 @@ class ChampionsTextParser:
 
         events: list[BattleEvent] = []
         observations = self._hud_observations(lines)
+        text_keys = {_text_key(line.text) for line in lines}
+        selection_visible = bool(
+            text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo"})
+        )
         changed_slots: set[str] = set()
 
         for slot, (species, health) in observations.items():
@@ -2079,6 +2113,13 @@ class ChampionsTextParser:
             if not health or slot in changed_slots:
                 continue
             previous_health = self._health.get(slot)
+            # En MOVE TIME / Move Info, RapidOCR puede unir el contador con un
+            # signo `%` cercano y fabricar lecturas como 32%. Nunca hay daño o
+            # curación reales mientras el jugador está eligiendo una acción.
+            if selection_visible:
+                if previous_health is None:
+                    self._health[slot] = health
+                continue
             self._health[slot] = health
             if not previous_health or previous_health == health:
                 continue
@@ -2096,7 +2137,6 @@ class ChampionsTextParser:
             )
             self._turn_has_activity = True
 
-        text_keys = {_text_key(line.text) for line in lines}
         command_visible = "fight" in text_keys and (
             "pokemon" in text_keys or "movetime" in text_keys
         )

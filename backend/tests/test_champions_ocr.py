@@ -416,6 +416,56 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual([event.turn for event in next_turn.events if event.kind == "turn"], [2])
 
+    def test_move_menu_timer_cannot_create_hp_changes_or_empty_turns(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        action_frame = tuple(
+            item
+            for item in self.command_frame(p1_health="120/152")
+            if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+        ) + (line("The opposing Steelix used Rock Slide!", x=0.12, y=0.7, width=0.42),)
+        parser.parse(action_frame, timestamp_ms=1_000, source_frame=1)
+        turn_two = parser.parse(
+            self.command_frame(p1_health="120/152"),
+            timestamp_ms=2_000,
+            source_frame=2,
+        )
+
+        move_info = parser.parse(
+            (
+                line("Steelix", x=0.62, y=0.04),
+                line("32", x=0.69, y=0.11, width=0.035),
+                line("%", x=0.728, y=0.11, width=0.015),
+                line("MOVE TIME", x=0.82, y=0.32),
+                line("Move Info", x=0.80, y=0.84),
+            ),
+            timestamp_ms=2_500,
+            source_frame=3,
+        )
+        back_to_fight = parser.parse(
+            self.command_frame(p1_health="120/152"),
+            timestamp_ms=3_000,
+            source_frame=4,
+        )
+
+        self.assertEqual(
+            [event.turn for event in turn_two.events if event.kind == "turn"],
+            [2],
+        )
+        self.assertEqual(move_info.events, ())
+        self.assertEqual(back_to_fight.events, ())
+
+        parser.parse(action_frame, timestamp_ms=4_000, source_frame=5)
+        turn_three = parser.parse(
+            self.command_frame(p1_health="120/152"),
+            timestamp_ms=5_000,
+            source_frame=6,
+        )
+        self.assertEqual(
+            [event.turn for event in turn_three.events if event.kind == "turn"],
+            [3],
+        )
+
     def test_reset_battle_state_allows_the_same_opening_in_a_second_battle(self) -> None:
         parser = self.parser()
 
@@ -1375,6 +1425,62 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertIn("|-mega|p2a: Metagross|Metagross|Metagrossite", log)
         self.assertIn("|move|p2b: Sableye|Light Screen|", log)
         self.assertNotIn("Sableye|Metagrossite", log)
+
+    def test_final_garbled_aliases_restore_the_missing_lead_before_turn_one(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="Rival",
+                p1_team=("Venusaur", "Sylveon"),
+                p2_aliases=(
+                    ("せんtせl", "Metagross"),
+                    ("tんtl)", "Metagross"),
+                    ("しでき", "Sableye"),
+                ),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Venusaur", "Sylveon", "Metagross", "Sableye"),
+            ),
+        )
+        parser.parse(
+            (line("Rival sent out しごでき and せんせい!", x=0.2, y=0.7, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        leads = parser.parse(
+            (
+                line("しでき", x=0.799, y=0.05, width=0.051),
+                line("100%", x=0.682, y=0.11, width=0.053),
+                line("100%", x=0.851, y=0.11, width=0.053),
+                line("Venusaur", x=0.08, y=0.86),
+                line("Sylveon", x=0.29, y=0.86),
+                line("200/200", x=0.13, y=0.93),
+                line("190/190", x=0.34, y=0.93),
+            ),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+        turn = parser.parse(
+            (
+                line("FIGHT", x=0.86, y=0.70),
+                line("POKÉMON", x=0.84, y=0.90),
+            ),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(
+            [
+                (event.slot, event.species)
+                for event in leads.events
+                if event.kind == "switch" and event.slot.startswith("p2")
+            ],
+            [("p2a", "Metagross"), ("p2b", "Sableye")],
+        )
+        self.assertEqual(
+            [event.turn for event in turn.events if event.kind == "turn"],
+            [1],
+        )
 
     def test_final_trace_pass_places_both_leads_before_turn_one(self) -> None:
         def record(
