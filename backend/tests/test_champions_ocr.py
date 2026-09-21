@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, build_parser
-from pkmn_vgc.champions_replay.detector import DetectorContext, HudAlias
+from pkmn_vgc.champions_replay.detector import DetectionError, DetectorContext, HudAlias
 from pkmn_vgc.champions_replay.ocr_detector import (
     ChampionsCatalog,
     ChampionsOcrDetector,
@@ -17,10 +17,12 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     OcrTraceDetector,
     RapidOcrEngine,
     _health_value,
+    load_champions_catalog,
     load_trace_aliases,
 )
 from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
 from pkmn_vgc.champions_replay.showdown import build_replay_document
+from pkmn_vgc.champions_replay.team_preview import ChampionsTeamPreviewResolver
 from pkmn_vgc.champions_replay.sources import FramePacket, OcrTraceFrameSource
 
 
@@ -630,6 +632,98 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(parser.resolved_identities(), {identity: "Sableye"})
 
+    def test_a_move_cannot_overwrite_a_species_the_game_already_named(self) -> None:
+        """COL-101: Psychic Fangs convirtió a Metagross en Lycanroc-Dusk.
+
+        El juego había escrito "Mega Metagross" en pantalla minutos antes. Una
+        deducción a partir del movimiento no puede pisar esa evidencia.
+        """
+
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(
+                species=("Metagross", "Lycanroc-Dusk"),
+                species_moves=(
+                    ("Metagross", ("Psychic Fangs",)),
+                    ("Lycanroc-Dusk", ("Psychic Fangs",)),
+                ),
+                species_teammates=(("Lycanroc-Dusk", "Sableye", 40),),
+            )
+        )
+        identity = parser._new_identity("p2", "せんtせl", "p2a")
+        parser._bind_alias("p2", "せんtせl", "Metagross", evidence="explicit")
+
+        parser._infer_alias_from_move("p2", "せんtl)", "Psychic Fangs")
+
+        self.assertEqual(parser.resolved_identities(), {identity: "Metagross"})
+
+    def test_an_ocr_variant_of_a_known_nickname_inherits_its_species(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Metagross", "Lycanroc-Dusk"))
+        )
+        parser._new_identity("p2", "せんtせl", "p2a")
+        parser._bind_alias("p2", "せんtせl", "Metagross", evidence="explicit")
+
+        parser._bind_alias("p2", "せんtl)", "Lycanroc-Dusk", evidence="inferred")
+
+        self.assertEqual(set(parser._aliases["p2"].values()), {"Metagross"})
+
+    def test_the_game_text_still_corrects_a_misread_team_preview(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Sableye", "Spiritomb"))
+        )
+        identity = parser._new_identity("p2", "しでき", "p2a")
+        parser._bind_alias("p2", "しでき", "Spiritomb", evidence="preview")
+
+        parser._bind_alias("p2", "しでき", "Sableye", evidence="explicit")
+
+        self.assertEqual(parser.resolved_identities(), {identity: "Sableye"})
+
+    def test_both_sides_running_the_same_species_keep_their_moves(self) -> None:
+        """El mensaje sin "The opposing" es del jugador, aunque el rival lleve lo mismo.
+
+        Con Gardevoir en los dos equipos, el ataque del jugador acababa
+        atribuido al rival porque el lado se volvía a deducir de la especie.
+        """
+
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="Hisagi-",
+                p1_team=("Gardevoir",),
+                p2_team=("Gardevoir",),
+            ),
+            catalog=ChampionsCatalog(species=("Gardevoir",), moves=("Hyper Voice",)),
+        )
+        parser.bind_preview_labels((("Suzuko", "Gardevoir"),), side="p1")
+
+        own = parser.parse(
+            (line("Suzuko used Hyper Voice!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+        rival = parser.parse(
+            (line("The opposing Gardevoir used Hyper Voice!", x=0.15, y=0.72, width=0.5),),
+            timestamp_ms=2_000,
+            source_frame=4,
+        )
+
+        self.assertTrue(own.events, "el ataque del jugador no produjo evento")
+        self.assertTrue(rival.events)
+        self.assertTrue(own.events[0].slot.startswith("p1"), own.events[0])
+        self.assertTrue(rival.events[0].slot.startswith("p2"), rival.events[0])
+
+    def test_the_preview_card_ties_each_nickname_to_its_species(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Gardevoir", "Sneasler"))
+        )
+
+        bound = parser.bind_preview_labels(
+            (("Suzuko", "Gardevoir"), ("Silveria", "Sneasler")), side="p1"
+        )
+
+        self.assertEqual(bound, 2)
+        self.assertEqual(set(parser._aliases["p1"].values()), {"Gardevoir", "Sneasler"})
+
     def test_mega_stone_reveals_an_unknown_opponent_nickname_and_slot(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_name="Rival"),
@@ -1200,6 +1294,122 @@ class ChampionsOcrTests(unittest.TestCase):
             {"Metagross", "Sableye"},
         )
 
+    # Pokémon Champions no publica sprite de estas formas en la categoría de
+    # Bulbagarden. Cualquier otra ausencia es un fallo de mapeo: cuando
+    # "-Female" no casaba con la forma "F" de Showdown, Indeedee-F se quedaba
+    # sin sprite y el replay escribía el macho en su lugar.
+    def test_every_champions_species_has_a_sprite(self) -> None:
+        """Ninguna especie del catálogo puede quedarse sin referencia.
+
+        Las ausencias no se notaban: cuando "-Female" no casaba con la forma
+        "F" de Showdown, Indeedee-F se quedaba sin sprite y el replay escribía
+        el macho en su lugar. Lo mismo con la tilde de "Poké Ball" borrada en
+        vez de normalizada, que dejaba fuera a Vivillon-Pokeball.
+        """
+
+        resolver = ChampionsTeamPreviewResolver(())
+        catalog = load_champions_catalog()
+
+        missing = sorted(
+            species
+            for species, _types in catalog.species_types
+            if species not in resolver._sprite_sources
+        )
+
+        self.assertEqual(
+            missing,
+            [],
+            "faltan sprites; revisa el mapeo de formas en "
+            "scripts/update-champions-sprites.mjs",
+        )
+
+    def test_formes_drawn_alike_do_not_compete_with_each_other(self) -> None:
+        """Champions usa un mismo dibujo para Polteageist y su forma Antique.
+
+        Si compitieran las dos, empatarían siempre y la fila se descartaría.
+        """
+
+        resolver = ChampionsTeamPreviewResolver(
+            tuple(
+                (species, types)
+                for species, types in load_champions_catalog().species_types
+                if species.startswith(("Polteageist", "Sinistcha"))
+            )
+        )
+
+        candidates = resolver._every_candidate()
+
+        self.assertIn("Polteageist", candidates)
+        self.assertNotIn("Polteageist-Antique", candidates)
+        self.assertIn("Sinistcha", candidates)
+        self.assertNotIn("Sinistcha-Masterpiece", candidates)
+
+    def test_the_gender_symbol_picks_the_forme_the_sprite_cannot(self) -> None:
+        """Macho y hembra son casi el mismo dibujo; el símbolo de la tarjeta manda."""
+
+        resolver = ChampionsTeamPreviewResolver(
+            (
+                ("Basculegion", ("Water", "Ghost")),
+                ("Basculegion-F", ("Water", "Ghost")),
+                ("Gardevoir", ("Psychic", "Fairy")),
+            )
+        )
+
+        self.assertEqual(resolver._gendered_variant("Basculegion", "F"), "Basculegion-F")
+        self.assertEqual(resolver._gendered_variant("Basculegion-F", "M"), "Basculegion")
+        self.assertEqual(resolver._gendered_variant("Basculegion", None), "Basculegion")
+        # Sin forma hembra en el catálogo no se inventa ninguna.
+        self.assertEqual(resolver._gendered_variant("Gardevoir", "F"), "Gardevoir")
+
+    def test_gender_formes_do_not_compete_in_the_sprite_match(self) -> None:
+        resolver = ChampionsTeamPreviewResolver(
+            (("Basculegion", ("Water", "Ghost")), ("Basculegion-F", ("Water", "Ghost")))
+        )
+
+        candidates = resolver._every_candidate()
+
+        self.assertIn("Basculegion", candidates)
+        self.assertNotIn("Basculegion-F", candidates)
+
+    def test_champions_sprites_ship_with_the_repository(self) -> None:
+        """Los sprites del Team Preview son datos del repo, no una descarga."""
+
+        resolver = ChampionsTeamPreviewResolver(
+            (("Metagross", ("Steel", "Psychic")),),
+        )
+
+        self.assertGreater(len(resolver._sprite_sources), 300)
+        for species in ("Metagross", "Sableye", "Spiritomb", "Sylveon"):
+            paths = resolver._sprite_paths(species)
+            self.assertTrue(paths, species)
+            for path in paths:
+                self.assertTrue(path.is_file(), path)
+
+    def test_a_species_without_a_champions_sprite_is_reported(self) -> None:
+        resolver = ChampionsTeamPreviewResolver(())
+
+        with self.assertRaises(DetectionError) as failure:
+            resolver._sprite_paths("Missingno")
+
+        self.assertIn("Missingno", str(failure.exception))
+
+    def test_the_sprite_reference_keeps_shape_and_colour(self) -> None:
+        resolver = ChampionsTeamPreviewResolver(())
+
+        reference = resolver._sprite_templates("Sableye")[0]
+        other = resolver._sprite_templates("Spiritomb")[0]
+
+        # La silueta pesa más que el color justamente para que un shiny, que
+        # cambia los colores pero no la forma, siga cayendo en su especie.
+        self.assertGreater(
+            ChampionsTeamPreviewResolver._SHAPE_WEIGHT,
+            ChampionsTeamPreviewResolver._COLOUR_WEIGHT * 2,
+        )
+        self.assertGreater(
+            ChampionsTeamPreviewResolver._shape_score(reference, reference),
+            ChampionsTeamPreviewResolver._shape_score(reference, other),
+        )
+
     def test_detector_reads_opponent_preview_on_a_background_thread(self) -> None:
         preview_lines = (
             line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
@@ -1224,8 +1434,11 @@ class ChampionsOcrTests(unittest.TestCase):
                 _frame: FramePacket,
                 *,
                 rotation_degrees: int = 0,
+                side: str = "p2",
             ) -> tuple[str, ...]:
                 self.rotation_degrees = rotation_degrees
+                if side != "p2":
+                    raise DetectionError("este doble sólo conoce el panel rival")
                 return opponent
 
         resolver = FakePreviewResolver()
@@ -1234,18 +1447,118 @@ class ChampionsOcrTests(unittest.TestCase):
             team_preview_resolver=resolver,
         )
         try:
-            detector.detect(FramePacket(index=0, timestamp_ms=0, image=b"jpeg"))
-            detector.detect(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"))
-            self.assertIsNotNone(detector._preview_future)
-            detector._preview_future.result(timeout=1)  # type: ignore[union-attr]
-            detections = detector.detect(
-                FramePacket(index=2, timestamp_ms=1_000, image=b"jpeg")
-            )
+            detections = self._pump_team_preview(detector)
         finally:
             detector.close()
 
         self.assertEqual(detections.p2_team, opponent)
         self.assertEqual(resolver.rotation_degrees, 0)
+        self.assertGreaterEqual(detector._preview_votes["p2"][0][opponent[0]], 3)
+
+    @staticmethod
+    def _pump_team_preview(detector, *, frames: int = 40):
+        """Avanza frames de Team Preview hasta que el roster rival queda fijado."""
+
+        detections = None
+        for index in range(frames):
+            pending = detector._preview_future
+            if pending is not None:
+                try:
+                    pending.result(timeout=1)
+                except Exception:
+                    pass  # el detector registra el fallo al hacer poll
+            detections = detector.detect(
+                FramePacket(index=index, timestamp_ms=index * 500, image=b"jpeg")
+            )
+            if detections.p2_team:
+                break
+        assert detections is not None
+        return detections
+
+    def test_detector_discards_a_lone_bad_team_preview_reading(self) -> None:
+        preview_lines = (
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+        )
+        opponent = (
+            "Swampert",
+            "Metagross",
+            "Pelipper",
+            "Archaludon",
+            "Sableye",
+            "Basculegion",
+        )
+        # Los primeros frames del Team Preview llegan en transición y confunden
+        # una silueta; el roster bueno es el que repiten los frames siguientes.
+        wrong = opponent[:4] + ("Spiritomb",) + opponent[5:]
+
+        class FakeEngine:
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                return preview_lines
+
+        class FlakyPreviewResolver:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def resolve(
+                self,
+                _frame: FramePacket,
+                *,
+                rotation_degrees: int = 0,
+                side: str = "p2",
+            ) -> tuple[str, ...]:
+                if side != "p2":
+                    raise DetectionError("este doble sólo conoce el panel rival")
+                self.calls += 1
+                if self.calls <= 2:
+                    return wrong
+                return opponent
+
+        resolver = FlakyPreviewResolver()
+        detector = ChampionsOcrDetector(
+            engine=FakeEngine(),
+            team_preview_resolver=resolver,
+        )
+        try:
+            detections = self._pump_team_preview(detector)
+        finally:
+            detector.close()
+
+        self.assertEqual(detections.p2_team, opponent)
+
+    def test_detector_reports_a_single_warning_when_no_preview_reading_works(self) -> None:
+        preview_lines = (
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+        )
+
+        class FakeEngine:
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                return preview_lines
+
+        class BrokenPreviewResolver:
+            def resolve(
+                self,
+                _frame: FramePacket,
+                *,
+                rotation_degrees: int = 0,
+                side: str = "p2",
+            ) -> tuple[str, ...]:
+                raise DetectionError("no se pudo leer un par de tipos válido en la fila rival 2")
+
+        detector = ChampionsOcrDetector(
+            engine=FakeEngine(),
+            team_preview_resolver=BrokenPreviewResolver(),
+        )
+        try:
+            self._pump_team_preview(detector, frames=8)
+            self.assertFalse(detector.flush_pending().p2_team)
+            warnings = list(detector._visual_warnings)
+        finally:
+            detector.close()
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("lecturas", warnings[0])
 
     def test_cli_uses_ocr_by_default_and_keeps_ollama_as_an_option(self) -> None:
         parser = build_parser()

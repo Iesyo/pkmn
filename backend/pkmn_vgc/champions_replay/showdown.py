@@ -11,6 +11,27 @@ def _identifier(slot: str, species: str) -> str:
     return f"{slot}: {species}"
 
 
+def _base_species(species: str) -> str:
+    base = species.split("-", 1)[0]
+    return "".join(character for character in base.lower() if character.isalnum())
+
+
+def _named_species(event: BattleEvent, active: dict[str, str]) -> str:
+    """Quién es el Pokémon del evento, dando prioridad a lo que dijo el juego.
+
+    Normalmente manda el ocupante que llevamos apuntado en el slot, porque
+    conserva la forma tras una megaevolución. Pero si el mensaje nombró a otro
+    Pokémon distinto, el apunte está desfasado y lo escrito en pantalla gana.
+    """
+
+    tracked = active.get(event.slot or "")
+    if not event.species or not tracked:
+        return tracked or event.species or "Pokémon"
+    if _base_species(tracked) == _base_species(event.species):
+        return tracked
+    return event.species
+
+
 def _health(value: str | None) -> str:
     return value or "100/100"
 
@@ -74,7 +95,7 @@ def _event_lines(
 
     if event.kind in {"faint", "crit"}:
         assert event.slot
-        species = active.get(event.slot) or event.species or "Pokémon"
+        species = _named_species(event, active)
         prefix = "" if event.kind == "faint" else "-"
         return [f"|{prefix}{event.kind}|{_identifier(event.slot, species)}"]
 

@@ -53,21 +53,10 @@ def _default_processor(
     trace_path = output_directory / "ocr.trace.jsonl"
     trace_path.unlink(missing_ok=True)
     catalog = load_champions_catalog()
-    cache_root = (
-        output_directory.parent.parent
-        if output_directory.name == "output"
-        else output_directory.parent
-    )
-    sprite_cache = Path(
-        os.getenv("PKMN_CHAMPIONS_SPRITE_CACHE", str(cache_root / "sprite-cache"))
-    )
     detector = ChampionsOcrDetector(
         context=detector_context,
         trace_path=trace_path,
-        team_preview_resolver=ChampionsTeamPreviewResolver(
-            catalog.species_types,
-            cache_directory=sprite_cache,
-        ),
+        team_preview_resolver=ChampionsTeamPreviewResolver(catalog.species_types),
     )
     captures = ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,

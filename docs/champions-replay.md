@@ -45,7 +45,8 @@ flowchart TD
   candidatos y la silueta o el género resuelven los empates. El roster queda
   guardado en `ocr.trace.jsonl` y limita después la relación mote → especie.
   La primera lectura descarga únicamente los sprites ambiguos desde el catálogo
-  público de Showdown y los conserva en `data/champions-jobs/sprite-cache`.
+  propios de Pokémon Champions que viajan en `public/data/champions-sprites/`
+  (se regeneran con `npm run data:champions-sprites`).
 - `LiveFrameSource` lee OBS Virtual Camera mediante FFmpeg y conserva sólo el
   frame más reciente. Si el OCR tarda, descarta imágenes viejas en vez de
   acumular retraso.

@@ -19,6 +19,7 @@ from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, Repl
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
 from .team_preview import ChampionsTeamPreviewResolver
+from .verify import describe, verify_replay
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
@@ -204,6 +205,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    verify = subparsers.add_parser(
+        "verify",
+        help="Contrasta un replay con el texto que el juego puso en pantalla.",
+    )
+    verify.add_argument("--trace", type=Path, required=True, help="JSONL de la traza OCR.")
+    verify.add_argument(
+        "--replay",
+        type=Path,
+        required=True,
+        nargs="+",
+        help="Logs de Showdown, en el mismo orden que las batallas de la traza.",
+    )
+
     events = subparsers.add_parser("events", help="Genera un replay desde un JSON de eventos ya revisado.")
     events.add_argument("capture", type=Path)
     events.add_argument("--output", type=Path, required=True)
@@ -235,10 +249,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _verify(trace: Path, logs: Sequence[Path]) -> int:
+    """Informa de lo que el replay añade o se deja respecto a la pantalla."""
+
+    faithful = True
+    for battle_index, log in enumerate(logs):
+        report = verify_replay(
+            trace,
+            log,
+            battle_index=battle_index,
+            species_names=[name for name, _types in load_champions_catalog().species_types],
+        )
+        print(f"{log.name} (batalla {battle_index}):")
+        for line in describe(report):
+            print(f"  {line}")
+        faithful = faithful and report.faithful
+    print(
+        "El replay coincide con la pantalla."
+        if faithful
+        else "Hay diferencias entre el replay y la pantalla."
+    )
+    return 0 if faithful else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     progress: _ProgressPrinter | None = None
     try:
+        if args.command == "verify":
+            return _verify(args.trace, args.replay)
         if args.command == "events":
             battle = CapturedBattle.from_mapping(_load_mapping(args.capture))
             return _write_captures((battle,), args.output, args.force)
@@ -275,12 +314,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 min_confidence=args.ocr_min_confidence,
                 team_preview_resolver=ChampionsTeamPreviewResolver(
                     load_champions_catalog().species_types,
-                    cache_directory=Path(
-                        os.getenv(
-                            "PKMN_CHAMPIONS_SPRITE_CACHE",
-                            "data/champions-jobs/sprite-cache",
-                        )
-                    ),
                 ),
             )
             detector_label = "OCR local determinista"

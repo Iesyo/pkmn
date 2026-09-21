@@ -721,6 +721,7 @@ class ChampionsTextParser:
         self._identity_counter = 0
         self._identity_by_alias: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
         self._identity_species: dict[str, str] = {}
+        self._identity_evidence: dict[str, int] = {}
         self._identity_slots: dict[str, str] = {}
 
     def _infer_alias(
@@ -783,7 +784,7 @@ class ChampionsTextParser:
         if len(narrowed) != 1:
             return None, None, False
         species = next(iter(narrowed))
-        slot, changed = self._bind_alias(side, nickname, species)
+        slot, changed = self._bind_alias(side, nickname, species, evidence="inferred")
         return species, slot, changed
 
     def _infer_alias_from_move(
@@ -840,6 +841,23 @@ class ChampionsTextParser:
                 result[alias_key] = canonical
         return result
 
+    def bind_preview_labels(self, labels: Sequence[tuple[str, str]], *, side: str) -> int:
+        """Ata cada mote con la especie de su misma tarjeta del Team Preview.
+
+        Es la única fuente que empareja las dos cosas sin deducir nada. Sin
+        esto, cuando los dos entrenadores llevan la misma especie el texto de
+        batalla se atribuye al lado equivocado.
+        """
+
+        bound = 0
+        for nickname, species in labels:
+            if not nickname or not species:
+                continue
+            canonical = self._species.resolve(species, threshold=0.9) or species
+            self._bind_alias(side, nickname, canonical, evidence="preview")
+            bound += 1
+        return bound
+
     def bind_preview_team(
         self,
         team: Sequence[str],
@@ -894,6 +912,7 @@ class ChampionsTextParser:
             species = self._identity_species.get(identity)
             if species and _text_key(species) not in allowed:
                 self._identity_species.pop(identity, None)
+                self._identity_evidence.pop(identity, None)
 
         for evidence_key, candidates in tuple(self._alias_evidence.items()):
             evidence_side, alias_key = evidence_key
@@ -910,7 +929,7 @@ class ChampionsTextParser:
                 self._bound_alias_keys[side].add(alias_key)
                 identity = self._identity_by_alias[side].get(alias_key)
                 if identity:
-                    self._identity_species[identity] = species
+                    self._set_identity_species(identity, species, evidence="preview")
         return roster
 
     def _resolve_species(self, value: str, side: str | None = None) -> str | None:
@@ -1014,6 +1033,15 @@ class ChampionsTextParser:
     def _side_for_species(self, species: str, *, opposing: bool = False) -> str:
         if opposing:
             return "p2"
+        # El mensaje sin "The opposing" es del jugador. Si p1 tiene esa especie,
+        # se respeta: cuando los dos entrenadores llevan la misma, buscar por
+        # slot activo devolvía el primero insertado y cruzaba los ataques.
+        own = _text_key(self._canonical_actor(species))
+        for slot, active_species in self._active.items():
+            if slot.startswith("p1") and _text_key(self._canonical_actor(active_species)) == own:
+                return "p1"
+        if _text_key(species) in {_text_key(value) for value in self._teams["p1"]}:
+            return "p1"
         for slot, active_species in self._active.items():
             if _text_key(self._canonical_actor(active_species)) == _text_key(self._canonical_actor(species)):
                 return slot[:2]
@@ -1067,10 +1095,47 @@ class ChampionsTextParser:
         threshold = 0.55 if len(value_key) <= 3 else 0.64
         return slot if score >= threshold and score - runner_up >= 0.15 else None
 
-    def _bind_alias(self, side: str, value: str, species: str) -> tuple[str | None, bool]:
+    # Qué tan firme es la prueba de que una identidad es cierta especie. El
+    # juego escribiéndola en pantalla pesa más que el Team Preview leído por
+    # imagen, y cualquiera de los dos pesa más que deducirla de un movimiento.
+    _EVIDENCE_RANK = {"inferred": 1, "preview": 2, "explicit": 3}
+
+    def _set_identity_species(
+        self,
+        identity: str,
+        species: str,
+        *,
+        evidence: str = "explicit",
+    ) -> bool:
+        """Fija la especie de una identidad sin dejar que la pise algo más flojo."""
+
+        rank = self._EVIDENCE_RANK[evidence]
+        if self._identity_evidence.get(identity, 0) > rank:
+            return False
+        self._identity_species[identity] = species
+        self._identity_evidence[identity] = rank
+        return True
+
+    def _bind_alias(
+        self,
+        side: str,
+        value: str,
+        species: str,
+        *,
+        evidence: str = "explicit",
+    ) -> tuple[str | None, bool]:
         """Aprende un nickname cuando el juego revela después su especie."""
 
         identity = self._identity_for_value(side, value)
+        # El OCR lee el mismo mote de varias formas. Si esta lectura es una
+        # variante de un mote ya identificado con mejor evidencia, hereda su
+        # especie en vez de abrir una entrada que la contradiga.
+        established = self._identity_species.get(identity) if identity else None
+        if (
+            established
+            and self._identity_evidence.get(identity, 0) > self._EVIDENCE_RANK[evidence]
+        ):
+            species = established
         key = _text_key(value)
         if key:
             self._aliases[side][key] = species
@@ -1079,7 +1144,7 @@ class ChampionsTextParser:
                 self._message_aliases[side][value.casefold()] = species
         slot = self._announced_slot(side, value)
         if identity:
-            self._identity_species[identity] = species
+            self._set_identity_species(identity, species, evidence=evidence)
             if slot:
                 self._identity_slots[slot] = identity
             return slot or self._slot_for_species(identity, side), False
@@ -1624,7 +1689,7 @@ class ChampionsTextParser:
             self._bound_alias_keys[alias.side].add(nickname_key)
             identity = self._identity_for_value(alias.side, alias.nickname)
             if identity:
-                self._identity_species[identity] = canonical
+                self._set_identity_species(identity, canonical, evidence="preview")
             if _text_key(alias.nickname) != _text_key(canonical):
                 self._message_aliases[alias.side][alias.nickname.casefold()] = canonical
             applied.append(
@@ -1716,7 +1781,7 @@ class ChampionsTextParser:
                 if identity:
                     actor = identity
                     if species:
-                        self._identity_species[identity] = species
+                        self._set_identity_species(identity, species, evidence="inferred")
                 elif species:
                     actor = species
                 else:
@@ -1793,7 +1858,7 @@ class ChampionsTextParser:
             if actor in observed_actors:
                 continue
             if identity and species:
-                self._identity_species[identity] = species
+                self._set_identity_species(identity, species, evidence="inferred")
             observations[slot] = (actor, health_by_slot.get(slot))
             observed_actors.add(actor)
 
@@ -2483,6 +2548,13 @@ class ChampionsTextParser:
 class ChampionsOcrDetector:
     """Detector principal para vídeo/OBS: OCR local y parser determinista."""
 
+    # El Team Preview sigue en pantalla decenas de frames: leerlo varias veces y
+    # quedarnos con el roster que se repite evita que un frame en transición
+    # (o una silueta ambigua) decida el equipo rival de toda la batalla.
+    _PREVIEW_MAX_ATTEMPTS = 24
+    _PREVIEW_MIN_VOTES = 3
+    _PREVIEW_MIN_LEAD = 2
+
     def __init__(
         self,
         *,
@@ -2534,33 +2606,93 @@ class ChampionsOcrDetector:
         self._preview_future_generation = 0
         self._preview_generation = 0
         self._preview_stable_frames = 0
-        self._preview_attempted = False
-        self._preview_team: tuple[str, ...] = ()
+        self._preview_attempts = 0
+        # Un voto por fila, no por roster entero: basta con que una fila baile
+        # para que ninguna lectura completa llegue a repetirse.
+        self._preview_votes: dict[str, list[Counter[str]]] = {
+            "p1": [Counter() for _ in range(6)],
+            "p2": [Counter() for _ in range(6)],
+        }
+        self._preview_labels: dict[str, list[Counter[str]]] = {
+            "p1": [Counter() for _ in range(6)],
+            "p2": [Counter() for _ in range(6)],
+        }
+        self._preview_errors: Counter[str] = Counter()
+        self._preview_team: dict[str, tuple[str, ...]] = {"p1": (), "p2": ()}
         self._preview_source: PreparedOcrFrame | None = None
 
     def _poll_preview_team(self, *, wait: bool = False) -> tuple[str, ...]:
         future = self._preview_future
-        if future is None or (not wait and not future.done()):
+        if future is not None and (wait or future.done()):
+            generation = self._preview_future_generation
+            self._preview_future = None
+            try:
+                rosters = future.result()
+            except Exception as error:  # una lectura mala no descarta el Team Preview
+                self._preview_errors[str(error)] += 1
+            else:
+                if generation == self._preview_generation:
+                    for side, roster in rosters.items():
+                        for index, row in enumerate(roster[:6]):
+                            species, label = row if isinstance(row, tuple) else (row, None)
+                            if species:
+                                self._preview_votes[side][index][species] += 1
+                            if label:
+                                self._preview_labels[side][index][label] += 1
+        elif not wait:
             return ()
-        generation = self._preview_future_generation
-        self._preview_future = None
-        try:
-            team = future.result()
-        except Exception as error:  # la batalla puede continuar con evidencia parcial
-            self._visual_warnings.append(
-                "Team Preview detectado, pero no se pudieron identificar los seis "
-                f"sprites rivales: {error}"
-            )
+        applied = ()
+        for side in ("p2", "p1"):
+            if self._preview_team[side]:
+                continue
+            accepted = self._accept_preview_team(side, final=wait)
+            if side == "p2":
+                applied = accepted
+        return applied
+
+    def _accept_preview_team(self, side: str, *, final: bool) -> tuple[str, ...]:
+        """Se queda con el roster que repiten varios frames del Team Preview."""
+
+        rows = self._preview_votes[side]
+        if not any(rows):
+            if final and side == "p2" and self._preview_errors:
+                error, _count = self._preview_errors.most_common(1)[0]
+                self._visual_warnings.append(
+                    "Team Preview detectado, pero no se pudieron identificar los seis "
+                    f"sprites rivales en {self._preview_attempts} lecturas: {error}"
+                )
             return ()
-        if generation != self._preview_generation:
+        team: list[str] = []
+        for votes in rows:
+            ranked = votes.most_common()
+            if not ranked:
+                return ()
+            species, count = ranked[0]
+            runner_up = ranked[1][1] if len(ranked) > 1 else 0
+            if not final and (
+                count < self._PREVIEW_MIN_VOTES or count - runner_up < self._PREVIEW_MIN_LEAD
+            ):
+                return ()
+            team.append(species)
+        if len(set(team)) != len(team):
+            # Dos filas con la misma especie significa que alguna se leyó mal.
             return ()
-        applied = self.parser.bind_preview_team(team, side="p2")
+        applied = self.parser.bind_preview_team(team, side=side)
         if len(applied) != 6:
-            self._visual_warnings.append(
-                "Team Preview detectado, pero la lectura visual no produjo seis especies rivales."
-            )
+            if side == "p2":
+                self._visual_warnings.append(
+                    "Team Preview detectado, pero la lectura visual no produjo seis "
+                    "especies rivales."
+                )
             return ()
-        self._preview_team = applied
+        self._preview_team[side] = applied
+        labels = [
+            (votes.most_common(1)[0][0], species)
+            for votes, species in zip(self._preview_labels[side], applied, strict=False)
+            if votes
+        ]
+        if labels:
+            self.parser.bind_preview_labels(labels, side=side)
         return applied
 
     def _schedule_preview_team(
@@ -2572,23 +2704,62 @@ class ChampionsOcrDetector:
             self._preview_resolver is None
             or self._preview_executor is None
             or self._preview_future is not None
-            or self._preview_attempted
-            or self._preview_team
+            or all(self._preview_team.values())
             or not detections.team_preview
-            or len(detections.p2_team) == 6
         ):
             return
         self._preview_stable_frames += 1
         if self._preview_stable_frames < 2:
             return
-        self._preview_attempted = True
+        if self._preview_attempts >= self._PREVIEW_MAX_ATTEMPTS:
+            return
+        self._preview_attempts += 1
         self._preview_source = prepared
         self._preview_future_generation = self._preview_generation
         self._preview_future = self._preview_executor.submit(
-            self._preview_resolver.resolve,
+            self._read_preview,
             prepared.frame,
-            rotation_degrees=prepared.rotation_degrees,
+            prepared.rotation_degrees,
+            prepared.lines,
         )
+
+    def _read_preview(
+        self,
+        frame: FramePacket,
+        rotation_degrees: int,
+        lines: Sequence[OcrLine] = (),
+    ) -> dict[str, tuple]:
+        """Lee ambos paneles del Team Preview en la misma pasada.
+
+        El rival es el que importa y su fallo se propaga; el del jugador es un
+        extra que ahorra pedir el equipo por fuera, así que si no sale se deja
+        vacío en vez de tumbar la lectura.
+        """
+
+        assert self._preview_resolver is not None
+        read = getattr(self._preview_resolver, "resolve_rows", None)
+        if read is None:  # un resolver que sólo sepa devolver el roster entero
+            def read(frame, *, rotation_degrees, side):  # type: ignore[misc]
+                assert self._preview_resolver is not None
+                return self._preview_resolver.resolve(
+                    frame, rotation_degrees=rotation_degrees, side=side
+                )
+
+        rosters: dict[str, tuple] = {
+            "p2": read(frame, rotation_degrees=rotation_degrees, side="p2")
+        }
+        # El panel del jugador sí trae el mote escrito junto al sprite.
+        labelled = getattr(self._preview_resolver, "resolve_labelled_rows", None)
+        try:
+            if labelled is None:
+                rosters["p1"] = read(frame, rotation_degrees=rotation_degrees, side="p1")
+            else:
+                rosters["p1"] = labelled(
+                    frame, lines, rotation_degrees=rotation_degrees, side="p1"
+                )
+        except Exception:  # noqa: BLE001 - el panel propio es opcional
+            rosters["p1"] = ()
+        return rosters
 
     def _poll_visual_aliases(self) -> tuple[HudAlias, ...]:
         future = self._alias_future
@@ -2756,8 +2927,13 @@ class ChampionsOcrDetector:
             self._preview_future.cancel()
         self._preview_future = None
         self._preview_stable_frames = 0
-        self._preview_attempted = False
-        self._preview_team = ()
+        self._preview_attempts = 0
+        for table in (self._preview_votes, self._preview_labels):
+            for rows in table.values():
+                for votes in rows:
+                    votes.clear()
+        self._preview_errors.clear()
+        self._preview_team = {"p1": (), "p2": ()}
         self._preview_source = None
         self.parser.reset_battle_state()
 
