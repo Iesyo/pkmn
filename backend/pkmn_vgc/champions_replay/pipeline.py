@@ -159,8 +159,6 @@ class CaptureAccumulator:
             raise CaptureIncompleteError("No se pudo identificar el resultado de la batalla.")
         if not self.events:
             raise CaptureIncompleteError("No se detectaron eventos de batalla.")
-        if not self.p1_team or not self.p2_team:
-            raise CaptureIncompleteError("No se pudo reconstruir el Team Preview de ambos jugadores.")
         identity_map = dict(identities or {})
 
         def resolved(values: Iterable[str]) -> tuple[str, ...]:
@@ -168,12 +166,18 @@ class CaptureAccumulator:
 
         def ordered_selection(lead: list[str], selected: list[str]) -> tuple[str, ...]:
             ordered: list[str] = []
-            _merge_species(ordered, resolved(lead), limit=4)
+            _merge_species(
+                ordered,
+                (species for species in resolved(lead) if not is_actor_identity(species)),
+                limit=4,
+            )
             _merge_species(ordered, resolved(selected), limit=4)
             return tuple(ordered)
 
         def completed_team(side: str, current: list[str], lead: list[str]) -> tuple[str, ...]:
-            canonical_lead = list(resolved(lead))
+            canonical_lead = [
+                species for species in resolved(lead) if not is_actor_identity(species)
+            ]
             current_keys = {
                 "".join(character for character in species.lower() if character.isalnum())
                 for species in current
@@ -193,15 +197,22 @@ class CaptureAccumulator:
                     _merge_species(completed, (species,), limit=6)
             return tuple(completed)
 
+        p1_team = completed_team("p1", self.p1_team, self.p1_lead)
+        p2_team = completed_team("p2", self.p2_team, self.p2_lead)
+        if not p1_team or not p2_team:
+            raise CaptureIncompleteError(
+                "No se pudo reconstruir el Team Preview de ambos jugadores."
+            )
+
         return CapturedBattle(
             p1=BattleSide(
                 self.p1_name,
-                completed_team("p1", self.p1_team, self.p1_lead),
+                p1_team,
                 ordered_selection(self.p1_lead, self.p1_selected),
             ),
             p2=BattleSide(
                 self.p2_name,
-                completed_team("p2", self.p2_team, self.p2_lead),
+                p2_team,
                 ordered_selection(self.p2_lead, self.p2_selected),
             ),
             events=tuple(self.events),

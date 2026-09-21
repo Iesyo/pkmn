@@ -281,6 +281,46 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(detections.events[0].value, "Sylveon protected itself!")
 
+    def test_serializes_tailwind_messages_as_side_conditions(self) -> None:
+        parser = self.parser()
+        parser._battle_open = True
+
+        opposing_start = parser.parse(
+            (
+                line(
+                    "A tailwind started blowing on the opposing side!",
+                    x=0.2,
+                    y=0.7,
+                    width=0.5,
+                ),
+            ),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        opposing_end = parser.parse(
+            (line("The opposing side's tailwind petered out!", x=0.2, y=0.7, width=0.5),),
+            timestamp_ms=2_000,
+            source_frame=2,
+        )
+        local_start = parser.parse(
+            (line("A tailwind started blowing behind your team!", x=0.2, y=0.7, width=0.5),),
+            timestamp_ms=3_000,
+            source_frame=3,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in opposing_start.events],
+            [("sidestart", "p2a", "move: Tailwind")],
+        )
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in opposing_end.events],
+            [("sideend", "p2a", "move: Tailwind")],
+        )
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in local_start.events],
+            [("sidestart", "p1a", "move: Tailwind")],
+        )
+
     def test_uses_the_recall_time_when_hud_confirms_a_switch_later(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(
@@ -1423,7 +1463,6 @@ class ChampionsOcrTests(unittest.TestCase):
                 p1_name="Player",
                 p2_name="Rival",
                 p1_team=context.p1_team,
-                p2_team=("Metagross", "Sableye"),
             ),
         ).capture()[0]
 
@@ -1434,6 +1473,7 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertTrue(light_screen.species.startswith("__champions_actor_"))
         self.assertLess(capture.events.index(light_screen), capture.events.index(encore))
         self.assertEqual(dict(capture.identities)[light_screen.species], "Sableye")
+        self.assertEqual(capture.p2.team, ("Metagross", "Sableye"))
 
         log = build_replay_document(capture).log
         turn = log.index("|turn|1")

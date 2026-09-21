@@ -1805,6 +1805,32 @@ class ChampionsTextParser:
                 ),
             )
 
+        if "tailwind started blowing" in lowered:
+            side = "p2" if "opposing" in lowered else "p1"
+            return (
+                BattleEvent(
+                    kind="sidestart",
+                    timestamp_ms=timestamp_ms,
+                    confidence=confidence,
+                    slot=f"{side}a",  # type: ignore[arg-type]
+                    value="move: Tailwind",
+                    source_frame=source_frame,
+                ),
+            )
+
+        if "tailwind petered out" in lowered:
+            side = "p2" if "opposing" in lowered else "p1"
+            return (
+                BattleEvent(
+                    kind="sideend",
+                    timestamp_ms=timestamp_ms,
+                    confidence=confidence,
+                    slot=f"{side}a",  # type: ignore[arg-type]
+                    value="move: Tailwind",
+                    source_frame=source_frame,
+                ),
+            )
+
         withdrew = re.match(r"^(.*?)\s*withdrew\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if withdrew:
             side = self._side_for_player(withdrew.group(1))
