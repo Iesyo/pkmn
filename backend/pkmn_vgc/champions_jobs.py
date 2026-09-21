@@ -12,10 +12,14 @@ from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import ReplayDocument
-from .champions_replay.ocr_detector import ChampionsOcrDetector
+from .champions_replay.ocr_detector import (
+    ChampionsOcrDetector,
+    OcrTraceDetector,
+    load_trace_aliases,
+)
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
-from .champions_replay.sources import VideoFrameSource
+from .champions_replay.sources import OcrTraceFrameSource, VideoFrameSource
 
 
 ALLOWED_VIDEO_SUFFIXES = {".mkv", ".mov", ".mp4", ".webm"}
@@ -53,13 +57,33 @@ def _default_processor(
         context=detector_context,
         trace_path=trace_path,
     )
-    captures = ReplayCapturePipeline(source, detector, seed).capture(
+    provisional_captures = ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,
         total_frames=source.estimated_frame_count(),
         on_progress=on_progress,
         on_warning=on_warning,
     )
-    return tuple(build_replay_document(capture) for capture in captures)
+    aliases_by_battle = load_trace_aliases(trace_path)
+    if not aliases_by_battle:
+        return tuple(build_replay_document(capture) for capture in provisional_captures)
+
+    # Segunda pasada: el OCR ya terminó y cada batalla conoce desde su primer
+    # frame el mapa completo mote -> especie. Así se conserva el orden original
+    # y ninguna asociación tardía inserta switches dentro de un turno.
+    trace_source = OcrTraceFrameSource(path=trace_path)
+    final_captures = ReplayCapturePipeline(
+        trace_source,
+        OcrTraceDetector(
+            context=detector_context,
+            aliases_by_battle=aliases_by_battle,
+        ),
+        seed,
+    ).capture(
+        max_battles=max_battles,
+        total_frames=trace_source.estimated_frame_count(),
+        on_warning=on_warning,
+    )
+    return tuple(build_replay_document(capture) for capture in final_captures)
 
 
 Processor = Callable[

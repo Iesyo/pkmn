@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 
 from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, build_parser
@@ -16,7 +17,10 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     OcrTraceDetector,
     RapidOcrEngine,
     _health_value,
+    load_trace_aliases,
 )
+from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
+from pkmn_vgc.champions_replay.showdown import build_replay_document
 from pkmn_vgc.champions_replay.sources import FramePacket, OcrTraceFrameSource
 
 
@@ -1129,6 +1133,166 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.slot, event.species) for event in detections.events],
             [("p2a", "Metagross")],
         )
+
+    def test_trace_preloads_final_aliases_before_the_first_hud_frame(self) -> None:
+        detector = OcrTraceDetector(
+            context=DetectorContext(p2_team=("Metagross", "Sableye")),
+            aliases_by_battle={
+                0: {
+                    "p1": (),
+                    "p2": (("せんせい", "Metagross"), ("しごでき", "Sableye")),
+                }
+            },
+        )
+        opening = {
+            "battle_index": 0,
+            "ocr": [
+                asdict(line("しごでき", x=0.799, y=0.05, width=0.051)),
+                asdict(line("せんせい", x=0.629, y=0.05, width=0.052)),
+                asdict(line("100%", x=0.851, y=0.11, width=0.053)),
+                asdict(line("100%", x=0.682, y=0.11, width=0.053)),
+            ],
+        }
+
+        detections = detector.detect(
+            FramePacket(index=0, timestamp_ms=500, image=json.dumps(opening).encode())
+        )
+
+        self.assertEqual(
+            [(event.slot, event.species) for event in detections.events],
+            [("p2a", "Metagross"), ("p2b", "Sableye")],
+        )
+
+    def test_trace_alias_maps_are_isolated_between_battles(self) -> None:
+        detector = OcrTraceDetector(
+            context=DetectorContext(p2_team=("Metagross", "Sableye")),
+            aliases_by_battle={
+                0: {"p1": (), "p2": (("Ace", "Metagross"),)},
+                1: {"p1": (), "p2": (("Ace", "Sableye"),)},
+            },
+        )
+
+        def trace_frame(battle_index: int) -> bytes:
+            return json.dumps(
+                {
+                    "battle_index": battle_index,
+                    "ocr": [
+                        asdict(line("Ace", x=0.629, y=0.05, width=0.052)),
+                        asdict(line("100%", x=0.682, y=0.11, width=0.053)),
+                    ],
+                }
+            ).encode()
+
+        first = detector.detect(FramePacket(index=0, timestamp_ms=0, image=trace_frame(0)))
+        second = detector.detect(FramePacket(index=1, timestamp_ms=0, image=trace_frame(1)))
+
+        self.assertEqual(first.events[0].species, "Metagross")
+        self.assertEqual(second.events[0].species, "Sableye")
+
+    def test_loads_the_last_resolved_alias_map_for_each_battle(self) -> None:
+        records = (
+            {"battle_index": 0, "resolved_aliases": {"p1": {}, "p2": {"Ace": "Metagross"}}},
+            {"battle_index": 0, "resolved_aliases": {"p1": {}, "p2": {"Shade": "Sableye"}}},
+            {"battle_index": 1, "resolved_aliases": {"p1": {}, "p2": {"Ace": "Sableye"}}},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "battle.trace.jsonl"
+            trace.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+
+            aliases = load_trace_aliases(trace)
+
+        self.assertEqual(dict(aliases[0]["p2"]), {"Ace": "Metagross", "Shade": "Sableye"})
+        self.assertEqual(dict(aliases[1]["p2"]), {"Ace": "Sableye"})
+
+    def test_final_trace_pass_places_both_leads_before_turn_one(self) -> None:
+        def record(
+            frame: int,
+            timestamp_ms: int,
+            lines: tuple[OcrLine, ...],
+            *,
+            resolved_aliases: dict[str, dict[str, str]] | None = None,
+        ) -> dict[str, object]:
+            return {
+                "frame": frame,
+                "timestamp_ms": timestamp_ms,
+                "battle_index": 0,
+                "ocr": [asdict(value) for value in lines],
+                "resolved_aliases": resolved_aliases or {"p1": {}, "p2": {}},
+            }
+
+        aliases = {
+            "p1": {},
+            "p2": {"せんせい": "Metagross", "しごでき": "Sableye"},
+        }
+        records = (
+            record(
+                1,
+                0,
+                (line("Rival sent out しごでき and せんせい!", x=0.2, y=0.7, width=0.5),),
+            ),
+            record(
+                2,
+                500,
+                (
+                    line("せんせい", x=0.629, y=0.05, width=0.052),
+                    line("しごでき", x=0.799, y=0.05, width=0.051),
+                    line("100%", x=0.682, y=0.11, width=0.053),
+                    line("100%", x=0.851, y=0.11, width=0.053),
+                    line("Venusaur", x=0.08, y=0.86),
+                    line("Sylveon", x=0.29, y=0.86),
+                    line("200/200", x=0.13, y=0.93),
+                    line("190/190", x=0.34, y=0.93),
+                ),
+            ),
+            record(
+                3,
+                1_000,
+                (
+                    line("FIGHT", x=0.86, y=0.70),
+                    line("POKÉMON", x=0.84, y=0.90),
+                ),
+            ),
+            record(
+                4,
+                1_500,
+                (line("You won the battle!", x=0.2, y=0.7, width=0.35),),
+                resolved_aliases=aliases,
+            ),
+        )
+        context = DetectorContext(
+            p1_name="Player",
+            p2_name="Rival",
+            p1_team=("Venusaur", "Sylveon"),
+            p2_team=("Metagross", "Sableye"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "battle.trace.jsonl"
+            trace.write_text(
+                "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in records),
+                encoding="utf-8",
+            )
+            source = OcrTraceFrameSource(trace)
+            captures = ReplayCapturePipeline(
+                source,
+                OcrTraceDetector(
+                    context=context,
+                    aliases_by_battle=load_trace_aliases(trace),
+                ),
+                CaptureSeed(
+                    p1_name="Player",
+                    p2_name="Rival",
+                    p1_team=context.p1_team,
+                    p2_team=context.p2_team,
+                ),
+            ).capture()
+
+        log = build_replay_document(captures[0]).log
+        turn = log.index("|turn|1")
+        self.assertLess(log.index("|switch|p2a: Metagross"), turn)
+        self.assertLess(log.index("|switch|p2b: Sableye"), turn)
 
 
 if __name__ == "__main__":

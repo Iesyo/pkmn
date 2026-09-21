@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor
-from pkmn_vgc.champions_replay.models import ReplayDocument
+from pkmn_vgc.champions_replay.models import (
+    BattleEvent,
+    BattleSide,
+    CapturedBattle,
+    ReplayDocument,
+)
 from pkmn_vgc.champions_replay.pipeline import CaptureProgress
 
 
@@ -64,6 +69,58 @@ class ChampionsJobTests(unittest.TestCase):
 
         self.assertEqual(documents, ())
         self.assertNotIn("alias_resolver", detector_type.call_args.kwargs)
+
+    @patch("pkmn_vgc.champions_jobs.load_trace_aliases")
+    @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
+    @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
+    @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
+    def test_web_processor_rebuilds_from_the_trace_with_final_aliases(
+        self,
+        source_type: MagicMock,
+        detector_type: MagicMock,
+        pipeline_type: MagicMock,
+        load_aliases: MagicMock,
+    ) -> None:
+        source_type.return_value.estimated_frame_count.return_value = 1
+        provisional = CapturedBattle(
+            p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+            p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+            events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+            winner="p1",
+        )
+        final = CapturedBattle(
+            p1=provisional.p1,
+            p2=BattleSide("Rival final", ("Metagross",), ("Metagross",)),
+            events=provisional.events,
+            winner="p1",
+        )
+        pipeline_type.return_value.capture.side_effect = [
+            (provisional,),
+            (final,),
+        ]
+        def fake_detector(**kwargs: object) -> MagicMock:
+            Path(kwargs["trace_path"]).write_text("{}\n", encoding="utf-8")
+            return MagicMock()
+
+        detector_type.side_effect = fake_detector
+        load_aliases.return_value = {
+            0: {"p1": (), "p2": (("せんせい", "Metagross"),)}
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            documents = _default_processor(
+                output / "video.mp4",
+                {},
+                output,
+                2.0,
+                0,
+                MagicMock(),
+                MagicMock(),
+            )
+
+        self.assertEqual(documents[0].p2, "Rival final")
+        self.assertEqual(pipeline_type.return_value.capture.call_count, 2)
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0

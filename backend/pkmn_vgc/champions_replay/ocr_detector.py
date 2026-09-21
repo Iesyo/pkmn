@@ -8,11 +8,11 @@ import time
 import unicodedata
 from collections import Counter, deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import BattleEvent, FrameDetections
@@ -584,10 +584,17 @@ class ChampionsTextParser:
         }
         self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
         self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
-        self._message_aliases: dict[str, str] = {
-            alias.casefold(): species
-            for alias, species in (*self.context.p1_aliases, *self.context.p2_aliases)
-            if alias.strip() and _text_key(alias) != _text_key(species)
+        self._message_aliases: dict[str, dict[str, str]] = {
+            "p1": {
+                alias.casefold(): species
+                for alias, species in self.context.p1_aliases
+                if alias.strip() and _text_key(alias) != _text_key(species)
+            },
+            "p2": {
+                alias.casefold(): species
+                for alias, species in self.context.p2_aliases
+                if alias.strip() and _text_key(alias) != _text_key(species)
+            },
         }
         self._configured_aliases = {
             side: dict(values)
@@ -596,6 +603,10 @@ class ChampionsTextParser:
         self._configured_bound_alias_keys = {
             "p1": {_text_key(alias) for alias, _species in self.context.p1_aliases},
             "p2": {_text_key(alias) for alias, _species in self.context.p2_aliases},
+        }
+        self._configured_message_aliases = {
+            side: dict(values)
+            for side, values in self._message_aliases.items()
         }
         self._bound_alias_keys = {
             side: set(values)
@@ -628,6 +639,21 @@ class ChampionsTextParser:
     def reset_battle_state(self) -> None:
         """Descarta el estado efímero antes de analizar otra batalla."""
 
+        # Los aliases aprendidos pertenecen a una sola batalla. Reutilizarlos
+        # en la siguiente mezcla identidades cuando dos rivales usan el mismo
+        # mote o cuando cambia la pareja de leads.
+        self._aliases = {
+            side: dict(values)
+            for side, values in self._configured_aliases.items()
+        }
+        self._bound_alias_keys = {
+            side: set(values)
+            for side, values in self._configured_bound_alias_keys.items()
+        }
+        self._message_aliases = {
+            side: dict(values)
+            for side, values in self._configured_message_aliases.items()
+        }
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
         self._player_names = {
@@ -856,7 +882,7 @@ class ChampionsTextParser:
             self._aliases[side][key] = species
             self._bound_alias_keys[side].add(key)
             if _text_key(value) != _text_key(species):
-                self._message_aliases[value.casefold()] = species
+                self._message_aliases[side][value.casefold()] = species
         slot = self._announced_slot(side, value)
         changed = bool(slot and self._active.get(slot) != species)
         if slot:
@@ -869,7 +895,11 @@ class ChampionsTextParser:
 
         normalized = value
         for alias, species in sorted(
-            self._message_aliases.items(),
+            (
+                item
+                for aliases in self._message_aliases.values()
+                for item in aliases.items()
+            ),
             key=lambda item: len(item[0]),
             reverse=True,
         ):
@@ -880,6 +910,14 @@ class ChampionsTextParser:
                 flags=re.IGNORECASE,
             )
         return normalized
+
+    def resolved_aliases(self) -> dict[str, dict[str, str]]:
+        """Devuelve el mapa final mote -> especie, separado por lado."""
+
+        return {
+            side: dict(values)
+            for side, values in self._message_aliases.items()
+        }
 
     def _mark_slot_open(self, slot: str) -> None:
         side = slot[:2]
@@ -1226,6 +1264,7 @@ class ChampionsTextParser:
         if _text_key(p2_name) != _text_key(self._player_names["p2"]):
             self._aliases["p2"] = dict(self._configured_aliases["p2"])
             self._bound_alias_keys["p2"] = set(self._configured_bound_alias_keys["p2"])
+            self._message_aliases["p2"] = dict(self._configured_message_aliases["p2"])
         self._player_names.update({"p1": p1_name, "p2": p2_name})
 
         return FrameDetections(
@@ -1338,6 +1377,9 @@ class ChampionsTextParser:
             # rival puede venir invertido, así que aquí aprendemos sólo el alias
             # y dejamos que ``parse`` emita los switches con sus slots visuales.
             self._aliases[alias.side][nickname_key] = canonical
+            self._bound_alias_keys[alias.side].add(nickname_key)
+            if _text_key(alias.nickname) != _text_key(canonical):
+                self._message_aliases[alias.side][alias.nickname.casefold()] = canonical
             applied.append(
                 HudAlias(
                     side=alias.side,
@@ -2051,6 +2093,7 @@ class ChampionsOcrDetector:
         self._primary_engine_claimed = False
         self.parser = ChampionsTextParser(context=context)
         self.trace_path = trace_path
+        self._trace_battle_index = 0
         self._alias_resolver = alias_resolver
         self._alias_executor = (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="champions-hud-vision")
@@ -2134,6 +2177,7 @@ class ChampionsOcrDetector:
         record: dict[str, Any] = {
             "frame": frame.index + 1,
             "timestamp_ms": frame.timestamp_ms,
+            "battle_index": self._trace_battle_index,
             "elapsed_ms": prepared.elapsed_ms,
             "rotation_degrees": prepared.rotation_degrees,
             "phase": phase,
@@ -2143,6 +2187,7 @@ class ChampionsOcrDetector:
                 for side, nickname in visual_candidates
             ],
             "visual_aliases": [asdict(alias) for alias in visual_aliases],
+            "resolved_aliases": self.parser.resolved_aliases(),
             "visual_alias_pending": self._alias_future is not None,
             "detections": {
                 "team_preview": detections.team_preview,
@@ -2205,6 +2250,7 @@ class ChampionsOcrDetector:
 
     def reset_battle_state(self) -> None:
         self._alias_generation += 1
+        self._trace_battle_index += 1
         self._visual_candidate_counts.clear()
         self._visual_attempted.clear()
         self._alias_source = None
@@ -2258,15 +2304,88 @@ class ChampionsOcrDetector:
             self._alias_executor = None
 
 
+def load_trace_aliases(path: Path) -> dict[int, dict[str, tuple[tuple[str, str], ...]]]:
+    """Carga el mapa final de motes de cada batalla sin alterar la traza."""
+
+    aliases: dict[int, dict[str, dict[str, str]]] = {}
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8-sig") as stream:
+        for raw in stream:
+            if not raw.strip():
+                continue
+            try:
+                payload = json.loads(raw)
+                battle_index = max(0, int(payload.get("battle_index", 0)))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            resolved = payload.get("resolved_aliases")
+            if not isinstance(resolved, dict):
+                continue
+            battle_aliases = aliases.setdefault(battle_index, {"p1": {}, "p2": {}})
+            for side in ("p1", "p2"):
+                values = resolved.get(side)
+                if not isinstance(values, dict):
+                    continue
+                for raw_alias, raw_species in values.items():
+                    alias = str(raw_alias).strip()
+                    species = str(raw_species).strip()
+                    if alias and species:
+                        battle_aliases[side][alias] = species
+    return {
+        battle_index: {
+            side: tuple(values.items())
+            for side, values in battle_aliases.items()
+        }
+        for battle_index, battle_aliases in aliases.items()
+    }
+
+
 class OcrTraceDetector:
     """Reaplica el parser a una traza sin repetir FFmpeg ni RapidOCR."""
 
-    def __init__(self, *, context: DetectorContext | None = None) -> None:
-        self.parser = ChampionsTextParser(context=context)
+    def __init__(
+        self,
+        *,
+        context: DetectorContext | None = None,
+        aliases_by_battle: Mapping[
+            int,
+            Mapping[str, Sequence[tuple[str, str]]],
+        ] | None = None,
+    ) -> None:
+        self._base_context = context or DetectorContext()
+        self._aliases_by_battle = dict(aliases_by_battle or {})
+        self._battle_index = 0
+        self.parser = ChampionsTextParser(context=self._context_for_battle(0))
+
+    @staticmethod
+    def _merged_aliases(
+        configured: Sequence[tuple[str, str]],
+        learned: Sequence[tuple[str, str]],
+    ) -> tuple[tuple[str, str], ...]:
+        merged = {alias.casefold(): (alias, species) for alias, species in configured}
+        for alias, species in learned:
+            merged[alias.casefold()] = (alias, species)
+        return tuple(merged.values())
+
+    def _context_for_battle(self, battle_index: int) -> DetectorContext:
+        learned = self._aliases_by_battle.get(battle_index, {})
+        return replace(
+            self._base_context,
+            p1_aliases=self._merged_aliases(
+                self._base_context.p1_aliases,
+                learned.get("p1", ()),
+            ),
+            p2_aliases=self._merged_aliases(
+                self._base_context.p2_aliases,
+                learned.get("p2", ()),
+            ),
+        )
 
     def detect(self, frame: FramePacket) -> FrameDetections:
         try:
             payload = json.loads(frame.image.decode("utf-8-sig"))
+            battle_index = max(0, int(payload.get("battle_index", 0)))
             values = payload.get("ocr")
             if not isinstance(values, list):
                 raise ValueError("falta la lista ocr")
@@ -2289,6 +2408,13 @@ class OcrTraceDetector:
             ) if isinstance(visual_values, list) else ()
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
+        if payload.get("phase") == "visual_alias_flush":
+            return FrameDetections()
+        if battle_index != self._battle_index:
+            self._battle_index = battle_index
+            self.parser = ChampionsTextParser(
+                context=self._context_for_battle(battle_index)
+            )
         self.parser.bind_visual_aliases(visual_aliases)
         return self.parser.parse(
             lines,

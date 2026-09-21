@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from .detector import DetectionError, DetectorContext, OllamaVisionDetector
 from .models import CapturedBattle
-from .ocr_detector import ChampionsOcrDetector, OcrTraceDetector
+from .ocr_detector import ChampionsOcrDetector, OcrTraceDetector, load_trace_aliases
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
@@ -242,7 +242,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed, detector_context = _seed_from_context(context_value, source_mode)
         sample_fps: float | None = None
         if args.command == "trace":
-            detector = OcrTraceDetector(context=detector_context)
+            detector = OcrTraceDetector(
+                context=detector_context,
+                aliases_by_battle=load_trace_aliases(args.trace),
+            )
             source = OcrTraceFrameSource(path=args.trace)
             total_frames = source.estimated_frame_count()
             detector_label = "parser de traza OCR"
