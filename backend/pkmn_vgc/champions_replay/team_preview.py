@@ -153,7 +153,11 @@ class ChampionsTeamPreviewResolver:
     # el mote y el objeto como texto a la izquierda. No lleva placas de tipo.
     # El borde derecho se queda corto a propósito: el marco redondeado de la
     # tarjeta es más claro que el fondo y se colaba en la silueta.
-    _PLAYER_SPRITE_TILE = (0.740, 0.970)
+    # Medido sobre las dos grabaciones con la tarjeta ya bien acotada: el
+    # sprite del jugador ocupa de 0,69 al borde en las dos. Las fracciones
+    # viejas estaban ajustadas a una tarjeta que sobraba por la izquierda y
+    # recortaban al Pokémon por los dos lados.
+    _PLAYER_SPRITE_TILE = (0.680, 1.000)
     # El mote va arriba a la izquierda de la tarjeta y el objeto justo debajo;
     # medidos en las dos capturas, el mote cae en y 0.24-0.30 y el objeto en
     # 0.70-0.74, así que la banda de arriba los separa sin ambigüedad.
@@ -372,23 +376,21 @@ class ChampionsTeamPreviewResolver:
 
         # El mapa de color sólo cubre el fondo visible de la tarjeta: sprites,
         # placas y textos lo interrumpen, así que el ancho se mide aparte.
-        if side == "p1":
-            # La tarjeta del jugador lleva el sprite pegado al borde derecho, y
-            # entre ella y el resto de la interfaz hay fondo oscuro: crecer
-            # mientras siga iluminada llega hasta el borde real.
-            lit = channels.max(axis=2) > 45
-            profile = np.concatenate(
-                [lit[top:bottom] for top, bottom in window], axis=0
-            ).mean(axis=0)
-        else:
-            # En el panel rival no sirve "lo que esté iluminado": el juego pinta
-            # una banda verde de ventaja pegada a la tarjeta y se la tragaba. Su
-            # franja superior, en cambio, está limpia de punta a punta.
-            strips = []
-            for top, bottom in window:
-                edge = max(1, round((bottom - top) * 0.12))
-                strips.append(card[top : top + edge])
-            profile = np.concatenate(strips, axis=0).mean(axis=0)
+        # La franja superior de la tarjeta está limpia de punta a punta en los dos
+        # paneles: ni sprites ni placas la interrumpen. Medir "lo que esté
+        # iluminado" no vale en ninguno: en el panel rival se traga la banda verde
+        # de ventaja, y en el del jugador, sobre una captura a pantalla completa,
+        # no hay fondo oscuro que lo pare y crece hasta el borde del frame. Ahí la
+        # tarjeta acababa midiendo todo el ancho, el recorte del sprite caía sobre
+        # el panel contrario y las seis filas salían vacías.
+        strips = []
+        for top, bottom in window:
+            edge = max(1, round((bottom - top) * 0.12))
+            strips.append(card[top : top + edge].mean(axis=0))
+        # Mediana entre las seis tarjetas, no media: el borde es el mismo en
+        # todas, y promediando basta con que una se lea sucia en un frame para
+        # que el borde se meta hacia dentro y el recorte del sprite se pierda.
+        profile = np.median(np.asarray(strips), axis=0)
         left, right = x1, x2
         while left > 0 and profile[left - 1] >= 0.60:
             left -= 1

@@ -1659,6 +1659,23 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(len(cards), 6)
         self.assertEqual([top for _x1, _x2, top, _bottom in cards], [40 + n * 90 for n in range(6)])
 
+    def test_the_player_card_does_not_swallow_a_full_bleed_frame(self) -> None:
+        import numpy as np
+
+        # Captura de PC a pantalla completa: no hay fondo oscuro a los lados que
+        # pare el crecimiento. Midiendo "lo que esté iluminado", la tarjeta
+        # acababa ocupando el ancho entero, el recorte del sprite caía sobre el
+        # panel contrario y las seis filas salían vacías.
+        image = np.full((600, 800, 3), 120, dtype=np.uint8)
+        for index in range(6):
+            top = 40 + index * 90
+            image[top : top + 80, 60:300] = (120, 60, 220)
+
+        cards = ChampionsTeamPreviewResolver._card_boxes(image, "p1")
+
+        self.assertEqual(len(cards), 6)
+        self.assertEqual({(x1, x2) for x1, x2, _top, _bottom in cards}, {(60, 300)})
+
     def test_the_card_veil_does_not_become_part_of_the_sprite(self) -> None:
         import numpy as np
 
