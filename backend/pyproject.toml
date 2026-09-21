@@ -17,7 +17,11 @@ dependencies = [
 dev = ["pytest>=8.3,<9.0", "httpx>=0.28,<1.0"]
 champions = [
   "rapidocr>=3.9,<4.0",
-  "onnxruntime>=1.30,<2.0",
+  # En Windows el runtime con DirectML corre los modelos en la GPU. Es el
+  # mismo modelo y el mismo resultado, sólo cambia dónde se ejecuta. Los dos
+  # paquetes instalan el módulo `onnxruntime`, así que no pueden convivir.
+  "onnxruntime-directml>=1.24,<2.0; sys_platform == 'win32'",
+  "onnxruntime>=1.30,<2.0; sys_platform != 'win32'",
   "opencv-python-headless>=4.10,<5.0",
   "Pillow>=10,<13",
 ]

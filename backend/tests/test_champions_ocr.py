@@ -11,6 +11,7 @@ from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, bui
 from pkmn_vgc.champions_replay.detector import DetectionError, DetectorContext, HudAlias
 from pkmn_vgc.champions_replay.ocr_detector import (
     ChampionsCatalog,
+    _accelerator_params,
     ChampionsOcrDetector,
     ChampionsTextParser,
     OcrLine,
@@ -78,6 +79,16 @@ class ChampionsOcrTests(unittest.TestCase):
             line("FIGHT", x=0.86, y=0.70),
             line("POKÉMON", x=0.84, y=0.90),
         )
+
+    def test_the_gpu_runs_the_models_when_the_runtime_brings_it(self) -> None:
+        self.assertEqual(
+            _accelerator_params(("DmlExecutionProvider", "CPUExecutionProvider")),
+            {"EngineConfig.onnxruntime.use_dml": True},
+        )
+        # Sin DirectML no se pide nada: el mismo código sigue en CPU en otra
+        # máquina, con los mismos modelos y el mismo resultado.
+        self.assertEqual(_accelerator_params(("CPUExecutionProvider",)), {})
+        self.assertEqual(_accelerator_params(()), {})
 
     def test_repairs_common_health_ocr_artifacts(self) -> None:
         self.assertEqual(_health_value("100%"), "100/100")
