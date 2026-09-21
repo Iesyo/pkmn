@@ -577,6 +577,51 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual([event for event in detections.events if event.kind == "ability"], [])
 
+    def relief_parser(self) -> ChampionsTextParser:
+        """Tyranitar en los dos equipos, que es cuando el lado hay que deducirlo."""
+
+        return ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="IesYo",
+                p2_name="Rival",
+                p1_team=("Tyranitar", "Sinistcha"),
+                p2_team=("Tyranitar", "Sylveon"),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Tyranitar", "Sinistcha", "Sylveon"),
+                abilities=("Sand Stream",),
+                species_abilities=(("Tyranitar", ("sandstream",)),),
+            ),
+        )
+
+    def test_an_ability_announces_the_pokemon_it_relieves_into_the_slot(self) -> None:
+        parser = self.relief_parser()
+        parser._turn = 3
+        parser._announced_slots["p2"] = {"tyranitar": "p2b"}
+        # Sylveon está en el slot: lo que venga detrás es un relevo.
+        parser._active["p2b"] = "Sylveon"
+
+        detections = parser.parse(self.ability_frame(), timestamp_ms=4_000, source_frame=8)
+
+        # Sin el cambio, el HUD ya no ve diferencia cuando por fin lee al recién
+        # entrado, y su daño y su estado salen a nombre del que estaba antes.
+        self.assertEqual(
+            [(event.kind, event.slot, event.species)
+             for event in detections.events if event.kind in {"switch", "ability"}],
+            [("switch", "p2b", "Tyranitar"), ("ability", "p2b", "Tyranitar")],
+        )
+
+    def test_an_ability_on_an_empty_slot_is_not_a_relief(self) -> None:
+        parser = self.relief_parser()
+        parser._turn = 3
+        parser._announced_slots["p2"] = {"tyranitar": "p2b"}
+        # Nadie a quien relevar: son los leads, y el HUD los anuncia después
+        # sabiendo quién está en cada sitio.
+
+        detections = parser.parse(self.ability_frame(), timestamp_ms=4_000, source_frame=8)
+
+        self.assertEqual([event for event in detections.events if event.kind == "switch"], [])
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (

@@ -1353,7 +1353,26 @@ class ChampionsTextParser:
             ),
         )
 
-    def _ability_actor(self, value: str, ability: str | None = None) -> tuple[str, str] | None:
+    def _ability_relief(self, side: str, value: str, ability: str) -> tuple[str | None, str | None]:
+        """Especie, y el slot sólo cuando el Pokémon relevó a otro.
+
+        Atar el mote por la habilidad mete al Pokémon en su slot. Si ese slot
+        estaba ocupado, hubo un relevo que el replay tiene que contar. Si estaba
+        vacío no lo hubo: son los leads, y el HUD los anuncia unos frames después
+        sabiendo quién está en cada sitio.
+        """
+
+        occupied = self._active.get(self._announced_slot(side, value) or "")
+        species, slot, changed = self._infer_alias_from_ability(side, value, ability)
+        if not changed or not slot or occupied is None:
+            return species, None
+        return species, slot
+
+    def _ability_actor(
+        self, value: str, ability: str | None = None
+    ) -> tuple[str, str, str | None] | None:
+        """Lado, Pokémon y, si al atarlo cambia de ocupante, el slot que estrenó."""
+
         raw = re.sub(r"[\'’]s$", "", value.strip(), flags=re.IGNORECASE)
         candidates: list[tuple[str, str]] = []
         has_known_team = any(self._known_teams.values())
@@ -1376,16 +1395,14 @@ class ChampionsTextParser:
                 for slot, active_species in self._active.items()
             )
         ]
-        if len(active) == 1:
-            side, actor = active[0]
+        for shortlist in (active, candidates):
+            if len(shortlist) != 1:
+                continue
+            side, actor = shortlist[0]
+            learned = None
             if ability and is_actor_identity(actor):
-                self._infer_alias_from_ability(side, raw, ability)
-            return side, actor
-        if len(candidates) == 1:
-            side, actor = candidates[0]
-            if ability and is_actor_identity(actor):
-                self._infer_alias_from_ability(side, raw, ability)
-            return side, actor
+                _species, learned = self._ability_relief(side, raw, ability)
+            return side, actor, learned
         if ability:
             announced_sides = [
                 side
@@ -1394,9 +1411,10 @@ class ChampionsTextParser:
             ]
             if len(announced_sides) == 1:
                 side = announced_sides[0]
-                species, _slot, _changed = self._infer_alias_from_ability(side, raw, ability)
+                species, learned = self._ability_relief(side, raw, ability)
                 if species:
-                    return side, self._actor_for_value(side, raw) or species
+                    actor = self._actor_for_value(side, raw) or species
+                    return side, actor, learned
         return None
 
     @staticmethod
@@ -1421,6 +1439,7 @@ class ChampionsTextParser:
             if line.left >= 0.68 and 0.28 <= line.center_y <= 0.52
         ]
         visible: set[tuple[str, str, str]] = set()
+        learned_switches: list[BattleEvent] = []
         for actor_line in overlay:
             if not re.search(r"[\'’]s$", actor_line.text, re.IGNORECASE):
                 continue
@@ -1440,19 +1459,33 @@ class ChampionsTextParser:
             ability = self._abilities.resolve(ability_line.text, threshold=0.78)
             if not ability:
                 continue
-            actor = self._ability_actor(actor_line.text, ability)
-            if not actor:
+            resolved = self._ability_actor(actor_line.text, ability)
+            if not resolved:
                 continue
-            side, species = actor
+            side, species, learned_slot = resolved
+            confidence = min(actor_line.confidence, ability_line.confidence)
+            if learned_slot:
+                # Atar el mote por la habilidad mete al Pokémon en su slot. Si esa
+                # entrada no se anuncia, el HUD ya no ve cambio cuando por fin lo
+                # lee y el replay se queda sin ella: el daño, el estado y los
+                # movimientos del recién entrado salen a nombre del que estaba
+                # antes. La vía de los movimientos ya reconstruye este cambio.
+                learned_switches.append(
+                    BattleEvent(
+                        kind="switch",
+                        timestamp_ms=max(0, timestamp_ms - 1),
+                        confidence=confidence,
+                        slot=learned_slot,  # type: ignore[arg-type]
+                        species=species,
+                        source_frame=source_frame,
+                    )
+                )
             key = (side, species, ability)
             visible.add(key)
             if key not in self._visible_abilities:
-                self._pending_abilities[key] = (
-                    min(actor_line.confidence, ability_line.confidence),
-                    self._turn,
-                )
+                self._pending_abilities[key] = (confidence, self._turn)
         self._visible_abilities = visible
-        return self._flush_pending_abilities(
+        return tuple(learned_switches) + self._flush_pending_abilities(
             timestamp_ms=timestamp_ms,
             source_frame=source_frame,
         )
