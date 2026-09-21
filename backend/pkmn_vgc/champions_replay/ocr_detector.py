@@ -1364,7 +1364,15 @@ class ChampionsTextParser:
 
         occupied = self._active.get(self._announced_slot(side, value) or "")
         species, slot, changed = self._infer_alias_from_ability(side, value, ability)
-        if not changed or not slot or occupied is None:
+        if not changed or not slot:
+            return species, None
+        if occupied is None:
+            # Slot vacío: no hubo relevo, y el orden en que el juego anuncia las
+            # salidas no siempre coincide con el del HUD, así que colocar aquí al
+            # Pokémon es adivinar. Se deshace y la habilidad espera a que el HUD
+            # lo lea. Escribirla antes de que nadie haya entrado deja el replay
+            # con una habilidad sin dueño, y el visor oficial se cae al cargarlo.
+            self._active.pop(slot, None)
             return species, None
         return species, slot
 

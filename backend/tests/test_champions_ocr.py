@@ -611,16 +611,31 @@ class ChampionsOcrTests(unittest.TestCase):
             [("switch", "p2b", "Tyranitar"), ("ability", "p2b", "Tyranitar")],
         )
 
-    def test_an_ability_on_an_empty_slot_is_not_a_relief(self) -> None:
+    def test_an_ability_waits_for_the_hud_to_place_its_pokemon(self) -> None:
         parser = self.relief_parser()
-        parser._turn = 3
-        parser._announced_slots["p2"] = {"tyranitar": "p2b"}
-        # Nadie a quien relevar: son los leads, y el HUD los anuncia después
-        # sabiendo quién está en cada sitio.
+        # El juego anuncia las salidas en un orden que no siempre es el del HUD:
+        # aquí dice p2a y Tyranitar acaba saliendo en p2b.
+        parser._announced_slots["p2"] = {"tyranitar": "p2a"}
 
-        detections = parser.parse(self.ability_frame(), timestamp_ms=4_000, source_frame=8)
+        announced = parser.parse(self.ability_frame(), timestamp_ms=0, source_frame=0)
 
-        self.assertEqual([event for event in detections.events if event.kind == "switch"], [])
+        # Nadie a quien relevar, así que ni cambio ni habilidad: escribirla antes
+        # de que nadie haya entrado deja el replay con una habilidad sin dueño, y
+        # el visor oficial se cae al cargarlo.
+        self.assertEqual(
+            [event for event in announced.events if event.kind in {"switch", "ability"}], []
+        )
+
+        # El HUD lee los leads y coloca a cada uno donde está de verdad.
+        parser._active["p2a"] = "Sylveon"
+        parser._active["p2b"] = "Tyranitar"
+        later = parser.parse((), timestamp_ms=2_000, source_frame=4)
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species)
+             for event in later.events if event.kind == "ability"],
+            [("ability", "p2b", "Tyranitar")],
+        )
 
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
