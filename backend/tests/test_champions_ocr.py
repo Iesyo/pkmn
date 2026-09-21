@@ -637,6 +637,21 @@ class ChampionsOcrTests(unittest.TestCase):
             [("ability", "p2b", "Tyranitar")],
         )
 
+    def test_a_return_without_the_word_withdrew_still_marks_the_slot(self) -> None:
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)
+
+        # Volt Switch, U-turn y Parting Shot sacan al Pokémon sin que el juego
+        # diga "withdrew". Sin apuntar el momento, el HUD tarda en dejar leer a
+        # quien entra y su entrada acaba escrita después de lo que ya le pasó.
+        parser.parse(
+            (line("Delphox went back to IesYo!", x=0.2, y=0.6, width=0.5),),
+            timestamp_ms=5_000,
+            source_frame=10,
+        )
+
+        self.assertEqual(parser._pending_switch_timestamps.get("p1a"), 5_000)
+
     def test_reads_mobile_hud_positions_without_fixed_sixteen_nine_bands(self) -> None:
         detections = self.parser().parse(
             (

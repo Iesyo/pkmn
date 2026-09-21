@@ -2162,6 +2162,21 @@ class ChampionsTextParser:
                 self._pending_switch_timestamps[slot] = timestamp_ms
                 return ()
 
+        # Volt Switch, U-turn y Parting Shot sacan al Pokémon sin que el juego
+        # diga "withdrew", así que este relevo no apuntaba su momento. El HUD tarda
+        # en dejar leer a quien entra, y sin esa marca su entrada se escribía
+        # después del ataque que ya había recibido. El mensaje sigue su camino.
+        went_back = re.match(
+            r"^(The opposing )?(.+?)\s+went back to\s+(.+?)[!.]?$", cleaned, re.IGNORECASE
+        )
+        if went_back:
+            side = "p2" if went_back.group(1) else self._side_for_player(went_back.group(3))
+            actor = self._actor_for_value(side, went_back.group(2)) if side else None
+            if side and actor:
+                slot = self._slot_for_species(actor, side)
+                self._mark_slot_open(slot)
+                self._pending_switch_timestamps[slot] = timestamp_ms
+
         sent_out = re.match(r"^(.*?)\s*sent out\s+(.+?)[!.]?$", cleaned, re.IGNORECASE)
         if sent_out:
             side = self._side_for_player(sent_out.group(1))
