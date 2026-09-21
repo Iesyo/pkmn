@@ -177,7 +177,11 @@ class ChampionsTeamPreviewResolver:
     # ningún tipo: distinto de no tener placa, porque significa que la lista
     # de tipos de esa fila está incompleta y no sirve para filtrar.
     UNKNOWN_TYPE = "?"
-    _BAND_FILL = 0.35
+    # Lo que separa una tarjeta de la siguiente está vacío; el cuerpo de la
+    # tarjeta puede estar tapado. Midiendo el cuerpo, un sprite grande partía
+    # su propia franja en dos, y con el JPEG que el pipeline se fabrica para
+    # analizar el relleno bajaba de 0,38 a 0,10 y ya no lo salvaba nada.
+    _BAND_FILL = 0.05
     # Sin filtro por tipo hay cientos de candidatos. Se criban primero con
     # una silueta sin desplazamientos (barata) y sólo la lista corta pasa a
     # la comparación completa. El cribado no mira el color: un shiny tiene
@@ -320,9 +324,10 @@ class ChampionsTeamPreviewResolver:
             raise DetectionError(f"el panel {side} del Team Preview quedó demasiado estrecho")
         filled = card[:, x1:x2].sum(axis=1) / (x2 - x1)
 
-        # Una fila cuenta como tarjeta si al menos un tercio de su ancho sigue
-        # siendo carmesí: un sprite grande tapa más de la mitad y con un umbral
-        # más alto la última tarjeta se partía en dos.
+        # Una fila cuenta como tarjeta mientras quede algo de carmesí. El umbral
+        # mide el hueco entre tarjetas, que está vacío, no el cuerpo, que el
+        # sprite tapa: medido sobre once frames de dos grabaciones, 0,05 es el
+        # valor que más frames cierra en las dos.
         bands = cls._runs(filled >= cls._BAND_FILL, minimum=height // 40)
         if len(bands) < 6:
             raise DetectionError(
@@ -718,8 +723,15 @@ class ChampionsTeamPreviewResolver:
         crop = image[y1:y2, x1:x2]  # type: ignore[index]
         if not crop.size:
             return None
-        difference = np.linalg.norm(crop.astype(float) - background, axis=2)
-        mask = difference > 35
+        # El carmesí de la tarjeta es un velo: la arquitectura de la arena se ve
+        # por detrás. Eso cambia el brillo del fondo, no su color, pero medir la
+        # distancia a secas metía esa arquitectura en la silueta y el sprite se
+        # emparejaba con otra especie. Proyectar sobre el fondo y quedarse con lo
+        # que sobra la deja fuera sin tocar al sprite, que sí cambia de color.
+        pixels = crop.astype(float)
+        scale = (pixels @ background) / float(background @ background)
+        residual = pixels - scale[..., None] * background
+        mask = np.linalg.norm(residual, axis=2) > 40
 
         best: tuple[float, tuple[tuple[int, int], ...]] | None = None
         crop_height, crop_width = mask.shape
@@ -924,6 +936,13 @@ class ChampionsTeamPreviewResolver:
             else:
                 base, suffix = species, "M"
             by_base.setdefault(_text_id(base), {})[suffix] = species
+        # El género decide entre las dos formas de una especie, no entre
+        # especies. Con más de un candidato en juego, que Indeedee sea el único
+        # con pareja macho y hembra bastaba para quedarse la fila sin mirar el
+        # sprite: Farigiraf, que la ganaba por silueta 0,79 contra 0,46, ni
+        # llegaba a puntuarse. Manda la silueta y el género se aplica después.
+        if len(by_base) != 1:
+            return None
         matches = [values[gender] for values in by_base.values() if gender in values and {"M", "F"} <= values.keys()]
         return matches[0] if len(matches) == 1 else None
 

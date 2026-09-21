@@ -1535,6 +1535,66 @@ class ChampionsOcrTests(unittest.TestCase):
         # Sin forma hembra en el catálogo no se inventa ninguna.
         self.assertEqual(resolver._gendered_variant("Gardevoir", "F"), "Gardevoir")
 
+    def test_the_gender_symbol_does_not_choose_between_species(self) -> None:
+        resolver = ChampionsTeamPreviewResolver(
+            (
+                ("Farigiraf", ("Normal", "Psychic")),
+                ("Indeedee", ("Psychic", "Normal")),
+                ("Indeedee-F", ("Psychic", "Normal")),
+                ("Oranguru", ("Normal", "Psychic")),
+            )
+        )
+
+        # Entre las dos formas de una especie, el símbolo decide.
+        self.assertEqual(
+            resolver._gendered_candidate(("Indeedee", "Indeedee-F"), "M"), "Indeedee"
+        )
+        # Con varias especies en juego, no: que Indeedee fuera la única con pareja
+        # macho y hembra se llevaba la fila sin llegar a puntuar la silueta.
+        self.assertIsNone(
+            resolver._gendered_candidate(
+                ("Farigiraf", "Indeedee", "Indeedee-F", "Oranguru"), "M"
+            )
+        )
+
+    def test_a_sprite_covering_its_card_does_not_split_the_grid(self) -> None:
+        import numpy as np
+
+        # Panel rival sintético: seis tarjetas carmesí con hueco negro entre
+        # ellas. La tercera lleva un sprite que tapa casi todo su ancho.
+        image = np.zeros((600, 400, 3), dtype=np.uint8)
+        for index in range(6):
+            top = 40 + index * 90
+            image[top : top + 80, 250:390] = (200, 20, 60)
+        image[240:280, 255:385] = 0
+
+        cards = ChampionsTeamPreviewResolver._card_boxes(image, "p2")
+
+        self.assertEqual(len(cards), 6)
+        self.assertEqual([top for _x1, _x2, top, _bottom in cards], [40 + n * 90 for n in range(6)])
+
+    def test_the_card_veil_does_not_become_part_of_the_sprite(self) -> None:
+        import numpy as np
+
+        background = np.array([180.0, 20.0, 60.0])
+        clean = np.zeros((60, 80, 3), dtype=np.uint8)
+        clean[:, :] = (180, 20, 60)
+        clean[20:45, 30:55] = (60, 200, 80)
+        veiled = clean.copy()
+        # La arena que se ve por detrás del carmesí: el mismo color con otro
+        # brillo. Midéndola por distancia entraba en la silueta.
+        veiled[0:12, :] = (90, 10, 30)
+        veiled[50:60, :] = (255, 28, 85)
+
+        box = (0, 80, 0, 60)
+        clean_shape = ChampionsTeamPreviewResolver._observed_shape(clean, box, background)
+        veiled_shape = ChampionsTeamPreviewResolver._observed_shape(veiled, box, background)
+
+        self.assertIsNotNone(clean_shape)
+        self.assertIsNotNone(veiled_shape)
+        self.assertEqual(veiled_shape.aspect_ratio, clean_shape.aspect_ratio)
+        self.assertTrue(np.array_equal(veiled_shape.mask, clean_shape.mask))
+
     def test_gender_formes_do_not_compete_in_the_sprite_match(self) -> None:
         resolver = ChampionsTeamPreviewResolver(
             (("Basculegion", ("Water", "Ghost")), ("Basculegion-F", ("Water", "Ghost")))
