@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
-from .models import BattleEvent, FrameDetections
+from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, FrameDetections, is_actor_identity
 from .sources import FramePacket
 
 
@@ -67,15 +67,6 @@ class PreparedOcrFrame:
     lines: tuple[OcrLine, ...]
     elapsed_ms: int
     rotation_degrees: int
-
-
-@dataclass(frozen=True, slots=True)
-class OcrTimelineFrame:
-    """OCR cronológico mínimo; no conserva el JPEG ni resuelve identidades."""
-
-    timestamp_ms: int
-    source_frame: int
-    lines: tuple[OcrLine, ...]
 
 
 class OcrEngine(Protocol):
@@ -693,6 +684,10 @@ class ChampionsTextParser:
             tuple[str, str],
             list[tuple[str, int, float, int]],
         ] = {}
+        self._identity_counter = 0
+        self._identity_by_alias: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
+        self._identity_species: dict[str, str] = {}
+        self._identity_slots: dict[str, str] = {}
 
     def _infer_alias(
         self,
@@ -837,11 +832,83 @@ class ChampionsTextParser:
             return None
         return self._species.resolve(value, allow_fuzzy=False)
 
+    def _new_identity(self, side: str, value: str, slot: str | None = None) -> str:
+        self._identity_counter += 1
+        identity = f"{ACTOR_IDENTITY_PREFIX}{side}_{self._identity_counter:04d}__"
+        key = _text_key(value)
+        if key:
+            self._identity_by_alias[side][key] = identity
+        if slot:
+            self._identity_slots[slot] = identity
+        return identity
+
+    def _remember_identity_alias(self, side: str, value: str, identity: str) -> None:
+        key = _text_key(value)
+        if key:
+            self._identity_by_alias[side][key] = identity
+
+    def _identity_for_value(self, side: str, value: str) -> str | None:
+        """Resuelve un mote a la identidad estable observada, no a su especie."""
+
+        value_key = _text_key(value)
+        identity = self._identity_by_alias[side].get(value_key)
+        if identity:
+            return identity
+        if len(value_key) >= 3:
+            ranked = sorted(
+                (
+                    (SequenceMatcher(None, value_key, alias_key).ratio(), candidate)
+                    for alias_key, candidate in self._identity_by_alias[side].items()
+                    if abs(len(alias_key) - len(value_key)) <= max(3, len(value_key) // 2)
+                ),
+                reverse=True,
+            )
+            if ranked:
+                score, identity = ranked[0]
+                runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+                threshold = 0.55 if len(value_key) <= 3 else 0.64
+                if score >= threshold and score - runner_up >= 0.12:
+                    self._remember_identity_alias(side, value, identity)
+                    return identity
+        slot = self._announced_slot(side, value)
+        active = self._active.get(slot or "")
+        if active and is_actor_identity(active):
+            self._remember_identity_alias(side, value, active)
+            return active
+        return None
+
+    def _ensure_identity(self, side: str, value: str, slot: str) -> str:
+        identity = self._identity_for_value(side, value)
+        active = self._active.get(slot)
+        if identity is None and active and is_actor_identity(active):
+            identity = active
+        if identity is None:
+            identity = self._new_identity(side, value, slot)
+        self._remember_identity_alias(side, value, identity)
+        self._identity_slots[slot] = identity
+        return identity
+
+    def _canonical_actor(self, actor: str) -> str:
+        return self._identity_species.get(actor, actor)
+
+    def _actor_for_value(self, side: str, value: str) -> str | None:
+        identity = self._identity_for_value(side, value)
+        if identity:
+            return identity
+        species = self._resolve_species(value, side)
+        if not species:
+            return None
+        species_key = _text_key(species)
+        for slot, active in self._active.items():
+            if slot.startswith(side) and _text_key(self._canonical_actor(active)) == species_key:
+                return active
+        return species
+
     def _side_for_species(self, species: str, *, opposing: bool = False) -> str:
         if opposing:
             return "p2"
         for slot, active_species in self._active.items():
-            if _text_key(active_species) == _text_key(species):
+            if _text_key(self._canonical_actor(active_species)) == _text_key(self._canonical_actor(species)):
                 return slot[:2]
         p1 = {_text_key(value) for value in self.context.p1_team}
         p2 = {_text_key(value) for value in self.context.p2_team}
@@ -852,7 +919,11 @@ class ChampionsTextParser:
 
     def _slot_for_species(self, species: str, side: str) -> str:
         for slot, active_species in self._active.items():
-            if slot.startswith(side) and _text_key(active_species) == _text_key(species):
+            if slot.startswith(side) and (
+                active_species == species
+                or _text_key(self._canonical_actor(active_species))
+                == _text_key(self._canonical_actor(species))
+            ):
                 return slot
         return f"{side}a"
 
@@ -892,6 +963,7 @@ class ChampionsTextParser:
     def _bind_alias(self, side: str, value: str, species: str) -> tuple[str | None, bool]:
         """Aprende un nickname cuando el juego revela después su especie."""
 
+        identity = self._identity_for_value(side, value)
         key = _text_key(value)
         if key:
             self._aliases[side][key] = species
@@ -899,6 +971,11 @@ class ChampionsTextParser:
             if _text_key(value) != _text_key(species):
                 self._message_aliases[side][value.casefold()] = species
         slot = self._announced_slot(side, value)
+        if identity:
+            self._identity_species[identity] = species
+            if slot:
+                self._identity_slots[slot] = identity
+            return slot or self._slot_for_species(identity, side), False
         changed = bool(slot and self._active.get(slot) != species)
         if slot:
             self._active[slot] = species
@@ -933,6 +1010,40 @@ class ChampionsTextParser:
             side: dict(values)
             for side, values in self._message_aliases.items()
         }
+
+    def resolved_identities(self) -> dict[str, str]:
+        """Mapa final de actor estable a especie, aplicado sólo al serializar."""
+
+        resolved = dict(self._identity_species)
+        for side, aliases in self._identity_by_alias.items():
+            for alias_key, identity in aliases.items():
+                species = self._aliases[side].get(alias_key)
+                if species:
+                    resolved[identity] = species
+            side_identities = set(aliases.values())
+            unresolved = side_identities - resolved.keys()
+            used = {
+                self._canonical_actor(actor)
+                for slot, actor in self._active.items()
+                if slot.startswith(side) and not is_actor_identity(self._canonical_actor(actor))
+            }
+            used.update(
+                species
+                for identity, species in resolved.items()
+                if identity in side_identities
+            )
+            candidates = set(self.context.p1_team if side == "p1" else self.context.p2_team)
+            candidates.update(self._aliases[side].values())
+            remaining = {
+                species
+                for species in candidates
+                if _text_key(species) not in {_text_key(value) for value in used}
+            }
+            # Sólo se completa por descarte cuando ambos lados son inequívocos;
+            # nunca se asignan dos identidades pendientes por orden o por slot.
+            if len(unresolved) == 1 and len(remaining) == 1:
+                resolved[next(iter(unresolved))] = next(iter(remaining))
+        return resolved
 
     def _mark_slot_open(self, slot: str) -> None:
         side = slot[:2]
@@ -996,22 +1107,32 @@ class ChampionsTextParser:
         for side in ("p1", "p2"):
             if has_known_team and not self._known_teams[side]:
                 continue
-            species = self._resolve_species(raw, side)
-            if species:
-                candidates.append((side, species))
+            actor = self._actor_for_value(side, raw)
+            if actor:
+                candidates.append((side, actor))
         active = [
             candidate
             for candidate in candidates
             if any(
                 slot.startswith(candidate[0])
-                and _text_key(active_species) == _text_key(candidate[1])
+                and (
+                    active_species == candidate[1]
+                    or _text_key(self._canonical_actor(active_species))
+                    == _text_key(self._canonical_actor(candidate[1]))
+                )
                 for slot, active_species in self._active.items()
             )
         ]
         if len(active) == 1:
-            return active[0]
+            side, actor = active[0]
+            if ability and is_actor_identity(actor):
+                self._infer_alias_from_ability(side, raw, ability)
+            return side, actor
         if len(candidates) == 1:
-            return candidates[0]
+            side, actor = candidates[0]
+            if ability and is_actor_identity(actor):
+                self._infer_alias_from_ability(side, raw, ability)
+            return side, actor
         if ability:
             announced_sides = [
                 side
@@ -1022,7 +1143,7 @@ class ChampionsTextParser:
                 side = announced_sides[0]
                 species, _slot, _changed = self._infer_alias_from_ability(side, raw, ability)
                 if species:
-                    return side, species
+                    return side, self._actor_for_value(side, raw) or species
         return None
 
     @staticmethod
@@ -1089,15 +1210,9 @@ class ChampionsTextParser:
         events: list[BattleEvent] = []
         for key, confidence in tuple(self._pending_abilities.items()):
             side, species, ability = key
-            slot = next(
-                (
-                    active_slot
-                    for active_slot, active_species in self._active.items()
-                    if active_slot.startswith(side)
-                    and _text_key(active_species) == _text_key(species)
-                ),
-                None,
-            )
+            slot = self._slot_for_species(species, side)
+            if slot not in self._active:
+                slot = None
             if slot is None:
                 continue
             events.append(
@@ -1178,7 +1293,7 @@ class ChampionsTextParser:
             return ()
 
         canonical_item, base_species, mega_forme = mega
-        if _text_key(base_species) != _text_key(actor):
+        if _text_key(base_species) != _text_key(self._canonical_actor(actor)):
             return ()
         self._mega_seen.add(slot)
         return (
@@ -1290,23 +1405,29 @@ class ChampionsTextParser:
             team_preview=True,
         )
 
-    def _hud_species(self, lines: Sequence[OcrLine], side: str) -> list[tuple[str, OcrLine]]:
+    def _hud_species(
+        self,
+        lines: Sequence[OcrLine],
+        side: str,
+    ) -> list[tuple[str, str | None, OcrLine]]:
         if side == "p1":
             candidates = [line for line in lines if line.center_y >= 0.55]
         else:
             candidates = [line for line in lines if line.center_y <= 0.45]
 
-        found: list[tuple[str, OcrLine]] = []
+        found: list[tuple[str, str | None, OcrLine]] = []
         seen: set[str] = set()
         for line in sorted(candidates, key=lambda item: item.center_x):
             if _health_value(line.text) or _text_key(line.text) in _UI_TEXT:
                 continue
             species = self._resolve_species(line.text, side)
-            key = _text_key(species or "")
-            if not species or key in seen:
+            announced = self._announced_slot(side, line.text) is not None
+            identity = self._identity_for_value(side, line.text)
+            key = _text_key(species or identity or line.text)
+            if (not species and not announced and not identity) or key in seen:
                 continue
             seen.add(key)
-            found.append((species, line))
+            found.append((line.text, species, line))
         return found[:2]
 
     def visual_alias_candidates(self, lines: Sequence[OcrLine]) -> tuple[tuple[str, str], ...]:
@@ -1393,6 +1514,9 @@ class ChampionsTextParser:
             # y dejamos que ``parse`` emita los switches con sus slots visuales.
             self._aliases[alias.side][nickname_key] = canonical
             self._bound_alias_keys[alias.side].add(nickname_key)
+            identity = self._identity_for_value(alias.side, alias.nickname)
+            if identity:
+                self._identity_species[identity] = canonical
             if _text_key(alias.nickname) != _text_key(canonical):
                 self._message_aliases[alias.side][alias.nickname.casefold()] = canonical
             applied.append(
@@ -1428,14 +1552,16 @@ class ChampionsTextParser:
                 key=lambda item: item[0].center_x,
             )
 
-            slot_lines: list[tuple[str, str, OcrLine]] = []
+            slot_lines: list[tuple[str, str, str | None, OcrLine]] = []
             if len(species_lines) == 1:
-                species, line = species_lines[0]
+                label, species, line = species_lines[0]
                 slot = next(
                     (
                         slot
                         for slot, active_species in self._active.items()
-                        if slot.startswith(side) and _text_key(active_species) == _text_key(species)
+                        if species
+                        and slot.startswith(side)
+                        and _text_key(self._canonical_actor(active_species)) == _text_key(species)
                     ),
                     None,
                 )
@@ -1451,12 +1577,12 @@ class ChampionsTextParser:
                 if slot is None:
                     midpoint = 0.24 if side == "p1" else 0.75
                     slot = f"{side}{'a' if line.center_x < midpoint else 'b'}"
-                slot_lines.append((slot, species, line))
+                slot_lines.append((slot, label, species, line))
             else:
-                for index, (species, line) in enumerate(species_lines):
-                    slot_lines.append((f"{side}{'ab'[index]}", species, line))
+                for index, (label, species, line) in enumerate(species_lines):
+                    slot_lines.append((f"{side}{'ab'[index]}", label, species, line))
 
-            for slot, species, species_line in slot_lines:
+            for slot, label, species, species_line in slot_lines:
                 nearby = min(
                     (
                         (line, health)
@@ -1478,10 +1604,21 @@ class ChampionsTextParser:
                 )
                 if health is None and not legacy_hud_band:
                     continue
-                observations[slot] = (species, health)
+                identity = self._identity_for_value(side, label)
+                if identity:
+                    actor = identity
+                    if species:
+                        self._identity_species[identity] = species
+                elif species:
+                    actor = species
+                else:
+                    actor = self._ensure_identity(side, label, slot)
+                observations[slot] = (actor, health)
                 announced_key = self._matching_announced_lead_key(side, species_line.text)
                 if announced_key:
                     self._hud_alias_slots[side][announced_key] = slot
+                    if is_actor_identity(actor):
+                        self._remember_identity_alias(side, announced_key, actor)
 
             self._complete_announced_lead_observations(
                 side,
@@ -1533,49 +1670,24 @@ class ChampionsTextParser:
             f"{side}{'a' if index == 0 else 'b'}": health
             for index, (_line, health) in enumerate(side_readings[:2])
         }
-        observed_species = {
-            _text_key(species)
-            for slot, (species, _health) in observations.items()
+        observed_actors = {
+            actor
+            for slot, (actor, _health) in observations.items()
             if slot.startswith(side)
         }
-        # El anuncio y el HUD pueden deformar el mismo mote de maneras
-        # distintas. Si el mapa final sólo deja una especie aún no observada,
-        # esa identidad pertenece al único slot anunciado que falta. Esto usa
-        # evidencia ya aprendida de la batalla; no inventa un Pokémon del team.
-        missing_slots = {
-            slot
-            for lead_key in leads
-            if (slot := mapped.get(lead_key)) is not None
-            and slot not in observations
-        }
-        remaining_alias_species = {
-            _text_key(species): species
-            for species in self._aliases[side].values()
-            if _text_key(species) not in observed_species
-        }
-        inferred_species = (
-            next(iter(remaining_alias_species.values()))
-            if len(missing_slots) == 1 and len(remaining_alias_species) == 1
-            else None
-        )
         for lead_key in leads:
             slot = mapped.get(lead_key)
             species = self._aliases[side].get(lead_key)
-            if slot in missing_slots and species is None and inferred_species:
-                species = inferred_species
-                self._aliases[side][lead_key] = species
-                self._bound_alias_keys[side].add(lead_key)
-                self._message_aliases[side][lead_key.casefold()] = species
-            species_key = _text_key(species or "")
-            if (
-                not slot
-                or slot in observations
-                or not species
-                or species_key in observed_species
-            ):
+            if not slot or slot in observations:
                 continue
-            observations[slot] = (species, health_by_slot.get(slot))
-            observed_species.add(species_key)
+            identity = self._identity_for_value(side, lead_key)
+            actor = identity or species or self._ensure_identity(side, lead_key, slot)
+            if actor in observed_actors:
+                continue
+            if identity and species:
+                self._identity_species[identity] = species
+            observations[slot] = (actor, health_by_slot.get(slot))
+            observed_actors.add(actor)
 
     def _message_lines(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
         messages: list[OcrLine] = []
@@ -1774,12 +1886,16 @@ class ChampionsTextParser:
             opposing = bool(mega_reaction.group(1))
             side = "p2" if opposing else "p1"
             actor_raw = mega_reaction.group(2)
-            actor = self._resolve_species(actor_raw, side)
+            actor = self._actor_for_value(side, actor_raw)
             mega = self._mega_stones.get(_text_key(mega_reaction.group(3)))
             learned_switch: tuple[BattleEvent, ...] = ()
-            if actor is None and mega is not None:
-                actor = mega[1]
-                slot, changed = self._bind_alias(side, actor_raw, actor)
+            if mega is not None and (
+                actor is None
+                or is_actor_identity(actor)
+                or _text_key(self._canonical_actor(actor)) != _text_key(mega[1])
+            ):
+                slot, changed = self._bind_alias(side, actor_raw, mega[1])
+                actor = self._actor_for_value(side, actor_raw) or mega[1]
                 if slot and changed:
                     learned_switch = (
                         BattleEvent(
@@ -1787,7 +1903,7 @@ class ChampionsTextParser:
                             timestamp_ms=timestamp_ms,
                             confidence=confidence,
                             slot=slot,  # type: ignore[arg-type]
-                            species=actor,
+                            species=mega[1],
                             source_frame=source_frame,
                         ),
                     )
@@ -1810,10 +1926,10 @@ class ChampionsTextParser:
             opposing = bool(mega_evolved.group(1))
             side = "p2" if opposing else "p1"
             actor_raw = mega_evolved.group(2)
-            actor = self._resolve_species(actor_raw, side)
+            actor = self._actor_for_value(side, actor_raw)
             announced_forme = mega_evolved.group(3)
             learned_switch: tuple[BattleEvent, ...] = ()
-            if actor is None:
+            if actor is None or is_actor_identity(actor):
                 normalized_forme = announced_forme.strip()
                 if not normalized_forme.casefold().startswith("mega "):
                     normalized_forme = f"Mega {normalized_forme}"
@@ -1823,8 +1939,8 @@ class ChampionsTextParser:
                 candidate = f"{' '.join(base_words)}-Mega{f'-{suffix}' if suffix else ''}"
                 mega = self._mega_formes.get(_text_key(candidate))
                 if mega is not None:
-                    actor = mega[1]
-                    slot, changed = self._bind_alias(side, actor_raw, actor)
+                    slot, changed = self._bind_alias(side, actor_raw, mega[1])
+                    actor = self._actor_for_value(side, actor_raw) or mega[1]
                     if slot and changed:
                         learned_switch = (
                             BattleEvent(
@@ -1832,7 +1948,7 @@ class ChampionsTextParser:
                                 timestamp_ms=timestamp_ms,
                                 confidence=confidence,
                                 slot=slot,  # type: ignore[arg-type]
-                                species=actor,
+                                species=mega[1],
                                 source_frame=source_frame,
                             ),
                         )
@@ -1858,7 +1974,24 @@ class ChampionsTextParser:
             move = self._moves.resolve(move_raw, threshold=0.72)
             if not move or len(_text_key(move_raw)) < len(_text_key(move)) * 0.75:
                 return ()
-            actor = self._resolve_species(actor_raw, side)
+            actor = self._actor_for_value(side, actor_raw)
+            if actor is not None and is_actor_identity(actor):
+                # El evento se congela ahora, en su posición real. La evidencia
+                # del movimiento sólo completa identidad -> especie; nunca
+                # reinyecta ni reordena el movimiento después.
+                self._infer_alias_from_move(side, actor_raw, move)
+                slot = self._slot_for_species(actor, side)
+                return (
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        slot=slot,  # type: ignore[arg-type]
+                        species=actor,
+                        move=move,
+                        source_frame=source_frame,
+                    ),
+                )
             if actor is None:
                 announced_slot = self._announced_slot(side, actor_raw)
                 actor = self._active.get(announced_slot or "")
@@ -1916,10 +2049,10 @@ class ChampionsTextParser:
         faint_match = re.match(r"^(The opposing )?(.+?) fainted[!.]?$", cleaned, re.IGNORECASE)
         if faint_match:
             opposing = bool(faint_match.group(1))
-            species = self._resolve_species(faint_match.group(2), "p2" if opposing else "p1")
-            if species:
-                side = self._side_for_species(species, opposing=opposing)
-                slot = self._slot_for_species(species, side)
+            side = "p2" if opposing else "p1"
+            actor = self._actor_for_value(side, faint_match.group(2))
+            if actor:
+                slot = self._slot_for_species(actor, side)
                 self._mark_slot_open(slot)
                 return (
                     BattleEvent(
@@ -1927,7 +2060,7 @@ class ChampionsTextParser:
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
                         slot=slot,  # type: ignore[arg-type]
-                        species=species,
+                        species=actor,
                         source_frame=source_frame,
                     ),
                 )
@@ -1945,16 +2078,16 @@ class ChampionsTextParser:
             if not status_match:
                 continue
             opposing = bool(status_match.group(1))
-            species = self._resolve_species(status_match.group(2), "p2" if opposing else "p1")
-            if species:
-                side = self._side_for_species(species, opposing=opposing)
+            side = "p2" if opposing else "p1"
+            actor = self._actor_for_value(side, status_match.group(2))
+            if actor:
                 return (
                     BattleEvent(
                         kind="status",
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
-                        slot=self._slot_for_species(species, side),  # type: ignore[arg-type]
-                        species=species,
+                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
+                        species=actor,
                         value=status,
                         source_frame=source_frame,
                     ),
@@ -1970,16 +2103,16 @@ class ChampionsTextParser:
             if not cure_match:
                 continue
             opposing = bool(cure_match.group(1))
-            species = self._resolve_species(cure_match.group(2), "p2" if opposing else "p1")
-            if species:
-                side = self._side_for_species(species, opposing=opposing)
+            side = "p2" if opposing else "p1"
+            actor = self._actor_for_value(side, cure_match.group(2))
+            if actor:
                 return (
                     BattleEvent(
                         kind="curestatus",
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
-                        slot=self._slot_for_species(species, side),  # type: ignore[arg-type]
-                        species=species,
+                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
+                        species=actor,
                         value="status",
                         source_frame=source_frame,
                     ),
@@ -2241,7 +2374,6 @@ class ChampionsOcrDetector:
         self._engine_claim_lock = threading.Lock()
         self._primary_engine_claimed = False
         self.parser = ChampionsTextParser(context=self._base_context)
-        self._timeline: list[OcrTimelineFrame] = []
         self.trace_path = trace_path
         self._trace_battle_index = 0
         self._alias_resolver = alias_resolver
@@ -2338,6 +2470,7 @@ class ChampionsOcrDetector:
             ],
             "visual_aliases": [asdict(alias) for alias in visual_aliases],
             "resolved_aliases": self.parser.resolved_aliases(),
+            "resolved_identities": self.parser.resolved_identities(),
             "visual_alias_pending": self._alias_future is not None,
             "detections": {
                 "team_preview": detections.team_preview,
@@ -2378,15 +2511,6 @@ class ChampionsOcrDetector:
     def parse_prepared(self, prepared: PreparedOcrFrame) -> FrameDetections:
         frame = prepared.frame
         lines = prepared.lines
-        # Este carril guarda la partida exactamente en el orden del OCR y con
-        # los motes originales. Sólo retiene texto/posición, nunca los JPEG.
-        self._timeline.append(
-            OcrTimelineFrame(
-                timestamp_ms=frame.timestamp_ms,
-                source_frame=frame.index,
-                lines=lines,
-            )
-        )
         visual_aliases = self._poll_visual_aliases()
         visual_candidates = self._schedule_visual_aliases(prepared)
         detections = self.parser.parse(
@@ -2414,47 +2538,9 @@ class ChampionsOcrDetector:
         self._visual_attempted.clear()
         self._alias_source = None
         self.parser.reset_battle_state()
-        self._timeline.clear()
 
-    @staticmethod
-    def _merge_aliases(
-        configured: Sequence[tuple[str, str]],
-        learned: Mapping[str, str],
-    ) -> tuple[tuple[str, str], ...]:
-        merged = {alias.casefold(): (alias, species) for alias, species in configured}
-        for alias, species in learned.items():
-            merged[alias.casefold()] = (alias, species)
-        return tuple(merged.values())
-
-    def materialize_timeline(self) -> tuple[FrameDetections, ...]:
-        """Aplica el mapa final mote -> especie al carril cronológico en memoria.
-
-        No vuelve a leer el vídeo, no ejecuta OCR y no usa la traza JSONL. El
-        parser final recibe todos los aliases desde el primer frame, por lo que
-        aprender una identidad tarde no puede mover un lead dentro de un turno.
-        """
-
-        learned = self.parser.resolved_aliases()
-        context = replace(
-            self._base_context,
-            p1_aliases=self._merge_aliases(
-                self._base_context.p1_aliases,
-                learned["p1"],
-            ),
-            p2_aliases=self._merge_aliases(
-                self._base_context.p2_aliases,
-                learned["p2"],
-            ),
-        )
-        timeline_parser = ChampionsTextParser(context=context)
-        return tuple(
-            timeline_parser.parse(
-                frame.lines,
-                timestamp_ms=frame.timestamp_ms,
-                source_frame=frame.source_frame,
-            )
-            for frame in self._timeline
-        )
+    def resolved_identities(self) -> dict[str, str]:
+        return self.parser.resolved_identities()
 
     def flush_pending(self) -> FrameDetections:
         """Espera el refuerzo visual antes de cerrar y perder sus aliases."""
@@ -2624,3 +2710,6 @@ class OcrTraceDetector:
 
     def reset_battle_state(self) -> None:
         self.parser.reset_battle_state()
+
+    def resolved_identities(self) -> dict[str, str]:
+        return self.parser.resolved_identities()

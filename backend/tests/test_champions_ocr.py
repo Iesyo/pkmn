@@ -981,7 +981,7 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(record["ocr"][0]["text"], "The opposing Umbreon fainted!")
         self.assertEqual(record["detections"]["events"][0]["kind"], "faint")
 
-    def test_detector_resets_the_in_memory_timeline_between_battles(self) -> None:
+    def test_detector_resets_stable_identities_between_battles(self) -> None:
         class FakeEngine:
             def read(self, image: bytes) -> tuple[OcrLine, ...]:
                 return (line(image.decode(), x=0.2, y=0.7),)
@@ -990,11 +990,11 @@ class ChampionsOcrTests(unittest.TestCase):
             context=DetectorContext(p2_team=("Umbreon", "Drampa")),
             engine=FakeEngine(),
         )
-        detector.detect(
-            FramePacket(index=0, timestamp_ms=0, image=b"The opposing Umbreon fainted!")
-        )
+        identity = detector.parser._new_identity("p2", "Shade", "p2a")
+        detector.parser._bind_alias("p2", "Shade", "Umbreon")
+        self.assertEqual(detector.resolved_identities(), {identity: "Umbreon"})
         detector.reset_battle_state()
-        detector.detect(
+        detections = detector.detect(
             FramePacket(
                 index=1,
                 timestamp_ms=1_000,
@@ -1002,10 +1002,8 @@ class ChampionsOcrTests(unittest.TestCase):
             )
         )
 
-        finalized = detector.materialize_timeline()
-
-        self.assertEqual(len(finalized), 1)
-        self.assertEqual(finalized[0].events[0].species, "Drampa")
+        self.assertEqual(detector.resolved_identities(), {})
+        self.assertEqual(detections.events[0].species, "Drampa")
 
     def test_detector_resolves_stable_unknown_hud_aliases_in_the_background(self) -> None:
         hud = (
@@ -1057,9 +1055,10 @@ class ChampionsOcrTests(unittest.TestCase):
         finally:
             detector.close()
 
+        self.assertEqual(detections.events, ())
         self.assertEqual(
-            [(event.slot, event.species) for event in detections.events],
-            [("p2a", "Metagross"), ("p2b", "Sableye")],
+            set(detector.resolved_identities().values()),
+            {"Metagross", "Sableye"},
         )
 
     def test_detector_flushes_pending_visual_aliases_before_battle_reset(self) -> None:
@@ -1114,9 +1113,10 @@ class ChampionsOcrTests(unittest.TestCase):
             release.set()
             detector.close()
 
+        self.assertEqual(detections.events, ())
         self.assertEqual(
-            [(event.slot, event.species) for event in detections.events],
-            [("p2a", "Metagross"), ("p2b", "Sableye")],
+            set(detector.resolved_identities().values()),
+            {"Metagross", "Sableye"},
         )
 
     def test_cli_uses_ocr_by_default_and_keeps_ollama_as_an_option(self) -> None:
@@ -1355,6 +1355,96 @@ class ChampionsOcrTests(unittest.TestCase):
             log.index("|move|p2a: Metagross|Psychic Fangs"),
         )
 
+    def test_real_alias_variants_freeze_events_then_replace_identities_once(self) -> None:
+        frames = tuple(
+            FramePacket(index=index, timestamp_ms=index * 500, image=str(index).encode())
+            for index in range(7)
+        )
+        ocr = {
+            0: (line("Rival sent out しごでき and せんせい!", x=0.2, y=0.7, width=0.5),),
+            1: (
+                line("せんせい", x=0.629, y=0.05, width=0.052),
+                line("しごでき", x=0.799, y=0.05, width=0.051),
+                line("100%", x=0.682, y=0.11, width=0.053),
+                line("100%", x=0.851, y=0.11, width=0.053),
+                line("Venusaur", x=0.08, y=0.86),
+                line("Sylveon", x=0.29, y=0.86),
+                line("200/200", x=0.13, y=0.93),
+                line("190/190", x=0.34, y=0.93),
+            ),
+            2: (
+                line("FIGHT", x=0.86, y=0.70),
+                line("POKÉMON", x=0.84, y=0.90),
+            ),
+            3: (
+                line(
+                    "The opposing せんtせL's Metagrossite is reacting to Rival's Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.75,
+                ),
+            ),
+            4: (line("The opposing しでき used Light Screen!", x=0.2, y=0.7, width=0.5),),
+            5: (line("The opposing しでき used Encore!", x=0.2, y=0.7, width=0.5),),
+            6: (line("You won the battle!", x=0.2, y=0.7, width=0.35),),
+        }
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self, image: bytes) -> tuple[OcrLine, ...]:
+                self.calls += 1
+                return ocr[int(image.decode())]
+
+        context = DetectorContext(
+            p1_name="Player",
+            p2_name="Rival",
+            p1_team=("Venusaur", "Sylveon"),
+        )
+        engine = FakeEngine()
+        detector = ChampionsOcrDetector(context=context, engine=engine)
+        detector.parser = ChampionsTextParser(
+            context=context,
+            catalog=ChampionsCatalog(
+                species=("Venusaur", "Sylveon", "Metagross", "Metagross-Mega", "Sableye", "Grimmsnarl"),
+                moves=("Light Screen", "Encore"),
+                species_moves=(
+                    ("Sableye", ("lightscreen", "encore")),
+                    ("Grimmsnarl", ("lightscreen",)),
+                ),
+                mega_stones=(("Metagrossite", "Metagross", "Metagross-Mega"),),
+            ),
+        )
+        capture = ReplayCapturePipeline(
+            frames,
+            detector,
+            CaptureSeed(
+                p1_name="Player",
+                p2_name="Rival",
+                p1_team=context.p1_team,
+                p2_team=("Metagross", "Sableye"),
+            ),
+        ).capture()[0]
+
+        opponent_events = [event for event in capture.events if event.slot and event.slot.startswith("p2")]
+        light_screen = next(event for event in opponent_events if event.move == "Light Screen")
+        encore = next(event for event in opponent_events if event.move == "Encore")
+        self.assertEqual(engine.calls, len(frames))
+        self.assertTrue(light_screen.species.startswith("__champions_actor_"))
+        self.assertLess(capture.events.index(light_screen), capture.events.index(encore))
+        self.assertEqual(dict(capture.identities)[light_screen.species], "Sableye")
+
+        log = build_replay_document(capture).log
+        turn = log.index("|turn|1")
+        self.assertNotIn("__champions_actor_", log)
+        self.assertLess(log.index("|switch|p2a: Metagross"), turn)
+        self.assertLess(log.index("|switch|p2b: Sableye"), turn)
+        self.assertLess(
+            log.index("|move|p2b: Sableye|Light Screen|"),
+            log.index("|move|p2b: Sableye|Encore|"),
+        )
+
     def test_single_visible_opponent_keeps_its_hud_slot_and_restores_the_other_lead(self) -> None:
         frames = tuple(
             FramePacket(index=index, timestamp_ms=index * 500, image=str(index).encode())
@@ -1469,13 +1559,17 @@ class ChampionsOcrTests(unittest.TestCase):
             source_frame=2,
         )
 
+        opponent_switches = [
+            event
+            for event in leads.events
+            if event.kind == "switch" and event.slot.startswith("p2")
+        ]
+        self.assertEqual([event.slot for event in opponent_switches], ["p2a", "p2b"])
+        self.assertTrue(opponent_switches[0].species.startswith("__champions_actor_"))
+        self.assertEqual(opponent_switches[1].species, "Sableye")
         self.assertEqual(
-            [
-                (event.slot, event.species)
-                for event in leads.events
-                if event.kind == "switch" and event.slot.startswith("p2")
-            ],
-            [("p2a", "Metagross"), ("p2b", "Sableye")],
+            parser.resolved_identities()[opponent_switches[0].species],
+            "Metagross",
         )
         self.assertEqual(
             [event.turn for event in turn.events if event.kind == "turn"],

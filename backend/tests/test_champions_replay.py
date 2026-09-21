@@ -138,7 +138,7 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertIn("|switch|p2a: Metagross|Metagross-Mega, L50|100/100", document.log)
 
-    def test_places_a_late_resolved_switch_before_its_move(self) -> None:
+    def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()
         document = build_replay_document(
             CapturedBattle(
@@ -169,8 +169,8 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
         self.assertLess(
-            document.log.index("|switch|p2a: Sableye"),
             document.log.index("|move|p2a: Sableye|Light Screen|"),
+            document.log.index("|switch|p2a: Sableye"),
         )
 
     def test_keeps_the_active_species_when_an_event_contains_a_mixed_alias(self) -> None:
@@ -199,7 +199,7 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("|move|p2a: Sableye|Light Screen|", document.log)
         self.assertNotIn("p2a: しごでき", document.log)
 
-    def test_activates_a_known_actor_before_an_orphan_action(self) -> None:
+    def test_does_not_synthesize_a_switch_for_an_orphan_action(self) -> None:
         battle = self.capture()
         document = build_replay_document(
             CapturedBattle(
@@ -221,10 +221,40 @@ class ChampionsReplayTests(unittest.TestCase):
             )
         )
 
-        self.assertLess(
-            document.log.index("|switch|p2a: Sableye"),
-            document.log.index("|move|p2a: Sableye|Light Screen|"),
+        self.assertNotIn("|switch|p2a: Sableye", document.log)
+        self.assertIn("|move|p2a: Sableye|Light Screen|", document.log)
+
+    def test_replaces_stable_actor_identities_only_after_building_the_protocol(self) -> None:
+        battle = self.capture()
+        metagross = "__champions_actor_p2_0001__"
+        sableye = "__champions_actor_p2_0002__"
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Metagross", "Sableye"), ("Metagross", "Sableye")),
+                events=(
+                    BattleEvent(kind="switch", timestamp_ms=0, slot="p2a", species=metagross),
+                    BattleEvent(kind="switch", timestamp_ms=1, slot="p2b", species=sableye),
+                    BattleEvent(kind="turn", timestamp_ms=2, turn=1),
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=3,
+                        slot="p2b",
+                        species=sableye,
+                        move="Light Screen",
+                    ),
+                ),
+                winner=battle.winner,
+                identities=((metagross, "Metagross"), (sableye, "Sableye")),
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
         )
+
+        self.assertNotIn("__champions_actor_", document.log)
+        self.assertLess(document.log.index("|switch|p2b: Sableye"), document.log.index("|turn|1"))
+        self.assertLess(document.log.index("|turn|1"), document.log.index("|move|p2b: Sableye"))
 
     def test_serializes_ability_driven_terrain_with_its_source(self) -> None:
         battle = self.capture()

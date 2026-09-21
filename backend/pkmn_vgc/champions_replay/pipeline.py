@@ -3,10 +3,18 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from .detector import DetectionError, FrameDetector
-from .models import BattleEvent, BattleSide, CapturedBattle, FrameDetections, SideId, SourceMode
+from .models import (
+    BattleEvent,
+    BattleSide,
+    CapturedBattle,
+    FrameDetections,
+    SideId,
+    SourceMode,
+    is_actor_identity,
+)
 from .sources import FramePacket, FrameSource
 
 
@@ -107,7 +115,7 @@ class CaptureAccumulator:
             _merge_species(self.p2_selected, detections.p2_selected, limit=4)
 
         for event in detections.events:
-            if event.slot and event.species:
+            if event.slot and event.species and not is_actor_identity(event.species):
                 selected = self.p1_selected if event.slot.startswith("p1") else self.p2_selected
                 team = self.p1_team if event.slot.startswith("p1") else self.p2_team
                 _merge_species(selected, (event.species,), limit=4)
@@ -146,24 +154,59 @@ class CaptureAccumulator:
             self.winner = detections.winner
         self.complete = self.complete or detections.battle_complete
 
-    def finalize(self) -> CapturedBattle:
+    def finalize(self, identities: Mapping[str, str] | None = None) -> CapturedBattle:
         if not self.winner:
             raise CaptureIncompleteError("No se pudo identificar el resultado de la batalla.")
         if not self.events:
             raise CaptureIncompleteError("No se detectaron eventos de batalla.")
         if not self.p1_team or not self.p2_team:
             raise CaptureIncompleteError("No se pudo reconstruir el Team Preview de ambos jugadores.")
+        identity_map = dict(identities or {})
+
+        def resolved(values: Iterable[str]) -> tuple[str, ...]:
+            return tuple(identity_map.get(value, value) for value in values)
+
         def ordered_selection(lead: list[str], selected: list[str]) -> tuple[str, ...]:
             ordered: list[str] = []
-            _merge_species(ordered, lead, limit=4)
-            _merge_species(ordered, selected, limit=4)
+            _merge_species(ordered, resolved(lead), limit=4)
+            _merge_species(ordered, resolved(selected), limit=4)
             return tuple(ordered)
 
+        def completed_team(side: str, current: list[str], lead: list[str]) -> tuple[str, ...]:
+            canonical_lead = list(resolved(lead))
+            current_keys = {
+                "".join(character for character in species.lower() if character.isalnum())
+                for species in current
+            }
+            missing_leads = [
+                species
+                for species in canonical_lead
+                if "".join(character for character in species.lower() if character.isalnum())
+                not in current_keys
+            ]
+            completed = [*missing_leads, *current]
+            for event in self.events:
+                if not event.slot or not event.slot.startswith(side) or not event.species:
+                    continue
+                species = identity_map.get(event.species, event.species)
+                if not is_actor_identity(species):
+                    _merge_species(completed, (species,), limit=6)
+            return tuple(completed)
+
         return CapturedBattle(
-            p1=BattleSide(self.p1_name, tuple(self.p1_team), ordered_selection(self.p1_lead, self.p1_selected)),
-            p2=BattleSide(self.p2_name, tuple(self.p2_team), ordered_selection(self.p2_lead, self.p2_selected)),
-            events=tuple(sorted(self.events, key=lambda event: event.timestamp_ms)),
+            p1=BattleSide(
+                self.p1_name,
+                completed_team("p1", self.p1_team, self.p1_lead),
+                ordered_selection(self.p1_lead, self.p1_selected),
+            ),
+            p2=BattleSide(
+                self.p2_name,
+                completed_team("p2", self.p2_team, self.p2_lead),
+                ordered_selection(self.p2_lead, self.p2_selected),
+            ),
+            events=tuple(self.events),
             winner=self.winner,
+            identities=tuple(identity_map.items()),
             started_at=self.started_at,
             format=self.seed.format,
             source_mode=self.seed.source_mode,
@@ -254,34 +297,12 @@ class ReplayCapturePipeline:
                 for warning in pop_warnings():
                     on_warning(warning)
 
-        def materialize_timeline() -> CaptureAccumulator:
-            """Une el carril cronológico con el mapa final de motes."""
-
-            materialize = getattr(self.detector, "materialize_timeline", None)
-            if not callable(materialize):
-                return accumulator
-            try:
-                final_detections = materialize()
-                rebuilt = CaptureAccumulator(self.seed)
-                for detections in final_detections:
-                    if not isinstance(detections, FrameDetections):
-                        raise TypeError("el detector devolvió una detección final inválida")
-                    rebuilt.apply(detections)
-            except Exception as error:
-                if on_warning:
-                    on_warning(
-                        "No se pudo aplicar el mapa final de motes; se conserva "
-                        f"la captura provisional: {error}"
-                    )
-                return accumulator
-            if not rebuilt.winner or not rebuilt.has_battle_data:
-                if on_warning:
-                    on_warning(
-                        "El carril cronológico final quedó incompleto; se conserva "
-                        "la captura provisional."
-                    )
-                return accumulator
-            return rebuilt
+        def resolved_identities() -> Mapping[str, str]:
+            resolve = getattr(self.detector, "resolved_identities", None)
+            if not callable(resolve):
+                return {}
+            identities = resolve()
+            return identities if isinstance(identities, Mapping) else {}
 
         def report(frame_timestamp_ms: int) -> None:
             if not on_progress:
@@ -332,10 +353,9 @@ class ReplayCapturePipeline:
             accumulator.apply(detections)
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
                 flush_detector_pending()
-                finalized_accumulator = materialize_timeline()
                 try:
-                    capture = finalized_accumulator.finalize()
-                except CaptureIncompleteError as error:
+                    capture = accumulator.finalize(resolved_identities())
+                except (CaptureIncompleteError, ValueError) as error:
                     incomplete_battles += 1
                     if on_warning:
                         on_warning(
@@ -359,7 +379,7 @@ class ReplayCapturePipeline:
 
         if not awaiting_next_start and accumulator.winner and accumulator.has_battle_data:
             flush_detector_pending()
-            captures.append(materialize_timeline().finalize())
+            captures.append(accumulator.finalize(resolved_identities()))
         if not captures:
             raise CaptureIncompleteError("La fuente terminó sin una batalla completa.")
         return tuple(captures if max_battles == 0 else captures[:max_battles])

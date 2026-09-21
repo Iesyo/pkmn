@@ -56,6 +56,12 @@ VALID_EVENT_KINDS = {
     "message",
 }
 
+ACTOR_IDENTITY_PREFIX = "__champions_actor_"
+
+
+def is_actor_identity(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(ACTOR_IDENTITY_PREFIX)
+
 
 def _clean_text(value: object, *, limit: int = 120) -> str | None:
     if not isinstance(value, str):
@@ -266,6 +272,7 @@ class CapturedBattle:
     p2: BattleSide
     events: tuple[BattleEvent, ...]
     winner: SideId
+    identities: tuple[tuple[str, str], ...] = ()
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     format: str = "gen9championsvgc2026regmc"
     source_mode: SourceMode = "video"
@@ -280,7 +287,31 @@ class CapturedBattle:
         clean_format = _clean_text(self.format, limit=100)
         if not clean_format:
             raise ValueError("El combate necesita un formato.")
+        identities: list[tuple[str, str]] = []
+        identity_keys: set[str] = set()
+        for raw_identity, raw_species in self.identities:
+            identity = _clean_text(raw_identity, limit=80)
+            species = _clean_text(raw_species, limit=80)
+            if not identity or not is_actor_identity(identity) or not species:
+                raise ValueError("El mapa de identidades del replay es inválido.")
+            if is_actor_identity(species):
+                raise ValueError("Una identidad del replay debe resolver a una especie.")
+            if identity in identity_keys:
+                raise ValueError(f"La identidad {identity} está duplicada.")
+            identity_keys.add(identity)
+            identities.append((identity, species))
+        unresolved = {
+            event.species
+            for event in self.events
+            if is_actor_identity(event.species) and event.species not in identity_keys
+        }
+        if unresolved:
+            raise ValueError(
+                "Faltan especies para identidades observadas: "
+                + ", ".join(sorted(unresolved))
+            )
         object.__setattr__(self, "format", clean_format)
+        object.__setattr__(self, "identities", tuple(identities))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> CapturedBattle:
@@ -306,6 +337,11 @@ class CapturedBattle:
             p2=BattleSide.from_mapping(value.get("p2") if isinstance(value.get("p2"), Mapping) else {}),
             events=events,
             winner=winner,
+            identities=tuple(
+                (str(item[0]), str(item[1]))
+                for item in value.get("identities", ())
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            ),
             started_at=started_at,
             format=_clean_text(value.get("format"), limit=100) or "gen9championsvgc2026regmc",
             source_mode=source_mode,

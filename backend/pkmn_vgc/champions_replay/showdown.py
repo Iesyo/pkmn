@@ -4,7 +4,7 @@ import html
 import json
 from pathlib import Path
 
-from .models import BattleEvent, BattleSide, CapturedBattle, ReplayDocument
+from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, BattleSide, CapturedBattle, ReplayDocument
 
 
 def _identifier(slot: str, species: str) -> str:
@@ -96,27 +96,6 @@ def _event_lines(
     return []
 
 
-def _event_order(event: BattleEvent) -> tuple[int, int, int]:
-    """Preserva tiempo/frame, pero da prioridad causal a entradas al campo."""
-
-    switch_priority = 0 if event.kind in {"switch", "drag"} else 1
-    return event.timestamp_ms, switch_priority, event.source_frame or -1
-
-
-def _activate_missing_slot(event: BattleEvent, active: dict[str, str]) -> list[str]:
-    """Evita protocolo inválido si OCR vio una acción antes que el send-out."""
-
-    if (
-        not event.slot
-        or not event.species
-        or event.slot in active
-        or event.kind in {"switch", "drag"}
-    ):
-        return []
-    active[event.slot] = event.species
-    return [f"|switch|{_identifier(event.slot, event.species)}|{event.species}, L50|100/100"]
-
-
 def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     """Convierte la evidencia normalizada en el protocolo público de Showdown."""
     lines = [
@@ -135,8 +114,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in sorted(battle.events, key=_event_order):
-        lines.extend(_activate_missing_slot(event, active))
+    for event in battle.events:
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")
@@ -147,8 +125,14 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
         if code:
             choices.append(f">{side_id} team {code}")
 
+    protocol = "\n".join(lines)
+    for identity, species in sorted(battle.identities, key=lambda item: len(item[0]), reverse=True):
+        protocol = protocol.replace(identity, species)
+    if ACTOR_IDENTITY_PREFIX in protocol:
+        raise ValueError("El replay conserva una identidad sin especie al finalizar.")
+
     return ReplayDocument(
-        log="\n".join(lines),
+        log=protocol,
         inputlog="\n".join(choices),
         uploadtime=int(battle.started_at.timestamp()),
         p1=battle.p1.name,
