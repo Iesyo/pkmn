@@ -9,10 +9,16 @@ from typing import Any, Mapping, Sequence
 
 from .detector import DetectionError, DetectorContext, OllamaVisionDetector
 from .models import CapturedBattle
-from .ocr_detector import ChampionsOcrDetector, OcrTraceDetector, load_trace_aliases
+from .ocr_detector import (
+    ChampionsOcrDetector,
+    OcrTraceDetector,
+    load_champions_catalog,
+    load_trace_aliases,
+)
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
+from .team_preview import ChampionsTeamPreviewResolver
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
@@ -267,6 +273,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 context=detector_context,
                 trace_path=args.ocr_trace,
                 min_confidence=args.ocr_min_confidence,
+                team_preview_resolver=ChampionsTeamPreviewResolver(
+                    load_champions_catalog().species_types,
+                    cache_directory=Path(
+                        os.getenv(
+                            "PKMN_CHAMPIONS_SPRITE_CACHE",
+                            "data/champions-jobs/sprite-cache",
+                        )
+                    ),
+                ),
             )
             detector_label = "OCR local determinista"
         if args.command != "trace":

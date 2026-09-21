@@ -14,10 +14,11 @@ from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import ReplayDocument
-from .champions_replay.ocr_detector import ChampionsOcrDetector
+from .champions_replay.ocr_detector import ChampionsOcrDetector, load_champions_catalog
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
 from .champions_replay.sources import VideoFrameSource
+from .champions_replay.team_preview import ChampionsTeamPreviewResolver
 
 
 ALLOWED_VIDEO_SUFFIXES = {".mkv", ".mov", ".mp4", ".webm"}
@@ -51,9 +52,22 @@ def _default_processor(
     source = VideoFrameSource(path=video_path, sample_fps=sample_fps)
     trace_path = output_directory / "ocr.trace.jsonl"
     trace_path.unlink(missing_ok=True)
+    catalog = load_champions_catalog()
+    cache_root = (
+        output_directory.parent.parent
+        if output_directory.name == "output"
+        else output_directory.parent
+    )
+    sprite_cache = Path(
+        os.getenv("PKMN_CHAMPIONS_SPRITE_CACHE", str(cache_root / "sprite-cache"))
+    )
     detector = ChampionsOcrDetector(
         context=detector_context,
         trace_path=trace_path,
+        team_preview_resolver=ChampionsTeamPreviewResolver(
+            catalog.species_types,
+            cache_directory=sprite_cache,
+        ),
     )
     captures = ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,

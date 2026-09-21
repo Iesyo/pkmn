@@ -589,6 +589,47 @@ class ChampionsOcrTests(unittest.TestCase):
             [("p1a", "Blaziken"), ("p1b", "Basculegion")],
         )
 
+    def test_team_preview_emits_the_visual_opponent_roster(self) -> None:
+        opponent = (
+            "Swampert",
+            "Metagross",
+            "Pelipper",
+            "Archaludon",
+            "Sableye",
+            "Basculegion",
+        )
+        parser = ChampionsTextParser(catalog=ChampionsCatalog(species=opponent))
+
+        self.assertEqual(parser.bind_preview_team(opponent), opponent)
+        preview = parser.parse(
+            (
+                line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+                line("to send into battle.", x=0.38, y=0.215, width=0.16),
+            ),
+            timestamp_ms=45_500,
+            source_frame=91,
+        )
+
+        self.assertEqual(preview.p2_team, opponent)
+
+    def test_visual_roster_removes_an_early_alias_inference_outside_the_team(self) -> None:
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(
+                species=("Sableye", "Ninetales-Alola"),
+                species_moves=(
+                    ("Sableye", ("Light Screen",)),
+                    ("Ninetales-Alola", ("Light Screen",)),
+                ),
+            )
+        )
+        identity = parser._new_identity("p2", "Helper", "p2a")
+        parser._bind_alias("p2", "Helper", "Ninetales-Alola")
+
+        parser.bind_preview_team(("Sableye",))
+        parser._infer_alias_from_move("p2", "Helper", "Light Screen")
+
+        self.assertEqual(parser.resolved_identities(), {identity: "Sableye"})
+
     def test_mega_stone_reveals_an_unknown_opponent_nickname_and_slot(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_name="Rival"),
@@ -1159,6 +1200,53 @@ class ChampionsOcrTests(unittest.TestCase):
             {"Metagross", "Sableye"},
         )
 
+    def test_detector_reads_opponent_preview_on_a_background_thread(self) -> None:
+        preview_lines = (
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+        )
+        opponent = (
+            "Swampert",
+            "Metagross",
+            "Pelipper",
+            "Archaludon",
+            "Sableye",
+            "Basculegion",
+        )
+
+        class FakeEngine:
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                return preview_lines
+
+        class FakePreviewResolver:
+            def resolve(
+                self,
+                _frame: FramePacket,
+                *,
+                rotation_degrees: int = 0,
+            ) -> tuple[str, ...]:
+                self.rotation_degrees = rotation_degrees
+                return opponent
+
+        resolver = FakePreviewResolver()
+        detector = ChampionsOcrDetector(
+            engine=FakeEngine(),
+            team_preview_resolver=resolver,
+        )
+        try:
+            detector.detect(FramePacket(index=0, timestamp_ms=0, image=b"jpeg"))
+            detector.detect(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"))
+            self.assertIsNotNone(detector._preview_future)
+            detector._preview_future.result(timeout=1)  # type: ignore[union-attr]
+            detections = detector.detect(
+                FramePacket(index=2, timestamp_ms=1_000, image=b"jpeg")
+            )
+        finally:
+            detector.close()
+
+        self.assertEqual(detections.p2_team, opponent)
+        self.assertEqual(resolver.rotation_degrees, 0)
+
     def test_cli_uses_ocr_by_default_and_keeps_ollama_as_an_option(self) -> None:
         parser = build_parser()
         default = parser.parse_args(["video", "battle.mp4", "--output", "replay"])
@@ -1249,6 +1337,33 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.slot, event.species) for event in detections.events],
             [("p2a", "Metagross")],
         )
+
+    def test_ocr_trace_reuses_the_recorded_visual_opponent_roster(self) -> None:
+        opponent = (
+            "Swampert",
+            "Metagross",
+            "Pelipper",
+            "Archaludon",
+            "Sableye",
+            "Basculegion",
+        )
+        record = {
+            "battle_index": 0,
+            "ocr": [
+                asdict(line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15)),
+                asdict(line("to send into battle.", x=0.38, y=0.215, width=0.16)),
+            ],
+            "detections": {
+                "teams": {"p1": [], "p2": list(opponent)},
+                "team_preview": True,
+            },
+        }
+
+        detections = OcrTraceDetector().detect(
+            FramePacket(index=0, timestamp_ms=0, image=json.dumps(record).encode())
+        )
+
+        self.assertEqual(detections.p2_team, opponent)
 
     def test_trace_preloads_final_aliases_before_the_first_hud_frame(self) -> None:
         detector = OcrTraceDetector(

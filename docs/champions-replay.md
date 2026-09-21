@@ -40,6 +40,12 @@ flowchart TD
   OCR originales con timestamp y número de frame, mientras otro resuelve el
   mapa de nicknames por batalla y lado. Al detectar el resultado se aplica el
   mapa completo a la cronología; no se vuelve a leer el vídeo ni la traza.
+- En el Team Preview, un worker independiente lee las placas de tipo y las
+  siluetas de las seis filas rivales. Los tipos reducen el Pokédex a uno o dos
+  candidatos y la silueta o el género resuelven los empates. El roster queda
+  guardado en `ocr.trace.jsonl` y limita después la relación mote → especie.
+  La primera lectura descarga únicamente los sprites ambiguos desde el catálogo
+  público de Showdown y los conserva en `data/champions-jobs/sprite-cache`.
 - `LiveFrameSource` lee OBS Virtual Camera mediante FFmpeg y conserva sólo el
   frame más reciente. Si el OCR tarda, descarta imágenes viejas en vez de
   acumular retraso.
@@ -127,7 +133,8 @@ git pull origin desarrollo
 No hace falta activar el entorno, cambiar la política de ejecución de
 PowerShell ni instalar Ollama. Los modelos pequeños de RapidOCR quedan dentro
 del entorno local; la reconstrucción y la inferencia de aliases no salen de la
-computadora.
+computadora. La primera reanálisis con Team Preview puede llenar la caché local
+de sprites de Showdown; los siguientes trabajos reutilizan esos archivos.
 
 ## Contexto conocido
 
@@ -270,12 +277,14 @@ sólo declara hechos visibles: turnos, entradas al campo, movimientos
 confirmados, HP, estados, KO, clima y resultado. Nunca rellena información
 oculta por inferencia.
 
-El OCR ya reconoce texto del HUD y mensajes, y la lectura visual identifica los
-iconos que aparecen junto a nicknames durante la batalla. Todavía no clasifica
-los seis iconos sin texto del Team Preview, por lo que conviene proporcionar el
-Team propio en `--context`. Los Pokémon rivales se agregan cuando aparecen en
-campo. Una captura se marca para revisión si no contiene seis Pokémon o cuatro
-picks por lado, o si un evento crítico queda por debajo de 75% de confianza.
+El OCR reconoce texto del HUD y mensajes; la lectura visual identifica tanto
+los iconos junto a nicknames durante la batalla como las seis filas sin texto
+del Team Preview rival. Conviene proporcionar el Team propio en `--context`
+porque sus nicknames sí aparecen como texto. Si una placa o silueta rival queda
+ambigua, el análisis conserva la evidencia parcial y emite un aviso preciso en
+vez de inventar una especie. Una captura se marca para revisión si el roster
+reconstruido no contiene seis Pokémon, faltan picks o un evento crítico queda
+por debajo de 75% de confianza.
 
 ## Investigación previa
 
@@ -293,7 +302,7 @@ validaron contra screenshots públicos reales. La siguiente fuente de verdad es
 la grabación real del usuario y su archivo `.trace.jsonl`; con esa traza toca:
 
 1. ajustar zonas y frases que difieran en 1080p;
-2. añadir el clasificador de iconos del Team Preview;
+2. ampliar las muestras de Team Preview para resoluciones y overlays distintos;
 3. validar cambios, Mega Evolution, estados, clima, movimientos de área,
    multi-hit y daño residual;
 4. medir precisión por tipo de evento antes de alimentar estadísticas sin

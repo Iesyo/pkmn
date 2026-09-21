@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, FrameDetections, is_actor_identity
 from .sources import FramePacket
+from .team_preview import TeamPreviewResolver
 
 
 def _text_key(value: str) -> str:
@@ -306,6 +307,7 @@ class RapidOcrEngine:
 @dataclass(frozen=True, slots=True)
 class ChampionsCatalog:
     species: tuple[str, ...] = ()
+    species_types: tuple[tuple[str, tuple[str, ...]], ...] = ()
     moves: tuple[str, ...] = ()
     abilities: tuple[str, ...] = ()
     species_moves: tuple[tuple[str, tuple[str, ...]], ...] = ()
@@ -386,6 +388,21 @@ def load_champions_catalog() -> ChampionsCatalog:
                 if isinstance((entry := species_values.get(species_id)), dict)
                 and isinstance(entry.get("name"), str)
             )
+            species_types = tuple(
+                (
+                    entry["name"],
+                    tuple(
+                        pokemon_type
+                        for pokemon_type in entry.get("types", ())
+                        if isinstance(pokemon_type, str)
+                    ),
+                )
+                for species_id in champion_ids
+                if isinstance((entry := species_values.get(species_id)), dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("types"), list)
+                and entry["types"]
+            )
             moves = tuple(
                 entry["name"]
                 for entry in moves_values.values()
@@ -440,6 +457,7 @@ def load_champions_catalog() -> ChampionsCatalog:
             )
             return ChampionsCatalog(
                 species=species,
+                species_types=species_types,
                 moves=moves,
                 abilities=abilities,
                 species_moves=species_moves,
@@ -570,13 +588,17 @@ class ChampionsTextParser:
         self.catalog = catalog or load_champions_catalog()
         context_species = (*self.context.p1_team, *self.context.p2_team)
         self._species = _NameMatcher((*context_species, *self.catalog.species))
+        self._teams = {
+            "p1": tuple(self.context.p1_team),
+            "p2": tuple(self.context.p2_team),
+        }
         self._side_species = {
-            "p1": _NameMatcher(self.context.p1_team or self.catalog.species),
-            "p2": _NameMatcher(self.context.p2_team or self.catalog.species),
+            "p1": _NameMatcher(self._teams["p1"] or self.catalog.species),
+            "p2": _NameMatcher(self._teams["p2"] or self.catalog.species),
         }
         self._known_teams = {
-            "p1": bool(self.context.p1_team),
-            "p2": bool(self.context.p2_team),
+            "p1": bool(self._teams["p1"]),
+            "p2": bool(self._teams["p2"]),
         }
         self._aliases = {
             "p1": self._team_form_aliases(self.context.p1_team),
@@ -639,6 +661,18 @@ class ChampionsTextParser:
     def reset_battle_state(self) -> None:
         """Descarta el estado efímero antes de analizar otra batalla."""
 
+        self._teams = {
+            "p1": tuple(self.context.p1_team),
+            "p2": tuple(self.context.p2_team),
+        }
+        self._side_species = {
+            side: _NameMatcher(team or self.catalog.species)
+            for side, team in self._teams.items()
+        }
+        self._known_teams = {
+            side: bool(team)
+            for side, team in self._teams.items()
+        }
         # Los aliases aprendidos pertenecen a una sola batalla. Reutilizarlos
         # en la siguiente mezcla identidades cuando dos rivales usan el mismo
         # mote o cuando cambia la pareja de leads.
@@ -705,7 +739,7 @@ class ChampionsTextParser:
         nickname_key = _text_key(nickname)
         if not nickname_key or not candidates:
             return None, None, False
-        known_team = set(self.context.p1_team if side == "p1" else self.context.p2_team)
+        known_team = set(self._teams[side])
         if known_team:
             candidates &= known_team
         assigned = {
@@ -805,6 +839,79 @@ class ChampionsTextParser:
             if alias_key and canonical:
                 result[alias_key] = canonical
         return result
+
+    def bind_preview_team(
+        self,
+        team: Sequence[str],
+        *,
+        side: str = "p2",
+    ) -> tuple[str, ...]:
+        """Fija el roster visual antes de resolver motes por evidencia.
+
+        Si una inferencia temprana apuntó fuera del Team Preview, se descarta.
+        Los eventos conservan su identidad estable y reciben la especie correcta
+        únicamente al serializar el replay.
+        """
+
+        if side not in {"p1", "p2"}:
+            return ()
+        canonical: list[str] = []
+        seen: set[str] = set()
+        for raw_species in team:
+            species = self._species.resolve(str(raw_species), threshold=0.9)
+            key = _text_key(species or "")
+            if not species or not key or key in seen:
+                continue
+            seen.add(key)
+            canonical.append(species)
+        if not canonical:
+            return ()
+
+        roster = tuple(canonical[:6])
+        allowed = {_text_key(species) for species in roster}
+        self._teams[side] = roster
+        self._side_species[side] = _NameMatcher(roster)
+        self._known_teams[side] = True
+
+        configured_keys = self._configured_bound_alias_keys[side]
+        for alias_key, species in tuple(self._aliases[side].items()):
+            if alias_key in configured_keys and _text_key(species) in allowed:
+                continue
+            if _text_key(species) not in allowed:
+                self._aliases[side].pop(alias_key, None)
+                self._bound_alias_keys[side].discard(alias_key)
+        self._aliases[side].update(self._team_form_aliases(roster))
+
+        configured_messages = self._configured_message_aliases[side]
+        for alias, species in tuple(self._message_aliases[side].items()):
+            if alias in configured_messages and _text_key(species) in allowed:
+                continue
+            if _text_key(species) not in allowed:
+                self._message_aliases[side].pop(alias, None)
+
+        side_identities = set(self._identity_by_alias[side].values())
+        for identity in side_identities:
+            species = self._identity_species.get(identity)
+            if species and _text_key(species) not in allowed:
+                self._identity_species.pop(identity, None)
+
+        for evidence_key, candidates in tuple(self._alias_evidence.items()):
+            evidence_side, alias_key = evidence_key
+            if evidence_side != side:
+                continue
+            narrowed = {species for species in candidates if _text_key(species) in allowed}
+            if narrowed:
+                self._alias_evidence[evidence_key] = narrowed
+            else:
+                self._alias_evidence.pop(evidence_key, None)
+            if len(narrowed) == 1:
+                species = next(iter(narrowed))
+                self._aliases[side][alias_key] = species
+                self._bound_alias_keys[side].add(alias_key)
+                identity = self._identity_by_alias[side].get(alias_key)
+                if identity:
+                    self._identity_species[identity] = species
+        return roster
 
     def _resolve_species(self, value: str, side: str | None = None) -> str | None:
         if side in self._side_species:
@@ -910,8 +1017,8 @@ class ChampionsTextParser:
         for slot, active_species in self._active.items():
             if _text_key(self._canonical_actor(active_species)) == _text_key(self._canonical_actor(species)):
                 return slot[:2]
-        p1 = {_text_key(value) for value in self.context.p1_team}
-        p2 = {_text_key(value) for value in self.context.p2_team}
+        p1 = {_text_key(value) for value in self._teams["p1"]}
+        p2 = {_text_key(value) for value in self._teams["p2"]}
         key = _text_key(species)
         if key in p2 and key not in p1:
             return "p2"
@@ -1032,7 +1139,7 @@ class ChampionsTextParser:
                 for identity, species in resolved.items()
                 if identity in side_identities
             )
-            candidates = set(self.context.p1_team if side == "p1" else self.context.p2_team)
+            candidates = set(self._teams[side])
             candidates.update(self._aliases[side].values())
             remaining = {
                 species
@@ -1060,8 +1167,7 @@ class ChampionsTextParser:
             return resolved
         candidate_key = _text_key(candidate)
         named_values = {
-            **{_text_key(species): species for species in self.context.p1_team if side == "p1"},
-            **{_text_key(species): species for species in self.context.p2_team if side == "p2"},
+            **{_text_key(species): species for species in self._teams[side]},
             **self._aliases[side],
         }
         for name_key, species in sorted(named_values.items(), key=lambda item: len(item[0]), reverse=True):
@@ -1325,7 +1431,7 @@ class ChampionsTextParser:
         """
 
         row_centers = (0.145, 0.26, 0.38, 0.495, 0.61, 0.73)
-        roster = self.context.p1_team[:6]
+        roster = self._teams["p1"][:6]
         for index, center_y in enumerate(row_centers[: len(roster)]):
             label = min(
                 (
@@ -1393,6 +1499,7 @@ class ChampionsTextParser:
         )
         if _text_key(p2_name) != _text_key(self._player_names["p2"]):
             self._aliases["p2"] = dict(self._configured_aliases["p2"])
+            self._aliases["p2"].update(self._team_form_aliases(self._teams["p2"]))
             self._bound_alias_keys["p2"] = set(self._configured_bound_alias_keys["p2"])
             self._message_aliases["p2"] = dict(self._configured_message_aliases["p2"])
         self._player_names.update({"p1": p1_name, "p2": p2_name})
@@ -1401,6 +1508,7 @@ class ChampionsTextParser:
             p1_name=p1_name,
             p2_name=p2_name,
             p1_team=tuple(roster),
+            p2_team=tuple(self._teams["p2"]),
             p1_selected=selected,
             team_preview=True,
         )
@@ -2384,6 +2492,7 @@ class ChampionsOcrDetector:
         min_confidence: float = 0.5,
         engine_factory: Callable[[], OcrEngine] | None = None,
         alias_resolver: HudAliasResolver | None = None,
+        team_preview_resolver: TeamPreviewResolver | None = None,
     ) -> None:
         self._base_context = context or DetectorContext()
         if engine is not None:
@@ -2415,6 +2524,71 @@ class ChampionsOcrDetector:
         self._visual_attempted: set[tuple[tuple[str, str], ...]] = set()
         self._visual_warnings: deque[str] = deque()
         self._alias_source: PreparedOcrFrame | None = None
+        self._preview_resolver = team_preview_resolver
+        self._preview_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="champions-team-preview")
+            if team_preview_resolver is not None
+            else None
+        )
+        self._preview_future: Future[tuple[str, ...]] | None = None
+        self._preview_future_generation = 0
+        self._preview_generation = 0
+        self._preview_stable_frames = 0
+        self._preview_attempted = False
+        self._preview_team: tuple[str, ...] = ()
+        self._preview_source: PreparedOcrFrame | None = None
+
+    def _poll_preview_team(self, *, wait: bool = False) -> tuple[str, ...]:
+        future = self._preview_future
+        if future is None or (not wait and not future.done()):
+            return ()
+        generation = self._preview_future_generation
+        self._preview_future = None
+        try:
+            team = future.result()
+        except Exception as error:  # la batalla puede continuar con evidencia parcial
+            self._visual_warnings.append(
+                "Team Preview detectado, pero no se pudieron identificar los seis "
+                f"sprites rivales: {error}"
+            )
+            return ()
+        if generation != self._preview_generation:
+            return ()
+        applied = self.parser.bind_preview_team(team, side="p2")
+        if len(applied) != 6:
+            self._visual_warnings.append(
+                "Team Preview detectado, pero la lectura visual no produjo seis especies rivales."
+            )
+            return ()
+        self._preview_team = applied
+        return applied
+
+    def _schedule_preview_team(
+        self,
+        prepared: PreparedOcrFrame,
+        detections: FrameDetections,
+    ) -> None:
+        if (
+            self._preview_resolver is None
+            or self._preview_executor is None
+            or self._preview_future is not None
+            or self._preview_attempted
+            or self._preview_team
+            or not detections.team_preview
+            or len(detections.p2_team) == 6
+        ):
+            return
+        self._preview_stable_frames += 1
+        if self._preview_stable_frames < 2:
+            return
+        self._preview_attempted = True
+        self._preview_source = prepared
+        self._preview_future_generation = self._preview_generation
+        self._preview_future = self._preview_executor.submit(
+            self._preview_resolver.resolve,
+            prepared.frame,
+            rotation_degrees=prepared.rotation_degrees,
+        )
 
     def _poll_visual_aliases(self) -> tuple[HudAlias, ...]:
         future = self._alias_future
@@ -2498,7 +2672,17 @@ class ChampionsOcrDetector:
             "resolved_aliases": self.parser.resolved_aliases(),
             "resolved_identities": self.parser.resolved_identities(),
             "visual_alias_pending": self._alias_future is not None,
+            "preview_team_pending": self._preview_future is not None,
             "detections": {
+                "players": {"p1": detections.p1_name, "p2": detections.p2_name},
+                "teams": {
+                    "p1": list(detections.p1_team),
+                    "p2": list(detections.p2_team),
+                },
+                "selected": {
+                    "p1": list(detections.p1_selected),
+                    "p2": list(detections.p2_selected),
+                },
                 "team_preview": detections.team_preview,
                 "battle_started": detections.battle_started,
                 "battle_complete": detections.battle_complete,
@@ -2539,11 +2723,15 @@ class ChampionsOcrDetector:
         lines = prepared.lines
         visual_aliases = self._poll_visual_aliases()
         visual_candidates = self._schedule_visual_aliases(prepared)
+        preview_team = self._poll_preview_team()
         detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,
             source_frame=frame.index,
         )
+        if preview_team and not detections.p2_team:
+            detections = replace(detections, p2_team=preview_team)
+        self._schedule_preview_team(prepared, detections)
         self._write_trace(
             prepared,
             detections,
@@ -2559,10 +2747,18 @@ class ChampionsOcrDetector:
 
     def reset_battle_state(self) -> None:
         self._alias_generation += 1
+        self._preview_generation += 1
         self._trace_battle_index += 1
         self._visual_candidate_counts.clear()
         self._visual_attempted.clear()
         self._alias_source = None
+        if self._preview_future is not None:
+            self._preview_future.cancel()
+        self._preview_future = None
+        self._preview_stable_frames = 0
+        self._preview_attempted = False
+        self._preview_team = ()
+        self._preview_source = None
         self.parser.reset_battle_state()
 
     def resolved_identities(self) -> dict[str, str]:
@@ -2571,10 +2767,27 @@ class ChampionsOcrDetector:
     def flush_pending(self) -> FrameDetections:
         """Espera el refuerzo visual antes de cerrar y perder sus aliases."""
 
+        preview_source = self._preview_source
+        preview_team = self._poll_preview_team(wait=True)
+        pending = FrameDetections(p2_team=preview_team)
+        if preview_team and preview_source is not None:
+            preview_detections = replace(
+                pending,
+                p1_name=self.parser._player_names["p1"],
+                p2_name=self.parser._player_names["p2"],
+                team_preview=True,
+            )
+            self._write_trace(
+                preview_source,
+                preview_detections,
+                phase="preview_team_flush",
+            )
+        self._preview_source = None
+
         future = self._alias_future
         source = self._alias_source
         if future is None or source is None:
-            return FrameDetections()
+            return pending
         generation = self._alias_future_generation
         self._alias_future = None
         self._alias_source = None
@@ -2582,15 +2795,15 @@ class ChampionsOcrDetector:
             aliases = future.result()
         except Exception as error:  # el OCR determinista conserva el replay parcial
             self._visual_warnings.append(f"Lectura visual de nicknames omitida: {error}")
-            return FrameDetections()
+            return pending
         if generation != self._alias_generation:
-            return FrameDetections()
+            return pending
         applied = self.parser.bind_visual_aliases(aliases)
         if not applied:
             self._visual_warnings.append(
                 "La lectura visual terminó, pero no produjo asociaciones válidas para el HUD."
             )
-            return FrameDetections()
+            return pending
         detections = self.parser.parse(
             source.lines,
             timestamp_ms=source.frame.timestamp_ms,
@@ -2603,7 +2816,7 @@ class ChampionsOcrDetector:
             visual_candidates=tuple((alias.side, alias.nickname) for alias in applied),
             phase="visual_alias_flush",
         )
-        return detections
+        return replace(detections, p2_team=preview_team or detections.p2_team)
 
     def pop_warnings(self) -> tuple[str, ...]:
         warnings = tuple(self._visual_warnings)
@@ -2614,6 +2827,9 @@ class ChampionsOcrDetector:
         if self._alias_executor is not None:
             self._alias_executor.shutdown(wait=False, cancel_futures=True)
             self._alias_executor = None
+        if self._preview_executor is not None:
+            self._preview_executor.shutdown(wait=False, cancel_futures=True)
+            self._preview_executor = None
 
 
 def load_trace_aliases(path: Path) -> dict[int, dict[str, tuple[tuple[str, str], ...]]]:
@@ -2718,6 +2934,11 @@ class OcrTraceDetector:
                 for item in visual_values
                 if isinstance(item, dict)
             ) if isinstance(visual_values, list) else ()
+            detection_values = payload.get("detections")
+            recorded = FrameDetections.from_mapping(
+                detection_values,
+                timestamp_ms=frame.timestamp_ms,
+            ) if isinstance(detection_values, Mapping) else FrameDetections()
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
         if payload.get("phase") == "visual_alias_flush":
@@ -2727,12 +2948,17 @@ class OcrTraceDetector:
             self.parser = ChampionsTextParser(
                 context=self._context_for_battle(battle_index)
             )
+        if recorded.p2_team:
+            self.parser.bind_preview_team(recorded.p2_team, side="p2")
         self.parser.bind_visual_aliases(visual_aliases)
-        return self.parser.parse(
+        detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,
             source_frame=frame.index,
         )
+        if recorded.p2_team and not detections.p2_team:
+            detections = replace(detections, p2_team=recorded.p2_team)
+        return detections
 
     def reset_battle_state(self) -> None:
         self.parser.reset_battle_state()

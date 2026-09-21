@@ -234,7 +234,12 @@ def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75
     issues: list[ReviewIssue] = []
     for label, side in (("jugador", battle.p1), ("rival", battle.p2)):
         if len(side.team) != 6:
-            issues.append(ReviewIssue("warning", f"El Team Preview del {label} contiene {len(side.team)}/6 Pokémon."))
+            issues.append(
+                ReviewIssue(
+                    "warning",
+                    f"El roster reconstruido del {label} contiene {len(side.team)}/6 Pokémon.",
+                )
+            )
         if len(side.selected) != 4:
             issues.append(ReviewIssue("blocking", f"La selección del {label} contiene {len(side.selected)}/4 Pokémon."))
     critical_kinds = {"switch", "move", "faint", "turn"}
