@@ -339,7 +339,9 @@ class ChampionsCatalog:
     species: tuple[str, ...] = ()
     species_types: tuple[tuple[str, tuple[str, ...]], ...] = ()
     moves: tuple[str, ...] = ()
+    move_targets: tuple[tuple[str, str], ...] = ()
     abilities: tuple[str, ...] = ()
+    items: tuple[str, ...] = ()
     species_moves: tuple[tuple[str, tuple[str, ...]], ...] = ()
     species_abilities: tuple[tuple[str, tuple[str, ...]], ...] = ()
     species_teammates: tuple[tuple[str, str, int], ...] = ()
@@ -438,9 +440,21 @@ def load_champions_catalog() -> ChampionsCatalog:
                 for entry in moves_values.values()
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             )
+            move_targets = tuple(
+                (entry["name"], entry["target"])
+                for entry in moves_values.values()
+                if isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("target"), str)
+            )
             abilities = tuple(
                 entry["name"]
                 for entry in ability_values.values()
+                if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+            )
+            items = tuple(
+                entry["name"]
+                for entry in items_values.values()
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str)
             )
             species_moves = tuple(
@@ -489,7 +503,9 @@ def load_champions_catalog() -> ChampionsCatalog:
                 species=species,
                 species_types=species_types,
                 moves=moves,
+                move_targets=move_targets,
                 abilities=abilities,
+                items=items,
                 species_moves=species_moves,
                 species_abilities=species_abilities,
                 species_teammates=_historical_teammates(species),
@@ -706,6 +722,10 @@ class ChampionsTextParser:
         }
         self._moves = _NameMatcher(self.catalog.moves)
         self._abilities = _NameMatcher(self.catalog.abilities)
+        self._items = _NameMatcher(self.catalog.items)
+        self._move_targets: dict[str, str] = {
+            _text_key(name): target for name, target in self.catalog.move_targets
+        }
         self._species_by_move: dict[str, set[str]] = {}
         for species, moves in self.catalog.species_moves:
             for move in moves:
@@ -1155,6 +1175,22 @@ class ChampionsTextParser:
             ):
                 return slot
         return f"{side}a"
+
+    # Movimientos con "target": "self" en el propio movimiento apuntan a
+    # quien lo usa; con "allies"/"adjacentAlly" apuntan al compañero. En
+    # ninguno de los dos casos hay que buscar qué rival recibió daño cerca
+    # -Protect y Life Dew no le pegan a nadie- así que resolverlo aquí evita
+    # que la heurística de proximidad de showdown.py adivine mal.
+    _SELF_TARGET_CLASSES = frozenset({"self"})
+    _ALLY_TARGET_CLASSES = frozenset({"allies", "adjacentAlly"})
+
+    def _target_slot_for_move(self, move: str, actor_slot: str) -> str | None:
+        target_class = self._move_targets.get(_text_key(move))
+        if target_class in self._SELF_TARGET_CLASSES:
+            return actor_slot
+        if target_class in self._ALLY_TARGET_CLASSES:
+            return f"{actor_slot[:2]}{'b' if actor_slot.endswith('a') else 'a'}"
+        return None
 
     def _side_for_player(self, value: str) -> str | None:
         player = _text_key(value)
@@ -2281,13 +2317,14 @@ class ChampionsTextParser:
                         "[from] move: Knock Off",
                         f"[of] {self._slot_for_species(actor_species, actor_side)}: {actor_species}",
                     )
+                item_raw = knocked_off.group(5).strip()
                 return (
                     BattleEvent(
                         kind="enditem",
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
                         slot=self._slot_for_species(owner_species, owner_side),  # type: ignore[arg-type]
-                        value=knocked_off.group(5).strip(),
+                        value=self._items.resolve(item_raw) or item_raw,
                         tags=tags,
                         source_frame=source_frame,
                     ),
@@ -2404,6 +2441,7 @@ class ChampionsTextParser:
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
                         slot=slot,  # type: ignore[arg-type]
+                        target_slot=self._target_slot_for_move(move, slot),  # type: ignore[arg-type]
                         species=actor,
                         move=move,
                         source_frame=source_frame,
@@ -2453,6 +2491,7 @@ class ChampionsTextParser:
                             timestamp_ms=move_timestamp,
                             confidence=move_confidence,
                             slot=slot,  # type: ignore[arg-type]
+                            target_slot=self._target_slot_for_move(pending_move, slot),  # type: ignore[arg-type]
                             species=actor,
                             move=pending_move,
                             source_frame=move_frame,

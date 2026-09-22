@@ -1484,6 +1484,87 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual(repeated.events, ())
 
+    def test_a_knocked_off_item_is_corrected_against_the_catalog(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Tyranitar",), p2_team=("Farigiraf",)),
+            catalog=ChampionsCatalog(
+                species=("Tyranitar", "Farigiraf"),
+                items=("Sitrus Berry",),
+            ),
+        )
+        parser.parse(
+            (
+                line("Tyranitar", x=0.08, y=0.86),
+                line("Farigiraf", x=0.62, y=0.04),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        detections = parser.parse(
+            (
+                line(
+                    "Tyranitar knocked off the opposing Farigiraf's Strus Berry!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.6,
+                ),
+            ),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(detections.events[0].value, "Sitrus Berry")
+
+    def test_a_self_targeting_move_names_its_own_slot(self) -> None:
+        # COL-102 (reapertura): Protect no le pega a nadie, pero sin la clase
+        # de objetivo real del movimiento la heurística de proximidad podía
+        # engancharse a daño de otra acción y animar el bloqueo contra el
+        # rival equivocado.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Milotic",)),
+            catalog=ChampionsCatalog(
+                species=("Milotic",),
+                moves=("Protect",),
+                move_targets=(("Protect", "self"),),
+            ),
+        )
+        parser._active["p1a"] = "Milotic"
+
+        detections = parser.parse(
+            (line("Milotic used Protect!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.target_slot) for event in detections.events],
+            [("move", "p1a", "p1a")],
+        )
+
+    def test_an_ally_targeting_move_names_the_ally_slot(self) -> None:
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Milotic", "Incineroar")),
+            catalog=ChampionsCatalog(
+                species=("Milotic", "Incineroar"),
+                moves=("Life Dew",),
+                move_targets=(("Life Dew", "allies"),),
+            ),
+        )
+        parser._active["p1a"] = "Incineroar"
+        parser._active["p1b"] = "Milotic"
+
+        detections = parser.parse(
+            (line("Milotic used Life Dew!", x=0.15, y=0.72, width=0.4),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.target_slot) for event in detections.events],
+            [("move", "p1b", "p1a")],
+        )
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         parser._active["p2a"] = "Umbreon"
