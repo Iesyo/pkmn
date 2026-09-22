@@ -382,19 +382,48 @@ class RefreshChecks(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "SHA-256"):
             pipeline.ensure_champion(self.root)
 
-    def test_production_reference_is_independent_from_training_champion(self):
-        prod = self.root / "production.zip"
-        prod.write_bytes(b"deployed policy")
-        spec = {"id": "production", "checkpoint": str(prod), "sha256": sha256_file(prod), "format": FMT}
-        atomic_json(self.root / "Refresh" / "production.json", spec)
-        atomic_json(self.root / "Refresh" / "champion.json", {"sha256": "another policy"})
-        self.assertEqual(pipeline.production_reference(self.root)["sha256"], spec["sha256"])
-        self.assertFalse(pipeline.production_reference(self.root)["liveDeploymentVerified"])
-        with self.assertRaises(ValueError):
-            pipeline.production_reference(self.root, str(prod))
-        prod.write_bytes(b"changed bytes")
+    def test_production_reference_is_exactly_the_selected_champion(self):
+        champion_file = self.root / "champion.zip"
+        champion_file.write_bytes(b"canonical production")
+        historical_file = self.root / "historical.zip"
+        historical_file.write_bytes(b"old light")
+        champion = {"id": "current-production", "checkpoint": str(champion_file),
+                    "sha256": sha256_file(champion_file), "format": FMT}
+        atomic_json(self.root / "Refresh" / "champion.json", champion)
+        # A stale legacy production registry must never override the canonical champion.
+        atomic_json(self.root / "Refresh" / "production.json",
+                    {"id": "old-production", "checkpoint": str(historical_file),
+                     "sha256": sha256_file(historical_file), "format": FMT})
+        reference = pipeline.production_reference(self.root)
+        self.assertEqual(reference["id"], champion["id"])
+        self.assertEqual(reference["sha256"], champion["sha256"])
+        self.assertEqual(reference["checkpoint"], champion["checkpoint"])
+        self.assertEqual(reference["source"], "champion-registry")
+        self.assertEqual(reference["role"], "production")
+        self.assertFalse(reference["liveDeploymentVerified"])
+        champion_file.write_bytes(b"changed bytes")
         with self.assertRaisesRegex(RuntimeError, "SHA-256"):
             pipeline.production_reference(self.root)
+
+    def test_direct_recovery_always_uses_current_canonical_production(self):
+        run, original, _ = self.recovery_fixture()
+        current = self.root / "current-production.zip"
+        current.write_bytes(b"current production")
+        champion = {"id": "current", "checkpoint": str(current),
+                    "sha256": sha256_file(current), "format": FMT}
+        atomic_json(self.root / "Refresh" / "champion.json", champion)
+        captured = {}
+        def child(stage, selected_run, status, durations, *, worker_config, status_root):
+            if stage == "evaluate":
+                captured.update(data.read_json(worker_config)["production"])
+        with patch.object(pipeline, "git_sha", return_value="direct-code"), \
+             patch.object(pipeline, "runtime_versions", return_value=original["runtimeVersions"]), \
+             patch.object(pipeline, "run_child", side_effect=child), \
+             patch.object(pipeline, "write_report"):
+            pipeline.recover_evaluation(self.root, run.name, direct=True, battles=22)
+        self.assertEqual(captured["sha256"], champion["sha256"])
+        self.assertEqual(captured["checkpoint"], champion["checkpoint"])
+        self.assertEqual(captured["source"], "champion-registry")
 
     def test_direct_recovery_preserves_original_reports_status_and_training(self):
         run, original, _ = self.recovery_fixture()
