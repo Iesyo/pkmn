@@ -550,8 +550,10 @@ def promote(root: Path, run_id: str, *, direct: bool = False) -> dict:
     if not report or report.get("state") != "completed" or report.get("verdict") != "MEJORA_OBSERVADA":
         raise RuntimeError("Solo puede seleccionarse un candidato con benchmark completo y mejora observada.")
     old = ensure_champion(root)
-    if old["sha256"] != report["config"]["champion"]["sha256"]:
-        raise RuntimeError("El champion cambió desde esta comparación; el candidato debe reevaluarse.")
+    reference_role = "production" if direct else "champion"
+    reference = report["config"].get(reference_role, {})
+    if old["sha256"] != reference.get("sha256"):
+        raise RuntimeError("El modelo productivo cambió desde esta comparación; el candidato debe reevaluarse.")
     candidate = report["phases"]["rl"]
     check_artifact(candidate)
     check_artifact(report["phases"]["evaluate"])
