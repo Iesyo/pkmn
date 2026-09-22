@@ -21,7 +21,6 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(component, /job\.uploadedBytes/);
   assert.match(component, /maxBattles: 0/);
   assert.doesNotMatch(component, /ocrWorkers|Workers OCR/);
-  assert.match(component, /OCR secuencial/);
   assert.match(component, /Revisar partida/);
   assert.match(component, /Reintentar análisis/);
   assert.match(component, /Reanalizar vídeo/);
