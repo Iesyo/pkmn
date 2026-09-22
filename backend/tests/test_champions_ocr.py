@@ -768,6 +768,47 @@ class ChampionsOcrTests(unittest.TestCase):
             [3],
         )
 
+    def test_pre_battle_weather_does_not_leave_turn_one_empty(self) -> None:
+        # COL-102 (reabierta): un clima revelado por la habilidad de un lead,
+        # antes de que exista turno 1, marcaba "actividad" que sobrevivía al
+        # propio turno|1. En dobles el menú FIGHT/POKÉMON vuelve a aparecer
+        # dentro del mismo turno -una vez por cada Pokémon activo- y esa
+        # actividad heredada bastaba para cerrar el turno 1 como si ya
+        # hubiera terminado, antes de que ninguna de sus acciones reales se
+        # hubiera registrado.
+        parser = self.parser()
+        parser._battle_open = True
+        weather = parser.parse(
+            (line("A sandstorm kicked up!", x=0.12, y=0.5, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        self.assertEqual([event.kind for event in weather.events], ["weather"])
+
+        turn_one = parser.parse(self.command_frame(), timestamp_ms=500, source_frame=1)
+        self.assertEqual([event.turn for event in turn_one.events if event.kind == "turn"], [1])
+
+        # El menú de selección de movimiento del segundo Pokémon activo:
+        # oculta FIGHT/POKÉMON sin que haya ocurrido ninguna acción real.
+        move_menu = parser.parse(
+            (
+                line("Steelix", x=0.62, y=0.04),
+                line("32", x=0.69, y=0.11, width=0.035),
+                line("%", x=0.728, y=0.11, width=0.015),
+                line("MOVE TIME", x=0.82, y=0.32),
+                line("Move Info", x=0.80, y=0.84),
+            ),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+        self.assertEqual(move_menu.events, ())
+
+        second_active_pick = parser.parse(self.command_frame(), timestamp_ms=1_500, source_frame=3)
+        self.assertEqual(
+            [event.turn for event in second_active_pick.events if event.kind == "turn"],
+            [],
+        )
+
     def test_reset_battle_state_allows_the_same_opening_in_a_second_battle(self) -> None:
         parser = self.parser()
 

@@ -2629,6 +2629,13 @@ class ChampionsTextParser:
         if command_visible and not self._command_visible:
             if self._turn == 0:
                 self._turn = 1
+                # Sin esto, actividad previa a la propia batalla (p. ej. el
+                # mensaje de clima de una habilidad que se revela junto a los
+                # leads) sobrevive como "actividad del turno" y el segundo
+                # regreso al menú FIGHT/POKÉMON del mismo turno 1 -uno por
+                # cada Pokémon en dobles- se lee como el cierre del turno 1,
+                # dejándolo vacío y corriendo sus eventos reales al turno 2.
+                self._turn_has_activity = False
                 events.append(
                     BattleEvent(
                         kind="turn",

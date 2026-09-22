@@ -59,6 +59,47 @@ class VerifyReplayTests(unittest.TestCase):
         self.assertTrue(report.faithful, report)
         self.assertEqual(report.matched, 2)
 
+    def test_a_non_terminal_empty_turn_is_reported(self) -> None:
+        # COL-102 (reabierta): un turno sin eventos antes del siguiente
+        # |turn| significa que sus acciones reales quedaron mal etiquetadas
+        # bajo el turno de al lado, no que el turno haya estado vacío de
+        # verdad.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|turn|1",
+                    "|turn|2",
+                    "|move|p2a: Metagross|Psychic Fangs|",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertTrue(any("turno 1" in problem for problem in report.rosters), report.rosters)
+
+    def test_a_terminal_empty_turn_is_not_reported(self) -> None:
+        # El vídeo puede cortarse justo después del marcador del último
+        # turno, antes de que el HUD llegue a mostrar ninguna acción; eso no
+        # es el bug de COL-102.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Psychic Fangs|",
+                    "|turn|2",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertEqual(report.rosters, ())
+
     def test_an_event_the_screen_never_showed_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)

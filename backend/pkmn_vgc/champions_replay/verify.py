@@ -35,6 +35,7 @@ _MOVE_LINE = re.compile(r"^\|move\|(?P<slot>p[12][ab]): (?P<species>[^|]+)\|(?P<
 _POKE_LINE = re.compile(r"^\|poke\|(?P<side>p[12])\|(?P<species>[^,|]+)")
 _FAINT_LINE = re.compile(r"^\|faint\|(?P<slot>p[12][ab]): (?P<species>.+)$")
 _MEGA_LINE = re.compile(r"^\|-mega\|(?P<slot>p[12][ab]): (?P<species>[^|]+)\|")
+_TURN_LINE = re.compile(r"^\|turn\|(?P<number>\d+)$")
 
 _GAP_FRAMES = 4
 _SIMILAR = 0.80
@@ -126,6 +127,24 @@ def _species_for(nickname: str, aliases: dict[str, str]) -> str:
         if ratio > score:
             best, score = species, ratio
     return best
+
+
+def _turn_problems(log: Path) -> tuple[str, ...]:
+    """Un turno vacío antes del final no es un replay fiel, aunque nada se
+    haya perdido: sus eventos reales quedaron corriendo bajo el turno
+    siguiente (COL-102). El último turno queda fuera porque el vídeo puede
+    cortar la grabación justo después de su marcador, antes de que el HUD
+    muestre ninguna acción.
+    """
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    turn_indexes = [index for index, text in enumerate(lines) if _TURN_LINE.match(text)]
+    problems: list[str] = []
+    for position, index in enumerate(turn_indexes[:-1]):
+        if turn_indexes[position + 1] == index + 1:
+            number = _TURN_LINE.match(lines[index])["number"]
+            problems.append(f"turno {number} vacío: nada entre su |turn| y el siguiente")
+    return tuple(problems)
 
 
 def _replay_rosters(log: Path) -> dict[str, list[str]]:
@@ -271,7 +290,7 @@ def verify_replay(
         _roster_problems(rosters, _named_on_screen(trace, battle_index, species_names))
         if species_names
         else ()
-    )
+    ) + _turn_problems(log)
     return VerificationReport(
         rosters=problems,
         on_screen=sum(screen.values()),
