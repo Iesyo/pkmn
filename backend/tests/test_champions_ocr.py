@@ -1457,6 +1457,93 @@ class ChampionsOcrTests(unittest.TestCase):
                     [("fieldend", f"move: {terrain}")],
                 )
 
+    def test_a_pokemon_buffeted_by_sandstorm_is_narrated_once_per_turn(self) -> None:
+        # COL-102: el mismo aviso se relee con el mote un poco distinto
+        # entre frames ("Mate"/"Frida" en el job ciego); sin represarlo por
+        # slot y turno, cada lectura escribía su propio -message. A
+        # diferencia del objeto (una vez por batalla), la tormenta puede
+        # volver a golpear al mismo Pokémon cada turno, así que el límite
+        # es por turno, no permanente.
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_team=("Milotic",),
+                p1_aliases=(("Mate", "Milotic"), ("Mati", "Milotic")),
+            ),
+            catalog=ChampionsCatalog(species=("Milotic",)),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Milotic"
+        parser._turn = 3
+
+        first = parser.parse(
+            (line("Mate is buffeted by the sandstorm!", x=0.15, y=0.73, width=0.4),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        # El mismo golpe, releído con el mote un poco distinto: no se repite.
+        reread = parser.parse(
+            (line("Mati is buffeted by the sandstorm!", x=0.15, y=0.73, width=0.4),),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in first.events],
+            [("message", "Milotic is buffeted by the sandstorm!")],
+        )
+        self.assertEqual(reread.events, ())
+
+        parser._turn = 4
+        next_turn = parser.parse(
+            (line("Mate is buffeted by the sandstorm!", x=0.15, y=0.73, width=0.4),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in next_turn.events],
+            [("message", "Milotic is buffeted by the sandstorm!")],
+        )
+
+    def test_two_different_pokemon_buffeted_back_to_back_both_get_narrated(self) -> None:
+        # El hallazgo que tiró abajo el intento de represar mensajes por
+        # ventana de tiempo: "Sylveon is buffeted..." y, sin ningún frame
+        # vacío entre medio, "Mate is buffeted..." -dos Pokémon distintos,
+        # no una relectura del mismo aviso. Separarlos por identidad (slot)
+        # en vez de por hueco de pantalla los mantiene a los dos.
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_team=("Milotic",),
+                p2_team=("Sylveon",),
+                p1_aliases=(("Mate", "Milotic"),),
+            ),
+            catalog=ChampionsCatalog(species=("Milotic", "Sylveon")),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Milotic"
+        parser._active["p2a"] = "Sylveon"
+        parser._turn = 6
+
+        sylveon = parser.parse(
+            (line("The opposing Sylveon is buffeted by the sandstorm!", x=0.15, y=0.73, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        milotic = parser.parse(
+            (line("Mate is buffeted by the sandstorm!", x=0.15, y=0.73, width=0.4),),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in sylveon.events],
+            [("message", "The opposing Sylveon is buffeted by the sandstorm!")],
+        )
+        self.assertEqual(
+            [(event.kind, event.value) for event in milotic.events],
+            [("message", "Milotic is buffeted by the sandstorm!")],
+        )
+
     def test_a_knocked_off_item_becomes_a_structured_enditem(self) -> None:
         # COL-102: el vacío de objetos que Roku pidió auditar. El objeto de un
         # Pokémon sólo se puede perder una vez, pero el OCR repite el aviso con

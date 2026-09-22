@@ -814,6 +814,10 @@ class ChampionsTextParser:
         # entre frames ("Sitrus Berry", "Strus Berry") escribía el mismo
         # -enditem dos o tres veces.
         self._items_removed: set[str] = set()
+        # Idem para "X is buffeted by the sandstorm!": como mucho una vez
+        # por slot y por turno, no por texto exacto -el mismo aviso se
+        # relee con el mote un poco distinto en cada frame.
+        self._weather_buffeted_seen: set[tuple[str, int]] = set()
         self._alias_evidence: dict[tuple[str, str], set[str]] = {}
         self._alias_evidence_labels: dict[tuple[str, str], set[str]] = {}
         self._pending_alias_moves: dict[
@@ -2598,6 +2602,34 @@ class ChampionsTextParser:
                     source_frame=source_frame,
                 ),
             )
+
+        buffeted = re.match(
+            r"^(The opposing )?(.+?) is buffeted by the sandstorm!$", cleaned, re.IGNORECASE
+        )
+        if buffeted:
+            side = "p2" if buffeted.group(1) else "p1"
+            actor = self._actor_for_value(side, buffeted.group(2))
+            if actor:
+                # A diferencia del objeto (una vez por batalla), la tormenta
+                # de arena puede volver a golpear al mismo Pokémon en cada
+                # turno; el límite seguro es una vez por turno y por slot,
+                # no por texto. Distintos Pokémon narran su propio golpe sin
+                # ningún frame vacío entre uno y otro (medido en el job
+                # ciego), así que separarlos por hueco de pantalla no sirve.
+                key = (self._slot_for_species(actor, side), self._turn)
+                if key in self._weather_buffeted_seen:
+                    return ()
+                self._weather_buffeted_seen.add(key)
+                prefix = "The opposing " if side == "p2" else ""
+                return (
+                    BattleEvent(
+                        kind="message",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        value=f"{prefix}{actor} is buffeted by the sandstorm!",
+                        source_frame=source_frame,
+                    ),
+                )
 
         direct_turn = re.fullmatch(r"Turn\s+(\d+)", cleaned, re.IGNORECASE)
         if direct_turn:
