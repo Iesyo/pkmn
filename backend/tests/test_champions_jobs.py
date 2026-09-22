@@ -332,6 +332,124 @@ class ChampionsJobTests(unittest.TestCase):
             self.assertNotIn("ocrWorkers", queued)
             manager.close(wait=True)
 
+    def test_compacts_a_finished_job_without_losing_the_current_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = ChampionsJobManager(root, processor=fake_processor)
+            job = manager.create_job(
+                filename="session.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(job["id"], offset=0, data=b"video")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(job["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(job["id"])
+            self.assertEqual(completed["status"], "ready")
+
+            history = root / job["id"] / "output" / "history" / "old-run"
+            history.mkdir(parents=True)
+            (history / "ocr.trace.jsonl").write_text("old trace\n", encoding="utf-8")
+            before = manager.get_job(job["id"])
+            self.assertTrue(before["sourceAvailable"])
+            self.assertGreater(before["reclaimableBytes"], 0)
+
+            compacted = manager.compact_job(job["id"])
+
+            self.assertFalse(compacted["sourceAvailable"])
+            self.assertFalse(compacted["canRetry"])
+            self.assertTrue(compacted["compacted"])
+            self.assertEqual(compacted["historyBytes"], 0)
+            self.assertEqual(manager.replay_document(job["id"], 1)["p2"], "Rival A")
+            with zipfile.ZipFile(io.BytesIO(manager.diagnostics_archive(job["id"]))) as bundle:
+                names = set(bundle.namelist())
+            self.assertIn("job.json", names)
+            self.assertIn("output/replay-001.json", names)
+            self.assertFalse((root / job["id"] / "source.mp4").exists())
+            self.assertFalse((root / job["id"] / "output" / "history").exists())
+            manager.close(wait=True)
+
+            restored = ChampionsJobManager(root, processor=fake_processor)
+            restored_job = restored.get_job(job["id"])
+            self.assertTrue(restored_job["compacted"])
+            self.assertFalse(restored_job["sourceAvailable"])
+            self.assertEqual(restored.replay_document(job["id"], 2)["p2"], "Rival B")
+            restored.close(wait=True)
+
+    def test_protected_or_active_jobs_cannot_be_cleaned_or_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ChampionsJobManager(Path(directory), processor=fake_processor)
+            active = manager.create_job(
+                filename="uploading.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            with self.assertRaisesRegex(ValueError, "trabajo terminado"):
+                manager.compact_job(active["id"])
+            with self.assertRaisesRegex(ValueError, "trabajo terminado"):
+                manager.delete_job(active["id"])
+
+            ready = manager.create_job(
+                filename="ready.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(ready["id"], offset=0, data=b"video")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(ready["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(ready["id"])
+            self.assertEqual(completed["status"], "ready")
+
+            protected = manager.set_protected(ready["id"], True)
+            self.assertTrue(protected["isProtected"])
+            with self.assertRaisesRegex(ValueError, "protegido"):
+                manager.compact_job(ready["id"])
+            with self.assertRaisesRegex(ValueError, "protegido"):
+                manager.delete_job(ready["id"])
+
+            unprotected = manager.set_protected(ready["id"], False)
+            self.assertFalse(unprotected["isProtected"])
+            manager.close(wait=True)
+
+    def test_deleting_a_finished_job_removes_it_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = ChampionsJobManager(root, processor=fake_processor)
+            job = manager.create_job(
+                filename="delete-me.mp4",
+                size_bytes=5,
+                team_version_id="version-1",
+                context={},
+            )
+            manager.append_chunk(job["id"], offset=0, data=b"video")
+            deadline = time.monotonic() + 2
+            completed = manager.get_job(job["id"])
+            while completed["status"] not in {"ready", "error"} and time.monotonic() < deadline:
+                time.sleep(0.01)
+                completed = manager.get_job(job["id"])
+            self.assertEqual(completed["status"], "ready")
+            self.assertGreater(manager.storage_summary()["totalBytes"], 0)
+
+            deleted = manager.delete_job(job["id"])
+
+            self.assertEqual(deleted, job["id"])
+            self.assertFalse((root / job["id"]).exists())
+            with self.assertRaises(LookupError):
+                manager.get_job(job["id"])
+            self.assertEqual(manager.storage_summary()["jobCount"], 0)
+            manager.close(wait=True)
+
+            restored = ChampionsJobManager(root, processor=fake_processor)
+            self.assertEqual(restored.list_jobs(), [])
+            restored.close(wait=True)
+
 
 if __name__ == "__main__":
     unittest.main()
