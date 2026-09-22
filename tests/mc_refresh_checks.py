@@ -408,6 +408,9 @@ class RefreshChecks(unittest.TestCase):
         champion.write_bytes(b"corrupt")
         with self.assertRaisesRegex(RuntimeError, "SHA-256"):
             pipeline.ensure_champion(self.root)
+        (self.root / "Refresh" / "champion.json").unlink()
+        with self.assertRaisesRegex(RuntimeError, "productivo canónico"):
+            pipeline.ensure_champion(self.root)
 
     def test_production_reference_is_exactly_the_selected_champion(self):
         champion_file = self.root / "champion.zip"
