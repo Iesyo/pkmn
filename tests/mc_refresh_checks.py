@@ -237,27 +237,54 @@ class RefreshChecks(unittest.TestCase):
                   "codeSha": "original-code", "runtimeVersions": {"python": "fixture"},
                   "champion": {"checkpoint": str(initial), "sha256": sha256_file(initial)}}
         atomic_json(run / "config.json", config)
+        split_manifest = run / "split" / "split_manifest.json"
+        atomic_json(split_manifest, {"fixture": "frozen split"})
         for stage in pipeline.STAGES[:-1]:
             payload = {"state": "completed"}
+            if stage == "split":
+                payload = pipeline.artifact_result(split_manifest, state="completed")
             if stage == "rl":
                 payload = pipeline.artifact_result(candidate, state="completed", steps=100,
                                                     checkpoint=str(candidate), sha256=sha256_file(candidate))
             atomic_json(run / "phases" / (stage + ".json"), payload)
         return run, config, candidate
 
-    def test_recovery_validates_and_preserves_original_training_contract(self):
+    def test_recovery_validates_only_evaluation_inputs_and_preserves_training_payloads(self):
         run, original, candidate = self.recovery_fixture()
+        # Simulate the expensive trajectory payload that triggered the Colab delay.
+        trajectory = run / "human" / "trajs" / "00000000.pkl"
+        trajectory.parent.mkdir(parents=True)
+        trajectory.write_bytes(b"training-only payload")
+        manifest = run / "human" / "trajs_manifest.json"
+        atomic_json(manifest, {"fixture": True})
+        atomic_json(run / "phases" / "trajectories.json",
+                    pipeline.artifact_result(manifest, state="completed", files=[trajectory]))
+        # Its recorded hash is now stale. Evaluation recovery must not re-read it.
+        trajectory.write_bytes(b"changed but irrelevant to frozen evaluation")
         before = {str(p): sha256_file(p) for p in run.rglob("*") if p.is_file()}
-        recovered_run, config = pipeline.recovery_config(self.root, run.name, code_sha="fixed-evaluation",
-                                                         versions=original["runtimeVersions"])
+        recovered_run, config = pipeline.recovery_config(
+            self.root, run.name, code_sha="fixed-evaluation",
+            versions=original["runtimeVersions"], direct=True)
         self.assertEqual(recovered_run, run)
         self.assertEqual(config["codeSha"], "fixed-evaluation")
-        self.assertEqual(config["evaluationRecovery"]["trainingCodeSha"], "original-code")
-        self.assertEqual(config["evaluationRecovery"]["scope"], ["prepare", "evaluate"])
+        recovery = config["evaluationRecovery"]
+        self.assertEqual(recovery["trainingCodeSha"], "original-code")
+        self.assertEqual(recovery["scope"], ["prepare", "evaluate"])
+        self.assertEqual(recovery["validation"]["mode"], "evaluation-inputs-only")
+        self.assertIn("trajectories", recovery["validation"]["skippedTrainingPayloads"])
+        self.assertNotIn("original_champion_checkpoint", recovery["validation"]["verified"])
         self.assertEqual(before, {str(p): sha256_file(p) for p in run.rglob("*") if p.is_file()})
         candidate.write_bytes(b"tampered")
         with self.assertRaises(RuntimeError):
-            pipeline.recovery_config(self.root, run.name, code_sha="fixed", versions=original["runtimeVersions"])
+            pipeline.recovery_config(self.root, run.name, code_sha="fixed",
+                                     versions=original["runtimeVersions"], direct=True)
+
+    def test_recovery_rejects_changed_split_manifest_without_scanning_training_payloads(self):
+        run, original, _ = self.recovery_fixture()
+        (run / "split" / "split_manifest.json").write_text('{"changed": true}')
+        with self.assertRaisesRegex(RuntimeError, "manifiesto congelado"):
+            pipeline.recovery_config(self.root, run.name, code_sha="fixed",
+                                     versions=original["runtimeVersions"], direct=True)
 
     def test_recovery_rejects_incomplete_training_or_changed_runtime(self):
         run, original, _ = self.recovery_fixture()
