@@ -151,6 +151,8 @@ class ChampionsJobTests(unittest.TestCase):
                 max_battles=0,
             )
 
+            self.assertTrue(job["isProtected"])
+
             first = manager.append_chunk(job["id"], offset=0, data=payload[:4])
             repeated = manager.append_chunk(job["id"], offset=0, data=payload[:4])
             manager.append_chunk(job["id"], offset=4, data=payload[4:])
@@ -355,8 +357,10 @@ class ChampionsJobTests(unittest.TestCase):
             (history / "ocr.trace.jsonl").write_text("old trace\n", encoding="utf-8")
             before = manager.get_job(job["id"])
             self.assertTrue(before["sourceAvailable"])
+            self.assertTrue(before["isProtected"])
             self.assertGreater(before["reclaimableBytes"], 0)
 
+            manager.set_protected(job["id"], False)
             compacted = manager.compact_job(job["id"])
 
             self.assertFalse(compacted["sourceAvailable"])
@@ -407,7 +411,7 @@ class ChampionsJobTests(unittest.TestCase):
                 completed = manager.get_job(ready["id"])
             self.assertEqual(completed["status"], "ready")
 
-            protected = manager.set_protected(ready["id"], True)
+            protected = manager.get_job(ready["id"])
             self.assertTrue(protected["isProtected"])
             with self.assertRaisesRegex(ValueError, "protegido"):
                 manager.compact_job(ready["id"])
@@ -435,8 +439,10 @@ class ChampionsJobTests(unittest.TestCase):
                 time.sleep(0.01)
                 completed = manager.get_job(job["id"])
             self.assertEqual(completed["status"], "ready")
+            self.assertTrue(completed["isProtected"])
             self.assertGreater(manager.storage_summary()["totalBytes"], 0)
 
+            manager.set_protected(job["id"], False)
             deleted = manager.delete_job(job["id"])
 
             self.assertEqual(deleted, job["id"])
