@@ -567,6 +567,53 @@ class ChampionsReplayTests(unittest.TestCase):
             [("p2a", "2/100"), ("p2b", "69/100")],
         )
 
+    def test_accumulator_restores_a_health_reading_the_hud_corrected_itself(self) -> None:
+        # COL-102, job 82923f56ce264a92, Partida 1, Turno 4: Scald deja a
+        # Incineroar en 28% -leído en varios frames seguidos-, un único
+        # frame de OCR malo lo lee "3%", y el frame siguiente ya vuelve a
+        # leer 28%. Como esa vuelta es una lectura de "cura" (28 > 3) en vez
+        # de "daño" (mismo tipo que veníamos viendo), no calzaba con la
+        # fusión de arriba y el replay escribía un daño a 3% seguido de una
+        # cura a 28% que nunca ocurrió -encima del Sitrus Berry real, que sí
+        # curó de 28% a 52% después. Confirmado contra el video: la barra
+        # nunca bajó de 28%.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(
+                        kind="damage", timestamp_ms=311_000, slot="p2a",
+                        species="Incineroar", health="46/100",
+                    ),
+                    BattleEvent(
+                        kind="damage", timestamp_ms=311_500, slot="p2a",
+                        species="Incineroar", health="28/100",
+                    ),
+                    BattleEvent(
+                        kind="damage", timestamp_ms=312_500, slot="p2a",
+                        species="Incineroar", health="3/100",
+                    ),
+                    BattleEvent(
+                        kind="heal", timestamp_ms=313_000, slot="p2a",
+                        species="Incineroar", health="28/100",
+                    ),
+                    BattleEvent(
+                        kind="heal", timestamp_ms=317_500, slot="p2a",
+                        species="Incineroar", health="42/100",
+                    ),
+                    BattleEvent(
+                        kind="heal", timestamp_ms=318_000, slot="p2a",
+                        species="Incineroar", health="52/100",
+                    ),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.health) for event in accumulator.events],
+            [("damage", "p2a", "28/100"), ("heal", "p2a", "52/100")],
+        )
+
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [
             FramePacket(index=0, timestamp_ms=0, image=b"first"),

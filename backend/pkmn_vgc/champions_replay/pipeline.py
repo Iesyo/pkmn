@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Mapping
 
@@ -86,6 +86,10 @@ class CaptureAccumulator:
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     _last_event_at: dict[tuple[object, ...], int] = field(default_factory=dict)
     _last_health_event: dict[tuple[object, ...], tuple[int, int]] = field(default_factory=dict)
+    # Valor que tenía la barra justo antes del último reemplazo dentro de una
+    # misma racha de daño o cura -no antes de que la racha empezara, antes de
+    # su lectura más reciente. Ver el chequeo de reversión en `apply`.
+    _pre_replace_health: dict[tuple[object, ...], str] = field(default_factory=dict)
     _turn_seen: bool = False
 
     def __post_init__(self) -> None:
@@ -126,11 +130,39 @@ class CaptureAccumulator:
                 if previous_health and event.timestamp_ms - previous_health[1] <= 1_500:
                     previous_index = previous_health[0]
                     previous_event = self.events[previous_index]
+                    if previous_event.health:
+                        self._pre_replace_health[health_key] = previous_event.health
                     self._last_event_at.pop(previous_event.signature(), None)
                     self.events[previous_index] = event
                     self._last_event_at[event.signature()] = event.timestamp_ms
                     self._last_health_event[health_key] = (previous_index, event.timestamp_ms)
                     continue
+                # COL-102, job 82923f56ce264a92: un solo frame de OCR malo
+                # leyó "3%" en medio de una racha estable en 28% -el HUD ya
+                # se había corregido solo un frame después, pero como el
+                # valor siguiente ("28% de nuevo") es una cura y no un daño,
+                # no calzaba con la fusión de arriba (que sólo junta lecturas
+                # del mismo tipo) y quedaba como una cura real que nunca
+                # pasó, encima del daño equivocado. Cuando el tipo contrario
+                # tiene una lectura reciente cuyo valor previo al último
+                # reemplazo es exactamente éste, el HUD ya se había corregido
+                # solo un frame antes: se restaura el evento de antes a ese
+                # valor -el daño real sí ocurrió, sólo que no hasta ahí- y
+                # éste, que ya no representaría ningún cambio real, no se
+                # escribe.
+                opposite_kind = "heal" if event.kind == "damage" else "damage"
+                opposite_key = (opposite_kind, event.slot, event.species)
+                opposite_health = self._last_health_event.get(opposite_key)
+                if opposite_health and event.timestamp_ms - opposite_health[1] <= 1_500:
+                    opposite_index, _opposite_ts = opposite_health
+                    reverted_value = self._pre_replace_health.get(opposite_key)
+                    if reverted_value is not None and event.health == reverted_value:
+                        opposite_event = self.events[opposite_index]
+                        self._last_event_at.pop(opposite_event.signature(), None)
+                        self.events[opposite_index] = replace(opposite_event, health=reverted_value)
+                        self._last_health_event.pop(opposite_key, None)
+                        self._pre_replace_health.pop(opposite_key, None)
+                        continue
             signature = event.signature()
             previous = self._last_event_at.get(signature)
             if previous is not None and event.timestamp_ms - previous <= self.dedupe_window_ms:
