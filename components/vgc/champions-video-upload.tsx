@@ -388,7 +388,7 @@ export function ChampionsVideoUpload({
             <label htmlFor={inputId} className={cn("flex cursor-pointer items-center justify-between gap-4", uploading && "pointer-events-none opacity-60")}>
               <span>
                 <span className="block text-sm font-black text-cyan-100">Seleccionar grabación</span>
-                <span className="mt-1 block text-[10px] text-slate-500">MP4, MKV, MOV o WebM · carga reanudable en fragmentos de 8 MiB</span>
+                <span className="mt-1 block text-[10px] text-slate-500">MP4, MKV, MOV o WebM · carga reanudable en fragmentos de 8 MiB · protegido por defecto</span>
               </span>
               <span className="inline-flex h-10 items-center gap-2 rounded-xl bg-cyan-300 px-4 text-xs font-black text-slate-950">
                 {uploading ? <Loader2 className="size-4 animate-spin" /> : <UploadCloud className="size-4" />}
@@ -419,6 +419,10 @@ export function ChampionsVideoUpload({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-black text-white">{currentJob.filename}</p>
+                  <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
+                    <span>Job ID</span>
+                    <code className="select-all rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-cyan-200">{currentJob.id}</code>
+                  </p>
                   <p className="mt-1 text-[10px] text-slate-500">
                     {currentJob.sourceAvailable ? `${formatBytes(currentJob.sourceBytes)} vídeo` : "vídeo eliminado"} · {formatBytes(currentJob.historyBytes)} historial · {formatBytes(currentJob.totalBytes)} total
                   </p>
