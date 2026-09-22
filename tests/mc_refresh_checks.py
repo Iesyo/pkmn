@@ -578,6 +578,8 @@ class RefreshChecks(unittest.TestCase):
         selected = pipeline.promote(self.root, run.name, direct=True)
         self.assertEqual(selected["sha256"], sha256_file(candidate))
         self.assertEqual(data.read_json(run / "promotion.json")["benchmarkReport"], str(report_dir / "report.json"))
+        with self.assertRaisesRegex(RuntimeError, "modelo productivo cambió"):
+            pipeline.promote(self.root, run.name, direct=True)
 
     def test_complete_report_and_explicit_promotion_use_actual_comparison(self):
         from battle_lab.mc_holdout_benchmark import compare_model_reports, BASELINE_SPECS
