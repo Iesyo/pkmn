@@ -270,6 +270,7 @@ class ChampionsOcrTests(unittest.TestCase):
             ),
         )
         parser._battle_open = True
+        parser._active["p2a"] = "Kingambit"
 
         detections = parser.parse(
             (line("The opposing Kingambit usedSucker Punch!", x=0.2, y=0.7, width=0.5),),
@@ -291,6 +292,7 @@ class ChampionsOcrTests(unittest.TestCase):
             catalog=ChampionsCatalog(species=("Sylveon",)),
         )
         parser._battle_open = True
+        parser._active["p1a"] = "Sylveon"
 
         detections = parser.parse(
             (line("Nico protected itself!", x=0.2, y=0.7, width=0.35),),
@@ -303,6 +305,8 @@ class ChampionsOcrTests(unittest.TestCase):
     def test_serializes_tailwind_messages_as_side_conditions(self) -> None:
         parser = self.parser()
         parser._battle_open = True
+        parser._active["p1a"] = "Delphox"
+        parser._active["p2a"] = "Steelix"
 
         opposing_start = parser.parse(
             (
@@ -393,6 +397,7 @@ class ChampionsOcrTests(unittest.TestCase):
             ),
         )
         parser._battle_open = True
+        parser._active["p1a"] = "Venusaur"
 
         detections = parser.parse(
             (
@@ -783,9 +788,16 @@ class ChampionsOcrTests(unittest.TestCase):
             timestamp_ms=0,
             source_frame=0,
         )
-        self.assertEqual([event.kind for event in weather.events], ["weather"])
+        # Nadie ha entrado todavía: el clima queda represado en vez de
+        # narrarse antes que los propios Pokémon (COL-102, mismo hallazgo:
+        # las habilidades no pueden salir antes que sus dueños).
+        self.assertEqual(weather.events, ())
 
         turn_one = parser.parse(self.command_frame(), timestamp_ms=500, source_frame=1)
+        self.assertEqual(
+            [event.kind for event in turn_one.events],
+            ["switch", "switch", "switch", "switch", "weather", "turn"],
+        )
         self.assertEqual([event.turn for event in turn_one.events if event.kind == "turn"], [1])
 
         # El menú de selección de movimiento del segundo Pokémon activo:
@@ -807,6 +819,44 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(
             [event.turn for event in second_active_pick.events if event.kind == "turn"],
             [],
+        )
+
+    def test_messages_before_the_first_switch_are_held_until_it_lands(self) -> None:
+        # COL-102 (reapertura, hallazgo de Roku sobre el replay corregido):
+        # el HUD tarda varios frames en estabilizar lo suficiente para
+        # confirmar el switch de los leads, pero una habilidad que dispara
+        # al entrar (Unnerve, un clima) se lee mucho antes. Sin represarla,
+        # el replay narraba su efecto antes de que el Pokémon dueño
+        # apareciera switcheado.
+        parser = self.parser()
+        parser._battle_open = True
+
+        first = parser.parse(
+            (line("Your side is too nervous to eat Berries!", x=0.15, y=0.73, width=0.45),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        second = parser.parse(
+            (line("A sandstorm kicked up!", x=0.15, y=0.73, width=0.35),),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+        self.assertEqual(first.events, ())
+        self.assertEqual(second.events, ())
+
+        switched_in = parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in switched_in.events],
+            [
+                ("switch", None),
+                ("switch", None),
+                ("switch", None),
+                ("switch", None),
+                ("message", "Your side is too nervous to eat Berries!"),
+                ("weather", "Sandstorm"),
+                ("turn", None),
+            ],
         )
 
     def test_reset_battle_state_allows_the_same_opening_in_a_second_battle(self) -> None:
@@ -996,6 +1046,8 @@ class ChampionsOcrTests(unittest.TestCase):
             catalog=ChampionsCatalog(species=("Gardevoir",), moves=("Hyper Voice",)),
         )
         parser.bind_preview_labels((("Suzuko", "Gardevoir"),), side="p1")
+        parser._active["p1a"] = "Gardevoir"
+        parser._active["p2a"] = "Gardevoir"
 
         own = parser.parse(
             (line("Suzuko used Hyper Voice!", x=0.15, y=0.72, width=0.4),),
@@ -1355,6 +1407,7 @@ class ChampionsOcrTests(unittest.TestCase):
 
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
+        parser._active["p2a"] = "Umbreon"
         faint = parser.parse(
             (line("The opposing Umbreon fainted!", x=0.2, y=0.7, width=0.35),),
             timestamp_ms=2_000,
@@ -1447,6 +1500,7 @@ class ChampionsOcrTests(unittest.TestCase):
                 engine=FakeEngine(),
                 trace_path=trace,
             )
+            detector.parser._active["p2a"] = "Umbreon"
             detections = detector.detect(
                 FramePacket(index=6, timestamp_ms=4_000, image=b"jpeg")
             )
@@ -1470,6 +1524,7 @@ class ChampionsOcrTests(unittest.TestCase):
         detector.parser._bind_alias("p2", "Shade", "Umbreon")
         self.assertEqual(detector.resolved_identities(), {identity: "Umbreon"})
         detector.reset_battle_state()
+        detector.parser._active["p2a"] = "Drampa"
         detections = detector.detect(
             FramePacket(
                 index=1,

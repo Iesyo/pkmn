@@ -775,6 +775,13 @@ class ChampionsTextParser:
         self._visible_abilities: set[tuple[str, str, str]] = set()
         self._pending_abilities: dict[tuple[str, str, str], tuple[float, int]] = {}
         self._pending_fieldstarts: set[str] = set()
+        # Un clima o una habilidad puede volverse legible mientras los leads
+        # todavía están entrando, varios segundos antes de que el HUD
+        # estabilice lo suficiente para confirmar sus switches. Lo que la
+        # pantalla ya mostró en ese hueco se represa aquí y se suelta recién
+        # detrás del primer switch de la batalla, para que nunca narre el
+        # efecto de un Pokémon antes de que el replay lo haya sacado a pelear.
+        self._pending_pre_switch_events: list[BattleEvent] = []
         self._recent_field_sources: dict[str, tuple[str, str, str, int]] = {}
         self._turn = 0
         self._command_visible = False
@@ -2543,6 +2550,8 @@ class ChampionsTextParser:
             text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo"})
         )
         changed_slots: set[str] = set()
+        switch_events: list[BattleEvent] = []
+        had_active_pokemon = bool(self._active)
 
         for slot, (species, health) in observations.items():
             previous_species = self._active.get(slot)
@@ -2554,7 +2563,7 @@ class ChampionsTextParser:
                 changed_slots.add(slot)
                 if health:
                     self._health[slot] = health
-                events.append(
+                switch_events.append(
                     BattleEvent(
                         kind="switch",
                         timestamp_ms=max(
@@ -2568,6 +2577,11 @@ class ChampionsTextParser:
                         source_frame=source_frame,
                     )
                 )
+
+        events.extend(switch_events)
+        if switch_events and not had_active_pokemon:
+            events.extend(self._pending_pre_switch_events)
+            self._pending_pre_switch_events = []
 
         ability_events = self._ability_events(
             lines,
@@ -2697,6 +2711,10 @@ class ChampionsTextParser:
         battle_started = self._battle_open and winner is None
         if winner:
             self._battle_open = False
+
+        if not self._active and events:
+            self._pending_pre_switch_events.extend(events)
+            events = []
 
         return FrameDetections(
             events=tuple(events),
