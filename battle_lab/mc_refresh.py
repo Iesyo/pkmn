@@ -1,4 +1,4 @@
-"""One resumable Colab cycle: current data -> candidate -> champion comparison.
+"""One resumable Colab cycle: current data -> candidate -> canonical production comparison.
 
 Based on the validated 40_017 v3 execution pattern and the existing Battle Lab
 LIGHT v3/holdout runners. Every expensive phase runs in a fresh Python process.
@@ -99,24 +99,15 @@ def ensure_champion(root: Path) -> dict:
     return champion
 
 
-def production_reference(root: Path, checkpoint: str = "", digest: str = "") -> dict:
-    """Keep the documented deployed policy independent of the training champion."""
-    if bool(checkpoint) != bool(digest):
-        raise ValueError("Indica checkpoint y SHA-256 productivos juntos")
-    if checkpoint:
-        spec = {"id": "production-explicit", "checkpoint": str(Path(checkpoint).resolve()),
-                "sha256": digest, "format": DEFAULT_FORMAT, "source": "explicit-production-reference"}
-    else:
-        spec = read_json(root / "Refresh" / "production.json")
-        if spec is None:
-            spec = {"id": "production-LIGHT-MC-196608", "format": DEFAULT_FORMAT,
-                    "checkpoint": str(root / "training" / "rl" / "light" / f"seed{LEGACY_SEED}" / "checkpoints" / "step-000196608.zip"),
-                    "sha256": LIGHT_SHA256, "source": "documented-ROG-LIGHT-reference"}
-    if spec.get("format") != DEFAULT_FORMAT or not re.fullmatch(r"[0-9a-f]{64}", spec.get("sha256", "")):
-        raise RuntimeError("Referencia productiva inválida")
-    if sha256_file(Path(spec["checkpoint"])) != spec["sha256"]:
-        raise RuntimeError("El modelo productivo no coincide con su SHA-256")
-    return {**spec, "liveDeploymentVerified": False}
+def production_reference(root: Path) -> dict:
+    """Return the single promoted champion as the canonical production policy.
+
+    Historical checkpoints may remain on disk for reproducibility, but normal
+    training and direct evaluation must never silently benchmark against them.
+    """
+    champion = ensure_champion(root)
+    return {**champion, "source": "champion-registry", "role": "production",
+            "liveDeploymentVerified": False}
 
 
 def config_identity(config: dict) -> str:
@@ -509,8 +500,7 @@ def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict) -
 
 
 def recover_evaluation(root: Path, run_id: str = "", *, direct: bool = False,
-                       battles: int = 500, production_checkpoint: str = "",
-                       production_sha256: str = "") -> None:
+                       battles: int = 500) -> None:
     run_id = run_id or read_json(root / "Refresh" / "active_run.json", {}).get("runId", "")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("No hay una corrida válida que recuperar.")
@@ -523,7 +513,7 @@ def recover_evaluation(root: Path, run_id: str = "", *, direct: bool = False,
         if battles < 2 or battles % 2:
             raise ValueError("Las batallas por rival deben ser pares y al menos 2")
         config.update(evaluationProtocol="direct-v1", battles=battles,
-                      production=production_reference(root, production_checkpoint, production_sha256))
+                      production=production_reference(root))
         config["evaluationRecovery"]["directOnly"] = True
     config_path = run / "recovery" / ("direct_config.json" if direct else "evaluation_config.json")
     atomic_json(config_path, config)
@@ -598,8 +588,6 @@ def main(argv=None) -> int:
     parser.add_argument("--promote-direct-run", default="")
     parser.add_argument("--recover-evaluation", action="store_true")
     parser.add_argument("--direct-evaluation", action="store_true")
-    parser.add_argument("--production-checkpoint", default="")
-    parser.add_argument("--production-sha256", default="")
     parser.add_argument("--worker-stage", choices=STAGES)
     parser.add_argument("--worker-run", type=Path)
     parser.add_argument("--worker-config", type=Path)
@@ -646,8 +634,7 @@ def main(argv=None) -> int:
             recover_evaluation(root, args.run_id)
             return 0
         if args.direct_evaluation:
-            recover_evaluation(root, args.run_id, direct=True, battles=args.battles,
-                               production_checkpoint=args.production_checkpoint, production_sha256=args.production_sha256)
+            recover_evaluation(root, args.run_id, direct=True, battles=args.battles)
             return 0
         if args.battles < 2 or args.battles % 2 or args.replay_pages < 1 or args.num_envs not in (1, 2, 4):
             parser.error("battles must be even >=2; replay-pages >=1; num-envs one of 1,2,4")
@@ -665,8 +652,10 @@ def main(argv=None) -> int:
                   "numEnvs": args.num_envs, "battles": args.battles, "replayPages": args.replay_pages,
                   "bcMinTransitions": args.bc_min_transitions,
                   "evaluationProtocol": "direct-v1",
-                  "production": production_reference(root, args.production_checkpoint, args.production_sha256),
+                  "production": production_reference(root),
                   "seed": args.seed, "device": device, "port": args.port}
+        if config["production"]["sha256"] != champion["sha256"]:
+            raise RuntimeError("La referencia productiva debe coincidir con el champion canónico vigente.")
         run = select_run(root, config, args.run_action, args.run_id)
         stages = STAGES[:5] if args.mode == "CENSUS" else STAGES
         status = read_json(run / "status.json", {"completedStages": [], "totalStages": len(stages), "runId": run.name})
