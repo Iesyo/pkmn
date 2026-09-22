@@ -553,7 +553,8 @@ def promote(root: Path, run_id: str, *, direct: bool = False) -> dict:
     reference_role = "production" if direct else "champion"
     reference = report["config"].get(reference_role, {})
     if old["sha256"] != reference.get("sha256"):
-        raise RuntimeError("El modelo productivo cambió desde esta comparación; el candidato debe reevaluarse.")
+        changed = "modelo productivo" if direct else "champion"
+        raise RuntimeError(f"El {changed} cambió desde esta comparación; el candidato debe reevaluarse.")
     candidate = report["phases"]["rl"]
     check_artifact(candidate)
     check_artifact(report["phases"]["evaluate"])
