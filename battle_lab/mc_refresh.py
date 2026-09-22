@@ -467,8 +467,15 @@ def write_report(run: Path, config: dict, status: dict, *, report_root: Path | N
     return report
 
 
-def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict) -> tuple[Path, dict]:
-    """Validate a completed training run before allowing an evaluation-only code update."""
+def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict,
+                    direct: bool = False) -> tuple[Path, dict]:
+    """Validate only the immutable inputs an evaluation actually consumes.
+
+    Training-only payloads (raw logs, trajectories and BC intermediates) can be
+    thousands of small files on mounted Drive. Re-hashing them cannot change an
+    evaluation result once the final checkpoint and frozen split are fixed, so
+    recovery checks their phase metadata but does not re-read those payloads.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("Invalid recovery RUN_ID")
     run = root / "Refresh" / "runs" / run_id
@@ -479,23 +486,53 @@ def recovery_config(root: Path, run_id: str, *, code_sha: str, versions: dict) -
         raise RuntimeError("Un censo sin entrenamiento no puede recuperar evaluación.")
     if versions != original["runtimeVersions"]:
         raise RuntimeError("El runtime cambió; restaura las versiones de config.json antes de evaluar.")
-    candidate = read_json(run / "phases" / "rl.json", {})
-    if candidate.get("state") != "completed" or candidate.get("steps", -1) < original["profile"]["steps"]:
-        raise RuntimeError("El entrenamiento no está completo; no se puede saltar a evaluación.")
+
+    phases = {}
     for stage in STAGES[:-1]:
         phase = read_json(run / "phases" / (stage + ".json"))
         if not phase:
             raise RuntimeError("Falta una fase anterior completa: " + stage)
-        print("Verificando fase conservada: " + stage, flush=True)
-        check_artifact(phase)
-    for model in (original["champion"], candidate):
-        if sha256_file(Path(model["checkpoint"])) != model["sha256"]:
-            raise RuntimeError("El modelo guardado cambió antes de recuperar evaluación.")
+        phases[stage] = phase
+
+    candidate = phases["rl"]
+    if candidate.get("state") != "completed" or candidate.get("steps", -1) < original["profile"]["steps"]:
+        raise RuntimeError("El entrenamiento no está completo; no se puede saltar a evaluación.")
+
+    # The evaluation consumes the frozen team split, not raw replays/trajectories.
+    # Verify the split manifest itself here; evaluation_corpus() revalidates every
+    # train/holdout team exactly once immediately before playing battles.
+    split = phases["split"]
+    split_manifest = run / "split" / "split_manifest.json"
+    if split.get("artifact") != str(split_manifest) or not split_manifest.is_file():
+        raise RuntimeError("Falta el manifiesto congelado de train/holdout.")
+    if sha256_file(split_manifest) != split.get("artifactSha256"):
+        raise RuntimeError("El manifiesto congelado de train/holdout cambió.")
+
+    # Verify the final candidate once. A direct evaluation resolves and verifies
+    # the current canonical production separately; a legacy recovery still needs
+    # the original champion because it is one of its two evaluated policies.
+    check_artifact(candidate)
+    if not direct:
+        champion = original["champion"]
+        if sha256_file(Path(champion["checkpoint"])) != champion["sha256"]:
+            raise RuntimeError("El champion original cambió antes de recuperar evaluación.")
+
+    validation = {
+        "mode": "evaluation-inputs-only",
+        "phaseMetadataChecked": list(STAGES[:-1]),
+        "verified": ["split_manifest", "candidate_checkpoint"]
+                    + ([] if direct else ["original_champion_checkpoint"]),
+        "deferredToEvaluation": ["train_holdout_team_hashes", "production_checkpoint"] if direct
+                                else ["train_holdout_team_hashes"],
+        "skippedTrainingPayloads": ["teams", "replays", "trajectories", "bc"],
+    }
+    print("⚡ Validación ligera: checkpoint + manifiesto; no se releen trayectorias/logs de entrenamiento.", flush=True)
     config = {**original, "codeSha": code_sha,
               "evaluationRecovery": {"trainingCodeSha": original["codeSha"],
                                      "sourceConfigSha256": sha256_file(run / "config.json"),
                                      "candidateSha256": candidate["sha256"],
-                                     "scope": ["prepare", "evaluate"]}}
+                                     "scope": ["prepare", "evaluate"],
+                                     "validation": validation}}
     return run, config
 
 
@@ -508,7 +545,7 @@ def recover_evaluation(root: Path, run_id: str = "", *, direct: bool = False,
     if not original:
         raise RuntimeError("No existe config.json para la corrida seleccionada.")
     run, config = recovery_config(root, run_id, code_sha=git_sha(PROJECT_ROOT),
-                                  versions=runtime_versions(original["device"]))
+                                  versions=runtime_versions(original["device"]), direct=direct)
     if direct:
         if battles < 2 or battles % 2:
             raise ValueError("Las batallas por rival deben ser pares y al menos 2")
