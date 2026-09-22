@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import threading
 import time
 import zipfile
@@ -185,6 +186,7 @@ class ChampionsJobManager:
             "warnings": [],
             "replay_files": [],
             "source_path": f"source{suffix}",
+            "is_protected": False,
             "error": None,
             "created_at": created_at,
             "updated_at": created_at,
@@ -247,6 +249,61 @@ class ChampionsJobManager:
     def get_job(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             return self._public(self._require(job_id))
+
+    def storage_summary(self) -> dict[str, int]:
+        with self._lock:
+            storage = [self._storage_locked(job) for job in self._jobs.values()]
+            return {
+                "totalBytes": sum(item["totalBytes"] for item in storage),
+                "reclaimableBytes": sum(item["reclaimableBytes"] for item in storage),
+                "jobCount": len(storage),
+            }
+
+    def set_protected(self, job_id: str, protected: bool) -> dict[str, Any]:
+        with self._lock:
+            job = self._require(job_id)
+            job["is_protected"] = bool(protected)
+            job["updated_at"] = _now()
+            self._save_locked(job)
+            return self._public(job)
+
+    def compact_job(self, job_id: str) -> dict[str, Any]:
+        """Libera vídeo e historiales, conservando la salida actual del replay."""
+
+        with self._lock:
+            job = self._require(job_id)
+            if job["status"] not in {"ready", "error"}:
+                raise ValueError("Sólo se puede liberar espacio de un trabajo terminado.")
+            if job.get("is_protected"):
+                raise ValueError("Este trabajo está protegido. Desprotégelo antes de liberar espacio.")
+
+            source = self._source_path(job)
+            source.unlink(missing_ok=True)
+            (self._job_directory(job_id) / "upload.part").unlink(missing_ok=True)
+            history = self._job_directory(job_id) / "output" / "history"
+            if history.is_dir():
+                shutil.rmtree(history)
+
+            job["analysis_archives"] = []
+            job["compacted_at"] = _now()
+            job["updated_at"] = _now()
+            self._save_locked(job)
+            return self._public(job)
+
+    def delete_job(self, job_id: str) -> str:
+        with self._lock:
+            job = self._require(job_id)
+            if job["status"] not in {"ready", "error"}:
+                raise ValueError("Sólo se puede eliminar un trabajo terminado.")
+            if job.get("is_protected"):
+                raise ValueError("Este trabajo está protegido. Desprotégelo antes de eliminarlo.")
+            directory = self._job_directory(job_id)
+            if directory.is_dir():
+                shutil.rmtree(directory)
+            self._jobs.pop(job_id, None)
+            self._submitted.discard(job_id)
+            self._last_progress_save.pop(job_id, None)
+            return job_id
 
     def retry_job(self, job_id: str) -> dict[str, Any]:
         """Reutiliza el vídeo ya cargado para repetir sólo el análisis."""
@@ -431,6 +488,8 @@ class ChampionsJobManager:
                 if total_frames
                 else 0.0
             )
+        storage = self._storage_locked(job)
+        source_available = self._source_path(job).is_file()
         return {
             "id": job["id"],
             "teamVersionId": job["team_version_id"],
@@ -450,9 +509,60 @@ class ChampionsJobManager:
             "warnings": list(job.get("warnings") or []),
             "replayCount": len(job.get("replay_files") or []),
             "archivedRunCount": len(job.get("analysis_archives") or []),
+            "sourceAvailable": source_available,
+            "canRetry": status in {"ready", "error"} and source_available,
+            "isProtected": bool(job.get("is_protected")),
+            "compacted": bool(job.get("compacted_at")),
+            "sourceBytes": storage["sourceBytes"],
+            "outputBytes": storage["outputBytes"],
+            "historyBytes": storage["historyBytes"],
+            "totalBytes": storage["totalBytes"],
+            "reclaimableBytes": storage["reclaimableBytes"],
             "error": job.get("error"),
             "createdAt": job["created_at"],
             "updatedAt": job["updated_at"],
+        }
+
+    @staticmethod
+    def _tree_size(path: Path) -> int:
+        if path.is_file():
+            try:
+                return path.stat().st_size
+            except OSError:
+                return 0
+        if not path.is_dir():
+            return 0
+        total = 0
+        for candidate in path.rglob("*"):
+            if not candidate.is_file():
+                continue
+            try:
+                total += candidate.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    def _storage_locked(self, job: Mapping[str, Any]) -> dict[str, int]:
+        directory = self._job_directory(str(job["id"]))
+        output = directory / "output"
+        history = output / "history"
+        source_bytes = self._tree_size(self._source_path(job))
+        history_bytes = self._tree_size(history)
+        output_bytes = 0
+        if output.is_dir():
+            for candidate in output.rglob("*"):
+                if not candidate.is_file() or history in candidate.parents:
+                    continue
+                try:
+                    output_bytes += candidate.stat().st_size
+                except OSError:
+                    continue
+        return {
+            "sourceBytes": source_bytes,
+            "outputBytes": output_bytes,
+            "historyBytes": history_bytes,
+            "totalBytes": self._tree_size(directory),
+            "reclaimableBytes": source_bytes + history_bytes,
         }
 
     def _job_directory(self, job_id: str) -> Path:
