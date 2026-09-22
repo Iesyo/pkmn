@@ -254,7 +254,7 @@ class ChampionsJobManager:
         with self._lock:
             storage = [self._storage_locked(job) for job in self._jobs.values()]
             return {
-                "totalBytes": sum(item["totalBytes"] for item in storage),
+                "totalBytes": self._tree_size(self.root),
                 "reclaimableBytes": sum(item["reclaimableBytes"] for item in storage),
                 "jobCount": len(storage),
             }
