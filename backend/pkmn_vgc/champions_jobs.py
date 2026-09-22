@@ -112,6 +112,7 @@ class ChampionsJobManager:
             if not isinstance(value, dict) or value.get("id") != metadata_path.parent.name:
                 continue
             value.pop("ocr_workers", None)
+            value.setdefault("is_protected", True)
             part_path = metadata_path.parent / "upload.part"
             source_path = metadata_path.parent / str(value.get("source_path") or "")
             if part_path.is_file():
@@ -186,7 +187,7 @@ class ChampionsJobManager:
             "warnings": [],
             "replay_files": [],
             "source_path": f"source{suffix}",
-            "is_protected": False,
+            "is_protected": True,
             "error": None,
             "created_at": created_at,
             "updated_at": created_at,
