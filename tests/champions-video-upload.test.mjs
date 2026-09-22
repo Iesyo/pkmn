@@ -26,6 +26,10 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(component, /Reintentar análisis/);
   assert.match(component, /Reanalizar vídeo/);
   assert.match(component, /Descargar diagnóstico/);
+  assert.match(component, /Almacenamiento Champions en la ROG/);
+  assert.match(component, /Liberar/);
+  assert.match(component, /Proteger/);
+  assert.match(component, /Eliminar job/);
   assert.match(component, /Avisos del análisis/);
   assert.match(jobs, /ThreadPoolExecutor\(max_workers=1/);
   assert.doesNotMatch(jobs, /champions-ocr|ocr_workers=ocr_workers/);
@@ -34,6 +38,9 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(api, /@app\.put\("\/jobs\/\{job_id\}\/chunks"\)/);
   assert.match(api, /@app\.get\("\/jobs\/\{job_id\}\/replays\/\{replay_number\}"\)/);
   assert.match(api, /@app\.post\("\/jobs\/\{job_id\}\/retry"\)/);
+  assert.match(api, /@app\.post\("\/jobs\/\{job_id\}\/protect"\)/);
+  assert.match(api, /@app\.post\("\/jobs\/\{job_id\}\/cleanup"\)/);
+  assert.match(api, /@app\.delete\("\/jobs\/\{job_id\}"\)/);
   assert.match(api, /@app\.get\("\/jobs\/\{job_id\}\/diagnostics"\)/);
 });
 
@@ -49,6 +56,8 @@ test("keeps the Python processor behind a strict same-origin loopback proxy", as
     "jobs/0123456789abcdef",
     "jobs/0123456789abcdef/chunks",
     "jobs/0123456789abcdef/retry",
+    "jobs/0123456789abcdef/protect",
+    "jobs/0123456789abcdef/cleanup",
     "jobs/0123456789abcdef/diagnostics",
     "jobs/0123456789abcdef/replays/1",
     "jobs/0123456789abcdef/replays/12",
@@ -64,6 +73,7 @@ test("keeps the Python processor behind a strict same-origin loopback proxy", as
 
   assert.match(proxy, /127\.0\.0\.1:8770/);
   assert.match(proxy, /await request\.arrayBuffer\(\)/);
+  assert.match(proxy, /export async function DELETE/);
 });
 
 test("starts the local Champions queue with the web development runtime", async () => {
