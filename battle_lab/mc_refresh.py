@@ -82,20 +82,17 @@ def runtime_versions(device: str = "cpu") -> dict:
 
 
 def ensure_champion(root: Path) -> dict:
+    """Resolve the single canonical production model from its registry."""
     registry = root / "Refresh" / "champion.json"
     champion = read_json(registry)
     if champion is None:
-        path = root / "training" / "rl" / "light" / f"seed{LEGACY_SEED}" / "checkpoints" / "step-000196608.zip"
-        champion = {"id": "LIGHT-MC-196608", "format": DEFAULT_FORMAT,
-                    "checkpoint": str(path), "sha256": LIGHT_SHA256, "source": "validated-legacy-LIGHT"}
+        raise RuntimeError("Falta Refresh/champion.json; no existe un productivo canónico verificable.")
     if champion.get("format") != DEFAULT_FORMAT:
         raise RuntimeError("El champion pertenece a otra regulación.")
     if not Path(champion["checkpoint"]).is_file():
-        raise RuntimeError("Falta el LIGHT/champion persistido: " + champion["checkpoint"])
+        raise RuntimeError("Falta el checkpoint productivo canónico: " + champion["checkpoint"])
     if sha256_file(Path(champion["checkpoint"])) != champion["sha256"]:
-        raise RuntimeError("El checkpoint champion no coincide con su SHA-256.")
-    if not registry.exists():
-        atomic_json(registry, champion)
+        raise RuntimeError("El checkpoint productivo no coincide con su SHA-256.")
     return champion
 
 
