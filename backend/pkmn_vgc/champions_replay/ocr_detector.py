@@ -1489,10 +1489,15 @@ class ChampionsTextParser:
         timestamp_ms: int,
         source_frame: int,
     ) -> tuple[BattleEvent, ...]:
+        # El banner de habilidad ancla al lado de quien la activa: la del
+        # rival aparece pegada al borde derecho, la propia al izquierdo. Sólo
+        # mirar la derecha dejaba sin -ability ninguna habilidad del propio
+        # equipo (Intimidate, Sand Stream) aunque su efecto narrado sí pasara
+        # por el camino de mensajes.
         overlay = [
             line
             for line in lines
-            if line.left >= 0.68 and 0.28 <= line.center_y <= 0.52
+            if (line.left >= 0.68 or line.right <= 0.32) and 0.28 <= line.center_y <= 0.52
         ]
         visible: set[tuple[str, str, str]] = set()
         learned_switches: list[BattleEvent] = []

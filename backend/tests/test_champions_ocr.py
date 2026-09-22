@@ -642,6 +642,36 @@ class ChampionsOcrTests(unittest.TestCase):
             [("ability", "p2b", "Tyranitar")],
         )
 
+    def test_reads_the_own_sides_ability_banner_anchored_to_the_left(self) -> None:
+        # COL-102 (reapertura): el banner de habilidad del propio equipo
+        # aparece pegado al borde izquierdo, no al derecho como el del rival
+        # (ability_frame). Sin mirar ese lado, Intimidate -y cualquier otra
+        # habilidad propia al entrar- nunca llegaba a escribirse como
+        # -ability, aunque su efecto narrado sí llegara por el camino de
+        # mensajes.
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_team=("Incineroar",),
+                p1_aliases=(("Antonio", "Incineroar"),),
+            ),
+            catalog=ChampionsCatalog(species=("Incineroar",), abilities=("Intimidate",)),
+        )
+        parser._active["p1a"] = "Incineroar"
+
+        detections = parser.parse(
+            (
+                line("Antonio's", x=0.078, y=0.431, width=0.073),
+                line("Intimidate", x=0.078, y=0.473, width=0.077),
+            ),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("ability", "p1a", "Intimidate")],
+        )
+
     def test_a_return_without_the_word_withdrew_still_marks_the_slot(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)
