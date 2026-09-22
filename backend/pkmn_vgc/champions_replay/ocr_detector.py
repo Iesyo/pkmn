@@ -818,6 +818,10 @@ class ChampionsTextParser:
         # por slot y por turno, no por texto exacto -el mismo aviso se
         # relee con el mote un poco distinto en cada frame.
         self._weather_buffeted_seen: set[tuple[str, int]] = set()
+        # Mismo patrón para "X's perish count fell to N!": el conteo sólo
+        # baja una vez por turno y por slot, pero "fell" sale relaído como
+        # "fll" o "fel t" en frames distintos del mismo aviso.
+        self._perish_count_seen: set[tuple[str, int]] = set()
         self._alias_evidence: dict[tuple[str, str], set[str]] = {}
         self._alias_evidence_labels: dict[tuple[str, str], set[str]] = {}
         self._pending_alias_moves: dict[
@@ -2341,7 +2345,7 @@ class ChampionsTextParser:
             return ()
 
         mega_reaction = re.match(
-            r"^(The opposing )?(.+?)[\'’]s (.+?) (?:is|i) reacting to .+?[\'’]s (?:Omni|Omi|Mega) Ring[!.]?$",
+            r"^(The opposing )?(.+?)[\'’]s (.+?) (?:is|i) reacting\s*to .+?[\'’]s (?:Omni|Omi|Mega) Ring[!.]?$",
             cleaned,
             re.IGNORECASE,
         )
@@ -2627,6 +2631,34 @@ class ChampionsTextParser:
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
                         value=f"{prefix}{actor} is buffeted by the sandstorm!",
+                        source_frame=source_frame,
+                    ),
+                )
+
+        perish = re.match(
+            r"^(The opposing )?(.+?)[\'’]s perish count \w+(?:\s+\w+)?\s*(\d+|O)[!.]?$",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if perish:
+            side = "p2" if perish.group(1) else "p1"
+            actor = self._actor_for_value(side, perish.group(2))
+            if actor:
+                # Mismo criterio que buffeted: una vez por turno y por slot,
+                # no por texto -el conteo real sólo cambia una vez por turno.
+                key = (self._slot_for_species(actor, side), self._turn)
+                if key in self._perish_count_seen:
+                    return ()
+                self._perish_count_seen.add(key)
+                prefix = "The opposing " if side == "p2" else ""
+                count = perish.group(3)
+                count = "0" if count.upper() == "O" else count
+                return (
+                    BattleEvent(
+                        kind="message",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        value=f"{prefix}{actor}'s perish count fell to {count}!",
                         source_frame=source_frame,
                     ),
                 )

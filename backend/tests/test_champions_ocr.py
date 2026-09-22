@@ -1298,6 +1298,49 @@ class ChampionsOcrTests(unittest.TestCase):
             ],
         )
 
+    def test_a_mega_reaction_survives_ocr_dropping_the_space_before_to(self) -> None:
+        # COL-102, job f53bd34897b84f86: el primer frame en que aparece el
+        # aviso lee "reactingto" pegado ("Charizard's Charizardite X is
+        # reactingto Roku's Omni Ring!"). El regex exigía el espacio, así
+        # que ese frame caía a -message suelto; y como el overlay dedupe
+        # (_visible_messages) ignora espacios, los frames siguientes -ya
+        # bien leídos, con el espacio- se descartaban por "ya visto",
+        # perdiendo la única oportunidad de resolver X/Y. Charizard nunca
+        # llegaba a -mega, aunque Gengar (sin ambigüedad X/Y) sí.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Charizard",)),
+            catalog=ChampionsCatalog(
+                species=("Charizard", "Charizard-Mega-X"),
+                mega_stones=(("Charizardite X", "Charizard", "Charizard-Mega-X"),),
+            ),
+        )
+        parser.parse(
+            (line("Charizard", x=0.08, y=0.86),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        garbled = parser.parse(
+            (
+                line(
+                    "Charizard's Charizardite X is reactingto Roku's Omni Ring!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.6,
+                ),
+            ),
+            timestamp_ms=268_500,
+            source_frame=538,
+        )
+
+        self.assertEqual(
+            [
+                (event.kind, event.slot, event.species, event.forme, event.value)
+                for event in garbled.events
+            ],
+            [("mega", "p1a", "Charizard", "Charizard-Mega-X", "Charizardite X")],
+        )
+
     def test_parses_explicit_mega_evolution_when_reaction_was_not_visible(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_team=("Gardevoir",)),
@@ -1542,6 +1585,89 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(
             [(event.kind, event.value) for event in milotic.events],
             [("message", "Milotic is buffeted by the sandstorm!")],
+        )
+
+    def test_a_perish_count_tick_is_narrated_once_per_turn(self) -> None:
+        # COL-102, job f53bd34897b84f86: "fell" sale como "fll" o "fel t"
+        # en frames distintos del mismo aviso, así que el mismo tic de
+        # Perish Song escribía dos o tres -message. Mismo criterio que
+        # buffeted: una vez por slot y turno, no por texto exacto.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Politoed",)),
+            catalog=ChampionsCatalog(species=("Politoed",)),
+        )
+        parser._battle_open = True
+        parser._active["p2a"] = "Politoed"
+        parser._turn = 6
+
+        first = parser.parse(
+            (
+                line(
+                    "The opposing Politoed's perish count fll to 3!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.55,
+                ),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        reread = parser.parse(
+            (
+                line(
+                    "The opposing Politoed's perish count fel t 3!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.55,
+                ),
+            ),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in first.events],
+            [("message", "The opposing Politoed's perish count fell to 3!")],
+        )
+        self.assertEqual(reread.events, ())
+
+        parser._turn = 7
+        next_turn = parser.parse(
+            (
+                line(
+                    "The opposing Politoed's perish count fell to 2!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.55,
+                ),
+            ),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+        self.assertEqual(
+            [(event.kind, event.value) for event in next_turn.events],
+            [("message", "The opposing Politoed's perish count fell to 2!")],
+        )
+
+    def test_a_perish_count_hitting_zero_reads_the_letter_o_as_a_digit(self) -> None:
+        # El mismo aviso a cero lee "O" (letra) en vez de "0" (dígito).
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Charizard",)),
+            catalog=ChampionsCatalog(species=("Charizard",)),
+        )
+        parser._battle_open = True
+        parser._active["p1b"] = "Charizard"
+        parser._turn = 9
+
+        detections = parser.parse(
+            (line("Charizard's perish count fell to O!", x=0.15, y=0.72, width=0.45),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in detections.events],
+            [("message", "Charizard's perish count fell to 0!")],
         )
 
     def test_a_knocked_off_item_becomes_a_structured_enditem(self) -> None:
