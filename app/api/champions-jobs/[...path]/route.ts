@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
 const CHAMPIONS_JOBS_LOOPBACK = "http://127.0.0.1:8770";
-const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/retry|\/diagnostics|\/replays\/[1-9][0-9]*)?)?)$/;
+const ALLOWED_PATH = /^(?:health|jobs(?:\/[a-f0-9]{16}(?:\/chunks|\/retry|\/protect|\/cleanup|\/diagnostics|\/replays\/[1-9][0-9]*)?)?)$/;
 
 async function forward(
   request: Request,
@@ -23,7 +23,7 @@ async function forward(
 
   let body: BodyInit | undefined;
   if (method === "PUT") body = await request.arrayBuffer();
-  else if (method !== "GET" && method !== "HEAD") body = await request.text();
+  else if (!["GET", "HEAD", "DELETE"].includes(method)) body = await request.text();
 
   try {
     const upstream = await fetch(upstreamUrl, {
@@ -69,6 +69,13 @@ export async function POST(
 }
 
 export async function PUT(
+  request: Request,
+  context: { params: Promise<{ path: string[] }> },
+) {
+  return forward(request, context);
+}
+
+export async function DELETE(
   request: Request,
   context: { params: Promise<{ path: string[] }> },
 ) {
