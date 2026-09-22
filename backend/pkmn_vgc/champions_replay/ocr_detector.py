@@ -2968,6 +2968,16 @@ class ChampionsOcrDetector:
     _PREVIEW_MAX_ATTEMPTS = 24
     _PREVIEW_MIN_VOTES = 3
     _PREVIEW_MIN_LEAD = 2
+    # Respaldo para una fila que nunca sacó ni un solo voto fuerte en las 24
+    # lecturas (COL-102, job 82923f56ce264a92: una placa de tipo ilegible en
+    # la mayoría de los frames dejaba a Slowking fuera del margen calibrado
+    # de _species_and_guesses_for_cards en 36 de 37 lecturas). Un margen bajo
+    # no vale como voto fuerte, pero decenas de conjeturas independientes
+    # coincidiendo siempre en la misma especie sí son evidencia real -exige
+    # muchas más coincidencias y casi unanimidad, precisamente porque cada
+    # una por separado no pasó el filtro fino.
+    _PREVIEW_WEAK_MIN_VOTES = 10
+    _PREVIEW_WEAK_MIN_RATIO = 0.85
 
     def __init__(
         self,
@@ -3027,6 +3037,14 @@ class ChampionsOcrDetector:
             "p1": [Counter() for _ in range(6)],
             "p2": [Counter() for _ in range(6)],
         }
+        # Conjeturas del rival que nunca llegaron al margen calibrado por
+        # frame. Ninguna sola vale como voto fuerte, pero si docenas de
+        # lecturas independientes coinciden siempre en la misma especie, eso
+        # sí es evidencia -y hoy se estaba tirando entera. Ver
+        # _accept_preview_team.
+        self._preview_weak_votes: dict[str, list[Counter[str]]] = {
+            "p2": [Counter() for _ in range(6)],
+        }
         self._preview_labels: dict[str, list[Counter[str]]] = {
             "p1": [Counter() for _ in range(6)],
             "p2": [Counter() for _ in range(6)],
@@ -3048,6 +3066,18 @@ class ChampionsOcrDetector:
                 if generation == self._preview_generation:
                     for side, roster in rosters.items():
                         for index, row in enumerate(roster[:6]):
+                            if side == "p2":
+                                # (especie segura, mejor conjetura) si el
+                                # resolver soporta resolve_rows_with_guesses;
+                                # si no, la especie sola, como antes.
+                                confident, guess = row if isinstance(row, tuple) else (row, None)
+                                if confident:
+                                    self._preview_votes[side][index][confident] += 1
+                                if guess:
+                                    self._preview_weak_votes[side][index][guess] += 1
+                                continue
+                            # p1: (especie, mote) -el mote sí viene escrito
+                            # junto al sprite, sin margen que discutir.
                             species, label = row if isinstance(row, tuple) else (row, None)
                             if species:
                                 self._preview_votes[side][index][species] += 1
@@ -3077,10 +3107,14 @@ class ChampionsOcrDetector:
                 )
             return ()
         team: list[str] = []
-        for votes in rows:
+        for index, votes in enumerate(rows):
             ranked = votes.most_common()
             if not ranked:
-                return ()
+                fallback = self._weak_preview_species(side, index) if final else None
+                if fallback is None:
+                    return ()
+                team.append(fallback)
+                continue
             species, count = ranked[0]
             runner_up = ranked[1][1] if len(ranked) > 1 else 0
             if not final and (
@@ -3108,6 +3142,27 @@ class ChampionsOcrDetector:
         if labels:
             self.parser.bind_preview_labels(labels, side=side)
         return applied
+
+    def _weak_preview_species(self, side: str, index: int) -> str | None:
+        """Conjetura de respaldo para una fila sin ni un voto fuerte.
+
+        Sólo se llama cuando las 24 lecturas se agotaron y esa fila nunca
+        cruzó el margen calibrado del resolver ni una vez -así que exige
+        muchas más coincidencias y casi unanimidad entre ellas, precisamente
+        porque cada una por separado no alcanzó ese margen.
+        """
+
+        weak_rows = self._preview_weak_votes.get(side)
+        if weak_rows is None or index >= len(weak_rows):
+            return None
+        ranked = weak_rows[index].most_common()
+        if not ranked:
+            return None
+        species, count = ranked[0]
+        total = sum(votes for _species, votes in ranked)
+        if count < self._PREVIEW_WEAK_MIN_VOTES or count / total < self._PREVIEW_WEAK_MIN_RATIO:
+            return None
+        return species
 
     def _schedule_preview_team(
         self,
@@ -3159,8 +3214,14 @@ class ChampionsOcrDetector:
                     frame, rotation_degrees=rotation_degrees, side=side
                 )
 
+        # El rival trae sólo silueta y tipo, sin mote que la respalde; cuando
+        # el resolver puede además entregar su mejor conjetura por debajo del
+        # margen calibrado, la usamos como respaldo de la votación entre
+        # frames en vez de perderla (ver _accept_preview_team).
+        read_with_guesses = getattr(self._preview_resolver, "resolve_rows_with_guesses", None)
+        p2_read = read_with_guesses or read
         rosters: dict[str, tuple] = {
-            "p2": read(frame, rotation_degrees=rotation_degrees, side="p2")
+            "p2": p2_read(frame, rotation_degrees=rotation_degrees, side="p2")
         }
         # El panel del jugador sí trae el mote escrito junto al sprite.
         labelled = getattr(self._preview_resolver, "resolve_labelled_rows", None)
@@ -3342,7 +3403,7 @@ class ChampionsOcrDetector:
         self._preview_future = None
         self._preview_stable_frames = 0
         self._preview_attempts = 0
-        for table in (self._preview_votes, self._preview_labels):
+        for table in (self._preview_votes, self._preview_weak_votes, self._preview_labels):
             for rows in table.values():
                 for votes in rows:
                     votes.clear()

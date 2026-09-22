@@ -999,6 +999,26 @@ class ChampionsTeamPreviewResolver:
         cards = self._card_boxes(image, side)
         return self._species_for_cards(image, cards, side)
 
+    def resolve_rows_with_guesses(
+        self,
+        frame: FramePacket,
+        *,
+        rotation_degrees: int = 0,
+        side: str = "p2",
+    ) -> tuple[tuple[str | None, str | None], ...]:
+        """Como `resolve_rows`, pero sin descartar la mejor conjetura de cada fila.
+
+        Cada elemento es (especie segura, mejor conjetura). La primera es la
+        misma que devuelve `resolve_rows` -sólo cuando el margen calibrado la
+        respalda-; la segunda es a qué especie apuntó la comparación de
+        siluetas aunque no llegara a ese margen, para que la votación entre
+        frames pueda usarla como respaldo en vez de tirarla.
+        """
+
+        image = self._decode_frame(frame, rotation_degrees)
+        cards = self._card_boxes(image, side)
+        return self._species_and_guesses_for_cards(image, cards, side)
+
     def resolve_labelled_rows(
         self,
         frame: FramePacket,
@@ -1052,6 +1072,17 @@ class ChampionsTeamPreviewResolver:
         cards: Sequence[tuple[int, int, int, int]],
         side: str,
     ) -> tuple[str | None, ...]:
+        return tuple(
+            confident
+            for confident, _guess in self._species_and_guesses_for_cards(image, cards, side)
+        )
+
+    def _species_and_guesses_for_cards(
+        self,
+        image: object,
+        cards: Sequence[tuple[int, int, int, int]],
+        side: str,
+    ) -> tuple[tuple[str | None, str | None], ...]:
         sprite_tile = self._PLAYER_SPRITE_TILE if side == "p1" else self._CARD_SPRITE_TILE
         candidates_by_row: list[tuple[str, ...]] = []
         genders: list[str | None] = []
@@ -1103,17 +1134,17 @@ class ChampionsTeamPreviewResolver:
         }
         loaded = self._templates_for(required_templates, {})
 
-        roster: list[str | None] = []
+        roster: list[tuple[str | None, str | None]] = []
         for row_number, (card, candidates, gender) in enumerate(
             zip(cards, candidates_by_row, genders, strict=True),
             start=1,
         ):
             if len(candidates) == 1:
-                roster.append(candidates[0])
+                roster.append((candidates[0], candidates[0]))
                 continue
             gendered = self._gendered_candidate(candidates, gender)
             if gendered:
-                roster.append(gendered)
+                roster.append((gendered, gendered))
                 continue
             readings = self._observed_shapes(
                 image,
@@ -1125,12 +1156,12 @@ class ChampionsTeamPreviewResolver:
             if not readings:
                 # Una fila dudosa ya no tumba el panel entero: se deja vacía y
                 # la votación entre frames del detector la resuelve aparte.
-                roster.append(None)
+                roster.append((None, None))
                 continue
             loaded = self._templates_for(candidates, loaded)
             comparable = [species for species in candidates if loaded.get(species)]
             if not comparable:
-                roster.append(None)
+                roster.append((None, None))
                 continue
             if len(comparable) > self._SHORTLIST:
                 ranked_coarse = sorted(
@@ -1162,18 +1193,21 @@ class ChampionsTeamPreviewResolver:
                 decisions.append((top[0] - second, top[0], top[1]))
             margin_gap, best_score, best_species = max(decisions)
             runner_up = best_score - margin_gap
+            guess = self._gendered_variant(best_species, gender)
             # Medido sobre este vídeo: los aciertos tienen margen mediano 0.27 y
             # el p10 en 0.074; los errores nunca pasaron de 0.051. Se descarta la
-            # duda en vez de inventar y la votación entre frames del detector
-            # decide con las lecturas que sí pasan.
+            # duda en vez de inventar; la mejor conjetura viaja igual como
+            # respaldo para la votación entre frames del detector, que exige
+            # muchas más coincidencias para confiar en algo que nunca llegó a
+            # este margen.
             if best_score < 0.33 or best_score - runner_up < 0.055:
-                roster.append(None)
+                roster.append((None, guess))
                 continue
-            roster.append(self._gendered_variant(best_species, gender))
+            roster.append((guess, guess))
 
         if len(roster) != 6:
             raise DetectionError(f"el Team Preview de {side} no tiene seis filas")
-        named = [species for species in roster if species]
+        named = [confident for confident, _guess in roster if confident]
         if len({_text_id(species) for species in named}) != len(named):
             raise DetectionError(f"el Team Preview de {side} repitió alguna especie")
         return tuple(roster)

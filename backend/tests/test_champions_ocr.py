@@ -2583,6 +2583,101 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("lecturas", warnings[0])
 
+    def test_a_row_with_no_strong_votes_falls_back_to_a_unanimous_weak_guess(self) -> None:
+        # COL-102, job 82923f56ce264a92: una placa de tipo ilegible dejaba a
+        # Slowking fuera del margen calibrado del resolver en 36 de 37
+        # lecturas reales -nunca un voto fuerte, pero la silueta lo señaló
+        # sin ninguna discrepancia en las 37. Antes, una sola fila así tiraba
+        # el roster de seis Pokémon entero.
+        preview_lines = (
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+        )
+        confident_rows = ("Incineroar", "Sneasler", None, "Pelipper", "Meganium", "Basculegion")
+
+        class FakeEngine:
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                return preview_lines
+
+        class WeakRowPreviewResolver:
+            def resolve_rows_with_guesses(
+                self,
+                _frame: FramePacket,
+                *,
+                rotation_degrees: int = 0,
+                side: str = "p2",
+            ) -> tuple[tuple[str | None, str | None], ...]:
+                if side != "p2":
+                    raise DetectionError("este doble sólo conoce el panel rival")
+                return tuple(
+                    (species, species) if species else (None, "Slowking")
+                    for species in confident_rows
+                )
+
+        detector = ChampionsOcrDetector(
+            engine=FakeEngine(),
+            team_preview_resolver=WeakRowPreviewResolver(),
+        )
+        try:
+            # Suficientes frames para agotar los intentos y acumular las diez
+            # conjeturas débiles que pide el respaldo -la fila 3 nunca junta
+            # un voto fuerte, así que la aceptación temprana nunca la fija.
+            self._pump_team_preview(detector, frames=60)
+            self.assertFalse(detector._preview_team["p2"])
+            flushed = detector.flush_pending()
+        finally:
+            detector.close()
+
+        self.assertEqual(
+            flushed.p2_team,
+            ("Incineroar", "Sneasler", "Slowking", "Pelipper", "Meganium", "Basculegion"),
+        )
+
+    def test_a_split_weak_guess_does_not_get_rescued(self) -> None:
+        # Sin acuerdo entre las conjeturas -mitad y mitad-, no hay evidencia
+        # real detrás y la fila se queda sin resolver en vez de adivinar.
+        preview_lines = (
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+        )
+        confident_rows = ("Incineroar", "Sneasler", None, "Pelipper", "Meganium", "Basculegion")
+
+        class FakeEngine:
+            def read(self, _image: bytes) -> tuple[OcrLine, ...]:
+                return preview_lines
+
+        class SplitRowPreviewResolver:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def resolve_rows_with_guesses(
+                self,
+                _frame: FramePacket,
+                *,
+                rotation_degrees: int = 0,
+                side: str = "p2",
+            ) -> tuple[tuple[str | None, str | None], ...]:
+                if side != "p2":
+                    raise DetectionError("este doble sólo conoce el panel rival")
+                self.calls += 1
+                guess = "Slowking" if self.calls % 2 else "Slowbro"
+                return tuple(
+                    (species, species) if species else (None, guess)
+                    for species in confident_rows
+                )
+
+        detector = ChampionsOcrDetector(
+            engine=FakeEngine(),
+            team_preview_resolver=SplitRowPreviewResolver(),
+        )
+        try:
+            self._pump_team_preview(detector, frames=60)
+            flushed = detector.flush_pending()
+        finally:
+            detector.close()
+
+        self.assertFalse(flushed.p2_team)
+
     def test_cli_uses_ocr_by_default_and_keeps_ollama_as_an_option(self) -> None:
         parser = build_parser()
         default = parser.parse_args(["video", "battle.mp4", "--output", "replay"])
