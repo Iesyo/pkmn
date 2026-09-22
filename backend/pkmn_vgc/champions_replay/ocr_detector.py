@@ -1174,8 +1174,13 @@ class ChampionsTextParser:
             return "p2"
         return "p1"
 
-    def _slot_for_species(self, species: str, side: str) -> str:
+    def _slot_for_species(
+        self, species: str, side: str, *, exclude_open: bool = False
+    ) -> str:
+        open_slots = self._open_slots.get(side, ()) if exclude_open else ()
         for slot, active_species in self._active.items():
+            if slot in open_slots:
+                continue
             if slot.startswith(side) and (
                 active_species == species
                 or _text_key(self._canonical_actor(active_species))
@@ -1392,6 +1397,17 @@ class ChampionsTextParser:
             # Initial leads are placed from HUD geometry. A text announcement
             # has no reliable doubles slot until a withdrawal or faint opens it.
             return ()
+        if len(slots) > 1:
+            # COL-102, job f53bd34897b84f86: a faint and a Parting Shot
+            # recall opened both doubles slots in the same stretch of turn
+            # 2, and "the earliest-opened slot gets the next announcement"
+            # guessed backwards -Charizard's "Go!" claimed the slot Sinistcha
+            # had just vacated, when the HUD later confirmed Charizard
+            # actually took Incineroar's. Announcement order doesn't track
+            # which physical slot a "Go!"/"sent out" refers to once more
+            # than one is open; only the HUD, reading both names together,
+            # does. Wait for it instead of guessing.
+            return ()
         slot = slots.pop(0)
         self._pending_switch_timestamps.pop(slot, None)
         if self._active.get(slot) == species:
@@ -1575,7 +1591,13 @@ class ChampionsTextParser:
             if turn != self._turn:
                 del self._pending_abilities[key]
                 continue
-            slot = self._slot_for_species(species, side)
+            # COL-102, job f53bd34897b84f86: Incineroar left p1b (Parting
+            # Shot) and came back through p1a; `_active["p1b"]` still named
+            # it until the HUD confirmed the swap, so the lookup kept
+            # matching that stale, now-open slot instead of waiting. Slots
+            # marked open (`_mark_slot_open`) are excluded here so a
+            # departed Pokémon's old spot can't stand in for its real one.
+            slot = self._slot_for_species(species, side, exclude_open=True)
             # El rótulo de habilidad no lleva el prefijo del rival, así que el
             # lado se deduce y con la misma especie en los dos equipos puede
             # caer en el que no juega. Buscar el slot devuelve el primero del

@@ -672,6 +672,104 @@ class ChampionsOcrTests(unittest.TestCase):
             [("ability", "p1a", "Intimidate")],
         )
 
+    def test_an_ability_does_not_attach_to_a_departed_pokemons_stale_slot(self) -> None:
+        # COL-102, job f53bd34897b84f86, auditoría focal del Turno 2. Al
+        # marcar el slot de Incineroar (p1b) como abierto, `_active` seguía
+        # nombrándolo ahí hasta que el HUD confirmara dónde había quedado de
+        # verdad. Su propia Intimidate al reentrar resolvía contra esa
+        # entrada obsoleta y se escribía en p1b, cuatro líneas antes de que
+        # el HUD confirmara que en realidad había vuelto a p1a.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_name="Roku", p1_team=("Incineroar",)),
+            catalog=ChampionsCatalog(species=("Incineroar",), abilities=("Intimidate",)),
+        )
+        parser._active["p1b"] = "Incineroar"
+        parser._battle_open = True
+        parser._turn = 2
+
+        parser.parse(
+            (line("Incineroar went back to Roku!", x=0.15, y=0.7, width=0.4),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        pending = parser.parse(
+            (
+                line("Incineroar's", x=0.078, y=0.431, width=0.09),
+                line("Intimidate", x=0.078, y=0.473, width=0.077),
+            ),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+        self.assertEqual(pending.events, ())
+
+        # El HUD confirma que Incineroar volvió, pero a un slot distinto
+        # -Charizard, no Incineroar, es quien de verdad ocupa p1b ahora.
+        parser._active["p1a"] = "Incineroar"
+        parser._active["p1b"] = "Charizard"
+        parser._open_slots["p1"].remove("p1b")
+        confirmed = parser.parse((), timestamp_ms=1_000, source_frame=2)
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in confirmed.events],
+            [("ability", "p1a", "Intimidate")],
+        )
+
+    def test_an_announced_switch_does_not_guess_between_two_open_slots(self) -> None:
+        # COL-102, job f53bd34897b84f86, auditoría focal del Turno 2. Un
+        # debilitado (Sinistcha, p1a) y un relevo por Parting Shot
+        # (Incineroar, p1b) abrieron los dos slots de dobles en el mismo
+        # tramo del turno. "Go! Charizard!" reclamó el slot abierto más
+        # temprano por orden de anuncio (p1a), pero el HUD confirmó después
+        # que Charizard había tomado el slot de Incineroar (p1b) y que
+        # Incineroar había tomado el otro (p1a): el orden del anuncio no
+        # dice a qué slot físico se refiere un "Go!" en cuanto hay más de
+        # uno abierto; sólo el HUD lo sabe.
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p1_team=("Sinistcha", "Incineroar", "Charizard"),
+            ),
+            catalog=ChampionsCatalog(species=("Sinistcha", "Incineroar", "Charizard")),
+        )
+        parser._active["p1a"] = "Sinistcha"
+        parser._active["p1b"] = "Incineroar"
+        parser._battle_open = True
+
+        faint = parser.parse(
+            (line("Sinistcha fainted!", x=0.2, y=0.7, width=0.3),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        recall = parser.parse(
+            (line("Incineroar went back to Roku!", x=0.15, y=0.7, width=0.4),),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+        announced = parser.parse(
+            (line("Go! Charizard!", x=0.15, y=0.73, width=0.25),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+
+        self.assertEqual([event.kind for event in faint.events], ["faint"])
+        self.assertEqual([event.kind for event in recall.events], ["message"])
+        self.assertEqual(announced.events, ())
+
+        confirmed = parser.parse(
+            (
+                line("Incineroar", x=0.08, y=0.86),
+                line("Charizard", x=0.29, y=0.86),
+                line("202/202", x=0.13, y=0.93),
+                line("167/167", x=0.34, y=0.93),
+            ),
+            timestamp_ms=15_000,
+            source_frame=30,
+        )
+        self.assertEqual(
+            [(event.kind, event.slot, event.species) for event in confirmed.events],
+            [("switch", "p1a", "Incineroar"), ("switch", "p1b", "Charizard")],
+        )
+
     def test_a_return_without_the_word_withdrew_still_marks_the_slot(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)
