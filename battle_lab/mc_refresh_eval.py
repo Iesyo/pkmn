@@ -128,8 +128,12 @@ def evaluate_direct(*, vgc_root: Path, showdown: Path, run: Path, production: di
     for spec in (production, candidate):
         if sha256_file(Path(spec["checkpoint"])) != spec["sha256"]:
             raise RuntimeError("Los pesos cambiaron antes del benchmark directo")
+    # The public VGC-Bench control is an evaluation dependency, not one of our
+    # retained models. Keep it in the ephemeral Colab runtime so Drive contains
+    # only the canonical production checkpoint and the current candidate.
+    baseline_path = vgc_root.parent / "benchmark-cache" / "vgc-bench-ma-mb-100.zip"
     base = {"id": "VGC-Bench-public-BC", "sha256": VGC_BENCH_CHECKPOINT_SHA256,
-            "checkpoint": str(download_baseline(run.parents[2] / "baseline" / "vgc-bench-ma-mb-100.zip"))}
+            "checkpoint": str(download_baseline(baseline_path))}
     corpus, split = evaluation_corpus(run, battle_format)
     aliases = alias_mc_runtime_catalogs(vgc_root)
     for team in corpus.teams:
