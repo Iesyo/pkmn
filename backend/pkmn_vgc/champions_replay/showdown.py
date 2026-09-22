@@ -128,6 +128,31 @@ def _with_known_target(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
     return tuple(completed)
 
 
+def _with_known_crits(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
+    """Convierte "A critical hit!" en un `-crit` con su slot cuando no hay dudas.
+
+    El mensaje del juego no nombra a nadie, así que hoy queda como flavor
+    text suelto. Buscando hacia atrás, dentro de la misma acción (hasta el
+    movimiento, cambio o turno anterior), el único Pokémon que recibió daño
+    es a quien golpeó ese crítico; con dos candidatos o ninguno se deja el
+    mensaje tal cual.
+    """
+
+    completed = list(events)
+    for index, event in enumerate(completed):
+        if event.kind != "message" or (event.value or "").strip().casefold() != "a critical hit!":
+            continue
+        hit_slots: set[str] = set()
+        for earlier in reversed(completed[:index]):
+            if earlier.kind in {"move", "switch", "drag", "turn"}:
+                break
+            if earlier.kind == "damage" and earlier.slot:
+                hit_slots.add(earlier.slot)
+        if len(hit_slots) == 1:
+            completed[index] = replace(event, kind="crit", slot=next(iter(hit_slots)), value=None)
+    return tuple(completed)
+
+
 def _selection_code(side: BattleSide) -> str:
     indexes: list[str] = []
     for species in side.selected:
@@ -173,7 +198,8 @@ def _event_lines(
     if event.kind in {"status", "curestatus", "ability", "item", "enditem", "terastallize"}:
         assert event.slot and event.value
         species = active.get(event.slot) or event.species or "Pokémon"
-        return [f"|-{event.kind}|{_identifier(event.slot, species)}|{event.value}"]
+        tags = "".join(f"|{tag}" for tag in event.tags)
+        return [f"|-{event.kind}|{_identifier(event.slot, species)}|{event.value}{tags}"]
 
     if event.kind == "mega":
         assert event.slot and event.species and event.forme and event.value
@@ -227,7 +253,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in _with_known_health(_with_known_target(battle.events)):
+    for event in _with_known_health(_with_known_target(_with_known_crits(battle.events))):
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")

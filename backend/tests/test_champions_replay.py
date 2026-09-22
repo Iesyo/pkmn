@@ -28,6 +28,7 @@ from pkmn_vgc.champions_replay.pipeline import (
     review_capture,
 )
 from pkmn_vgc.champions_replay.showdown import (
+    _with_known_crits,
     _with_known_health,
     _with_known_target,
     build_replay_document,
@@ -255,6 +256,48 @@ class ChampionsReplayTests(unittest.TestCase):
         completed = _with_known_target(events)
         self.assertIsNone(completed[0].target_slot)
         self.assertEqual(completed[1].target_slot, "p2a")
+
+    def test_attributes_a_critical_hit_to_the_pokemon_hit_since_the_last_action(self) -> None:
+        # El mensaje del juego, "A critical hit!", no nombra a nadie -Roku lo
+        # señaló al pedir la búsqueda de otros vacíos parecidos al del objetivo.
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p2a", move="Shadow Ball"),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_500, slot="p1a", species="Sinistcha", health="0/178"
+            ),
+            BattleEvent(kind="message", timestamp_ms=1_600, value="It's super effective on Sinistcha!"),
+            BattleEvent(kind="message", timestamp_ms=1_700, value="A critical hit!"),
+        )
+
+        completed = _with_known_crits(events)
+        self.assertEqual(completed[3].kind, "crit")
+        self.assertEqual(completed[3].slot, "p1a")
+        self.assertIsNone(completed[3].value)
+
+    def test_does_not_guess_a_critical_hit_with_two_candidates(self) -> None:
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Rock Slide"),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_500, slot="p2a", species="Farigiraf", health="40/100"
+            ),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_600, slot="p2b", species="Tyranitar", health="60/100"
+            ),
+            BattleEvent(kind="message", timestamp_ms=1_700, value="A critical hit!"),
+        )
+
+        self.assertEqual(_with_known_crits(events)[3].kind, "message")
+
+    def test_does_not_guess_a_critical_hit_across_a_turn_boundary(self) -> None:
+        events = (
+            BattleEvent(
+                kind="damage", timestamp_ms=1_000, slot="p1a", species="Sinistcha", health="0/178"
+            ),
+            BattleEvent(kind="turn", timestamp_ms=2_000, turn=2),
+            BattleEvent(kind="message", timestamp_ms=2_500, value="A critical hit!"),
+        )
+
+        self.assertEqual(_with_known_crits(events)[2].kind, "message")
 
     def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()

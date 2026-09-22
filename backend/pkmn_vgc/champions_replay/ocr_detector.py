@@ -789,6 +789,11 @@ class ChampionsTextParser:
         self._battle_open = False
         self._pending_end = False
         self._mega_seen: set[str] = set()
+        # Un Pokémon sólo puede perder su objeto una vez por batalla; sin esto,
+        # la misma lectura de OCR con el nombre del objeto ligeramente distinto
+        # entre frames ("Sitrus Berry", "Strus Berry") escribía el mismo
+        # -enditem dos o tres veces.
+        self._items_removed: set[str] = set()
         self._alias_evidence: dict[tuple[str, str], set[str]] = {}
         self._alias_evidence_labels: dict[tuple[str, str], set[str]] = {}
         self._pending_alias_moves: dict[
@@ -2124,6 +2129,26 @@ class ChampionsTextParser:
                 ),
             )
 
+        ended_terrain = None
+        if "weirdness disappeared from the battlefield" in lowered:
+            ended_terrain = "Psychic Terrain"
+        elif "electricity disappeared from the battlefield" in lowered:
+            ended_terrain = "Electric Terrain"
+        elif "grass disappeared from the battlefield" in lowered:
+            ended_terrain = "Grassy Terrain"
+        elif "mist disappeared from the battlefield" in lowered:
+            ended_terrain = "Misty Terrain"
+        if ended_terrain:
+            return (
+                BattleEvent(
+                    kind="fieldend",
+                    timestamp_ms=timestamp_ms,
+                    confidence=confidence,
+                    value=f"move: {ended_terrain}",
+                    source_frame=source_frame,
+                ),
+            )
+
         if "tailwind started blowing" in lowered:
             side = "p2" if "opposing" in lowered else "p1"
             return (
@@ -2236,6 +2261,38 @@ class ChampionsTextParser:
                     timestamp_ms=timestamp_ms,
                     source_frame=source_frame,
                 )
+
+        knocked_off = re.match(
+            r"^(The opposing )?(.+?)\s+knocked of?f\s+(the opposing )?(.+?)[\'’]s\s+(.+?)[!.]?$",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if knocked_off:
+            actor_side = "p2" if knocked_off.group(1) else "p1"
+            owner_side = "p2" if knocked_off.group(3) else "p1"
+            owner_species = self._actor_for_value(owner_side, knocked_off.group(4))
+            owner_key = f"{owner_side}:{_text_key(self._canonical_actor(owner_species))}" if owner_species else None
+            if owner_species and owner_key not in self._items_removed:
+                self._items_removed.add(owner_key)
+                tags: tuple[str, ...] = ()
+                actor_species = self._actor_for_value(actor_side, knocked_off.group(2))
+                if actor_species:
+                    tags = (
+                        "[from] move: Knock Off",
+                        f"[of] {self._slot_for_species(actor_species, actor_side)}: {actor_species}",
+                    )
+                return (
+                    BattleEvent(
+                        kind="enditem",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        slot=self._slot_for_species(owner_species, owner_side),  # type: ignore[arg-type]
+                        value=knocked_off.group(5).strip(),
+                        tags=tags,
+                        source_frame=source_frame,
+                    ),
+                )
+            return ()
 
         mega_reaction = re.match(
             r"^(The opposing )?(.+?)[\'’]s (.+?) (?:is|i) reacting to .+?[\'’]s (?:Omni|Omi|Mega) Ring[!.]?$",

@@ -1405,6 +1405,85 @@ class ChampionsOcrTests(unittest.TestCase):
             ("[from] ability: Psychic Surge", "[of] p2a: Indeedee-F"),
         )
 
+    def test_parses_terrain_ending_for_all_four_kinds(self) -> None:
+        endings = (
+            ("The weirdness disappeared from the battlefield!", "Psychic Terrain"),
+            ("The electricity disappeared from the battlefield!", "Electric Terrain"),
+            ("The grass disappeared from the battlefield!", "Grassy Terrain"),
+            ("The mist disappeared from the battlefield!", "Misty Terrain"),
+        )
+        for index, (text, terrain) in enumerate(endings):
+            with self.subTest(terrain=terrain):
+                parser = self.parser()
+                parser._battle_open = True
+                parser._active["p1a"] = "Delphox"
+                detections = parser.parse(
+                    (line(text, x=0.15, y=0.72, width=0.6),),
+                    timestamp_ms=1_000 * index,
+                    source_frame=index,
+                )
+                self.assertEqual(
+                    [(event.kind, event.value) for event in detections.events],
+                    [("fieldend", f"move: {terrain}")],
+                )
+
+    def test_a_knocked_off_item_becomes_a_structured_enditem(self) -> None:
+        # COL-102: el vacío de objetos que Roku pidió auditar. El objeto de un
+        # Pokémon sólo se puede perder una vez, pero el OCR repite el aviso con
+        # el nombre ligeramente distinto en cada frame ("Strus Berry",
+        # "Sitrus Berry"); sin represarlo, el mismo Knock Off escribía su
+        # -enditem dos o tres veces.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Tyranitar",), p2_team=("Farigiraf",)),
+            catalog=ChampionsCatalog(species=("Tyranitar", "Farigiraf")),
+        )
+        parser.parse(
+            (
+                line("Tyranitar", x=0.08, y=0.86),
+                line("Farigiraf", x=0.62, y=0.04),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        first = parser.parse(
+            (
+                line(
+                    "Tyranitar knocked off the opposing Farigiraf's Strus Berry!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.6,
+                ),
+            ),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+        repeated = parser.parse(
+            (
+                line(
+                    "Tyranitar knocked of the opposing Farigiraf's Sitrus Berry!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.6,
+                ),
+            ),
+            timestamp_ms=1_500,
+            source_frame=2,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value, event.tags) for event in first.events],
+            [
+                (
+                    "enditem",
+                    "p2a",
+                    "Strus Berry",
+                    ("[from] move: Knock Off", "[of] p1a: Tyranitar"),
+                )
+            ],
+        )
+        self.assertEqual(repeated.events, ())
+
     def test_parses_faint_and_result_without_a_visual_model(self) -> None:
         parser = self.parser()
         parser._active["p2a"] = "Umbreon"
