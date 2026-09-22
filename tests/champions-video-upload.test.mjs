@@ -26,11 +26,16 @@ test("uploads Champions videos in resumable chunks and processes every battle", 
   assert.match(component, /Reanalizar vídeo/);
   assert.match(component, /Descargar diagnóstico/);
   assert.match(component, /Almacenamiento Champions en la ROG/);
+  assert.match(component, /Job ID/);
+  assert.match(component, /select-all/);
+  assert.match(component, /protegido por defecto/);
   assert.match(component, /Liberar/);
   assert.match(component, /Proteger/);
   assert.match(component, /Eliminar job/);
   assert.match(component, /Avisos del análisis/);
   assert.match(jobs, /ThreadPoolExecutor\(max_workers=1/);
+  assert.match(jobs, /"is_protected": True/);
+  assert.match(jobs, /setdefault\("is_protected", True\)/);
   assert.doesNotMatch(jobs, /champions-ocr|ocr_workers=ocr_workers/);
   assert.match(jobs, /reset_battle_state|ReplayCapturePipeline/);
   assert.match(jobs, /replay-\{index:03d\}/);
