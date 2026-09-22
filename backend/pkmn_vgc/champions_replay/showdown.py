@@ -98,6 +98,36 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
     return tuple(completed)
 
 
+def _with_known_target(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
+    """Completa a quién apuntó un movimiento cuando sólo hay un candidato.
+
+    El detector sabe quién usó el movimiento y, por separado, a quién le bajó
+    la vida; nunca cruza las dos cosas porque la pantalla no nombra el
+    objetivo. Sin él, el visor oficial anima el golpe contra un slot fijo en
+    vez del rival real. Cuando un único Pokémon del lado contrario recibió
+    daño antes de la próxima acción (otro movimiento, un cambio o un nuevo
+    turno), ese es su objetivo sin dudas; con dos o ninguno -un movimiento de
+    área, uno que falló- no se adivina.
+    """
+
+    completed: list[BattleEvent] = []
+    for index, event in enumerate(events):
+        if event.kind != "move" or event.target_slot is not None or not event.slot:
+            completed.append(event)
+            continue
+        opposing_prefix = "p2" if event.slot.startswith("p1") else "p1"
+        hit_slots: set[str] = set()
+        for later in events[index + 1 :]:
+            if later.kind in {"move", "switch", "drag", "turn"}:
+                break
+            if later.kind == "damage" and later.slot and later.slot.startswith(opposing_prefix):
+                hit_slots.add(later.slot)
+        if len(hit_slots) == 1:
+            event = replace(event, target_slot=next(iter(hit_slots)))  # type: ignore[arg-type]
+        completed.append(event)
+    return tuple(completed)
+
+
 def _selection_code(side: BattleSide) -> str:
     indexes: list[str] = []
     for species in side.selected:
@@ -197,7 +227,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in _with_known_health(battle.events):
+    for event in _with_known_health(_with_known_target(battle.events)):
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")

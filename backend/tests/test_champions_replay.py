@@ -29,6 +29,7 @@ from pkmn_vgc.champions_replay.pipeline import (
 )
 from pkmn_vgc.champions_replay.showdown import (
     _with_known_health,
+    _with_known_target,
     build_replay_document,
     render_replay_html,
     write_replay_artifacts,
@@ -206,6 +207,54 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
         self.assertEqual(_with_known_health(events)[0].health, "156/156")
+
+    def test_fills_the_target_when_only_one_rival_was_hit(self) -> None:
+        # El detector sabe quién usó el movimiento y, por separado, a quién le
+        # bajó la vida, pero nunca cruzaba las dos cosas: el visor oficial
+        # terminaba animando el golpe contra un slot fijo en vez del rival
+        # real (lo notó Roku viendo el replay corregido de COL-102).
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Knock Off"),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_500, slot="p2a", species="Farigiraf", health="0/100"
+            ),
+        )
+
+        self.assertEqual(_with_known_target(events)[0].target_slot, "p2a")
+
+    def test_does_not_guess_a_target_for_a_spread_move(self) -> None:
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Rock Slide"),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_500, slot="p2a", species="Farigiraf", health="40/100"
+            ),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_600, slot="p2b", species="Tyranitar", health="60/100"
+            ),
+        )
+
+        self.assertIsNone(_with_known_target(events)[0].target_slot)
+
+    def test_does_not_guess_a_target_when_nothing_was_hit(self) -> None:
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Protect"),
+            BattleEvent(kind="turn", timestamp_ms=2_000, turn=2),
+        )
+
+        self.assertIsNone(_with_known_target(events)[0].target_slot)
+
+    def test_stops_looking_for_a_target_at_the_next_action(self) -> None:
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Knock Off"),
+            BattleEvent(kind="move", timestamp_ms=1_100, slot="p1b", move="Fake Out"),
+            BattleEvent(
+                kind="damage", timestamp_ms=1_200, slot="p2a", species="Farigiraf", health="0/100"
+            ),
+        )
+
+        completed = _with_known_target(events)
+        self.assertIsNone(completed[0].target_slot)
+        self.assertEqual(completed[1].target_slot, "p2a")
 
     def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()
