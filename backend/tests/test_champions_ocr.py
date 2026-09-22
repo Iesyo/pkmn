@@ -2267,6 +2267,29 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertIn("Sinistcha", candidates)
         self.assertNotIn("Sinistcha-Masterpiece", candidates)
 
+    def test_a_single_readable_type_plate_does_not_exclude_a_dual_type(self) -> None:
+        # COL-102, job 82923f56ce264a92: la placa primaria de Slowking
+        # (Water/Psychic) salió en blanco en 36 de 37 frames del Team
+        # Preview rival; sólo la secundaria, "Water", se leyó. Exigir que
+        # el tipo leído fuera el único de la especie dejaba fuera a
+        # Slowking en casi todos los frames -la fila resolvía Pokémon casi
+        # siempre, salvo el frame suelto donde ambas placas se leyeron.
+        resolver = ChampionsTeamPreviewResolver(
+            (
+                ("Slowking", ("Water", "Psychic")),
+                ("Quagsire", ("Water", "Ground")),
+                ("Lapras", ("Water", "Ice")),
+            )
+        )
+
+        one_plate = resolver._candidates_for_types(("Water",))
+        self.assertIn("Slowking", one_plate)
+        self.assertIn("Quagsire", one_plate)
+        self.assertIn("Lapras", one_plate)
+
+        both_plates = resolver._candidates_for_types(("Water", "Psychic"))
+        self.assertEqual(both_plates, ("Slowking",))
+
     def test_the_gender_symbol_picks_the_forme_the_sprite_cannot(self) -> None:
         """Macho y hembra son casi el mismo dibujo; el símbolo de la tarjeta manda."""
 

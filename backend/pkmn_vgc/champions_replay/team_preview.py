@@ -532,6 +532,22 @@ class ChampionsTeamPreviewResolver:
 
     def _candidates_for_types(self, types: Sequence[str]) -> tuple[str, ...]:
         expected = tuple(types)
+        if len(expected) == 1:
+            # Sólo se leyó una placa -puede ser un tipo único de verdad, o la
+            # segunda placa de un Pokémon de dos tipos que no se pudo leer
+            # (COL-102, job 82923f56ce264a92: la placa primaria de un
+            # Water/Psychic salió en blanco en 36 de 37 frames, y exigir el
+            # tipo exacto dejaba fuera a la especie correcta en todos salvo
+            # uno). No hay forma de distinguir los dos casos desde aquí,
+            # así que exigir que el tipo leído esté entre los suyos, sin
+            # exigir que sea el único, cubre ambos sin ampliar la búsqueda
+            # al catálogo entero.
+            return tuple(
+                species
+                for species, candidate_types in self.species_types
+                if set(expected).issubset(candidate_types)
+                and species not in self._shadowed
+            )
         return tuple(
             species
             for species, candidate_types in self.species_types
