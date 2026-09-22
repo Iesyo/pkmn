@@ -327,11 +327,9 @@ export function ChampionsVideoUpload({
         await fetch(`/api/champions-jobs/jobs/${deletedId}`, { method: "DELETE" }),
       );
       setStorage(payload.storage);
-      setJobs((current) => {
-        const next = current.filter((entry) => entry.id !== deletedId);
-        setCurrentJobId(next[0]?.id || "");
-        return next;
-      });
+      const nextJobs = jobs.filter((entry) => entry.id !== deletedId);
+      setJobs(nextJobs);
+      setCurrentJobId(nextJobs[0]?.id || "");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No pudimos eliminar el trabajo.");
     } finally {
@@ -553,7 +551,7 @@ export function ChampionsVideoUpload({
                       <Download className="size-3" />Descargar diagnóstico
                     </a>
                   </Button>
-                  <p className="text-[9px] text-slate-500">Usa el vídeo que ya está guardado en la ROG; no vuelve a subirlo.</p>
+                  <p className="text-[9px] text-slate-500">{currentJob.sourceAvailable ? "Usa el vídeo que ya está guardado en la ROG; no vuelve a subirlo." : "El vídeo fuente fue eliminado; conserva el diagnóstico disponible, pero ya no puede reanalizarse."}</p>
                 </div>
               ) : null}
             </section>
