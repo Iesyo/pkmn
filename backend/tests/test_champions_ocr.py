@@ -1857,6 +1857,72 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(detections.events[0].value, "Sitrus Berry")
 
+    def test_an_evaded_attack_becomes_a_structured_miss(self) -> None:
+        # COL-102, job 82923f56ce264a92: "X avoided the attack!" quedaba
+        # como -message suelto, sin el feedback de miss que sí tiene el
+        # protocolo Showdown. El aviso nombra a quien esquivó -eso ya lo
+        # resuelve el parser a slot-, y showdown.py completa después quién
+        # atacó buscando el movimiento más reciente de la misma acción.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Milotic",), p2_team=("Incineroar",)),
+            catalog=ChampionsCatalog(species=("Milotic", "Incineroar")),
+        )
+        parser._active["p1b"] = "Milotic"
+        parser._battle_open = True
+
+        own_side = parser.parse(
+            (line("Milotic avoided the attack!", x=0.15, y=0.72, width=0.45),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+        self.assertEqual(
+            [(event.kind, event.slot, event.target_slot) for event in own_side.events],
+            [("miss", None, "p1b")],
+        )
+
+        parser._active["p2a"] = "Incineroar"
+        opposing = parser.parse(
+            (line("The opposing Incineroar avoided the attack!", x=0.15, y=0.72, width=0.6),),
+            timestamp_ms=500,
+            source_frame=1,
+        )
+        self.assertEqual(
+            [(event.kind, event.slot, event.target_slot) for event in opposing.events],
+            [("miss", None, "p2a")],
+        )
+
+    def test_a_typo_d_name_matches_the_pokemon_already_on_screen(self) -> None:
+        # COL-102, job 82923f56ce264a92: sin equipo rival conocido (nunca se
+        # vio su Team Preview, sólo sprites sin texto), el resolutor de
+        # especies cae al catálogo completo y sólo acepta coincidencia
+        # exacta -adivinar entre ~1000 especies es demasiado arriesgado. Un
+        # solo fallo de OCR ("Sheasler" por "Sneasler") bastaba entonces
+        # para que el HUD leyera un Pokémon nuevo donde ya había uno activo,
+        # y el replay escribía un switch fantasma del mismo Sneasler a sí
+        # mismo, a full HP, sin que nadie se hubiera ido ni vuelto.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=()),
+            catalog=ChampionsCatalog(species=("Sneasler",)),
+        )
+        parser._active["p2b"] = "Sneasler"
+        # El slot ya quedó ligado a este mote por un anuncio anterior
+        # ("Rival sent out Sneasler!"), igual que en el job real -sin esto,
+        # _hud_species descarta la lectura entera por no resolver especie
+        # ni identidad, y el bug ni se manifiesta.
+        parser._announced_slots["p2"]["sneasler"] = "p2b"
+        self.assertFalse(parser._known_teams["p2"])
+
+        detections = parser.parse(
+            (
+                line("Sheasler", x=0.831, y=0.05),
+                line("100%", x=0.9, y=0.05),
+            ),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(detections.events, ())
+
     def test_a_self_targeting_move_names_its_own_slot(self) -> None:
         # COL-102 (reapertura): Protect no le pega a nadie, pero sin la clase
         # de objetivo real del movimiento la heurística de proximidad podía

@@ -122,6 +122,8 @@ def _with_known_target(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
                 break
             if later.kind == "damage" and later.slot and later.slot.startswith(opposing_prefix):
                 hit_slots.add(later.slot)
+            if later.kind == "miss" and later.target_slot and later.target_slot.startswith(opposing_prefix):
+                hit_slots.add(later.target_slot)
         if len(hit_slots) == 1:
             event = replace(event, target_slot=next(iter(hit_slots)))  # type: ignore[arg-type]
         completed.append(event)
@@ -150,6 +152,33 @@ def _with_known_crits(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
                 hit_slots.add(earlier.slot)
         if len(hit_slots) == 1:
             completed[index] = replace(event, kind="crit", slot=next(iter(hit_slots)), value=None)
+    return tuple(completed)
+
+
+def _with_known_miss(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
+    """Completa quién atacó en un `-miss` cuando no hay dudas.
+
+    El aviso en pantalla ("X avoided the attack!") nombra a quien esquivó,
+    ya resuelto a slot al detectarlo, pero no a quien atacó. Buscando hacia
+    atrás, dentro de la misma acción (hasta el switch/cambio/turno
+    anterior), el movimiento más reciente es quien lo intentó. Un
+    movimiento de área que falla contra los dos rivales genera un `-miss`
+    por cada uno, y los dos se atan al mismo movimiento sin adivinar nada.
+    """
+
+    completed = list(events)
+    for index, event in enumerate(completed):
+        if event.kind != "miss" or event.slot is not None:
+            continue
+        source_slot: str | None = None
+        for earlier in reversed(completed[:index]):
+            if earlier.kind == "move":
+                source_slot = earlier.slot
+                break
+            if earlier.kind in {"switch", "drag", "turn"}:
+                break
+        if source_slot:
+            completed[index] = replace(event, slot=source_slot)  # type: ignore[arg-type]
     return tuple(completed)
 
 
@@ -217,6 +246,20 @@ def _event_lines(
         prefix = "" if event.kind == "faint" else "-"
         return [f"|{prefix}{event.kind}|{_identifier(event.slot, species)}"]
 
+    if event.kind == "miss":
+        if not event.slot or not event.target_slot:
+            # Sin un movimiento previo en la misma acción no hay quien
+            # ataque que nombrar; el aviso original ya se perdió al
+            # convertirlo, así que omitirlo es preferible a inventar un
+            # atacante.
+            return []
+        source_species = active.get(event.slot) or "Pokémon"
+        target_species = active.get(event.target_slot) or "Pokémon"
+        return [
+            f"|-miss|{_identifier(event.slot, source_species)}"
+            f"|{_identifier(event.target_slot, target_species)}"
+        ]
+
     if event.kind in {"weather", "fieldstart", "fieldend"}:
         value = event.value or ""
         tags = "".join(f"|{tag}" for tag in event.tags)
@@ -253,7 +296,9 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in _with_known_health(_with_known_target(_with_known_crits(battle.events))):
+    for event in _with_known_health(
+        _with_known_target(_with_known_miss(_with_known_crits(battle.events)))
+    ):
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")

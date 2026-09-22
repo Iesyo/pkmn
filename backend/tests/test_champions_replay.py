@@ -30,6 +30,7 @@ from pkmn_vgc.champions_replay.pipeline import (
 from pkmn_vgc.champions_replay.showdown import (
     _with_known_crits,
     _with_known_health,
+    _with_known_miss,
     _with_known_target,
     build_replay_document,
     render_replay_html,
@@ -298,6 +299,79 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
         self.assertEqual(_with_known_crits(events)[2].kind, "message")
+
+    def test_fills_a_moves_target_from_a_miss_when_nothing_was_hit(self) -> None:
+        # COL-102, job 82923f56ce264a92: un ataque esquivado no deja ningún
+        # -damage, así que el objetivo del move quedaba vacío pese a que el
+        # -miss ya sabe a quién esquivó.
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p2a", move="Will-O-Wisp"),
+            BattleEvent(kind="miss", timestamp_ms=1_500, target_slot="p1b"),
+        )
+
+        self.assertEqual(_with_known_target(events)[0].target_slot, "p1b")
+
+    def test_completes_the_source_of_a_miss_from_the_last_move(self) -> None:
+        # "X avoided the attack!" nombra a quien esquivó, no a quien atacó.
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p2a", move="Will-O-Wisp"),
+            BattleEvent(kind="miss", timestamp_ms=1_500, target_slot="p1b"),
+        )
+
+        completed = _with_known_miss(events)
+        self.assertEqual(completed[1].slot, "p2a")
+        self.assertEqual(completed[1].target_slot, "p1b")
+
+    def test_a_spread_moves_misses_all_attach_to_the_same_source(self) -> None:
+        # Heat Wave fallando contra los dos rivales genera un -miss por cada
+        # uno; los dos deben atarse al mismo movimiento, sin adivinar cuál
+        # de los dos fue "el" objetivo.
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p2b", move="Heat Wave"),
+            BattleEvent(kind="miss", timestamp_ms=1_500, target_slot="p1a"),
+            BattleEvent(kind="miss", timestamp_ms=1_600, target_slot="p1b"),
+        )
+
+        completed = _with_known_miss(events)
+        self.assertEqual(completed[1].slot, "p2b")
+        self.assertEqual(completed[2].slot, "p2b")
+
+    def test_does_not_guess_a_miss_source_across_a_turn_boundary(self) -> None:
+        events = (
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p2a", move="Will-O-Wisp"),
+            BattleEvent(kind="turn", timestamp_ms=2_000, turn=2),
+            BattleEvent(kind="miss", timestamp_ms=2_500, target_slot="p1b"),
+        )
+
+        self.assertIsNone(_with_known_miss(events)[2].slot)
+
+    def test_renders_a_resolved_miss_as_showdown_protocol(self) -> None:
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=(
+                    BattleEvent(kind="switch", timestamp_ms=100, slot="p1a", species="Kleavor"),
+                    BattleEvent(kind="switch", timestamp_ms=500, slot="p2a", species="Sableye"),
+                    BattleEvent(
+                        kind="move",
+                        timestamp_ms=1_000,
+                        slot="p2a",
+                        species="Sableye",
+                        move="Will-O-Wisp",
+                    ),
+                    BattleEvent(kind="miss", timestamp_ms=1_500, target_slot="p1a"),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|move|p2a: Sableye|Will-O-Wisp|p1a: Kleavor", document.log)
+        self.assertIn("|-miss|p2a: Sableye|p1a: Kleavor", document.log)
 
     def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()

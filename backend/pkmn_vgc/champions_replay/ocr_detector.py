@@ -1071,8 +1071,36 @@ class ChampionsTextParser:
             )
             if resolved:
                 return resolved
+            if not self._known_teams[side]:
+                # COL-102, job 82923f56ce264a92: sin equipo rival conocido,
+                # el matcher cae al catálogo completo (~1000 especies) y sólo
+                # acepta coincidencia exacta -adivinar entre todas ellas es
+                # demasiado arriesgado. Pero un Pokémon que ya está
+                # confirmado en el campo de ese lado ("Sheasler" releído de
+                # "Sneasler", ya activo en p2b) es una base seria y acotada:
+                # comparar sólo contra quien ya ocupa un slot, no contra el
+                # catálogo entero.
+                return self._fuzzy_match_active_species(value, side)
             return None
         return self._species.resolve(value, allow_fuzzy=False)
+
+    def _fuzzy_match_active_species(self, value: str, side: str) -> str | None:
+        value_key = _text_key(value)
+        if len(value_key) < 4:
+            return None
+        best_name: str | None = None
+        best_score = 0.78
+        for slot, active_species in self._active.items():
+            if not slot.startswith(side) or not active_species or is_actor_identity(active_species):
+                continue
+            candidate_key = _text_key(self._canonical_actor(active_species))
+            if abs(len(candidate_key) - len(value_key)) > max(3, len(value_key) // 2):
+                continue
+            score = SequenceMatcher(None, value_key, candidate_key).ratio()
+            if score > best_score:
+                best_score = score
+                best_name = active_species
+        return best_name
 
     def _new_identity(self, side: str, value: str, slot: str | None = None) -> str:
         self._identity_counter += 1
@@ -2681,6 +2709,26 @@ class ChampionsTextParser:
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
                         value=f"{prefix}{actor}'s perish count fell to {count}!",
+                        source_frame=source_frame,
+                    ),
+                )
+
+        avoided = re.match(
+            r"^(The opposing )?(.+?) avoided the attack!$", cleaned, re.IGNORECASE
+        )
+        if avoided:
+            side = "p2" if avoided.group(1) else "p1"
+            actor = self._actor_for_value(side, avoided.group(2))
+            if actor:
+                # El aviso nombra a quien esquivó, no a quien atacó -eso lo
+                # completa showdown.py buscando el movimiento más reciente
+                # de la misma acción, igual que ya hace con el crítico.
+                return (
+                    BattleEvent(
+                        kind="miss",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        target_slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
                         source_frame=source_frame,
                     ),
                 )
