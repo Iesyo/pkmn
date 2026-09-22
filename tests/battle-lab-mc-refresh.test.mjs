@@ -39,12 +39,12 @@ with tempfile.TemporaryDirectory() as temp:
     exec(''.join(nb['cells'][5]['source']), scope)
     assert calls == [[sys.executable, '-u', '-m', 'battle_lab.mc_refresh', '--root', refresh,
                       '--recover-evaluation', '--run-id', 'saved-run']]
-    scope.update(RUN_ACTION='direct_evaluation', BATTLES_PER_CONTROL=500,
-                 PRODUCTION_CHECKPOINT='', PRODUCTION_SHA256='')
+    scope.update(RUN_ACTION='direct_evaluation', BATTLES_PER_CONTROL=500)
     exec(''.join(nb['cells'][5]['source']), scope)
     command = calls[-1]
     assert '--direct-evaluation' in command and '--mode' not in command
     assert command[command.index('--battles') + 1] == 500
+    assert '--production-checkpoint' not in command and '--production-sha256' not in command
     assert command[-2:] == ['--run-id', 'saved-run']
 `], { cwd: root, encoding: "utf8" });
 });
@@ -66,15 +66,22 @@ for i, cell in enumerate(nb['cells']):
         compile(''.join(cell['source']), f'colab-cell-{i}', 'exec')
 config = {}
 exec(''.join(nb['cells'][1]['source']), config)
-assert config['RUN_ACTION'] == 'auto' and config['RUN_MODE'] == 'LIGHT'
+assert config['RUN_ACTION'] == 'direct_evaluation' and config['RUN_MODE'] == 'NORMAL'
+assert config['RUN_ID'] == '20260922T182640086766Z'
 assert config['BATTLES_PER_CONTROL'] == 500
 assert config['BC_MIN_TRANSITIONS'] == 9500
-assert config['PKMN_REF'] == 'battle-lab-mc-refresh-001'
+assert config['PKMN_REF'] == 'f17f75d14b23e9cf24b9d0a924a7bd343180dd55'
+assert 'PRODUCTION_CHECKPOINT' not in config and 'PRODUCTION_SHA256' not in config
 assert ''.join(nb['cells'][-1]['source']).startswith('#@title')
 import sys, tempfile
 calls = []
 config.update(sys=sys, ROOT=Path('/data'), RUNTIME=Path('/runtime'), REPO=Path.cwd(),
               run=lambda command, cwd: calls.append(command))
+exec(''.join(nb['cells'][5]['source']), config)
+assert '--direct-evaluation' in calls[-1]
+assert '--production-checkpoint' not in calls[-1] and '--production-sha256' not in calls[-1]
+# A fresh training cycle still receives the pilot BC threshold.
+config.update(RUN_ACTION='new', RUN_ID='')
 exec(''.join(nb['cells'][5]['source']), config)
 assert calls[-1][-2:] == ['--bc-min-transitions', 9500]
 # Older pinned runs must remain resumable without an unsupported new CLI flag.
@@ -82,7 +89,7 @@ with tempfile.TemporaryDirectory() as folder:
     checkout = Path(folder)
     (checkout/'battle_lab').mkdir()
     (checkout/'battle_lab'/'mc_refresh.py').write_text('# historical runner')
-    config.update(REPO=checkout, RUN_ACTION='resume')
+    config.update(REPO=checkout, RUN_ACTION='resume', RUN_ID='')
     exec(''.join(nb['cells'][5]['source']), config)
     assert '--bc-min-transitions' not in calls[-1]
 `], { cwd: root, encoding: "utf8" });
