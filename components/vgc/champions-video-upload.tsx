@@ -22,6 +22,12 @@ const ACCEPTED_VIDEO_TYPES = ".mp4,.mkv,.mov,.webm,video/mp4,video/webm,video/qu
 
 type ChampionsJobStatus = "uploading" | "queued" | "analyzing" | "ready" | "error";
 
+interface ChampionsStorageSummary {
+  totalBytes: number;
+  reclaimableBytes: number;
+  jobCount: number;
+}
+
 interface ChampionsVideoJob {
   id: string;
   teamVersionId: string;
@@ -41,6 +47,15 @@ interface ChampionsVideoJob {
   warnings: string[];
   replayCount: number;
   archivedRunCount: number;
+  sourceAvailable: boolean;
+  canRetry: boolean;
+  isProtected: boolean;
+  compacted: boolean;
+  sourceBytes: number;
+  outputBytes: number;
+  historyBytes: number;
+  totalBytes: number;
+  reclaimableBytes: number;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -107,6 +122,8 @@ export function ChampionsVideoUpload({
   const [uploading, setUploading] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [readingReplay, setReadingReplay] = useState<number | null>(null);
+  const [managingStorage, setManagingStorage] = useState<"" | "protect" | "cleanup" | "delete">("");
+  const [storage, setStorage] = useState<ChampionsStorageSummary>({ totalBytes: 0, reclaimableBytes: 0, jobCount: 0 });
   const [error, setError] = useState("");
   const currentJob = useMemo(
     () => jobs.find((job) => job.id === currentJobId) ?? jobs[0] ?? null,
@@ -123,10 +140,11 @@ export function ChampionsVideoUpload({
     let active = true;
     const params = new URLSearchParams({ team_version_id: version.id });
     fetch(`/api/champions-jobs/jobs?${params.toString()}`, { cache: "no-store" })
-      .then((response) => readJson<{ jobs: ChampionsVideoJob[] }>(response))
+      .then((response) => readJson<{ jobs: ChampionsVideoJob[]; storage: ChampionsStorageSummary }>(response))
       .then((payload) => {
         if (!active) return;
         setJobs(payload.jobs);
+        setStorage(payload.storage);
         setCurrentJobId(payload.jobs[0]?.id || "");
       })
       .catch((caught) => {
@@ -236,7 +254,7 @@ export function ChampionsVideoUpload({
   }
 
   async function retryAnalysis() {
-    if (!currentJob || !["error", "ready"].includes(currentJob.status) || retrying) return;
+    if (!currentJob || !currentJob.canRetry || retrying) return;
     setRetrying(true);
     setError("");
     try {
@@ -250,6 +268,74 @@ export function ChampionsVideoUpload({
       setError(caught instanceof Error ? caught.message : "No pudimos reintentar el análisis.");
     } finally {
       setRetrying(false);
+    }
+  }
+
+  async function toggleProtection() {
+    if (!currentJob || managingStorage) return;
+    setManagingStorage("protect");
+    setError("");
+    try {
+      const payload = await readJson<{ job: ChampionsVideoJob; storage: ChampionsStorageSummary }>(
+        await fetch(`/api/champions-jobs/jobs/${currentJob.id}/protect`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ protected: !currentJob.isProtected }),
+        }),
+      );
+      mergeJob(payload.job);
+      setStorage(payload.storage);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos cambiar la protección del trabajo.");
+    } finally {
+      setManagingStorage("");
+    }
+  }
+
+  async function cleanupCurrentJob() {
+    if (!currentJob || managingStorage || currentJob.reclaimableBytes <= 0 || currentJob.isProtected) return;
+    const accepted = window.confirm(
+      `Liberar ${formatBytes(currentJob.reclaimableBytes)} borrando el vídeo original y los historiales de este job? El replay y la traza actuales se conservan, pero ya no podrás reanalizar el vídeo.`,
+    );
+    if (!accepted) return;
+    setManagingStorage("cleanup");
+    setError("");
+    try {
+      const payload = await readJson<{ job: ChampionsVideoJob; storage: ChampionsStorageSummary }>(
+        await fetch(`/api/champions-jobs/jobs/${currentJob.id}/cleanup`, { method: "POST" }),
+      );
+      mergeJob(payload.job);
+      setStorage(payload.storage);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos liberar espacio del trabajo.");
+    } finally {
+      setManagingStorage("");
+    }
+  }
+
+  async function deleteCurrentJob() {
+    if (!currentJob || managingStorage || currentJob.isProtected) return;
+    const accepted = window.confirm(
+      `Eliminar definitivamente el job "${currentJob.filename}" de la ROG? Se borrarán vídeo, traza, replay local e historiales. Esta acción no se puede deshacer.`,
+    );
+    if (!accepted) return;
+    setManagingStorage("delete");
+    setError("");
+    try {
+      const deletedId = currentJob.id;
+      const payload = await readJson<{ deleted: string; storage: ChampionsStorageSummary }>(
+        await fetch(`/api/champions-jobs/jobs/${deletedId}`, { method: "DELETE" }),
+      );
+      setStorage(payload.storage);
+      setJobs((current) => {
+        const next = current.filter((entry) => entry.id !== deletedId);
+        setCurrentJobId(next[0]?.id || "");
+        return next;
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos eliminar el trabajo.");
+    } finally {
+      setManagingStorage("");
     }
   }
 
@@ -284,6 +370,14 @@ export function ChampionsVideoUpload({
         </DialogHeader>
 
         <div className="grid gap-4">
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-white/8 bg-white/[0.025] px-3 py-2.5">
+            <div>
+              <p className="text-[10px] font-bold text-slate-300">Almacenamiento Champions en la ROG</p>
+              <p className="mt-0.5 text-[9px] text-slate-500">{storage.jobCount} job{storage.jobCount === 1 ? "" : "s"} · {formatBytes(storage.reclaimableBytes)} liberables</p>
+            </div>
+            <p className="font-mono text-sm font-black text-cyan-200">{formatBytes(storage.totalBytes)}</p>
+          </div>
+
           <div className="rounded-2xl border border-dashed border-cyan-300/20 bg-cyan-300/[0.035] p-4">
             <input
               id={inputId}
@@ -328,10 +422,14 @@ export function ChampionsVideoUpload({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-black text-white">{currentJob.filename}</p>
                   <p className="mt-1 text-[10px] text-slate-500">
-                    {formatBytes(currentJob.uploadedBytes)} / {formatBytes(currentJob.sizeBytes)} · OCR secuencial
+                    {currentJob.sourceAvailable ? `${formatBytes(currentJob.sourceBytes)} vídeo` : "vídeo eliminado"} · {formatBytes(currentJob.historyBytes)} historial · {formatBytes(currentJob.totalBytes)} total
                   </p>
                 </div>
-                <Badge variant="outline" className={cn("shrink-0 text-[9px]", statusTone(currentJob.status))}>{currentJob.stage}</Badge>
+                <div className="flex shrink-0 items-center gap-1">
+                  {currentJob.isProtected ? <Badge variant="outline" className="border-violet-300/20 bg-violet-300/8 text-[9px] text-violet-200">Protegido</Badge> : null}
+                  {currentJob.compacted ? <Badge variant="outline" className="border-slate-300/15 bg-slate-300/5 text-[9px] text-slate-300">Compactado</Badge> : null}
+                  <Badge variant="outline" className={cn("text-[9px]", statusTone(currentJob.status))}>{currentJob.stage}</Badge>
+                </div>
               </div>
               <Progress value={progress} className="h-2 bg-white/8 [&_[data-slot=progress-indicator]]:bg-cyan-300" />
               <div className="grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
@@ -371,11 +469,11 @@ export function ChampionsVideoUpload({
                       size="sm"
                       variant="outline"
                       onClick={() => void retryAnalysis()}
-                      disabled={retrying}
+                      disabled={retrying || !currentJob.canRetry}
                       className="gap-1.5 border-cyan-200/20 bg-cyan-200/5 text-cyan-100 hover:bg-cyan-200/10"
                     >
                       {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
-                      Reanalizar vídeo
+                      {currentJob.canRetry ? "Reanalizar vídeo" : "Vídeo eliminado"}
                     </Button>
                     <Button asChild type="button" size="sm" variant="outline" className="gap-1.5 border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/[0.07]">
                       <a href={`/api/champions-jobs/jobs/${currentJob.id}/diagnostics`} download>
@@ -386,6 +484,56 @@ export function ChampionsVideoUpload({
                   <p className="text-[9px] text-slate-500">Revisar abre el registro existente; la partida sólo se guarda cuando confirmas sus datos.</p>
                 </div>
               ) : null}
+              {["ready", "error"].includes(currentJob.status) ? (
+                <div className="grid gap-2 rounded-xl border border-white/8 bg-black/15 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[10px] font-bold text-slate-300">Gestión de almacenamiento</p>
+                      <p className="mt-0.5 text-[9px] text-slate-500">
+                        Fuente {formatBytes(currentJob.sourceBytes)} · historial {formatBytes(currentJob.historyBytes)} · salida actual {formatBytes(currentJob.outputBytes)}
+                      </p>
+                    </div>
+                    <p className="font-mono text-[10px] text-cyan-200">{formatBytes(currentJob.reclaimableBytes)} liberables</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void toggleProtection()}
+                      disabled={Boolean(managingStorage)}
+                      className="border-violet-300/20 bg-violet-300/5 text-violet-100 hover:bg-violet-300/10"
+                    >
+                      {managingStorage === "protect" ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : null}
+                      {currentJob.isProtected ? "Desproteger" : "Proteger"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void cleanupCurrentJob()}
+                      disabled={Boolean(managingStorage) || currentJob.isProtected || currentJob.reclaimableBytes <= 0}
+                      className="border-cyan-300/20 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10"
+                    >
+                      {managingStorage === "cleanup" ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : null}
+                      Liberar {formatBytes(currentJob.reclaimableBytes)}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void deleteCurrentJob()}
+                      disabled={Boolean(managingStorage) || currentJob.isProtected}
+                      className="border-rose-300/20 bg-rose-300/5 text-rose-100 hover:bg-rose-300/10"
+                    >
+                      {managingStorage === "delete" ? <Loader2 className="mr-1.5 size-3 animate-spin" /> : null}
+                      Eliminar job
+                    </Button>
+                  </div>
+                  {currentJob.isProtected ? <p className="text-[9px] text-violet-200/80">Este job está protegido: no puede compactarse ni eliminarse hasta desprotegerlo.</p> : null}
+                  {!currentJob.sourceAvailable ? <p className="text-[9px] text-slate-500">El replay actual sigue disponible, pero este job ya no puede reanalizarse porque el vídeo fuente fue eliminado.</p> : null}
+                </div>
+              ) : null}
               {currentJob.status === "error" ? (
                 <div className="grid gap-2 rounded-xl border border-rose-300/15 bg-rose-300/6 p-3 text-[10px] text-rose-200">
                   <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{currentJob.error || "El procesamiento terminó con error."}</p>
@@ -394,11 +542,11 @@ export function ChampionsVideoUpload({
                     size="sm"
                     variant="outline"
                     onClick={() => void retryAnalysis()}
-                    disabled={retrying}
+                    disabled={retrying || !currentJob.canRetry}
                     className="w-fit gap-1.5 border-rose-200/20 bg-rose-200/5 text-rose-100 hover:bg-rose-200/10"
                   >
                     {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
-                    Reintentar análisis
+                    {currentJob.canRetry ? "Reintentar análisis" : "Vídeo eliminado"}
                   </Button>
                   <Button asChild type="button" size="sm" variant="outline" className="w-fit gap-1.5 border-white/10 bg-white/[0.03] text-slate-200 hover:bg-white/[0.07]">
                     <a href={`/api/champions-jobs/jobs/${currentJob.id}/diagnostics`} download>
