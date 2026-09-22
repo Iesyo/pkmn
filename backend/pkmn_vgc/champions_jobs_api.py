@@ -20,6 +20,10 @@ class CreateJobBody(BaseModel):
     maxBattles: int = Field(default=0, ge=0)
 
 
+class ProtectJobBody(BaseModel):
+    protected: bool
+
+
 jobs = ChampionsJobManager(
     Path(os.getenv("PKMN_CHAMPIONS_JOBS_PATH", "data/champions-jobs")),
     max_upload_bytes=int(os.getenv("PKMN_CHAMPIONS_MAX_UPLOAD_BYTES", str(20 * 1024**3))),
@@ -72,7 +76,10 @@ def create_job(body: CreateJobBody) -> dict[str, object]:
 
 @app.get("/jobs")
 def list_jobs(team_version_id: str | None = None) -> dict[str, object]:
-    return {"jobs": jobs.list_jobs(team_version_id=team_version_id)}
+    return {
+        "jobs": jobs.list_jobs(team_version_id=team_version_id),
+        "storage": jobs.storage_summary(),
+    }
 
 
 @app.get("/jobs/{job_id}")
@@ -87,6 +94,40 @@ def get_job(job_id: str) -> dict[str, object]:
 def retry_job(job_id: str) -> dict[str, object]:
     try:
         return {"job": jobs.retry_job(job_id)}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.post("/jobs/{job_id}/protect")
+def protect_job(job_id: str, body: ProtectJobBody) -> dict[str, object]:
+    try:
+        return {
+            "job": jobs.set_protected(job_id, body.protected),
+            "storage": jobs.storage_summary(),
+        }
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.post("/jobs/{job_id}/cleanup")
+def cleanup_job(job_id: str) -> dict[str, object]:
+    try:
+        return {
+            "job": jobs.compact_job(job_id),
+            "storage": jobs.storage_summary(),
+        }
+    except Exception as error:
+        raise _http_error(error) from error
+
+
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: str) -> dict[str, object]:
+    try:
+        deleted = jobs.delete_job(job_id)
+        return {
+            "deleted": deleted,
+            "storage": jobs.storage_summary(),
+        }
     except Exception as error:
         raise _http_error(error) from error
 
