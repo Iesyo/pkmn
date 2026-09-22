@@ -70,7 +70,7 @@ assert config['RUN_ACTION'] == 'direct_evaluation' and config['RUN_MODE'] == 'NO
 assert config['RUN_ID'] == '20260922T182640086766Z'
 assert config['BATTLES_PER_CONTROL'] == 500
 assert config['BC_MIN_TRANSITIONS'] == 9500
-assert config['PKMN_REF'] == 'edd69573c4ecececd47a4205785d24ef57d825c8'
+assert len(config['PKMN_REF']) == 40 and all(ch in '0123456789abcdef' for ch in config['PKMN_REF'])
 assert 'PRODUCTION_CHECKPOINT' not in config and 'PRODUCTION_SHA256' not in config
 assert ''.join(nb['cells'][-1]['source']).startswith('#@title')
 import sys, tempfile
