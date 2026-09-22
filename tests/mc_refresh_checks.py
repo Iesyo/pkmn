@@ -495,7 +495,7 @@ class RefreshChecks(unittest.TestCase):
         teams = [SimpleNamespace(id=name, team_text=name) for name in ("team-A", "team-B")]
         split = {"fileHashes": {"holdout": {"a": "hash-a", "b": "hash-b"}}, "sourceManifestSha256": "frozen",
                  "holdoutTeams": 2, "sourceHoldoutTeams": 2, "removedDuplicates": []}
-        played, instances, loads = [], [], []
+        played, instances, loads, baseline_requests = [], [], [], []
         class Player:
             def __init__(self, *, account_configuration, team, policy=None, save_replays=None, **kwargs):
                 self.username = account_configuration.username
@@ -528,8 +528,11 @@ class RefreshChecks(unittest.TestCase):
         params = dict(vgc_root=self.root, showdown=self.root, run=run, production=specs["production"],
                       candidate=specs["candidate"], battles=2, seed=1, port=8000, device="cpu",
                       battle_format=FMT, code_sha="code", showdown_sha="showdown", runtime_versions={"poke-env": "pin"})
+        def baseline_loader(path):
+            baseline_requests.append(Path(path))
+            return Path(specs["base"]["checkpoint"])
         with patch.dict(sys.modules, modules), \
-             patch.object(training, "download_baseline", return_value=Path(specs["base"]["checkpoint"])), \
+             patch.object(training, "download_baseline", side_effect=baseline_loader), \
              patch.object(training, "VGC_BENCH_CHECKPOINT_SHA256", specs["base"]["sha256"]), \
              patch.object(evaluation, "evaluation_corpus", return_value=(SimpleNamespace(teams=teams), split)), \
              patch.object(evaluation, "alias_mc_runtime_catalogs", return_value={}), \
@@ -539,6 +542,9 @@ class RefreshChecks(unittest.TestCase):
              patch.object(evaluation.battle, "load_model_runtime", side_effect=loader):
             result = evaluation.evaluate_direct(**params)
             self.assertEqual(loads, ["candidate", "production", "base"])
+            self.assertEqual(baseline_requests[0],
+                             self.root.parent / "benchmark-cache" / "vgc-bench-ma-mb-100.zip")
+            self.assertFalse(str(baseline_requests[0]).startswith(str(run)))
             self.assertEqual([p[:2] for p in played], [("candidate", "production"), ("production", "candidate"),
                               ("candidate", "base"), ("base", "candidate"), ("candidate", None), (None, "candidate")])
             self.assertTrue(all(p[2:] == ("team-A", "team-B") for p in played))
