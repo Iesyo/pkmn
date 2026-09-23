@@ -18,6 +18,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     OcrTraceDetector,
     RapidOcrEngine,
     _health_value,
+    _with_japanese_second_opinion,
     load_champions_catalog,
     load_trace_aliases,
 )
@@ -999,6 +1000,49 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(notification_score[1], 0)
         self.assertGreater(battle_score[1], 0)
         self.assertGreater(battle_score, notification_score)
+
+    def test_the_second_reader_decides_only_lines_with_japanese(self) -> None:
+        # COL-102, job 18241f89f82c4e83: lecturas reales de un mismo frame por
+        # el modelo PP-OCRv6 `small` y el `medium`, con la misma caja.
+        def reading(text: str, *, y: float = 0.72) -> OcrLine:
+            return line(text, x=0.15, y=y, width=0.45)
+
+        small = (
+            reading("The opposingしごでき used Encore!"),
+            reading("The opposing Garchomp protected itself!", y=0.80),
+        )
+        medium = (
+            reading("The opposing しごでき used Encore!"),
+            # En inglés el `medium` a veces se queda en dos letras.
+            reading("TG", y=0.80),
+        )
+
+        merged = _with_japanese_second_opinion(small, medium)
+
+        self.assertEqual(
+            [value.text for value in merged],
+            ["The opposing しごでき used Encore!", "The opposing Garchomp protected itself!"],
+        )
+
+    def test_the_second_reader_cannot_lose_part_of_a_nickname(self) -> None:
+        small = (line("The opposing しごでき used Encore!", x=0.15, y=0.72, width=0.45),)
+        medium = (line("The opposing でき used Encore!", x=0.15, y=0.72, width=0.45),)
+        glued = (line("The opposing しごできused Encore!", x=0.15, y=0.72, width=0.45),)
+        elsewhere = (line("The opposing しごでき used Encore!", x=0.15, y=0.30, width=0.45),)
+
+        self.assertEqual(_with_japanese_second_opinion(small, medium), small)
+        # Sin el espacio antes de "used" el parser ya no ve el movimiento.
+        self.assertEqual(_with_japanese_second_opinion(small, glued), small)
+        # Una lectura del `medium` en otro sitio de la pantalla no es la misma línea.
+        self.assertEqual(_with_japanese_second_opinion(small, elsewhere), small)
+
+    def test_the_second_reader_ignores_hud_marks_read_as_characters(self) -> None:
+        # Job 18241f89f82c4e83: las marcas de la barra de vida salen como
+        # "二川" en el 41 % de los frames; no son frases y no se tocan.
+        small = (line("二川", x=0.88, y=0.73, width=0.05), line("しこでき", x=0.62, y=0.04, width=0.07))
+        medium = (line("二二", x=0.88, y=0.73, width=0.05), line("しごでき", x=0.62, y=0.04, width=0.07))
+
+        self.assertEqual(_with_japanese_second_opinion(small, medium), small)
 
     def test_parses_move_hp_change_deduplication_and_next_turn(self) -> None:
         parser = self.parser()

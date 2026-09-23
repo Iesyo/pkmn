@@ -63,6 +63,64 @@ class OcrLine:
         )
 
 
+_JAPANESE_TEXT = re.compile(r"[぀-ヿ一-鿿ｦ-ﾟ]")
+# El segundo lector sólo se usa si ya está en disco: nunca se descarga solo.
+_SECOND_READER_MODEL = "PP-OCRv6_rec_medium.onnx"
+
+
+def _box_overlap(first: OcrLine, second: OcrLine) -> float:
+    width = max(0.0, min(first.right, second.right) - max(first.left, second.left))
+    height = max(0.0, min(first.bottom, second.bottom) - max(first.top, second.top))
+    intersection = width * height
+    union = (
+        (first.right - first.left) * (first.bottom - first.top)
+        + (second.right - second.left) * (second.bottom - second.top)
+        - intersection
+    )
+    return intersection / union if union > 0 else 0.0
+
+
+def _is_japanese_sentence(text: str) -> bool:
+    """Una frase del juego con japonés dentro: un mote narrado en un mensaje.
+
+    Las marcas del HUD que el OCR confunde con caracteres ("二川", "ニニニ")
+    y las placas de nombre son una sola palabra corta; los mensajes no.
+    """
+
+    return bool(_JAPANESE_TEXT.search(text)) and " " in text.strip() and len(text) >= 12
+
+
+def _with_japanese_second_opinion(
+    lines: Sequence[OcrLine],
+    second: Sequence[OcrLine],
+) -> tuple[OcrLine, ...]:
+    """Toma del segundo lector el texto de las frases con japonés.
+
+    COL-102, job 18241f89f82c4e83: el modelo PP-OCRv6 `small` lee mal los
+    motes en hiragana dentro de los mensajes ("せんせL)" por "せんせい",
+    "The opposingしごでき" sin el espacio), y el `medium` los lee bien casi
+    siempre, pero en algunas frases largas en inglés se queda en dos letras.
+    Así que el `medium` sólo decide en las frases donde el `small` ya vio
+    japonés, y sólo si en su lectura no se pierde nada: a veces se come medio
+    mote ("しごでき" → "でき") o el espacio que separa el mote de "used", y
+    entonces se queda la del `small`.
+    """
+
+    replaced: list[OcrLine] = []
+    for line in lines:
+        if _is_japanese_sentence(line.text):
+            match = max(second, key=lambda candidate: _box_overlap(line, candidate), default=None)
+            if (
+                match is not None
+                and _box_overlap(line, match) >= 0.5
+                and len(_JAPANESE_TEXT.findall(match.text)) >= len(_JAPANESE_TEXT.findall(line.text))
+                and len(match.text.split()) >= len(line.text.split())
+            ):
+                line = replace(line, text=match.text, confidence=match.confidence)
+        replaced.append(line)
+    return tuple(replaced)
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedOcrFrame:
     frame: FramePacket
@@ -146,15 +204,51 @@ class RapidOcrEngine:
         accelerated = {**base, **_accelerator_params(_available_providers())}
         try:
             self._engine = RapidOCR(params=accelerated)
+            self._params = accelerated
         except Exception:  # pragma: no cover - depende del runtime instalado
             # Que el proveedor figure no garantiza que arranque: sin GPU
             # utilizable se sigue en CPU en vez de quedarse sin OCR.
             if accelerated == base:
                 raise
             self._engine = RapidOCR(params=base)
+            self._params = base
         self.min_confidence = min_confidence
         self.rotation_quarter_turns = 0
         self._orientation_locked = False
+        self._second_reader: Any = None
+        self._second_reader_loaded = False
+
+    def _second_reader_engine(self) -> Any:
+        """El lector `medium` para frases con japonés, si está instalado.
+
+        Se carga la primera vez que un frame trae una, así que un vídeo sin
+        motes japoneses no paga nada. Si el modelo no está en disco no se
+        descarga: se sigue sólo con el `small`, como antes.
+        """
+
+        if self._second_reader_loaded:
+            return self._second_reader
+        self._second_reader_loaded = True
+        try:
+            import rapidocr  # type: ignore[import-not-found]
+            from rapidocr import ModelType, RapidOCR  # type: ignore[import-not-found]
+
+            if not (Path(rapidocr.__file__).parent / "models" / _SECOND_READER_MODEL).is_file():
+                return None
+            self._second_reader = RapidOCR(params={**self._params, "Rec.model_type": ModelType.MEDIUM})
+        except Exception:  # pragma: no cover - depende del runtime instalado
+            self._second_reader = None
+        return self._second_reader
+
+    def _with_second_opinion(self, oriented: Any, lines: tuple[OcrLine, ...]) -> tuple[OcrLine, ...]:
+        # Sólo los frames con una frase en japonés: en el job 18241f89f82c4e83
+        # son el 4 %, frente al 41 % que tiene algún carácter japonés suelto.
+        if not any(_is_japanese_sentence(line.text) for line in lines):
+            return lines
+        reader = self._second_reader_engine()
+        if reader is None:
+            return lines
+        return _with_japanese_second_opinion(lines, self._read_decoded(oriented, reader))
 
     @staticmethod
     def _orientation_score(lines: Sequence[OcrLine], *, landscape: bool) -> tuple[float, int]:
@@ -182,10 +276,10 @@ class RapidOcrEngine:
                 score += 5.0
         return score, battle_signals
 
-    def _read_decoded(self, decoded: Any) -> tuple[OcrLine, ...]:
+    def _read_decoded(self, decoded: Any, engine: Any = None) -> tuple[OcrLine, ...]:
         height, width = decoded.shape[:2]
         try:
-            result = self._engine(
+            result = (engine or self._engine)(
                 decoded,
                 use_cls=False,
                 text_score=self.min_confidence,
@@ -235,7 +329,8 @@ class RapidOcrEngine:
             if width >= height:
                 self.rotation_quarter_turns = 0
                 self._orientation_locked = True
-            return self._read_decoded(self._rotate(decoded, self.rotation_quarter_turns))
+            oriented = self._rotate(decoded, self.rotation_quarter_turns)
+            return self._with_second_opinion(oriented, self._read_decoded(oriented))
 
         # Algunos screen recordings móviles conservan 1126x2436 aunque el
         # juego y su texto estén girados. Probamos ambas orientaciones una sola
@@ -249,8 +344,8 @@ class RapidOcrEngine:
                 lines,
                 landscape=oriented_width >= oriented_height,
             )
-            candidates.append((battle_signals, score, quarter_turns, lines))
-        battle_signals, _score, quarter_turns, lines = max(
+            candidates.append((battle_signals, score, quarter_turns, lines, oriented))
+        battle_signals, _score, quarter_turns, lines, oriented = max(
             candidates,
             key=lambda candidate: (candidate[0], candidate[1]),
         )
@@ -260,7 +355,7 @@ class RapidOcrEngine:
         if lines and battle_signals and (quarter_turns != 0 or battle_signals >= 2):
             self.rotation_quarter_turns = quarter_turns
             self._orientation_locked = True
-        return lines
+        return self._with_second_opinion(oriented, lines)
 
     def prepare_hud_frame(
         self,
