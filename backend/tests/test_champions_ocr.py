@@ -1876,6 +1876,93 @@ class ChampionsOcrTests(unittest.TestCase):
             ("[from] ability: Psychic Surge", "[of] p2a: Indeedee-F"),
         )
 
+    def item_parser(self) -> ChampionsTextParser:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="IesYo",
+                p2_name="Rival",
+                p1_team=("Delphox", "Victreebel"),
+                p2_team=("Steelix", "Drampa", "Umbreon"),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Delphox", "Victreebel", "Steelix", "Drampa", "Umbreon"),
+                items=("Sitrus Berry", "Leftovers", "Occa Berry"),
+            ),
+        )
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        return parser
+
+    @staticmethod
+    def hud(*, steelix: str = "100%", drampa: str = "100%", delphox: str = "152/152") -> tuple[OcrLine, ...]:
+        return (
+            line("Steelix", x=0.62, y=0.04),
+            line("Drampa", x=0.83, y=0.04),
+            line(steelix, x=0.69, y=0.11),
+            line(drampa, x=0.90, y=0.11),
+            line("Delphox", x=0.08, y=0.86),
+            line("Victreebel", x=0.29, y=0.86),
+            line(delphox, x=0.13, y=0.93),
+            line("187/187", x=0.34, y=0.93),
+        )
+
+    @staticmethod
+    def banner(owner: str, label: str, *, right: bool) -> tuple[OcrLine, ...]:
+        # Posiciones reales: a la derecha en el job 82923f56ce264a92 (16:9),
+        # a la izquierda en la grabación de móvil del 18241f89f82c4e83.
+        x = 0.835 if right else 0.12
+        return (
+            line(owner, x=x, y=0.432, width=0.087, height=0.035),
+            line(label, x=x, y=0.466, width=0.088, height=0.035),
+        )
+
+    def test_a_heal_after_an_item_banner_names_the_item(self) -> None:
+        # COL-102, job 82923f56ce264a92, frames 631-637: el juego no narra la
+        # Sitrus Berry en el cuadro de texto; muestra "Incineroar's / Sitrus
+        # Berry" y la barra sube de 28 % a 52 %. Sin esto la cura no tenía causa.
+        parser = self.item_parser()
+        parser.parse(self.hud(steelix="28%"), timestamp_ms=1_000, source_frame=1)
+        for index in range(3):
+            parser.parse(
+                self.banner("Steelix's", "Sitrus Berry", right=True),
+                timestamp_ms=2_000 + 500 * index,
+                source_frame=2 + index,
+            )
+        healed = parser.parse(self.hud(steelix="52%"), timestamp_ms=4_000, source_frame=5)
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value, event.health, event.tags) for event in healed.events],
+            [
+                ("enditem", "p2a", "Sitrus Berry", None, ("[eat]",)),
+                ("heal", "p2a", None, "52/100", ("[from] item: Sitrus Berry",)),
+            ],
+        )
+
+    def test_leftovers_on_the_own_side_heal_without_being_eaten(self) -> None:
+        # Job 18241f89f82c4e83, frames 520-527: "Gridnel's / Leftovers" a la
+        # izquierda y Garchomp sube 1/16 al final del turno.
+        parser = self.item_parser()
+        parser.parse(self.hud(delphox="100/152"), timestamp_ms=1_000, source_frame=1)
+        parser.parse(self.banner("Delphox's", "Leftovers", right=False), timestamp_ms=2_000, source_frame=2)
+        healed = parser.parse(self.hud(delphox="109/152"), timestamp_ms=3_500, source_frame=3)
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.tags) for event in healed.events],
+            [("heal", "p1a", ("[from] item: Leftovers",))],
+        )
+
+    def test_an_item_banner_does_not_claim_a_hit_or_someone_elses_heal(self) -> None:
+        parser = self.item_parser()
+        # Una baya que reduce el daño va seguida del golpe, no de una cura.
+        parser.parse(self.banner("Steelix's", "Occa Berry", right=True), timestamp_ms=1_000, source_frame=1)
+        hit = parser.parse(self.hud(steelix="70%"), timestamp_ms=1_500, source_frame=2)
+        # La Sitrus Berry de Steelix no explica que Drampa se cure.
+        parser.parse(self.hud(steelix="70%", drampa="40%"), timestamp_ms=2_000, source_frame=3)
+        parser.parse(self.banner("Steelix's", "Sitrus Berry", right=True), timestamp_ms=2_500, source_frame=4)
+        other = parser.parse(self.hud(steelix="70%", drampa="60%"), timestamp_ms=3_000, source_frame=5)
+
+        self.assertEqual([(event.kind, event.tags) for event in hit.events], [("damage", ())])
+        self.assertEqual([(event.kind, event.slot, event.tags) for event in other.events], [("heal", "p2b", ())])
+
     def test_parses_terrain_ending_for_all_four_kinds(self) -> None:
         endings = (
             ("The weirdness disappeared from the battlefield!", "Psychic Terrain"),

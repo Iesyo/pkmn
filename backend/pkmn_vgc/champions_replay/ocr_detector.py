@@ -129,6 +129,15 @@ class PreparedOcrFrame:
     rotation_degrees: int
 
 
+@dataclass(frozen=True, slots=True)
+class _Banner:
+    """Un banner lateral leído en un frame: de quién es y qué dice."""
+
+    side: str
+    owner: OcrLine
+    label: OcrLine
+
+
 @dataclass(slots=True)
 class _UnplacedEntry:
     """Una entrada anunciada cuyo slot todavía no confirma el HUD.
@@ -948,6 +957,8 @@ class ChampionsTextParser:
         # entre frames ("Sitrus Berry", "Strus Berry") escribía el mismo
         # -enditem dos o tres veces.
         self._items_removed: set[str] = set()
+        # Slot -> (objeto, dueño, último frame con su banner, primera cura).
+        self._item_banners: dict[str, tuple[str, str, int, int | None]] = {}
         # Idem para "X is buffeted by the sandstorm!": como mucho una vez
         # por slot y por turno, no por texto exacto -el mismo aviso se
         # relee con el mote un poco distinto en cada frame.
@@ -1815,6 +1826,109 @@ class ChampionsTextParser:
             "psychicsurge": "Psychic Terrain",
         }.get(_text_key(ability))
 
+    @staticmethod
+    def _banner_observations(lines: Sequence[OcrLine]) -> list[_Banner]:
+        """Los banners laterales del frame: "<Pokémon>'s" y debajo su etiqueta.
+
+        El juego usa el mismo banner para una habilidad ("Incineroar's /
+        Intimidate") y para un objeto que se activa ("Incineroar's / Sitrus
+        Berry"). Ancla al lado de quien lo activa: el rival, pegado al borde
+        derecho; el propio, al izquierdo. Sólo mirar la derecha dejaba sin
+        -ability ninguna habilidad del propio equipo (Intimidate, Sand Stream).
+        """
+
+        overlay = [
+            line
+            for line in lines
+            if (line.left >= 0.68 or line.right <= 0.32) and 0.28 <= line.center_y <= 0.52
+        ]
+        banners: list[_Banner] = []
+        for owner in overlay:
+            if not re.search(r"[\'’]s$", owner.text, re.IGNORECASE):
+                continue
+            label = min(
+                (
+                    candidate
+                    for candidate in overlay
+                    if candidate.top >= owner.bottom - 0.015
+                    and 0 <= candidate.center_y - owner.center_y <= 0.12
+                    and abs(candidate.center_x - owner.center_x) <= 0.12
+                ),
+                key=lambda candidate: candidate.center_y - owner.center_y,
+                default=None,
+            )
+            if label is not None:
+                banners.append(_Banner(side="p2" if owner.left >= 0.68 else "p1", owner=owner, label=label))
+        return banners
+
+    def _note_item_banner(self, banner: _Banner, item: str, *, timestamp_ms: int) -> None:
+        """Apunta que el objeto de un Pokémon en el campo acaba de activarse.
+
+        El juego no narra en el cuadro de texto la cura de una Sitrus Berry
+        ni la de Leftovers: sólo muestra el banner y la barra sube. Sin esto
+        el replay escribía una cura sin causa (COL-102: Incineroar 28 → 52
+        en el job 82923f56ce264a92, Garchomp +1/16 en el 18241f89f82c4e83).
+        """
+
+        side = banner.side
+        actor = self._actor_for_value(side, re.sub(r"[\'’]s$", "", banner.owner.text.strip()))
+        if not actor:
+            return
+        slot = self._slot_for_species(actor, side, exclude_open=True)
+        occupant = self._active.get(slot)
+        if occupant is None or not self._same_species(occupant, actor):
+            return
+        current = self._item_banners.get(slot)
+        if current and self._same_species(current[1], occupant) and current[0] == item:
+            self._item_banners[slot] = (item, occupant, timestamp_ms, current[3])
+        else:
+            self._item_banners[slot] = (item, occupant, timestamp_ms, None)
+
+    def _item_heal(
+        self,
+        slot: str,
+        species: str,
+        *,
+        confidence: float,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> tuple[tuple[str, ...], list[BattleEvent]]:
+        """Etiqueta y eventos previos de una cura que viene de un objeto.
+
+        Sólo curas: tras una baya que reduce daño (Occa, Chople) lo que llega
+        es el golpe, y ése no lo causa el objeto. La cura puede leerse en dos
+        o tres frames que el pipeline funde en uno; todas llevan la etiqueta,
+        y una baya sólo se come una vez.
+        """
+
+        banner = self._item_banners.get(slot)
+        if banner is None:
+            return (), []
+        item, owner, seen_ms, first_heal_ms = banner
+        if not self._same_species(owner, species) or timestamp_ms - seen_ms > 5_000:
+            return (), []
+        if first_heal_ms is not None and timestamp_ms - first_heal_ms > 1_500:
+            return (), []
+        before: list[BattleEvent] = []
+        owner_key = f"{slot[:2]}:{_text_key(self._canonical_actor(owner))}"
+        if first_heal_ms is None:
+            self._item_banners[slot] = (item, owner, seen_ms, timestamp_ms)
+            if item.casefold().endswith("berry") and owner_key not in self._items_removed:
+                self._items_removed.add(owner_key)
+                before.append(
+                    BattleEvent(
+                        kind="enditem",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        slot=slot,  # type: ignore[arg-type]
+                        species=owner,
+                        value=item,
+                        tags=("[eat]",),
+                        source_frame=source_frame,
+                    )
+                )
+        return (f"[from] item: {item}",), before
+
     def _ability_events(
         self,
         lines: Sequence[OcrLine],
@@ -1822,45 +1936,21 @@ class ChampionsTextParser:
         timestamp_ms: int,
         source_frame: int,
     ) -> tuple[BattleEvent, ...]:
-        # El banner de habilidad ancla al lado de quien la activa: la del
-        # rival aparece pegada al borde derecho, la propia al izquierdo. Sólo
-        # mirar la derecha dejaba sin -ability ninguna habilidad del propio
-        # equipo (Intimidate, Sand Stream) aunque su efecto narrado sí pasara
-        # por el camino de mensajes.
-        overlay = [
-            line
-            for line in lines
-            if (line.left >= 0.68 or line.right <= 0.32) and 0.28 <= line.center_y <= 0.52
-        ]
         visible: set[tuple[str, str, str]] = set()
         learned_switches: list[BattleEvent] = []
-        for actor_line in overlay:
-            if not re.search(r"[\'’]s$", actor_line.text, re.IGNORECASE):
-                continue
-            ability_line = min(
-                (
-                    candidate
-                    for candidate in overlay
-                    if candidate.top >= actor_line.bottom - 0.015
-                    and 0 <= candidate.center_y - actor_line.center_y <= 0.12
-                    and abs(candidate.center_x - actor_line.center_x) <= 0.12
-                ),
-                key=lambda candidate: candidate.center_y - actor_line.center_y,
-                default=None,
-            )
-            if ability_line is None:
-                continue
+        for banner in self._banner_observations(lines):
+            actor_line, ability_line = banner.owner, banner.label
             ability = self._abilities.resolve(ability_line.text, threshold=0.78)
             if not ability:
+                item = self._items.resolve(ability_line.text, threshold=0.78)
+                if item:
+                    self._note_item_banner(banner, item, timestamp_ms=timestamp_ms)
                 continue
             # Un banner a nombre de quien acaba de anunciarse sin slot es su
             # habilidad de entrada ("Pelipper's Drizzle" tras "sent out
             # Pelipper!"). El lado lo da el borde del banner; el slot, el HUD
             # cuando lo coloque. Hasta entonces queda en su tramo, en su sitio.
-            entry = self._unplaced_entry_named(
-                "p2" if actor_line.left >= 0.68 else "p1",
-                actor_line.text,
-            )
+            entry = self._unplaced_entry_named(banner.side, actor_line.text)
             if entry is not None:
                 key = (entry.side, entry.species, ability)
                 visible.add(key)
@@ -3276,6 +3366,16 @@ class ChampionsTextParser:
             if not previous_health or previous_health == health:
                 continue
             kind = "damage" if _health_ratio(health) < _health_ratio(previous_health) else "heal"
+            tags: tuple[str, ...] = ()
+            if kind == "heal":
+                tags, before = self._item_heal(
+                    slot,
+                    species,
+                    confidence=0.9,
+                    timestamp_ms=timestamp_ms,
+                    source_frame=source_frame,
+                )
+                events.extend(before)
             events.append(
                 BattleEvent(
                     kind=kind,
@@ -3284,6 +3384,7 @@ class ChampionsTextParser:
                     slot=slot,  # type: ignore[arg-type]
                     species=species,
                     health=health,
+                    tags=tags,
                     source_frame=source_frame,
                 )
             )
