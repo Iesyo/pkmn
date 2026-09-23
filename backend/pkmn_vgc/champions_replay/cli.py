@@ -14,6 +14,7 @@ from .ocr_detector import (
     OcrTraceDetector,
     load_champions_catalog,
     load_trace_aliases,
+    load_trace_preview_teams,
 )
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
@@ -290,6 +291,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             detector = OcrTraceDetector(
                 context=detector_context,
                 aliases_by_battle=load_trace_aliases(args.trace),
+                preview_teams_by_battle=load_trace_preview_teams(args.trace),
             )
             source = OcrTraceFrameSource(path=args.trace)
             total_frames = source.estimated_frame_count()

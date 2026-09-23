@@ -20,6 +20,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     _health_value,
     load_champions_catalog,
     load_trace_aliases,
+    load_trace_preview_teams,
 )
 from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
 from pkmn_vgc.champions_replay.showdown import build_replay_document
@@ -3496,6 +3497,113 @@ class ChampionsOcrTests(unittest.TestCase):
         turn = log.index("|turn|1")
         self.assertLess(log.index("|switch|p2a: Metagross"), turn)
         self.assertLess(log.index("|switch|p2b: Sableye"), turn)
+
+    def test_a_roster_resolved_when_its_battle_closes_stays_in_that_battle(self) -> None:
+        # COL-102, job 82923f56ce264a92: el Team Preview de la Partida 1 sólo
+        # se resolvió al cerrarla, y en vivo entró en la Partida 1. La traza
+        # lo guarda detrás de su último frame; reprocesarla lo aplicaba como
+        # un frame más, ya con la Partida 2 abierta: la Partida 1 quedaba con
+        # 4 de 6 y la Partida 2 con el equipo de otro rival.
+        def record(
+            frame: int,
+            timestamp_ms: int,
+            battle_index: int,
+            lines: tuple[OcrLine, ...],
+            *,
+            phase: str = "frame",
+            p2_team: tuple[str, ...] = (),
+        ) -> dict[str, object]:
+            return {
+                "frame": frame,
+                "timestamp_ms": timestamp_ms,
+                "battle_index": battle_index,
+                "phase": phase,
+                "ocr": [asdict(value) for value in lines],
+                "resolved_aliases": {"p1": {}, "p2": {}},
+                "detections": {"teams": {"p1": [], "p2": list(p2_team)}},
+            }
+
+        def battle(
+            first_frame: int,
+            battle_index: int,
+            p2_leads: tuple[str, str],
+            *,
+            p2_team: tuple[str, ...] = (),
+        ) -> tuple[dict[str, object], ...]:
+            timestamp_ms = first_frame * 500
+            return (
+                record(
+                    first_frame,
+                    timestamp_ms,
+                    battle_index,
+                    (
+                        line(p2_leads[0], x=0.62, y=0.04),
+                        line(p2_leads[1], x=0.83, y=0.04),
+                        line("100%", x=0.69, y=0.11),
+                        line("100%", x=0.90, y=0.11),
+                        line("Venusaur", x=0.08, y=0.86),
+                        line("Sylveon", x=0.29, y=0.86),
+                        line("200/200", x=0.13, y=0.93),
+                        line("190/190", x=0.34, y=0.93),
+                    ),
+                    p2_team=p2_team,
+                ),
+                record(
+                    first_frame + 1,
+                    timestamp_ms + 500,
+                    battle_index,
+                    (line("FIGHT", x=0.86, y=0.70), line("POKÉMON", x=0.84, y=0.90)),
+                ),
+                record(
+                    first_frame + 2,
+                    timestamp_ms + 1_000,
+                    battle_index,
+                    (line("You won the battle!", x=0.2, y=0.7, width=0.35),),
+                ),
+            )
+
+        first_rival = ("Incineroar", "Sneasler", "Slowking", "Pelipper", "Meganium", "Basculegion")
+        second_rival = ("Garchomp", "Whimsicott", "Mimikyu", "Lucario", "Charizard", "Venusaur")
+        records = (
+            *battle(1, 0, ("Incineroar", "Sneasler")),
+            # Lo que `flush_pending` escribió al cerrar la Partida 1: el
+            # roster, junto con el OCR de la pantalla de selección de donde
+            # salió, igual que en la traza real (frame 156).
+            record(
+                2,
+                1_000,
+                0,
+                (
+                    line("Select 4 Pokémon", x=0.36, y=0.20, width=0.2),
+                    line("to send into battle.", x=0.36, y=0.24, width=0.2),
+                ),
+                phase="preview_team_flush",
+                p2_team=first_rival,
+            ),
+            *battle(10, 1, ("Garchomp", "Whimsicott"), p2_team=second_rival),
+        )
+        context = DetectorContext(
+            p1_name="Player",
+            p2_name="Rival",
+            p1_team=("Venusaur", "Sylveon"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "battle.trace.jsonl"
+            trace.write_text(
+                "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in records),
+                encoding="utf-8",
+            )
+            captures = ReplayCapturePipeline(
+                OcrTraceFrameSource(trace),
+                OcrTraceDetector(
+                    context=context,
+                    aliases_by_battle=load_trace_aliases(trace),
+                    preview_teams_by_battle=load_trace_preview_teams(trace),
+                ),
+                CaptureSeed(p1_name="Player", p2_name="Rival", p1_team=context.p1_team),
+            ).capture(max_battles=0)
+
+        self.assertEqual([capture.p2.team for capture in captures], [first_rival, second_rival])
 
 
 if __name__ == "__main__":

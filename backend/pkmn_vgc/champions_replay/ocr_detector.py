@@ -3789,6 +3789,35 @@ def load_trace_aliases(path: Path) -> dict[int, dict[str, tuple[tuple[str, str],
     }
 
 
+def load_trace_preview_teams(path: Path) -> dict[int, tuple[str, ...]]:
+    """El roster rival que cada batalla sólo resolvió al cerrarse.
+
+    En vivo, un Team Preview que no junta votos fuertes durante la batalla
+    se resuelve en `flush_pending`, al cerrarla, y entra en esa batalla. La
+    traza lo guarda detrás de su último frame (fase `preview_team_flush`),
+    así que reaplicarlo como un frame más lo metía en la batalla siguiente.
+    """
+
+    teams: dict[int, tuple[str, ...]] = {}
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8-sig") as stream:
+        for raw in stream:
+            if '"preview_team_flush"' not in raw:
+                continue
+            try:
+                payload = json.loads(raw)
+                battle_index = max(0, int(payload.get("battle_index", 0)))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if payload.get("phase") != "preview_team_flush":
+                continue
+            team = ((payload.get("detections") or {}).get("teams") or {}).get("p2")
+            if isinstance(team, list) and team:
+                teams[battle_index] = tuple(str(species) for species in team if species)
+    return teams
+
+
 class OcrTraceDetector:
     """Reaplica el parser a una traza sin repetir FFmpeg ni RapidOCR."""
 
@@ -3800,9 +3829,14 @@ class OcrTraceDetector:
             int,
             Mapping[str, Sequence[tuple[str, str]]],
         ] | None = None,
+        preview_teams_by_battle: Mapping[int, Sequence[str]] | None = None,
     ) -> None:
         self._base_context = context or DetectorContext()
         self._aliases_by_battle = dict(aliases_by_battle or {})
+        self._preview_teams_by_battle = {
+            battle_index: tuple(team)
+            for battle_index, team in (preview_teams_by_battle or {}).items()
+        }
         self._battle_index = 0
         self.parser = ChampionsTextParser(context=self._context_for_battle(0))
 
@@ -3863,6 +3897,12 @@ class OcrTraceDetector:
             raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
         if payload.get("phase") == "visual_alias_flush":
             return FrameDetections()
+        if (
+            payload.get("phase") == "preview_team_flush"
+            and battle_index in self._preview_teams_by_battle
+        ):
+            # Ya lo entrega `flush_pending` al cerrar su batalla, como en vivo.
+            return FrameDetections()
         if battle_index != self._battle_index:
             self._battle_index = battle_index
             self.parser = ChampionsTextParser(
@@ -3879,6 +3919,11 @@ class OcrTraceDetector:
         if recorded.p2_team and not detections.p2_team:
             detections = replace(detections, p2_team=recorded.p2_team)
         return detections
+
+    def flush_pending(self) -> FrameDetections:
+        """El roster que en vivo llegó al cerrar esta batalla, si lo hubo."""
+
+        return FrameDetections(p2_team=self._preview_teams_by_battle.get(self._battle_index, ()))
 
     def reset_battle_state(self) -> None:
         self.parser.reset_battle_state()
