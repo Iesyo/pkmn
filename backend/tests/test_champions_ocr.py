@@ -1774,6 +1774,78 @@ class ChampionsOcrTests(unittest.TestCase):
                     [("fieldend", f"move: {terrain}")],
                 )
 
+    def trick_room_parser(self) -> ChampionsTextParser:
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="Potty94",
+                p1_team=("Milotic", "Sinistcha"),
+                p1_aliases=(("Mate", "Sinistcha"),),
+            ),
+            catalog=ChampionsCatalog(
+                species=("Milotic", "Sinistcha", "Garchomp", "Whimsicott"),
+                moves=("Trick Room",),
+            ),
+        )
+        parser._active.update(
+            {"p1a": "Milotic", "p1b": "Sinistcha", "p2a": "Garchomp", "p2b": "Whimsicott"}
+        )
+        parser._battle_open = True
+        return parser
+
+    def test_trick_room_starts_and_ends_as_a_field_effect(self) -> None:
+        # COL-102, job 82923f56ce264a92, Partida 2: los dos avisos quedaban
+        # como -message y el visor nunca mostraba el campo invertido. Textos,
+        # posiciones y frames reales de ocr.trace.jsonl.
+        parser = self.trick_room_parser()
+
+        used = parser.parse(
+            (line("Mate used Trick Room!", x=0.154, y=0.731, width=0.197),),
+            timestamp_ms=788_500,
+            source_frame=1578,
+        )
+        started = parser.parse(
+            (line("Mate twisted the dimensions!", x=0.155, y=0.733, width=0.247),),
+            timestamp_ms=793_000,
+            source_frame=1587,
+        )
+        ended = parser.parse(
+            (line("The twisted dimensions returned to normal!", x=0.152, y=0.727, width=0.368),),
+            timestamp_ms=1_041_500,
+            source_frame=2084,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.move) for event in used.events],
+            [("move", "p1b", "Trick Room")],
+        )
+        # Lo mismo que escribe el servidor de Showdown: quien lo activó va en
+        # [of], y sin él el visor deja vacío el nombre del aviso.
+        self.assertEqual(
+            [(event.kind, event.value, event.tags) for event in started.events],
+            [("fieldstart", "move: Trick Room", ("[of] p1b: Sinistcha",))],
+        )
+        self.assertEqual(
+            [(event.kind, event.value, event.tags) for event in ended.events],
+            [("fieldend", "move: Trick Room", ())],
+        )
+
+    def test_trick_room_does_not_name_a_user_that_is_not_on_the_field(self) -> None:
+        parser = self.trick_room_parser()
+        parser._active.pop("p2b")
+
+        started = parser.parse(
+            (line("The opposing Whimsicott twisted the dimensions!", x=0.152, y=0.73, width=0.4),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        # El campo sí cambia; a quién atribuirlo no se adivina.
+        self.assertEqual(
+            [(event.kind, event.value, event.tags) for event in started.events],
+            [("fieldstart", "move: Trick Room", ())],
+        )
+
     def test_a_pokemon_buffeted_by_sandstorm_is_narrated_once_per_turn(self) -> None:
         # COL-102: el mismo aviso se relee con el mote un poco distinto
         # entre frames ("Mate"/"Frida" en el job ciego); sin represarlo por

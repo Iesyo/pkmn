@@ -1868,27 +1868,76 @@ class ChampionsTextParser:
             del self._pending_abilities[key]
         return tuple(events)
 
+    # Efectos que ocupan todo el campo. Showdown los escribe como
+    # -fieldstart/-fieldend y el visor los pinta como estado del campo
+    # (addPseudoWeather/removePseudoWeather), no como un mensaje suelto. El
+    # juego narra cada inicio y cada fin con un texto fijo; sólo entran aquí
+    # los que ya se vieron en un job real.
+    _FIELD_STARTS = (
+        ("battlefield got weird", "Psychic Terrain"),
+        ("electric current ran across the battlefield", "Electric Terrain"),
+        ("grass grew to cover the battlefield", "Grassy Terrain"),
+        ("mist swirled around the battlefield", "Misty Terrain"),
+        # COL-102, job 82923f56ce264a92, Partida 2: "Mate twisted the
+        # dimensions!" (frame 1587).
+        ("twisted the dimensions", "Trick Room"),
+    )
+    _FIELD_ENDS = (
+        ("weirdness disappeared from the battlefield", "Psychic Terrain"),
+        ("electricity disappeared from the battlefield", "Electric Terrain"),
+        ("grass disappeared from the battlefield", "Grassy Terrain"),
+        ("mist disappeared from the battlefield", "Misty Terrain"),
+        # Mismo job, frame 2084. También sale cuando se reusa Trick Room con
+        # el campo ya invertido, que lo deshace.
+        ("twisted dimensions returned to normal", "Trick Room"),
+    )
+    # El aviso de inicio nombra a quien lo activó ("[POKEMON] twisted the
+    # dimensions!"); Showdown lo lleva en [of] y sin él el visor deja el
+    # hueco del nombre vacío.
+    _FIELD_START_ACTOR = re.compile(
+        r"^(The opposing )?(.+?)\s+twisted the dimensions", re.IGNORECASE
+    )
+
     def _fieldstart_event(
         self,
-        terrain: str,
+        effect: str,
         *,
         confidence: float,
         timestamp_ms: int,
         source_frame: int,
+        of: tuple[str, str] | None = None,
     ) -> BattleEvent:
         tags: tuple[str, ...] = ()
-        source = self._recent_field_sources.get(terrain)
+        source = self._recent_field_sources.get(effect)
         if source and timestamp_ms - source[3] <= 15_000:
             ability, slot, species, _ = source
             tags = (f"[from] ability: {ability}", f"[of] {slot}: {species}")
+        elif of:
+            tags = (f"[of] {of[0]}: {of[1]}",)
         return BattleEvent(
             kind="fieldstart",
             timestamp_ms=timestamp_ms,
             confidence=confidence,
-            value=f"move: {terrain}",
+            value=f"move: {effect}",
             tags=tags,
             source_frame=source_frame,
         )
+
+    def _field_start_actor(self, message: str) -> tuple[str, str] | None:
+        """Slot y especie de quien activó el efecto, sólo si está en el campo."""
+
+        match = self._FIELD_START_ACTOR.match(message.strip())
+        if not match:
+            return None
+        side = "p2" if match.group(1) else "p1"
+        actor = self._actor_for_value(side, match.group(2))
+        if not actor:
+            return None
+        slot = self._slot_for_species(actor, side, exclude_open=True)
+        occupant = self._active.get(slot)
+        if occupant is None or not self._same_species(occupant, actor):
+            return None
+        return slot, actor
 
     def _mega_event(
         self,
@@ -2407,48 +2456,41 @@ class ChampionsTextParser:
         cleaned = message.strip()
         lowered = cleaned.casefold()
 
-        terrain = None
-        if "battlefield got weird" in lowered:
-            terrain = "Psychic Terrain"
-        elif "electric current ran across the battlefield" in lowered:
-            terrain = "Electric Terrain"
-        elif "grass grew to cover the battlefield" in lowered:
-            terrain = "Grassy Terrain"
-        elif "mist swirled around the battlefield" in lowered:
-            terrain = "Misty Terrain"
-        if terrain:
+        started = next(
+            (effect for phrase, effect in self._FIELD_STARTS if phrase in lowered),
+            None,
+        )
+        if started:
+            # Un terreno que viene de una habilidad (Psychic Surge) espera a
+            # que esa habilidad encuentre a su Pokémon, para llevar su [from].
             pending_source = any(
-                self._terrain_for_ability(ability) == terrain
+                self._terrain_for_ability(ability) == started
                 for _side, _species, ability in self._pending_abilities
             )
             if pending_source:
-                self._pending_fieldstarts.add(terrain)
+                self._pending_fieldstarts.add(started)
                 return ()
             return (
                 self._fieldstart_event(
-                    terrain,
+                    started,
                     confidence=confidence,
                     timestamp_ms=timestamp_ms,
                     source_frame=source_frame,
+                    of=self._field_start_actor(cleaned),
                 ),
             )
 
-        ended_terrain = None
-        if "weirdness disappeared from the battlefield" in lowered:
-            ended_terrain = "Psychic Terrain"
-        elif "electricity disappeared from the battlefield" in lowered:
-            ended_terrain = "Electric Terrain"
-        elif "grass disappeared from the battlefield" in lowered:
-            ended_terrain = "Grassy Terrain"
-        elif "mist disappeared from the battlefield" in lowered:
-            ended_terrain = "Misty Terrain"
-        if ended_terrain:
+        ended = next(
+            (effect for phrase, effect in self._FIELD_ENDS if phrase in lowered),
+            None,
+        )
+        if ended:
             return (
                 BattleEvent(
                     kind="fieldend",
                     timestamp_ms=timestamp_ms,
                     confidence=confidence,
-                    value=f"move: {ended_terrain}",
+                    value=f"move: {ended}",
                     source_frame=source_frame,
                 ),
             )
