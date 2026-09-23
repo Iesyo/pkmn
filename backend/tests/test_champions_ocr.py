@@ -417,6 +417,53 @@ class ChampionsOcrTests(unittest.TestCase):
             [("move", "Venusaur", "Sleep Powder")],
         )
 
+    def test_move_info_description_is_not_a_battle_message(self) -> None:
+        # COL-102, job 7cf4fc1532d04b7a (frame 421): con la tarjeta Move Info
+        # abierta sobre Protect, la última línea de su descripción cae en la
+        # franja de avisos y tiene forma de frase. Salía en el replay una vez
+        # por cada Pokémon que elegía movimiento: dos veces por turno.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Venusaur",)),
+            catalog=ChampionsCatalog(species=("Venusaur",), moves=("Sleep Powder",)),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Venusaur"
+        card = (
+            line("Category", x=0.146, y=0.175, width=0.05, height=0.03),
+            line("Power", x=0.285, y=0.177, width=0.04, height=0.03),
+            line("Accuracy", x=0.411, y=0.177, width=0.05, height=0.03),
+            line("Range", x=0.153, y=0.272, width=0.04, height=0.03),
+            line("Self", x=0.356, y=0.275, width=0.03, height=0.03),
+            line(
+                "The user protects itself from incoming moves for the turn. With",
+                x=0.129,
+                y=0.332,
+                width=0.365,
+                height=0.03,
+            ),
+            line(
+                "each consecutive use, this move's chance of success becomes",
+                x=0.128,
+                y=0.374,
+                width=0.357,
+                height=0.03,
+            ),
+            line("1/3 of what it was before.", x=0.13, y=0.415, width=0.153, height=0.03),
+        )
+
+        only_card = parser.parse(card, timestamp_ms=1_000, source_frame=1)
+        with_message = parser.parse(
+            (*card, line("Venusaur used Sleep Powder!", x=0.213, y=0.675, width=0.3)),
+            timestamp_ms=1_500,
+            source_frame=2,
+        )
+
+        self.assertEqual(only_card.events, ())
+        self.assertEqual(
+            [(event.kind, event.species, event.move) for event in with_message.events],
+            [("move", "Venusaur", "Sleep Powder")],
+        )
+
     def test_one_readable_bar_does_not_feed_both_opponent_slots(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)

@@ -716,6 +716,34 @@ _UI_TEXT = {
     "check",
 }
 
+_MOVE_INFO_HEADERS = {"category", "power", "accuracy", "range"}
+
+
+def _move_info_description(lines: Sequence[OcrLine]) -> list[OcrLine]:
+    """El texto descriptivo de la tarjeta Move Info del menú de movimientos.
+
+    La descripción de Protect termina en «1/3 of what it was before.», una
+    línea que por sí sola tiene forma de aviso de combate. Cada vez que un
+    Pokémon abría la tarjeta durante su selección, esa línea entraba al replay
+    como mensaje. La tarjeta se reconoce por sus cabeceras; la descripción es
+    el párrafo que baja justo debajo de ellas, alineado a su columna.
+    """
+
+    headers = [line for line in lines if _text_key(line.text) in _MOVE_INFO_HEADERS]
+    if len(headers) < 2:
+        return []
+    column = min(header.left for header in headers)
+    edge = max(header.bottom for header in headers)
+    description: list[OcrLine] = []
+    for line in sorted(lines, key=lambda item: item.top):
+        if line in headers or line.top < edge - 0.01 or abs(line.left - column) > 0.04:
+            continue
+        if line.top - edge > 0.06:
+            break
+        description.append(line)
+        edge = line.bottom
+    return description
+
 
 def _health_value(value: str) -> str | None:
     compact = value.replace(" ", "").replace("O", "0").replace("o", "0")
@@ -2686,6 +2714,7 @@ class ChampionsTextParser:
             _text_key(line.text) in {"moveinfo", "movesmore"}
             for line in lines
         )
+        move_description = _move_info_description(lines)
         keywords = (
             " used ",
             " fainted",
@@ -2714,6 +2743,8 @@ class ChampionsTextParser:
             # exclude the whole menu even if OCR invents punctuation that
             # would otherwise make a label look like a dialogue sentence.
             if move_menu_visible and line.left >= 0.68:
+                continue
+            if line in move_description:
                 continue
             key = _text_key(line.text)
             lowered = f" {line.text.casefold()} "
