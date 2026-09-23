@@ -3,7 +3,10 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 // Pokémon Champions dibuja el Team Preview con sus propios menu sprites: mismo
 // arte, misma pose y siempre iguales. Tenerlos en el repo es lo que permite
 // identificar al rival comparando la silueta en vez de deducirla de los tipos.
+// Los shiny van aparte: la silueta es la misma, pero la comparación por color
+// (el icono del HUD, la tarjeta del Team Preview) necesita sus colores.
 const CATEGORY = "Category:Champions menu sprites";
+const SHINY_CATEGORY = "Category:Champions Shiny menu sprites";
 const ARCHIVES_API = "https://archives.bulbagarden.net/w/api.php";
 const POKEDEX_URL = "https://play.pokemonshowdown.com/data/pokedex.json";
 const AGENT = "pkmn-vgc-champions/1.0 (actualizacion de datos; repo Iesyo/pkmn)";
@@ -21,14 +24,14 @@ async function fetchJson(url) {
   return response.json();
 }
 
-async function categoryFiles() {
+async function categoryFiles(category) {
   const files = new Map();
   let cont = {};
   for (;;) {
     const params = new URLSearchParams({
       action: "query",
       generator: "categorymembers",
-      gcmtitle: CATEGORY,
+      gcmtitle: category,
       gcmtype: "file",
       gcmlimit: "200",
       prop: "imageinfo",
@@ -90,14 +93,15 @@ async function speciesByDexEntry() {
   return byEntry;
 }
 
-const files = await categoryFiles();
+const files = new Map([...(await categoryFiles(CATEGORY)), ...(await categoryFiles(SHINY_CATEGORY))]);
 const byEntry = await speciesByDexEntry();
 
 const sprites = {};
+const shiny = {};
 const unmatched = [];
 const cosmetic = [];
 for (const [title, url] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
-  const match = /^Menu CP (\d{4})(?:-(.+))?\.png$/.exec(title);
+  const match = /^Menu CP (\d{4})(?:-(.+?))?( shiny)?\.png$/.exec(title);
   if (!match) {
     unmatched.push(`${title}: nombre inesperado`);
     continue;
@@ -118,8 +122,9 @@ for (const [title, url] of [...files].sort(([left], [right]) => left.localeCompa
     cosmetic.push(`${title} -> ${fallback}`);
   }
   const name = title.replaceAll(" ", "_");
+  const target = match[3] ? shiny : sprites;
   for (const species of Array.isArray(fallback) ? fallback : [fallback]) {
-    (sprites[species] ??= []).push(name);
+    (target[species] ??= []).push(name);
   }
   const response = await fetch(url, { headers: { "User-Agent": AGENT } });
   if (!response.ok) {
@@ -145,7 +150,7 @@ if (cosmetic.length) {
 
 // Deja fuera lo que ya no esté en la categoría, para que el directorio sea
 // exactamente lo que describe el manifiesto.
-const expected = new Set(Object.values(sprites).flat());
+const expected = new Set([...Object.values(sprites).flat(), ...Object.values(shiny).flat()]);
 for (const name of await readdir(spriteDirectory)) {
   if (!expected.has(name)) {
     await rm(new URL(name, spriteDirectory));
@@ -156,11 +161,14 @@ await writeFile(
   manifestPath,
   `${JSON.stringify(
     {
-      source: `Bulbagarden Archives, ${CATEGORY}`,
+      source: `Bulbagarden Archives, ${CATEGORY} y ${SHINY_CATEGORY}`,
       captured: new Date().toISOString().slice(0, 10),
       directory: "champions-sprites",
       sprites: Object.fromEntries(
         Object.entries(sprites).sort(([left], [right]) => left.localeCompare(right)),
+      ),
+      shiny: Object.fromEntries(
+        Object.entries(shiny).sort(([left], [right]) => left.localeCompare(right)),
       ),
     },
     null,
@@ -169,5 +177,6 @@ await writeFile(
 );
 
 console.log(
-  `Sprites de Champions actualizados: ${Object.keys(sprites).length} especies en ${expected.size} archivos.`,
+  `Sprites de Champions actualizados: ${Object.keys(sprites).length} especies ` +
+    `(${Object.keys(shiny).length} con shiny) en ${expected.size} archivos.`,
 );

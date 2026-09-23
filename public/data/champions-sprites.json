@@ -1,6 +1,6 @@
 {
- "source": "Bulbagarden Archives, Category:Champions menu sprites",
- "captured": "2026-09-21",
+ "source": "Bulbagarden Archives, Category:Champions menu sprites y Category:Champions Shiny menu sprites",
+ "captured": "2026-09-23",
  "directory": "champions-sprites",
  "sprites": {
   "Abomasnow": [
@@ -1112,6 +1112,1118 @@
   ],
   "Zoroark-Hisui": [
    "Menu_CP_0571-Hisui.png"
+  ]
+ },
+ "shiny": {
+  "Abomasnow": [
+   "Menu_CP_0460_shiny.png"
+  ],
+  "Abomasnow-Mega": [
+   "Menu_CP_0460-Mega_shiny.png"
+  ],
+  "Absol": [
+   "Menu_CP_0359_shiny.png"
+  ],
+  "Absol-Mega": [
+   "Menu_CP_0359-Mega_shiny.png"
+  ],
+  "Absol-Mega-Z": [
+   "Menu_CP_0359-Mega_Z_shiny.png"
+  ],
+  "Aegislash": [
+   "Menu_CP_0681_shiny.png"
+  ],
+  "Aegislash-Blade": [
+   "Menu_CP_0681-Blade_shiny.png"
+  ],
+  "Aerodactyl": [
+   "Menu_CP_0142_shiny.png"
+  ],
+  "Aerodactyl-Mega": [
+   "Menu_CP_0142-Mega_shiny.png"
+  ],
+  "Aggron": [
+   "Menu_CP_0306_shiny.png"
+  ],
+  "Aggron-Mega": [
+   "Menu_CP_0306-Mega_shiny.png"
+  ],
+  "Alakazam": [
+   "Menu_CP_0065_shiny.png"
+  ],
+  "Alakazam-Mega": [
+   "Menu_CP_0065-Mega_shiny.png"
+  ],
+  "Alcremie": [
+   "Menu_CP_0869_shiny.png",
+   "Menu_CP_0869-Caramel_Swirl_shiny.png",
+   "Menu_CP_0869-Lemon_Cream_shiny.png",
+   "Menu_CP_0869-Matcha_Cream_shiny.png",
+   "Menu_CP_0869-Mint_Cream_shiny.png",
+   "Menu_CP_0869-Rainbow_Swirl_shiny.png",
+   "Menu_CP_0869-Ruby_Cream_shiny.png",
+   "Menu_CP_0869-Ruby_Swirl_shiny.png",
+   "Menu_CP_0869-Salted_Cream_shiny.png"
+  ],
+  "Altaria": [
+   "Menu_CP_0334_shiny.png"
+  ],
+  "Altaria-Mega": [
+   "Menu_CP_0334-Mega_shiny.png"
+  ],
+  "Ampharos": [
+   "Menu_CP_0181_shiny.png"
+  ],
+  "Ampharos-Mega": [
+   "Menu_CP_0181-Mega_shiny.png"
+  ],
+  "Annihilape": [
+   "Menu_CP_0979_shiny.png"
+  ],
+  "Appletun": [
+   "Menu_CP_0842_shiny.png"
+  ],
+  "Araquanid": [
+   "Menu_CP_0752_shiny.png"
+  ],
+  "Arbok": [
+   "Menu_CP_0024_shiny.png"
+  ],
+  "Arboliva": [
+   "Menu_CP_0930_shiny.png"
+  ],
+  "Arcanine": [
+   "Menu_CP_0059_shiny.png"
+  ],
+  "Arcanine-Hisui": [
+   "Menu_CP_0059-Hisui_shiny.png"
+  ],
+  "Archaludon": [
+   "Menu_CP_1018_shiny.png"
+  ],
+  "Ariados": [
+   "Menu_CP_0168_shiny.png"
+  ],
+  "Armarouge": [
+   "Menu_CP_0936_shiny.png"
+  ],
+  "Aromatisse": [
+   "Menu_CP_0683_shiny.png"
+  ],
+  "Audino": [
+   "Menu_CP_0531_shiny.png"
+  ],
+  "Audino-Mega": [
+   "Menu_CP_0531-Mega_shiny.png"
+  ],
+  "Aurorus": [
+   "Menu_CP_0699_shiny.png"
+  ],
+  "Avalugg": [
+   "Menu_CP_0713_shiny.png"
+  ],
+  "Avalugg-Hisui": [
+   "Menu_CP_0713-Hisui_shiny.png"
+  ],
+  "Azumarill": [
+   "Menu_CP_0184_shiny.png"
+  ],
+  "Banette": [
+   "Menu_CP_0354_shiny.png"
+  ],
+  "Banette-Mega": [
+   "Menu_CP_0354-Mega_shiny.png"
+  ],
+  "Barbaracle": [
+   "Menu_CP_0689_shiny.png"
+  ],
+  "Barbaracle-Mega": [
+   "Menu_CP_0689-Mega_shiny.png"
+  ],
+  "Basculegion": [
+   "Menu_CP_0902_shiny.png"
+  ],
+  "Basculegion-F": [
+   "Menu_CP_0902-Female_shiny.png"
+  ],
+  "Bastiodon": [
+   "Menu_CP_0411_shiny.png"
+  ],
+  "Baxcalibur": [
+   "Menu_CP_0998_shiny.png"
+  ],
+  "Baxcalibur-Mega": [
+   "Menu_CP_0998-Mega_shiny.png"
+  ],
+  "Beartic": [
+   "Menu_CP_0614_shiny.png"
+  ],
+  "Beedrill": [
+   "Menu_CP_0015_shiny.png"
+  ],
+  "Beedrill-Mega": [
+   "Menu_CP_0015-Mega_shiny.png"
+  ],
+  "Bellibolt": [
+   "Menu_CP_0939_shiny.png"
+  ],
+  "Blastoise": [
+   "Menu_CP_0009_shiny.png"
+  ],
+  "Blastoise-Mega": [
+   "Menu_CP_0009-Mega_shiny.png"
+  ],
+  "Blaziken": [
+   "Menu_CP_0257_shiny.png"
+  ],
+  "Blaziken-Mega": [
+   "Menu_CP_0257-Mega_shiny.png"
+  ],
+  "Camerupt": [
+   "Menu_CP_0323_shiny.png"
+  ],
+  "Camerupt-Mega": [
+   "Menu_CP_0323-Mega_shiny.png"
+  ],
+  "Castform": [
+   "Menu_CP_0351_shiny.png"
+  ],
+  "Castform-Rainy": [
+   "Menu_CP_0351-Rainy_shiny.png"
+  ],
+  "Castform-Snowy": [
+   "Menu_CP_0351-Snowy_shiny.png"
+  ],
+  "Castform-Sunny": [
+   "Menu_CP_0351-Sunny_shiny.png"
+  ],
+  "Ceruledge": [
+   "Menu_CP_0937_shiny.png"
+  ],
+  "Chandelure": [
+   "Menu_CP_0609_shiny.png"
+  ],
+  "Chandelure-Mega": [
+   "Menu_CP_0609-Mega_shiny.png"
+  ],
+  "Charizard": [
+   "Menu_CP_0006_shiny.png"
+  ],
+  "Charizard-Mega-X": [
+   "Menu_CP_0006-Mega_X_shiny.png"
+  ],
+  "Charizard-Mega-Y": [
+   "Menu_CP_0006-Mega_Y_shiny.png"
+  ],
+  "Chesnaught": [
+   "Menu_CP_0652_shiny.png"
+  ],
+  "Chesnaught-Mega": [
+   "Menu_CP_0652-Mega_shiny.png"
+  ],
+  "Chimecho": [
+   "Menu_CP_0358_shiny.png"
+  ],
+  "Chimecho-Mega": [
+   "Menu_CP_0358-Mega_shiny.png"
+  ],
+  "Cinderace": [
+   "Menu_CP_0815_shiny.png"
+  ],
+  "Clawitzer": [
+   "Menu_CP_0693_shiny.png"
+  ],
+  "Clefable": [
+   "Menu_CP_0036_shiny.png"
+  ],
+  "Clefable-Mega": [
+   "Menu_CP_0036-Mega_shiny.png"
+  ],
+  "Cofagrigus": [
+   "Menu_CP_0563_shiny.png"
+  ],
+  "Conkeldurr": [
+   "Menu_CP_0534_shiny.png"
+  ],
+  "Corviknight": [
+   "Menu_CP_0823_shiny.png"
+  ],
+  "Crabominable": [
+   "Menu_CP_0740_shiny.png"
+  ],
+  "Crabominable-Mega": [
+   "Menu_CP_0740-Mega_shiny.png"
+  ],
+  "Decidueye": [
+   "Menu_CP_0724_shiny.png"
+  ],
+  "Decidueye-Hisui": [
+   "Menu_CP_0724-Hisui_shiny.png"
+  ],
+  "Dedenne": [
+   "Menu_CP_0702_shiny.png"
+  ],
+  "Delphox": [
+   "Menu_CP_0655_shiny.png"
+  ],
+  "Delphox-Mega": [
+   "Menu_CP_0655-Mega_shiny.png"
+  ],
+  "Diggersby": [
+   "Menu_CP_0660_shiny.png"
+  ],
+  "Ditto": [
+   "Menu_CP_0132_shiny.png"
+  ],
+  "Dragalge": [
+   "Menu_CP_0691_shiny.png"
+  ],
+  "Dragalge-Mega": [
+   "Menu_CP_0691-Mega_shiny.png"
+  ],
+  "Dragapult": [
+   "Menu_CP_0887_shiny.png"
+  ],
+  "Dragonite": [
+   "Menu_CP_0149_shiny.png"
+  ],
+  "Dragonite-Mega": [
+   "Menu_CP_0149-Mega_shiny.png"
+  ],
+  "Drampa": [
+   "Menu_CP_0780_shiny.png"
+  ],
+  "Drampa-Mega": [
+   "Menu_CP_0780-Mega_shiny.png"
+  ],
+  "Eelektross": [
+   "Menu_CP_0604_shiny.png"
+  ],
+  "Eelektross-Mega": [
+   "Menu_CP_0604-Mega_shiny.png"
+  ],
+  "Emboar": [
+   "Menu_CP_0500_shiny.png"
+  ],
+  "Emboar-Mega": [
+   "Menu_CP_0500-Mega_shiny.png"
+  ],
+  "Emolga": [
+   "Menu_CP_0587_shiny.png"
+  ],
+  "Empoleon": [
+   "Menu_CP_0395_shiny.png"
+  ],
+  "Espathra": [
+   "Menu_CP_0956_shiny.png"
+  ],
+  "Espeon": [
+   "Menu_CP_0196_shiny.png"
+  ],
+  "Excadrill": [
+   "Menu_CP_0530_shiny.png"
+  ],
+  "Excadrill-Mega": [
+   "Menu_CP_0530-Mega_shiny.png"
+  ],
+  "Falinks": [
+   "Menu_CP_0870_shiny.png"
+  ],
+  "Falinks-Mega": [
+   "Menu_CP_0870-Mega_shiny.png"
+  ],
+  "Farfetch’d": [
+   "Menu_CP_0083_shiny.png"
+  ],
+  "Farigiraf": [
+   "Menu_CP_0981_shiny.png"
+  ],
+  "Feraligatr": [
+   "Menu_CP_0160_shiny.png"
+  ],
+  "Feraligatr-Mega": [
+   "Menu_CP_0160-Mega_shiny.png"
+  ],
+  "Flapple": [
+   "Menu_CP_0841_shiny.png"
+  ],
+  "Flareon": [
+   "Menu_CP_0136_shiny.png"
+  ],
+  "Floette-Eternal": [
+   "Menu_CP_0670-Eternal_shiny.png"
+  ],
+  "Floette-Mega": [
+   "Menu_CP_0670-Mega_shiny.png"
+  ],
+  "Florges": [
+   "Menu_CP_0671_shiny.png",
+   "Menu_CP_0671-Blue_shiny.png",
+   "Menu_CP_0671-Orange_shiny.png",
+   "Menu_CP_0671-White_shiny.png",
+   "Menu_CP_0671-Yellow_shiny.png"
+  ],
+  "Forretress": [
+   "Menu_CP_0205_shiny.png"
+  ],
+  "Froslass": [
+   "Menu_CP_0478_shiny.png"
+  ],
+  "Froslass-Mega": [
+   "Menu_CP_0478-Mega_shiny.png"
+  ],
+  "Furfrou": [
+   "Menu_CP_0676_shiny.png",
+   "Menu_CP_0676-Dandy_shiny.png",
+   "Menu_CP_0676-Debutante_shiny.png",
+   "Menu_CP_0676-Diamond_shiny.png",
+   "Menu_CP_0676-Heart_shiny.png",
+   "Menu_CP_0676-Kabuki_shiny.png",
+   "Menu_CP_0676-La_Reine_shiny.png",
+   "Menu_CP_0676-Matron_shiny.png",
+   "Menu_CP_0676-Pharaoh_shiny.png",
+   "Menu_CP_0676-Star_shiny.png"
+  ],
+  "Gallade": [
+   "Menu_CP_0475_shiny.png"
+  ],
+  "Gallade-Mega": [
+   "Menu_CP_0475-Mega_shiny.png"
+  ],
+  "Garbodor": [
+   "Menu_CP_0569_shiny.png"
+  ],
+  "Garchomp": [
+   "Menu_CP_0445_shiny.png"
+  ],
+  "Garchomp-Mega": [
+   "Menu_CP_0445-Mega_shiny.png"
+  ],
+  "Garchomp-Mega-Z": [
+   "Menu_CP_0445-Mega_Z_shiny.png"
+  ],
+  "Gardevoir": [
+   "Menu_CP_0282_shiny.png"
+  ],
+  "Gardevoir-Mega": [
+   "Menu_CP_0282-Mega_shiny.png"
+  ],
+  "Garganacl": [
+   "Menu_CP_0934_shiny.png"
+  ],
+  "Gengar": [
+   "Menu_CP_0094_shiny.png"
+  ],
+  "Gengar-Mega": [
+   "Menu_CP_0094-Mega_shiny.png"
+  ],
+  "Gholdengo": [
+   "Menu_CP_1000_shiny.png"
+  ],
+  "Glaceon": [
+   "Menu_CP_0471_shiny.png"
+  ],
+  "Glalie": [
+   "Menu_CP_0362_shiny.png"
+  ],
+  "Glalie-Mega": [
+   "Menu_CP_0362-Mega_shiny.png"
+  ],
+  "Glimmora": [
+   "Menu_CP_0970_shiny.png"
+  ],
+  "Glimmora-Mega": [
+   "Menu_CP_0970-Mega_shiny.png"
+  ],
+  "Gliscor": [
+   "Menu_CP_0472_shiny.png"
+  ],
+  "Gogoat": [
+   "Menu_CP_0673_shiny.png"
+  ],
+  "Golisopod": [
+   "Menu_CP_0768_shiny.png"
+  ],
+  "Golisopod-Mega": [
+   "Menu_CP_0768-Mega_shiny.png"
+  ],
+  "Golurk": [
+   "Menu_CP_0623_shiny.png"
+  ],
+  "Golurk-Mega": [
+   "Menu_CP_0623-Mega_shiny.png"
+  ],
+  "Goodra": [
+   "Menu_CP_0706_shiny.png"
+  ],
+  "Goodra-Hisui": [
+   "Menu_CP_0706-Hisui_shiny.png"
+  ],
+  "Gourgeist": [
+   "Menu_CP_0711_shiny.png"
+  ],
+  "Gourgeist-Large": [
+   "Menu_CP_0711-Large_shiny.png"
+  ],
+  "Gourgeist-Small": [
+   "Menu_CP_0711-Small_shiny.png"
+  ],
+  "Gourgeist-Super": [
+   "Menu_CP_0711-Jumbo_shiny.png"
+  ],
+  "Grapploct": [
+   "Menu_CP_0853_shiny.png"
+  ],
+  "Greninja": [
+   "Menu_CP_0658_shiny.png"
+  ],
+  "Greninja-Mega": [
+   "Menu_CP_0658-Mega_shiny.png"
+  ],
+  "Grimmsnarl": [
+   "Menu_CP_0861_shiny.png"
+  ],
+  "Gyarados": [
+   "Menu_CP_0130_shiny.png"
+  ],
+  "Gyarados-Mega": [
+   "Menu_CP_0130-Mega_shiny.png"
+  ],
+  "Hatterene": [
+   "Menu_CP_0858_shiny.png"
+  ],
+  "Hawlucha": [
+   "Menu_CP_0701_shiny.png"
+  ],
+  "Hawlucha-Mega": [
+   "Menu_CP_0701-Mega_shiny.png"
+  ],
+  "Heliolisk": [
+   "Menu_CP_0695_shiny.png"
+  ],
+  "Heracross": [
+   "Menu_CP_0214_shiny.png"
+  ],
+  "Heracross-Mega": [
+   "Menu_CP_0214-Mega_shiny.png"
+  ],
+  "Hippowdon": [
+   "Menu_CP_0450_shiny.png"
+  ],
+  "Houndoom": [
+   "Menu_CP_0229_shiny.png"
+  ],
+  "Houndoom-Mega": [
+   "Menu_CP_0229-Mega_shiny.png"
+  ],
+  "Houndstone": [
+   "Menu_CP_0972_shiny.png"
+  ],
+  "Hydrapple": [
+   "Menu_CP_1019_shiny.png"
+  ],
+  "Hydreigon": [
+   "Menu_CP_0635_shiny.png"
+  ],
+  "Incineroar": [
+   "Menu_CP_0727_shiny.png"
+  ],
+  "Indeedee": [
+   "Menu_CP_0876_shiny.png"
+  ],
+  "Indeedee-F": [
+   "Menu_CP_0876-Female_shiny.png"
+  ],
+  "Infernape": [
+   "Menu_CP_0392_shiny.png"
+  ],
+  "Inteleon": [
+   "Menu_CP_0818_shiny.png"
+  ],
+  "Jolteon": [
+   "Menu_CP_0135_shiny.png"
+  ],
+  "Kangaskhan": [
+   "Menu_CP_0115_shiny.png"
+  ],
+  "Kangaskhan-Mega": [
+   "Menu_CP_0115-Mega_shiny.png"
+  ],
+  "Kingambit": [
+   "Menu_CP_0983_shiny.png"
+  ],
+  "Kleavor": [
+   "Menu_CP_0900_shiny.png"
+  ],
+  "Klefki": [
+   "Menu_CP_0707_shiny.png"
+  ],
+  "Kommo-o": [
+   "Menu_CP_0784_shiny.png"
+  ],
+  "Krookodile": [
+   "Menu_CP_0553_shiny.png"
+  ],
+  "Leafeon": [
+   "Menu_CP_0470_shiny.png"
+  ],
+  "Liepard": [
+   "Menu_CP_0510_shiny.png"
+  ],
+  "Lopunny": [
+   "Menu_CP_0428_shiny.png"
+  ],
+  "Lopunny-Mega": [
+   "Menu_CP_0428-Mega_shiny.png"
+  ],
+  "Lucario": [
+   "Menu_CP_0448_shiny.png"
+  ],
+  "Lucario-Mega": [
+   "Menu_CP_0448-Mega_shiny.png"
+  ],
+  "Lucario-Mega-Z": [
+   "Menu_CP_0448-Mega_Z_shiny.png"
+  ],
+  "Luxray": [
+   "Menu_CP_0405_shiny.png"
+  ],
+  "Lycanroc": [
+   "Menu_CP_0745_shiny.png"
+  ],
+  "Lycanroc-Dusk": [
+   "Menu_CP_0745-Dusk_shiny.png"
+  ],
+  "Lycanroc-Midnight": [
+   "Menu_CP_0745-Midnight_shiny.png"
+  ],
+  "Mabosstiff": [
+   "Menu_CP_0943_shiny.png"
+  ],
+  "Machamp": [
+   "Menu_CP_0068_shiny.png"
+  ],
+  "Malamar": [
+   "Menu_CP_0687_shiny.png"
+  ],
+  "Malamar-Mega": [
+   "Menu_CP_0687-Mega_shiny.png"
+  ],
+  "Mamoswine": [
+   "Menu_CP_0473_shiny.png"
+  ],
+  "Manectric": [
+   "Menu_CP_0310_shiny.png"
+  ],
+  "Manectric-Mega": [
+   "Menu_CP_0310-Mega_shiny.png"
+  ],
+  "Maushold": [
+   "Menu_CP_0925-Three_shiny.png"
+  ],
+  "Maushold-Four": [
+   "Menu_CP_0925_shiny.png"
+  ],
+  "Mawile": [
+   "Menu_CP_0303_shiny.png"
+  ],
+  "Mawile-Mega": [
+   "Menu_CP_0303-Mega_shiny.png"
+  ],
+  "Medicham": [
+   "Menu_CP_0308_shiny.png"
+  ],
+  "Medicham-Mega": [
+   "Menu_CP_0308-Mega_shiny.png"
+  ],
+  "Meganium": [
+   "Menu_CP_0154_shiny.png"
+  ],
+  "Meganium-Mega": [
+   "Menu_CP_0154-Mega_shiny.png"
+  ],
+  "Meowscarada": [
+   "Menu_CP_0908_shiny.png"
+  ],
+  "Meowstic": [
+   "Menu_CP_0678_shiny.png"
+  ],
+  "Meowstic-F": [
+   "Menu_CP_0678-Female_shiny.png"
+  ],
+  "Meowstic-F-Mega": [
+   "Menu_CP_0678-Mega_shiny.png"
+  ],
+  "Meowstic-M-Mega": [
+   "Menu_CP_0678-Mega_shiny.png"
+  ],
+  "Metagross": [
+   "Menu_CP_0376_shiny.png"
+  ],
+  "Metagross-Mega": [
+   "Menu_CP_0376-Mega_shiny.png"
+  ],
+  "Milotic": [
+   "Menu_CP_0350_shiny.png"
+  ],
+  "Mimikyu": [
+   "Menu_CP_0778_shiny.png"
+  ],
+  "Morpeko": [
+   "Menu_CP_0877_shiny.png"
+  ],
+  "Morpeko-Hangry": [
+   "Menu_CP_0877-Hangry_shiny.png"
+  ],
+  "Mr. Mime": [
+   "Menu_CP_0122_shiny.png"
+  ],
+  "Mr. Rime": [
+   "Menu_CP_0866_shiny.png"
+  ],
+  "Mudsdale": [
+   "Menu_CP_0750_shiny.png"
+  ],
+  "Musharna": [
+   "Menu_CP_0518_shiny.png"
+  ],
+  "Ninetales": [
+   "Menu_CP_0038_shiny.png"
+  ],
+  "Ninetales-Alola": [
+   "Menu_CP_0038-Alola_shiny.png"
+  ],
+  "Noivern": [
+   "Menu_CP_0715_shiny.png"
+  ],
+  "Oranguru": [
+   "Menu_CP_0765_shiny.png"
+  ],
+  "Orthworm": [
+   "Menu_CP_0968_shiny.png"
+  ],
+  "Overqwil": [
+   "Menu_CP_0904_shiny.png"
+  ],
+  "Palafin": [
+   "Menu_CP_0964_shiny.png"
+  ],
+  "Palafin-Hero": [
+   "Menu_CP_0964-Hero_shiny.png"
+  ],
+  "Pangoro": [
+   "Menu_CP_0675_shiny.png"
+  ],
+  "Passimian": [
+   "Menu_CP_0766_shiny.png"
+  ],
+  "Pawmot": [
+   "Menu_CP_0923_shiny.png"
+  ],
+  "Pelipper": [
+   "Menu_CP_0279_shiny.png"
+  ],
+  "Perrserker": [
+   "Menu_CP_0863_shiny.png"
+  ],
+  "Persian": [
+   "Menu_CP_0053_shiny.png"
+  ],
+  "Persian-Alola": [
+   "Menu_CP_0053-Alola_shiny.png"
+  ],
+  "Pidgeot": [
+   "Menu_CP_0018_shiny.png"
+  ],
+  "Pidgeot-Mega": [
+   "Menu_CP_0018-Mega_shiny.png"
+  ],
+  "Pikachu": [
+   "Menu_CP_0025_shiny.png"
+  ],
+  "Pincurchin": [
+   "Menu_CP_0871_shiny.png"
+  ],
+  "Pinsir": [
+   "Menu_CP_0127_shiny.png"
+  ],
+  "Pinsir-Mega": [
+   "Menu_CP_0127-Mega_shiny.png"
+  ],
+  "Politoed": [
+   "Menu_CP_0186_shiny.png"
+  ],
+  "Polteageist": [
+   "Menu_CP_0855_shiny.png"
+  ],
+  "Polteageist-Antique": [
+   "Menu_CP_0855_shiny.png"
+  ],
+  "Primarina": [
+   "Menu_CP_0730_shiny.png"
+  ],
+  "Pyroar": [
+   "Menu_CP_0668_shiny.png",
+   "Menu_CP_0668-Female_shiny.png"
+  ],
+  "Pyroar-Mega": [
+   "Menu_CP_0668-Mega_shiny.png"
+  ],
+  "Quaquaval": [
+   "Menu_CP_0914_shiny.png"
+  ],
+  "Qwilfish": [
+   "Menu_CP_0211_shiny.png"
+  ],
+  "Raichu": [
+   "Menu_CP_0026_shiny.png"
+  ],
+  "Raichu-Alola": [
+   "Menu_CP_0026-Alola_shiny.png"
+  ],
+  "Raichu-Mega-X": [
+   "Menu_CP_0026-Mega_X_shiny.png"
+  ],
+  "Raichu-Mega-Y": [
+   "Menu_CP_0026-Mega_Y_shiny.png"
+  ],
+  "Rampardos": [
+   "Menu_CP_0409_shiny.png"
+  ],
+  "Reuniclus": [
+   "Menu_CP_0579_shiny.png"
+  ],
+  "Rhyperior": [
+   "Menu_CP_0464_shiny.png"
+  ],
+  "Rillaboom": [
+   "Menu_CP_0812_shiny.png"
+  ],
+  "Roserade": [
+   "Menu_CP_0407_shiny.png"
+  ],
+  "Rotom": [
+   "Menu_CP_0479_shiny.png"
+  ],
+  "Rotom-Fan": [
+   "Menu_CP_0479-Fan_shiny.png"
+  ],
+  "Rotom-Frost": [
+   "Menu_CP_0479-Frost_shiny.png"
+  ],
+  "Rotom-Heat": [
+   "Menu_CP_0479-Heat_shiny.png"
+  ],
+  "Rotom-Mow": [
+   "Menu_CP_0479-Mow_shiny.png"
+  ],
+  "Rotom-Wash": [
+   "Menu_CP_0479-Wash_shiny.png"
+  ],
+  "Runerigus": [
+   "Menu_CP_0867_shiny.png"
+  ],
+  "Sableye": [
+   "Menu_CP_0302_shiny.png"
+  ],
+  "Sableye-Mega": [
+   "Menu_CP_0302-Mega_shiny.png"
+  ],
+  "Salamence": [
+   "Menu_CP_0373_shiny.png"
+  ],
+  "Salamence-Mega": [
+   "Menu_CP_0373-Mega_shiny.png"
+  ],
+  "Salazzle": [
+   "Menu_CP_0758_shiny.png"
+  ],
+  "Samurott": [
+   "Menu_CP_0503_shiny.png"
+  ],
+  "Samurott-Hisui": [
+   "Menu_CP_0503-Hisui_shiny.png"
+  ],
+  "Sandaconda": [
+   "Menu_CP_0844_shiny.png"
+  ],
+  "Sceptile": [
+   "Menu_CP_0254_shiny.png"
+  ],
+  "Sceptile-Mega": [
+   "Menu_CP_0254-Mega_shiny.png"
+  ],
+  "Scizor": [
+   "Menu_CP_0212_shiny.png"
+  ],
+  "Scizor-Mega": [
+   "Menu_CP_0212-Mega_shiny.png"
+  ],
+  "Scolipede": [
+   "Menu_CP_0545_shiny.png"
+  ],
+  "Scolipede-Mega": [
+   "Menu_CP_0545-Mega_shiny.png"
+  ],
+  "Scovillain": [
+   "Menu_CP_0952_shiny.png"
+  ],
+  "Scovillain-Mega": [
+   "Menu_CP_0952-Mega_shiny.png"
+  ],
+  "Scrafty": [
+   "Menu_CP_0560_shiny.png"
+  ],
+  "Scrafty-Mega": [
+   "Menu_CP_0560-Mega_shiny.png"
+  ],
+  "Serperior": [
+   "Menu_CP_0497_shiny.png"
+  ],
+  "Sharpedo": [
+   "Menu_CP_0319_shiny.png"
+  ],
+  "Sharpedo-Mega": [
+   "Menu_CP_0319-Mega_shiny.png"
+  ],
+  "Simipour": [
+   "Menu_CP_0516_shiny.png"
+  ],
+  "Simisage": [
+   "Menu_CP_0512_shiny.png"
+  ],
+  "Simisear": [
+   "Menu_CP_0514_shiny.png"
+  ],
+  "Sinistcha": [
+   "Menu_CP_1013_shiny.png"
+  ],
+  "Sinistcha-Masterpiece": [
+   "Menu_CP_1013_shiny.png"
+  ],
+  "Sirfetch’d": [
+   "Menu_CP_0865_shiny.png"
+  ],
+  "Skarmory": [
+   "Menu_CP_0227_shiny.png"
+  ],
+  "Skarmory-Mega": [
+   "Menu_CP_0227-Mega_shiny.png"
+  ],
+  "Skeledirge": [
+   "Menu_CP_0911_shiny.png"
+  ],
+  "Slowbro": [
+   "Menu_CP_0080_shiny.png"
+  ],
+  "Slowbro-Galar": [
+   "Menu_CP_0080-Galar_shiny.png"
+  ],
+  "Slowbro-Mega": [
+   "Menu_CP_0080-Mega_shiny.png"
+  ],
+  "Slowking": [
+   "Menu_CP_0199_shiny.png"
+  ],
+  "Slowking-Galar": [
+   "Menu_CP_0199-Galar_shiny.png"
+  ],
+  "Slurpuff": [
+   "Menu_CP_0685_shiny.png"
+  ],
+  "Sneasler": [
+   "Menu_CP_0903_shiny.png"
+  ],
+  "Snorlax": [
+   "Menu_CP_0143_shiny.png"
+  ],
+  "Spiritomb": [
+   "Menu_CP_0442_shiny.png"
+  ],
+  "Squawkabilly": [
+   "Menu_CP_0931_shiny.png"
+  ],
+  "Squawkabilly-Blue": [
+   "Menu_CP_0931-Blue_shiny.png"
+  ],
+  "Squawkabilly-White": [
+   "Menu_CP_0931-White_shiny.png"
+  ],
+  "Squawkabilly-Yellow": [
+   "Menu_CP_0931-Yellow_shiny.png"
+  ],
+  "Staraptor": [
+   "Menu_CP_0398_shiny.png"
+  ],
+  "Staraptor-Mega": [
+   "Menu_CP_0398-Mega_shiny.png"
+  ],
+  "Starmie": [
+   "Menu_CP_0121_shiny.png"
+  ],
+  "Starmie-Mega": [
+   "Menu_CP_0121-Mega_shiny.png"
+  ],
+  "Steelix": [
+   "Menu_CP_0208_shiny.png"
+  ],
+  "Steelix-Mega": [
+   "Menu_CP_0208-Mega_shiny.png"
+  ],
+  "Stunfisk": [
+   "Menu_CP_0618_shiny.png"
+  ],
+  "Stunfisk-Galar": [
+   "Menu_CP_0618-Galar_shiny.png"
+  ],
+  "Swalot": [
+   "Menu_CP_0317_shiny.png"
+  ],
+  "Swampert": [
+   "Menu_CP_0260_shiny.png"
+  ],
+  "Swampert-Mega": [
+   "Menu_CP_0260-Mega_shiny.png"
+  ],
+  "Sylveon": [
+   "Menu_CP_0700_shiny.png"
+  ],
+  "Talonflame": [
+   "Menu_CP_0663_shiny.png"
+  ],
+  "Tauros": [
+   "Menu_CP_0128_shiny.png"
+  ],
+  "Tauros-Paldea-Aqua": [
+   "Menu_CP_0128-Paldea_Aqua_shiny.png"
+  ],
+  "Tauros-Paldea-Blaze": [
+   "Menu_CP_0128-Paldea_Blaze_shiny.png"
+  ],
+  "Tauros-Paldea-Combat": [
+   "Menu_CP_0128-Paldea_Combat_shiny.png"
+  ],
+  "Thievul": [
+   "Menu_CP_0828_shiny.png"
+  ],
+  "Tinkaton": [
+   "Menu_CP_0959_shiny.png"
+  ],
+  "Torkoal": [
+   "Menu_CP_0324_shiny.png"
+  ],
+  "Torterra": [
+   "Menu_CP_0389_shiny.png"
+  ],
+  "Toucannon": [
+   "Menu_CP_0733_shiny.png"
+  ],
+  "Toxapex": [
+   "Menu_CP_0748_shiny.png"
+  ],
+  "Toxicroak": [
+   "Menu_CP_0454_shiny.png"
+  ],
+  "Toxtricity": [
+   "Menu_CP_0849_shiny.png"
+  ],
+  "Toxtricity-Low-Key": [
+   "Menu_CP_0849-Low_Key_shiny.png"
+  ],
+  "Trevenant": [
+   "Menu_CP_0709_shiny.png"
+  ],
+  "Tsareena": [
+   "Menu_CP_0763_shiny.png"
+  ],
+  "Typhlosion": [
+   "Menu_CP_0157_shiny.png"
+  ],
+  "Typhlosion-Hisui": [
+   "Menu_CP_0157-Hisui_shiny.png"
+  ],
+  "Tyranitar": [
+   "Menu_CP_0248_shiny.png"
+  ],
+  "Tyranitar-Mega": [
+   "Menu_CP_0248-Mega_shiny.png"
+  ],
+  "Tyrantrum": [
+   "Menu_CP_0697_shiny.png"
+  ],
+  "Umbreon": [
+   "Menu_CP_0197_shiny.png"
+  ],
+  "Vanilluxe": [
+   "Menu_CP_0584_shiny.png"
+  ],
+  "Vaporeon": [
+   "Menu_CP_0134_shiny.png"
+  ],
+  "Venusaur": [
+   "Menu_CP_0003_shiny.png"
+  ],
+  "Venusaur-Mega": [
+   "Menu_CP_0003-Mega_shiny.png"
+  ],
+  "Victreebel": [
+   "Menu_CP_0071_shiny.png"
+  ],
+  "Victreebel-Mega": [
+   "Menu_CP_0071-Mega_shiny.png"
+  ],
+  "Vileplume": [
+   "Menu_CP_0045_shiny.png"
+  ],
+  "Vivillon": [
+   "Menu_CP_0666_shiny.png",
+   "Menu_CP_0666-Archipelago_shiny.png",
+   "Menu_CP_0666-Continental_shiny.png",
+   "Menu_CP_0666-Elegant_shiny.png",
+   "Menu_CP_0666-Garden_shiny.png",
+   "Menu_CP_0666-High_Plains_shiny.png",
+   "Menu_CP_0666-Icy_Snow_shiny.png",
+   "Menu_CP_0666-Jungle_shiny.png",
+   "Menu_CP_0666-Marine_shiny.png",
+   "Menu_CP_0666-Modern_shiny.png",
+   "Menu_CP_0666-Monsoon_shiny.png",
+   "Menu_CP_0666-Ocean_shiny.png",
+   "Menu_CP_0666-Polar_shiny.png",
+   "Menu_CP_0666-River_shiny.png",
+   "Menu_CP_0666-Sandstorm_shiny.png",
+   "Menu_CP_0666-Savanna_shiny.png",
+   "Menu_CP_0666-Sun_shiny.png",
+   "Menu_CP_0666-Tundra_shiny.png"
+  ],
+  "Vivillon-Fancy": [
+   "Menu_CP_0666-Fancy_shiny.png"
+  ],
+  "Vivillon-Pokeball": [
+   "Menu_CP_0666-Poké_Ball_shiny.png"
+  ],
+  "Volcarona": [
+   "Menu_CP_0637_shiny.png"
+  ],
+  "Watchog": [
+   "Menu_CP_0505_shiny.png"
+  ],
+  "Weavile": [
+   "Menu_CP_0461_shiny.png"
+  ],
+  "Whimsicott": [
+   "Menu_CP_0547_shiny.png"
+  ],
+  "Wigglytuff": [
+   "Menu_CP_0040_shiny.png"
+  ],
+  "Wyrdeer": [
+   "Menu_CP_0899_shiny.png"
+  ],
+  "Zoroark": [
+   "Menu_CP_0571_shiny.png"
+  ],
+  "Zoroark-Hisui": [
+   "Menu_CP_0571-Hisui_shiny.png"
   ]
  }
 }
