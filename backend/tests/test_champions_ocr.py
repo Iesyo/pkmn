@@ -770,6 +770,182 @@ class ChampionsOcrTests(unittest.TestCase):
             [("switch", "p1a", "Incineroar"), ("switch", "p1b", "Charizard")],
         )
 
+    def pelipper_parser(self) -> ChampionsTextParser:
+        # COL-102, job 82923f56ce264a92, Partida 1, final del turno 4: el
+        # rival sin equipo conocido (como en el job), Roku con el suyo.
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="ShotgunDave",
+                p1_team=("Charizard", "Tyranitar", "Milotic", "Incineroar", "Sneasler", "Sinistcha"),
+                p1_aliases=(("Frida", "Milotic"),),
+            ),
+            catalog=ChampionsCatalog(
+                species=(
+                    "Charizard", "Tyranitar", "Milotic", "Incineroar", "Sneasler",
+                    "Sinistcha", "Pelipper",
+                ),
+                moves=("Parting Shot",),
+                abilities=("Drizzle", "Intimidate", "Competitive"),
+            ),
+        )
+        parser._active.update(
+            {"p1a": "Charizard", "p1b": "Milotic", "p2a": "Incineroar", "p2b": "Sneasler"}
+        )
+        parser._battle_open = True
+        parser._turn = 4
+        return parser
+
+    @staticmethod
+    def pelipper_opening_frames() -> tuple[tuple[int, int, tuple[OcrLine, ...]], ...]:
+        # Frames y posiciones reales de ocr.trace.jsonl: el debilitado y el
+        # Parting Shot dejan abiertos p2a y p2b antes del primer anuncio.
+        return (
+            (610, 304_500, (line("The opposing Sneasler fainted!", x=0.152, y=0.725, width=0.269),)),
+            (640, 319_500, (line("The opposing Incineroar used Parting Shot!", x=0.152, y=0.727, width=0.367),)),
+            (650, 324_500, (line("The opposing Incineroar went back to ShotgunDave!", x=0.153, y=0.730, width=0.443),)),
+            (669, 334_000, (line("ShotgunDave sent out Pelipper!", x=0.152, y=0.728, width=0.273),)),
+            (
+                679,
+                339_000,
+                (
+                    line("Pelipper's", x=0.845, y=0.426, width=0.079, height=0.055),
+                    line("Drizzle", x=0.866, y=0.468, width=0.059, height=0.047),
+                    line("It started to rain!", x=0.154, y=0.731, width=0.149),
+                ),
+            ),
+        )
+
+    def test_an_entry_ability_waits_behind_its_switch_until_the_hud_places_it(self) -> None:
+        # COL-102, job 82923f56ce264a92, Partida 1. Con los dos slots del
+        # rival abiertos, "sent out Pelipper!" no puede decir en cuál entra y
+        # el switch espera al HUD (21 s después); antes de esta corrección, la
+        # lluvia de su Drizzle y el Intimidate de Incineroar se escribían en
+        # cuanto se leían, por delante de los switches de sus dueños, y los
+        # dos banners de habilidad se perdían.
+        parser = self.pelipper_parser()
+        frames = (
+            *self.pelipper_opening_frames(),
+            (695, 347_000, (line("ShotgunDave sent out Incineroar!", x=0.150, y=0.725, width=0.290),)),
+            (
+                702,
+                350_500,
+                (
+                    line("Incineroar's", x=0.834, y=0.427, width=0.088, height=0.048),
+                    line("Intimidate", x=0.844, y=0.468, width=0.080, height=0.049),
+                ),
+            ),
+            (
+                703,
+                351_000,
+                (
+                    line("Incineroar's", x=0.834, y=0.430, width=0.088, height=0.043),
+                    line("Intimidate", x=0.843, y=0.469, width=0.081, height=0.047),
+                    line("Charizard and Frida's Attack fell!", x=0.153, y=0.728, width=0.280),
+                ),
+            ),
+            (
+                706,
+                352_500,
+                (
+                    line("Fiida's", x=0.011, y=0.438, width=0.056, height=0.031),
+                    line("Competitive", x=0.010, y=0.472, width=0.091, height=0.042),
+                ),
+            ),
+            (
+                708,
+                353_500,
+                (
+                    line("Frida's", x=0.077, y=0.428, width=0.054, height=0.046),
+                    line("Competitive", x=0.077, y=0.469, width=0.094, height=0.051),
+                    line("Frida's Sp. Atk rose sharply!", x=0.149, y=0.720, width=0.245),
+                ),
+            ),
+        )
+        emitted = [
+            (frame, [event.kind for event in parser.parse(lines, timestamp_ms=ts, source_frame=frame).events])
+            for frame, ts, lines in frames
+        ]
+        # Hasta el anuncio todo sale al momento; desde ahí, nada se escribe
+        # delante de un switch que todavía no existe.
+        self.assertEqual(
+            emitted,
+            [
+                (610, ["faint"]),
+                (640, ["move"]),
+                (650, ["message"]),
+                (669, []),
+                (679, []),
+                (695, []),
+                (702, []),
+                (703, []),
+                (706, []),
+                (708, []),
+            ],
+        )
+
+        confirmed = parser.parse(
+            (
+                line("Pelipper", x=0.622, y=0.046, width=0.064),
+                line("Incineroar", x=0.832, y=0.052, width=0.070),
+                line("100%", x=0.690, y=0.110, width=0.064),
+                line("52%", x=0.907, y=0.108, width=0.052),
+                line("MOVE TIME", x=0.828, y=0.332, width=0.069),
+                line("FIGHT", x=0.902, y=0.706, width=0.058),
+                line("Charizard", x=0.083, y=0.867, width=0.066),
+                line("Frida", x=0.285, y=0.866, width=0.041),
+                line("POKÉMON", x=0.838, y=0.906, width=0.094),
+                line("94/167", x=0.141, y=0.930, width=0.070),
+                line("202/202", x=0.333, y=0.927, width=0.085),
+            ),
+            timestamp_ms=355_500,
+            source_frame=712,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.value) for event in confirmed.events],
+            [
+                ("switch", "p2a", "Pelipper", None),
+                ("ability", "p2a", "Pelipper", "Drizzle"),
+                ("weather", None, None, "RainDance"),
+                ("switch", "p2b", "Incineroar", None),
+                ("ability", "p2b", "Incineroar", "Intimidate"),
+                ("message", None, None, "Charizard and Milotic's Attack fell!"),
+                ("ability", "p1b", "Milotic", "Competitive"),
+                ("message", None, None, "Milotic's Sp. Atk rose sharply!"),
+                ("turn", None, None, None),
+            ],
+        )
+        # Cada switch conserva el momento en que el juego lo anunció.
+        self.assertEqual(
+            [event.timestamp_ms for event in confirmed.events if event.kind == "switch"],
+            [334_000, 347_000],
+        )
+
+    def test_an_entry_the_hud_never_places_stops_holding_at_the_next_turn(self) -> None:
+        # Si llega el menú del turno siguiente sin que el HUD haya leído a
+        # quien entró, se deja de esperar: lo narrado sale tal como se leyó,
+        # sin switch, y la habilidad sin slot confirmado no se escribe.
+        parser = self.pelipper_parser()
+        for frame, ts, lines in self.pelipper_opening_frames():
+            parser.parse(lines, timestamp_ms=ts, source_frame=frame)
+
+        unreadable_hud = parser.parse(
+            (
+                line("MOVE TIME", x=0.828, y=0.332, width=0.069),
+                line("FIGHT", x=0.902, y=0.706, width=0.058),
+                line("POKÉMON", x=0.838, y=0.906, width=0.094),
+            ),
+            timestamp_ms=355_500,
+            source_frame=712,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.value) for event in unreadable_hud.events],
+            [("weather", "RainDance"), ("turn", None)],
+        )
+        self.assertEqual(parser._unplaced_entries, [])
+
     def test_a_return_without_the_word_withdrew_still_marks_the_slot(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)

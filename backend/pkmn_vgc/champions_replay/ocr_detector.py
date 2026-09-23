@@ -70,6 +70,34 @@ class PreparedOcrFrame:
     rotation_degrees: int
 
 
+@dataclass(slots=True)
+class _UnplacedEntry:
+    """Una entrada anunciada cuyo slot todavía no confirma el HUD.
+
+    `held` guarda, en orden, todo lo que la pantalla narró desde el anuncio;
+    se suelta detrás del switch en cuanto el HUD dice en qué slot cayó.
+    """
+
+    side: str
+    species: str
+    name_key: str
+    timestamp_ms: int
+    held: list[BattleEvent | _HeldAbility]
+    slot: str | None = None
+    switch: BattleEvent | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldAbility:
+    """Habilidad de una entrada aún sin slot; se escribe al confirmarlo."""
+
+    entry: _UnplacedEntry
+    ability: str
+    confidence: float
+    timestamp_ms: int
+    source_frame: int
+
+
 class OcrEngine(Protocol):
     def read(self, image: bytes) -> tuple[OcrLine, ...]: ...
 
@@ -802,6 +830,14 @@ class ChampionsTextParser:
         # detrás del primer switch de la batalla, para que nunca narre el
         # efecto de un Pokémon antes de que el replay lo haya sacado a pelear.
         self._pending_pre_switch_events: list[BattleEvent] = []
+        # Lo mismo a mitad de batalla. COL-102, job 82923f56ce264a92: un
+        # Parting Shot y un debilitado dejaron abiertos los dos slots del
+        # rival, así que "sent out Pelipper!" no podía decir en cuál entraba
+        # y el switch esperó 21 s a que el HUD lo leyera; mientras tanto el
+        # "It started to rain!" de su Drizzle ya se había escrito. Cada anuncio
+        # sin slot abre un tramo que represa lo narrado detrás de él hasta que
+        # el HUD lo coloca.
+        self._unplaced_entries: list[_UnplacedEntry] = []
         self._recent_field_sources: dict[str, tuple[str, str, str, int]] = {}
         self._turn = 0
         self._command_visible = False
@@ -1419,6 +1455,7 @@ class ChampionsTextParser:
         confidence: float,
         timestamp_ms: int,
         source_frame: int,
+        announced_as: str = "",
     ) -> tuple[BattleEvent, ...]:
         slots = self._open_slots[side]
         if not slots:
@@ -1434,7 +1471,21 @@ class ChampionsTextParser:
             # actually took Incineroar's. Announcement order doesn't track
             # which physical slot a "Go!"/"sent out" refers to once more
             # than one is open; only the HUD, reading both names together,
-            # does. Wait for it instead of guessing.
+            # does. Wait for it instead of guessing -but remember that the
+            # entry happened here, so what follows it waits too.
+            if not any(
+                entry.side == side and self._same_species(entry.species, species)
+                for entry in self._unplaced_entries
+            ):
+                self._unplaced_entries.append(
+                    _UnplacedEntry(
+                        side=side,
+                        species=species,
+                        name_key=_text_key(announced_as or species),
+                        timestamp_ms=timestamp_ms,
+                        held=[],
+                    )
+                )
             return ()
         slot = slots.pop(0)
         self._pending_switch_timestamps.pop(slot, None)
@@ -1452,6 +1503,138 @@ class ChampionsTextParser:
                 source_frame=source_frame,
             ),
         )
+
+    def _same_species(self, left: str, right: str) -> bool:
+        return _text_key(self._canonical_actor(left)) == _text_key(self._canonical_actor(right))
+
+    def _unplaced_entry_named(self, side: str, value: str) -> _UnplacedEntry | None:
+        """La entrada aún sin slot de ese lado a la que se refiere un texto."""
+
+        value_key = _text_key(re.sub(r"[\'’]s$", "", value.strip(), flags=re.IGNORECASE))
+        if len(value_key) < 3:
+            return None
+        matches = [
+            entry
+            for entry in self._unplaced_entries
+            if entry.side == side
+            and entry.slot is None
+            and max(
+                SequenceMatcher(None, value_key, entry.name_key).ratio(),
+                SequenceMatcher(None, value_key, _text_key(entry.species)).ratio(),
+            )
+            >= 0.85
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _place_unplaced_entries(self, switch_events: Sequence[BattleEvent]) -> list[BattleEvent]:
+        """Coloca las entradas que el HUD acaba de confirmar y suelta sus tramos.
+
+        El switch toma el momento del anuncio y sale en el orden en que el
+        juego anunció las entradas, cada uno seguido de lo que se narró detrás
+        de él. Un tramo sólo se suelta cuando todos los anteriores ya tienen
+        slot: soltar uno más reciente primero sí sería reordenar.
+        """
+
+        if not self._unplaced_entries:
+            return list(switch_events)
+        direct: list[BattleEvent] = []
+        for event in switch_events:
+            entry = next(
+                (
+                    entry
+                    for entry in self._unplaced_entries
+                    if entry.slot is None
+                    and entry.side == (event.slot or "")[:2]
+                    and self._same_species(entry.species, event.species or "")
+                ),
+                None,
+            )
+            if entry is None:
+                direct.append(event)
+                continue
+            entry.slot = event.slot
+            entry.switch = replace(event, timestamp_ms=entry.timestamp_ms)
+        released: list[BattleEvent] = []
+        placed: dict[tuple[str, str], str] = {}
+        while self._unplaced_entries and self._unplaced_entries[0].switch is not None:
+            entry = self._unplaced_entries.pop(0)
+            placed[(entry.side, _text_key(self._canonical_actor(entry.species)))] = entry.slot or ""
+            released.append(entry.switch)  # type: ignore[arg-type]
+            released.extend(self._settle_held(entry.held, placed))
+        return direct + released
+
+    def _settle_held(
+        self,
+        held: Sequence[BattleEvent | _HeldAbility],
+        placed: Mapping[tuple[str, str], str],
+    ) -> list[BattleEvent]:
+        """Pone en su slot confirmado lo represado a nombre de una entrada.
+
+        Lo que no tenía slot seguro se había escrito en el primero del lado;
+        con el HUD ya leído, cada evento de una especie que entró (`placed`,
+        sólo las entradas ya soltadas hasta este tramo) pasa al slot donde de
+        verdad está. Una habilidad cuyo dueño nunca se confirmó se descarta:
+        escribirla sería adivinar su slot.
+        """
+
+        settled: list[BattleEvent] = []
+        for item in held:
+            if isinstance(item, _HeldAbility):
+                if not item.entry.slot:
+                    continue
+                settled.append(
+                    BattleEvent(
+                        kind="ability",
+                        timestamp_ms=item.timestamp_ms,
+                        confidence=item.confidence,
+                        slot=item.entry.slot,  # type: ignore[arg-type]
+                        species=item.entry.species,
+                        value=item.ability,
+                        source_frame=item.source_frame,
+                    )
+                )
+                continue
+            if item.slot and item.species:
+                slot = placed.get((item.slot[:2], _text_key(self._canonical_actor(item.species))))
+                if slot and slot != item.slot:
+                    item = replace(item, slot=slot)  # type: ignore[arg-type]
+            settled.append(item)
+        return settled
+
+    def _hold_behind_unplaced_entries(
+        self,
+        events: list[BattleEvent],
+        marks: Sequence[tuple[int, _UnplacedEntry]],
+        *,
+        give_up: bool,
+    ) -> list[BattleEvent]:
+        """Represa lo que el frame narró detrás de cada anuncio aún sin slot.
+
+        `marks` dice desde qué posición del frame empieza el tramo de cada
+        entrada. Con `give_up` (llega el turno siguiente o se acaba la batalla
+        sin que el HUD las haya colocado) se deja de esperar: todo lo represado
+        sale tal como se leyó, sin switch, igual que antes de esta espera.
+        """
+
+        if not marks:
+            return events
+        start = marks[0][0]
+        if give_up:
+            waiting: list[BattleEvent] = []
+            placed: dict[tuple[str, str], str] = {}
+            for entry in self._unplaced_entries:
+                if entry.switch is not None:
+                    placed[(entry.side, _text_key(self._canonical_actor(entry.species)))] = (
+                        entry.slot or ""
+                    )
+                    waiting.append(entry.switch)
+                waiting.extend(self._settle_held(entry.held, placed))
+            self._unplaced_entries.clear()
+            return events[:start] + waiting + events[start:]
+        bounds = [index for index, _entry in marks[1:]] + [len(events)]
+        for (index, entry), end in zip(marks, bounds):
+            entry.held.extend(events[index:end])
+        return events[:start]
 
     def _ability_relief(self, side: str, value: str, ability: str) -> tuple[str | None, str | None]:
         """Especie, y el slot sólo cuando el Pokémon relevó a otro.
@@ -1571,6 +1754,28 @@ class ChampionsTextParser:
                 continue
             ability = self._abilities.resolve(ability_line.text, threshold=0.78)
             if not ability:
+                continue
+            # Un banner a nombre de quien acaba de anunciarse sin slot es su
+            # habilidad de entrada ("Pelipper's Drizzle" tras "sent out
+            # Pelipper!"). El lado lo da el borde del banner; el slot, el HUD
+            # cuando lo coloque. Hasta entonces queda en su tramo, en su sitio.
+            entry = self._unplaced_entry_named(
+                "p2" if actor_line.left >= 0.68 else "p1",
+                actor_line.text,
+            )
+            if entry is not None:
+                key = (entry.side, entry.species, ability)
+                visible.add(key)
+                if key not in self._visible_abilities:
+                    self._unplaced_entries[-1].held.append(
+                        _HeldAbility(
+                            entry=entry,
+                            ability=ability,
+                            confidence=min(actor_line.confidence, ability_line.confidence),
+                            timestamp_ms=timestamp_ms,
+                            source_frame=source_frame,
+                        )
+                    )
                 continue
             resolved = self._ability_actor(actor_line.text, ability)
             if not resolved:
@@ -2332,6 +2537,7 @@ class ChampionsTextParser:
                         confidence=confidence,
                         timestamp_ms=timestamp_ms,
                         source_frame=source_frame,
+                        announced_as=sent_out.group(2),
                     )
                 slots = self._open_slots[side]
                 if slots:
@@ -2359,6 +2565,7 @@ class ChampionsTextParser:
                     confidence=confidence,
                     timestamp_ms=timestamp_ms,
                     source_frame=source_frame,
+                    announced_as=go.group(1),
                 )
 
         knocked_off = re.match(
@@ -2813,10 +3020,15 @@ class ChampionsTextParser:
                     )
                 )
 
-        events.extend(switch_events)
+        events.extend(self._place_unplaced_entries(switch_events))
         if switch_events and not had_active_pokemon:
             events.extend(self._pending_pre_switch_events)
             self._pending_pre_switch_events = []
+        # Desde aquí, lo que produzca el frame va detrás de cualquier entrada
+        # que siga sin slot, y de cada una que se anuncie en este mismo frame.
+        hold_marks: list[tuple[int, _UnplacedEntry]] = (
+            [(len(events), self._unplaced_entries[-1])] if self._unplaced_entries else []
+        )
 
         ability_events = self._ability_events(
             lines,
@@ -2842,6 +3054,10 @@ class ChampionsTextParser:
             events.extend(parsed)
             if any(event.kind not in {"message", "turn"} for event in parsed):
                 self._turn_has_activity = True
+            if self._unplaced_entries and (
+                not hold_marks or hold_marks[-1][1] is not self._unplaced_entries[-1]
+            ):
+                hold_marks.append((len(events), self._unplaced_entries[-1]))
         self._visible_messages = current_messages
 
         for slot, (species, health) in observations.items():
@@ -2946,6 +3162,17 @@ class ChampionsTextParser:
         battle_started = self._battle_open and winner is None
         if winner:
             self._battle_open = False
+
+        if hold_marks:
+            # Si el turno siguiente llega (o la batalla termina) sin que el HUD
+            # haya colocado la entrada, se deja de esperar en vez de arrastrar
+            # lo represado por encima del cambio de turno.
+            events = self._hold_behind_unplaced_entries(
+                events,
+                hold_marks,
+                give_up=battle_complete
+                or any(event.kind == "turn" for event in events[hold_marks[0][0]:]),
+            )
 
         if not self._active and events:
             self._pending_pre_switch_events.extend(events)
