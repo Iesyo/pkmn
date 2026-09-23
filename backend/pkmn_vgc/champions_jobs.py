@@ -15,10 +15,14 @@ from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import ReplayDocument
-from .champions_replay.ocr_detector import ChampionsOcrDetector, load_champions_catalog
+from .champions_replay.ocr_detector import (
+    ChampionsOcrDetector,
+    OcrTraceDetector,
+    load_champions_catalog,
+)
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
-from .champions_replay.sources import VideoFrameSource
+from .champions_replay.sources import OcrTraceFrameSource, VideoFrameSource
 from .champions_replay.team_preview import ChampionsTeamPreviewResolver
 
 
@@ -59,12 +63,34 @@ def _default_processor(
         trace_path=trace_path,
         team_preview_resolver=ChampionsTeamPreviewResolver(catalog.species_types),
     )
-    captures = ReplayCapturePipeline(source, detector, seed).capture(
+    # Fase 1, el único recorrido del vídeo: el OCR y todo lo que necesita la
+    # imagen (sprites del Team Preview, motes del HUD, dónde empieza y acaba
+    # cada batalla) quedan en la traza. Lo que esta fase decide sobre la
+    # marcha sólo guía esa lectura; el replay no sale de aquí.
+    reported: set[str] = set()
+
+    def report_video_warning(message: str) -> None:
+        reported.add(message)
+        on_warning(message)
+
+    def report_replay_warning(message: str) -> None:
+        if message not in reported:
+            on_warning(message)
+
+    ReplayCapturePipeline(source, detector, seed).capture(
         max_battles=max_battles,
         total_frames=source.estimated_frame_count(),
         on_progress=on_progress,
-        on_warning=on_warning,
+        on_warning=report_video_warning,
     )
+    # Fase 2: el replay se decide con la traza ya completa, sabiendo desde el
+    # primer frame de cada batalla lo que el vídeo sólo reveló más tarde (el
+    # roster rival, los motes finales). Tarda segundos y no vuelve al vídeo.
+    captures = ReplayCapturePipeline(
+        OcrTraceFrameSource(path=trace_path),
+        OcrTraceDetector.from_trace(trace_path, context=detector_context),
+        seed,
+    ).capture(max_battles=max_battles, on_warning=report_replay_warning)
     return tuple(build_replay_document(capture) for capture in captures)
 
 

@@ -830,6 +830,7 @@ class ChampionsTextParser:
         # detrás del primer switch de la batalla, para que nunca narre el
         # efecto de un Pokémon antes de que el replay lo haya sacado a pelear.
         self._pending_pre_switch_events: list[BattleEvent] = []
+        self._pending_ability_positions: dict[tuple[str, str, str], tuple[int, int, int]] = {}
         # Lo mismo a mitad de batalla. COL-102, job 82923f56ce264a92: un
         # Parting Shot y un debilitado dejaron abiertos los dos slots del
         # rival, así que "sent out Pelipper!" no podía decir en cuál entraba
@@ -1802,6 +1803,14 @@ class ChampionsTextParser:
             visible.add(key)
             if key not in self._visible_abilities:
                 self._pending_abilities[key] = (confidence, self._turn)
+                if not self._active:
+                    # Antes de los switches de los leads todo se represa en
+                    # orden; la habilidad guarda aquí su sitio en ese tramo.
+                    self._pending_ability_positions[key] = (
+                        len(self._pending_pre_switch_events),
+                        timestamp_ms,
+                        source_frame,
+                    )
         self._visible_abilities = visible
         return tuple(learned_switches) + self._flush_pending_abilities(
             timestamp_ms=timestamp_ms,
@@ -1824,49 +1833,100 @@ class ChampionsTextParser:
             if turn != self._turn:
                 del self._pending_abilities[key]
                 continue
-            # COL-102, job f53bd34897b84f86: Incineroar left p1b (Parting
-            # Shot) and came back through p1a; `_active["p1b"]` still named
-            # it until the HUD confirmed the swap, so the lookup kept
-            # matching that stale, now-open slot instead of waiting. Slots
-            # marked open (`_mark_slot_open`) are excluded here so a
-            # departed Pokémon's old spot can't stand in for its real one.
-            slot = self._slot_for_species(species, side, exclude_open=True)
-            # El rótulo de habilidad no lleva el prefijo del rival, así que el
-            # lado se deduce y con la misma especie en los dos equipos puede
-            # caer en el que no juega. Buscar el slot devuelve el primero del
-            # lado cuando no encuentra a nadie, y eso le colgaba la habilidad
-            # al ocupante que hubiera. Se espera a que esté en el campo.
-            occupant = self._active.get(slot) if slot else None
-            if occupant is None or _text_key(self._canonical_actor(occupant)) != _text_key(
-                self._canonical_actor(species)
-            ):
-                continue
-            events.append(
-                BattleEvent(
-                    kind="ability",
+            events.extend(
+                self._placed_ability_events(
+                    key,
+                    confidence,
                     timestamp_ms=timestamp_ms,
-                    confidence=confidence,
-                    slot=slot,  # type: ignore[arg-type]
-                    species=species,
-                    value=ability,
                     source_frame=source_frame,
                 )
             )
-            terrain = self._terrain_for_ability(ability)
-            if terrain:
-                self._recent_field_sources[terrain] = (ability, slot, species, timestamp_ms)
-                if terrain in self._pending_fieldstarts:
-                    events.append(
-                        self._fieldstart_event(
-                            terrain,
-                            confidence=confidence,
-                            timestamp_ms=timestamp_ms,
-                            source_frame=source_frame,
-                        )
-                    )
-                    self._pending_fieldstarts.remove(terrain)
-            del self._pending_abilities[key]
         return tuple(events)
+
+    def _placed_ability_events(
+        self,
+        key: tuple[str, str, str],
+        confidence: float,
+        *,
+        timestamp_ms: int,
+        source_frame: int,
+    ) -> list[BattleEvent]:
+        """La habilidad pendiente, si su Pokémon ya está en el campo."""
+
+        side, species, ability = key
+        # COL-102, job f53bd34897b84f86: Incineroar left p1b (Parting
+        # Shot) and came back through p1a; `_active["p1b"]` still named
+        # it until the HUD confirmed the swap, so the lookup kept
+        # matching that stale, now-open slot instead of waiting. Slots
+        # marked open (`_mark_slot_open`) are excluded here so a
+        # departed Pokémon's old spot can't stand in for its real one.
+        slot = self._slot_for_species(species, side, exclude_open=True)
+        # El rótulo de habilidad no lleva el prefijo del rival, así que el
+        # lado se deduce y con la misma especie en los dos equipos puede
+        # caer en el que no juega. Buscar el slot devuelve el primero del
+        # lado cuando no encuentra a nadie, y eso le colgaba la habilidad
+        # al ocupante que hubiera. Se espera a que esté en el campo.
+        occupant = self._active.get(slot) if slot else None
+        if occupant is None or _text_key(self._canonical_actor(occupant)) != _text_key(
+            self._canonical_actor(species)
+        ):
+            return []
+        events = [
+            BattleEvent(
+                kind="ability",
+                timestamp_ms=timestamp_ms,
+                confidence=confidence,
+                slot=slot,  # type: ignore[arg-type]
+                species=species,
+                value=ability,
+                source_frame=source_frame,
+            )
+        ]
+        terrain = self._terrain_for_ability(ability)
+        if terrain:
+            self._recent_field_sources[terrain] = (ability, slot, species, timestamp_ms)
+            if terrain in self._pending_fieldstarts:
+                events.append(
+                    self._fieldstart_event(
+                        terrain,
+                        confidence=confidence,
+                        timestamp_ms=timestamp_ms,
+                        source_frame=source_frame,
+                    )
+                )
+                self._pending_fieldstarts.remove(terrain)
+        del self._pending_abilities[key]
+        return events
+
+    def _release_pre_switch_events(self) -> list[BattleEvent]:
+        """Suelta lo represado en la apertura, cada habilidad en su sitio.
+
+        COL-102, job 82923f56ce264a92: con el roster rival ya conocido, el
+        Intimidate del Incineroar líder sí encuentra dueño, pero esperaba
+        aparte y salía detrás de su propio "Attack fell!", que se había leído
+        medio segundo después. Cada habilidad leída mientras nadie estaba en
+        el campo guarda su posición en ese tramo y entra ahí en cuanto el HUD
+        coloca a su Pokémon.
+        """
+
+        held = list(self._pending_pre_switch_events)
+        self._pending_pre_switch_events = []
+        positions = sorted(self._pending_ability_positions.items(), key=lambda item: item[1][0])
+        self._pending_ability_positions = {}
+        offset = 0
+        for key, (position, timestamp_ms, source_frame) in positions:
+            pending = self._pending_abilities.get(key)
+            if pending is None:
+                continue
+            placed = self._placed_ability_events(
+                key,
+                pending[0],
+                timestamp_ms=timestamp_ms,
+                source_frame=source_frame,
+            )
+            held[position + offset:position + offset] = placed
+            offset += len(placed)
+        return held
 
     # Efectos que ocupan todo el campo. Showdown los escribe como
     # -fieldstart/-fieldend y el visor los pinta como estado del campo
@@ -3064,8 +3124,7 @@ class ChampionsTextParser:
 
         events.extend(self._place_unplaced_entries(switch_events))
         if switch_events and not had_active_pokemon:
-            events.extend(self._pending_pre_switch_events)
-            self._pending_pre_switch_events = []
+            events.extend(self._release_pre_switch_events())
         # Desde aquí, lo que produzca el frame va detrás de cualquier entrada
         # que siga sin slot, y de cada una que se anuncie en este mismo frame.
         hold_marks: list[tuple[int, _UnplacedEntry]] = (
@@ -3789,37 +3848,49 @@ def load_trace_aliases(path: Path) -> dict[int, dict[str, tuple[tuple[str, str],
     }
 
 
-def load_trace_preview_teams(path: Path) -> dict[int, tuple[str, ...]]:
-    """El roster rival que cada batalla sólo resolvió al cerrarse.
+def load_trace_rosters(path: Path) -> dict[int, tuple[str, ...]]:
+    """El roster rival final de cada batalla, tal como quedó en la traza.
 
-    En vivo, un Team Preview que no junta votos fuertes durante la batalla
-    se resuelve en `flush_pending`, al cerrarla, y entra en esa batalla. La
-    traza lo guarda detrás de su último frame (fase `preview_team_flush`),
-    así que reaplicarlo como un frame más lo metía en la batalla siguiente.
+    Sale del Team Preview: de su lectura durante la batalla o, si sólo se
+    resolvió al cerrarla, del registro `preview_team_flush` que la traza
+    guarda detrás de su último frame. Ése manda, porque es la última palabra
+    del resolvedor para esa batalla.
     """
 
-    teams: dict[int, tuple[str, ...]] = {}
+    read: dict[int, tuple[str, ...]] = {}
+    closing: dict[int, tuple[str, ...]] = {}
     if not path.is_file():
         return {}
     with path.open("r", encoding="utf-8-sig") as stream:
         for raw in stream:
-            if '"preview_team_flush"' not in raw:
+            if not raw.strip():
                 continue
             try:
                 payload = json.loads(raw)
                 battle_index = max(0, int(payload.get("battle_index", 0)))
             except (json.JSONDecodeError, TypeError, ValueError):
                 continue
-            if payload.get("phase") != "preview_team_flush":
+            detections = payload.get("detections")
+            teams = detections.get("teams") if isinstance(detections, dict) else None
+            team = teams.get("p2") if isinstance(teams, dict) else None
+            if not isinstance(team, list) or not team:
                 continue
-            team = ((payload.get("detections") or {}).get("teams") or {}).get("p2")
-            if isinstance(team, list) and team:
-                teams[battle_index] = tuple(str(species) for species in team if species)
-    return teams
+            roster = tuple(str(species) for species in team if species)
+            if payload.get("phase") == "preview_team_flush":
+                closing[battle_index] = roster
+            else:
+                read.setdefault(battle_index, roster)
+    return {**read, **closing}
 
 
 class OcrTraceDetector:
-    """Reaplica el parser a una traza sin repetir FFmpeg ni RapidOCR."""
+    """Decide el replay desde una traza ya completa, sin repetir FFmpeg ni RapidOCR.
+
+    Es la segunda fase de un job: cuando se lee, la traza ya contiene todo lo
+    que el recorrido del vídeo llegó a saber de cada batalla, así que su
+    roster rival y sus motes finales se conocen desde su primer frame, y no
+    desde el momento en que el vídeo los reveló.
+    """
 
     def __init__(
         self,
@@ -3829,16 +3900,24 @@ class OcrTraceDetector:
             int,
             Mapping[str, Sequence[tuple[str, str]]],
         ] | None = None,
-        preview_teams_by_battle: Mapping[int, Sequence[str]] | None = None,
+        rosters_by_battle: Mapping[int, Sequence[str]] | None = None,
     ) -> None:
         self._base_context = context or DetectorContext()
         self._aliases_by_battle = dict(aliases_by_battle or {})
-        self._preview_teams_by_battle = {
+        self._rosters_by_battle = {
             battle_index: tuple(team)
-            for battle_index, team in (preview_teams_by_battle or {}).items()
+            for battle_index, team in (rosters_by_battle or {}).items()
         }
         self._battle_index = 0
         self.parser = ChampionsTextParser(context=self._context_for_battle(0))
+
+    @classmethod
+    def from_trace(cls, path: Path, *, context: DetectorContext | None = None) -> OcrTraceDetector:
+        return cls(
+            context=context,
+            aliases_by_battle=load_trace_aliases(path),
+            rosters_by_battle=load_trace_rosters(path),
+        )
 
     @staticmethod
     def _merged_aliases(
@@ -3854,6 +3933,10 @@ class OcrTraceDetector:
         learned = self._aliases_by_battle.get(battle_index, {})
         return replace(
             self._base_context,
+            # Un equipo rival escrito a mano en el job manda sobre el que se
+            # reconoció en el vídeo; si no lo hay, el de esta batalla entra
+            # como si se hubiera conocido desde el principio.
+            p2_team=self._base_context.p2_team or self._rosters_by_battle.get(battle_index, ()),
             p1_aliases=self._merged_aliases(
                 self._base_context.p1_aliases,
                 learned.get("p1", ()),
@@ -3895,13 +3978,10 @@ class OcrTraceDetector:
             ) if isinstance(detection_values, Mapping) else FrameDetections()
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             raise DetectionError(f"La traza OCR contiene un frame inválido: {error}") from error
-        if payload.get("phase") == "visual_alias_flush":
-            return FrameDetections()
-        if (
-            payload.get("phase") == "preview_team_flush"
-            and battle_index in self._preview_teams_by_battle
-        ):
-            # Ya lo entrega `flush_pending` al cerrar su batalla, como en vivo.
+        if payload.get("phase") in {"visual_alias_flush", "preview_team_flush"}:
+            # Lo que el vídeo resolvió al cerrar una batalla ya está en su
+            # roster desde el primer frame. Reaplicar aquí la pantalla de
+            # selección de la que salió lo metía en la batalla siguiente.
             return FrameDetections()
         if battle_index != self._battle_index:
             self._battle_index = battle_index
@@ -3916,14 +3996,10 @@ class OcrTraceDetector:
             timestamp_ms=frame.timestamp_ms,
             source_frame=frame.index,
         )
-        if recorded.p2_team and not detections.p2_team:
-            detections = replace(detections, p2_team=recorded.p2_team)
+        p2_team = recorded.p2_team or self._rosters_by_battle.get(battle_index, ())
+        if p2_team and not detections.p2_team:
+            detections = replace(detections, p2_team=p2_team)
         return detections
-
-    def flush_pending(self) -> FrameDetections:
-        """El roster que en vivo llegó al cerrar esta batalla, si lo hubo."""
-
-        return FrameDetections(p2_team=self._preview_teams_by_battle.get(self._battle_index, ()))
 
     def reset_battle_state(self) -> None:
         self.parser.reset_battle_state()

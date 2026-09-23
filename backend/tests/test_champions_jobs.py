@@ -16,7 +16,9 @@ from pkmn_vgc.champions_replay.models import (
     CapturedBattle,
     ReplayDocument,
 )
+from pkmn_vgc.champions_replay.ocr_detector import OcrTraceDetector
 from pkmn_vgc.champions_replay.pipeline import CaptureProgress
+from pkmn_vgc.champions_replay.sources import OcrTraceFrameSource
 from pkmn_vgc.champions_replay.team_preview import ChampionsTeamPreviewResolver
 
 
@@ -87,13 +89,21 @@ class ChampionsJobTests(unittest.TestCase):
         pipeline_type: MagicMock,
     ) -> None:
         source_type.return_value.estimated_frame_count.return_value = 1
-        final = CapturedBattle(
-            p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
-            p2=BattleSide("Rival final", ("Metagross",), ("Metagross",)),
-            events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
-            winner="p1",
-        )
-        pipeline_type.return_value.capture.return_value = (final,)
+
+        def battle(rival: str) -> CapturedBattle:
+            return CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide(rival, ("Metagross",), ("Metagross",)),
+                events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+                winner="p1",
+            )
+
+        # La lectura del vídeo decide sobre la marcha; el replay tiene que
+        # salir de la segunda fase, que ya parte de la traza completa.
+        pipeline_type.return_value.capture.side_effect = [
+            (battle("Rival sobre la marcha"),),
+            (battle("Rival final"),),
+        ]
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -110,7 +120,10 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(documents[0].p2, "Rival final")
         self.assertEqual(source_type.call_count, 1)
         self.assertEqual(detector_type.call_count, 1)
-        self.assertEqual(pipeline_type.return_value.capture.call_count, 1)
+        trace_source, trace_detector, _seed = pipeline_type.call_args_list[1].args
+        self.assertIsInstance(trace_source, OcrTraceFrameSource)
+        self.assertEqual(trace_source.path, output / "ocr.trace.jsonl")
+        self.assertIsInstance(trace_detector, OcrTraceDetector)
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0

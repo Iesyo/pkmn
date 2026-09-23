@@ -13,8 +13,6 @@ from .ocr_detector import (
     ChampionsOcrDetector,
     OcrTraceDetector,
     load_champions_catalog,
-    load_trace_aliases,
-    load_trace_preview_teams,
 )
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
@@ -288,11 +286,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed, detector_context = _seed_from_context(context_value, source_mode)
         sample_fps: float | None = None
         if args.command == "trace":
-            detector = OcrTraceDetector(
-                context=detector_context,
-                aliases_by_battle=load_trace_aliases(args.trace),
-                preview_teams_by_battle=load_trace_preview_teams(args.trace),
-            )
+            # La misma segunda fase que usa un job al terminar de leer el vídeo.
+            detector = OcrTraceDetector.from_trace(args.trace, context=detector_context)
             source = OcrTraceFrameSource(path=args.trace)
             total_frames = source.estimated_frame_count()
             detector_label = "parser de traza OCR"

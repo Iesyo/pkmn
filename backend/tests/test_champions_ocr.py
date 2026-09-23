@@ -20,7 +20,6 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     _health_value,
     load_champions_catalog,
     load_trace_aliases,
-    load_trace_preview_teams,
 )
 from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
 from pkmn_vgc.champions_replay.showdown import build_replay_document
@@ -1163,6 +1162,86 @@ class ChampionsOcrTests(unittest.TestCase):
                 ("turn", None),
             ],
         )
+
+    def test_an_opening_ability_keeps_its_place_ahead_of_its_effect(self) -> None:
+        # COL-102, job 82923f56ce264a92, apertura de la Partida 1, con el
+        # roster rival conocido desde el principio (segunda fase del job).
+        # El banner de Intimidate se lee medio segundo antes que su "Attack
+        # fell!", pero la habilidad esperaba aparte a que el HUD colocara a
+        # Incineroar y salía detrás de su propio efecto y de la White Herb.
+        roku = ("Charizard", "Tyranitar", "Milotic", "Incineroar", "Sneasler", "Sinistcha")
+        rival = ("Incineroar", "Sneasler", "Slowking", "Pelipper", "Meganium", "Basculegion")
+        parser = ChampionsTextParser(
+            context=DetectorContext(
+                p1_name="Roku",
+                p2_name="ShotgunDave",
+                p1_team=roku,
+                p2_team=rival,
+                p1_aliases=(("Mate", "Sinistcha"), ("Silveria", "Sneasler")),
+            ),
+            catalog=ChampionsCatalog(
+                species=tuple(dict.fromkeys((*roku, *rival))),
+                abilities=("Intimidate",),
+                species_abilities=(("Incineroar", ("Blaze", "Intimidate")),),
+            ),
+        )
+        frames = (
+            (250, 124_500, (line("ShotgunDave sent out Sneasler and Incineroar!", x=0.152, y=0.728, width=0.397),)),
+            (258, 128_500, (line("Go! Mate and Silveria!", x=0.155, y=0.731, width=0.194),)),
+            (
+                265,
+                132_000,
+                (
+                    line("Incineroar's", x=0.835, y=0.432, width=0.087, height=0.041),
+                    line("Intimidate", x=0.843, y=0.466, width=0.083, height=0.053),
+                ),
+            ),
+            (
+                266,
+                132_500,
+                (
+                    line("Incineroar's", x=0.835, y=0.431, width=0.087, height=0.043),
+                    line("Intimidate", x=0.844, y=0.468, width=0.081, height=0.050),
+                    line("Mate and Silveria's Attack fell!", x=0.155, y=0.732, width=0.259),
+                ),
+            ),
+            (
+                275,
+                137_000,
+                (line("Silveria returned its stats to normal using its White Herb!", x=0.154, y=0.73, width=0.475),),
+            ),
+        )
+        for frame, ts, lines in frames:
+            self.assertEqual(parser.parse(lines, timestamp_ms=ts, source_frame=frame).events, ())
+
+        leads = parser.parse(
+            (
+                line("Incineroar", x=0.625, y=0.050, width=0.070),
+                line("Sneasler", x=0.831, y=0.051, width=0.059),
+                line("100%", x=0.689, y=0.108, width=0.066),
+                line("100%", x=0.897, y=0.111, width=0.062),
+                line("MOVE TIME", x=0.826, y=0.334, width=0.074),
+                line("FIGHT", x=0.902, y=0.708, width=0.057),
+                line("Mate", x=0.081, y=0.866, width=0.040),
+                line("Silveria", x=0.287, y=0.867, width=0.053),
+                line("POKÉMON", x=0.839, y=0.906, width=0.093),
+                line("178/178", x=0.129, y=0.926, width=0.083),
+                line("157/157", x=0.334, y=0.926, width=0.082),
+            ),
+            timestamp_ms=139_000,
+            source_frame=279,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in leads.events if event.kind != "switch"],
+            [
+                ("ability", "p2a", "Intimidate"),
+                ("message", None, "Sinistcha and Sneasler's Attack fell!"),
+                ("message", None, "Sneasler returned its stats to normal using its White Herb!"),
+                ("turn", None, None),
+            ],
+        )
+        self.assertEqual([event.kind for event in leads.events[:4]], ["switch"] * 4)
 
     def test_reset_battle_state_allows_the_same_opening_in_a_second_battle(self) -> None:
         parser = self.parser()
@@ -3595,15 +3674,17 @@ class ChampionsOcrTests(unittest.TestCase):
             )
             captures = ReplayCapturePipeline(
                 OcrTraceFrameSource(trace),
-                OcrTraceDetector(
-                    context=context,
-                    aliases_by_battle=load_trace_aliases(trace),
-                    preview_teams_by_battle=load_trace_preview_teams(trace),
-                ),
+                OcrTraceDetector.from_trace(trace, context=context),
                 CaptureSeed(p1_name="Player", p2_name="Rival", p1_team=context.p1_team),
             ).capture(max_battles=0)
+            # Y la segunda fase ya lo sabe al leer el primer frame de la
+            # Partida 1, no al cerrarla como el recorrido del vídeo.
+            detector = OcrTraceDetector.from_trace(trace, context=context)
+            detector.detect(next(iter(OcrTraceFrameSource(trace))))
 
         self.assertEqual([capture.p2.team for capture in captures], [first_rival, second_rival])
+        self.assertEqual(detector.parser._teams["p2"], first_rival)
+        self.assertTrue(detector.parser._known_teams["p2"])
 
 
 if __name__ == "__main__":

@@ -61,7 +61,8 @@ flowchart TD
   usado por vídeo, web y OBS no inicia Ollama ni carga un modelo generativo.
 - `--ocr-trace` guarda un JSONL por frame con texto, coordenadas, tiempo de OCR
   y eventos. El subcomando `trace` vuelve a aplicar el parser a ese archivo en
-  segundos, sin repetir FFmpeg ni OCR.
+  segundos, sin repetir FFmpeg ni OCR; es la misma segunda fase con la que el
+  job web construye sus replays.
 
 Teams admite cargar el `.json` reconstruido desde **Replay Champions**. La
 partida conserva origen Champions porque no se guarda una URL pública de
@@ -91,7 +92,19 @@ el OCR de forma estrictamente secuencial para conservar el orden de los
 acontecimientos. En ese mismo recorrido mantiene dos carriles lógicos: uno
 registra los eventos con los motes visibles y el otro construye la relación
 mote → especie. La sustitución se hace al cerrar cada batalla, sin una segunda
-vuelta al vídeo. Un vídeo con varias batallas genera `replay-001.*`,
+vuelta al vídeo.
+
+El replay no sale de ese recorrido. Mientras se lee el vídeo, cada decisión se
+toma con lo que se sabe hasta ese frame: el roster rival puede resolverse
+recién al cerrar la batalla, y el HUD puede confirmar un slot muchos segundos
+después del anuncio. Por eso el job trabaja en dos fases. La primera es el
+único recorrido del vídeo y deja en `ocr.trace.jsonl` todo lo que necesita la
+imagen (texto, sprites del Team Preview, motes del HUD, límites de cada
+batalla). La segunda construye los replays desde esa traza ya completa, con el
+roster rival y los motes finales de cada batalla conocidos desde su primer
+frame. Tarda segundos y es exactamente lo que hace el subcomando `trace`.
+
+Un vídeo con varias batallas genera `replay-001.*`,
 `replay-002.*`, etc. La versión seleccionada aporta el Team propio y sus alias,
 mientras el rival se reconstruye desde lo visible. Cada resultado vuelve al
 formulario de revisión y no entra al historial hasta que el usuario lo
@@ -235,8 +248,8 @@ especie visual que no exista en el catálogo ni completa especies ambiguas por
 parecido. Las formas deben declararse
 con su nombre de Showdown, por ejemplo `Indeedee-F`; el OCR puede leer
 `Indeedee`, pero el Team conocido conserva automáticamente la forma correcta.
-La traza JSONL se conserva para diagnóstico y reproceso manual; el flujo web
-normal no la necesita para realizar la unión final de identidades.
+La traza JSONL es la fuente de los replays del flujo web (su segunda fase) y
+se conserva también para diagnóstico y reproceso manual.
 Si el Team del rival lleva la hembra, debe aparecer como `"Indeedee-F"` en
 `teams.p2`, no como `"Indeedee"`.
 
