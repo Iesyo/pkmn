@@ -23,7 +23,7 @@ from .champions_replay.ocr_detector import (
 from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
 from .champions_replay.sources import OcrTraceFrameSource, VideoFrameSource
-from .champions_replay.team_preview import ChampionsTeamPreviewResolver
+from .champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 
 
 ALLOWED_VIDEO_SUFFIXES = {".mkv", ".mov", ".mp4", ".webm"}
@@ -58,10 +58,14 @@ def _default_processor(
     trace_path = output_directory / "ocr.trace.jsonl"
     trace_path.unlink(missing_ok=True)
     catalog = load_champions_catalog()
+    preview_resolver = ChampionsTeamPreviewResolver(catalog.species_types)
     detector = ChampionsOcrDetector(
         context=detector_context,
         trace_path=trace_path,
-        team_preview_resolver=ChampionsTeamPreviewResolver(catalog.species_types),
+        team_preview_resolver=preview_resolver,
+        # El icono junto a cada mote rival es el mismo sprite del Team
+        # Preview: compararlo ata el mote a su especie sin deducir nada.
+        alias_resolver=ChampionsHudIconResolver(preview_resolver),
     )
     # Fase 1, el único recorrido del vídeo: el OCR y todo lo que necesita la
     # imagen (sprites del Team Preview, motes del HUD, dónde empieza y acaba

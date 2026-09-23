@@ -17,7 +17,7 @@ from .ocr_detector import (
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
-from .team_preview import ChampionsTeamPreviewResolver
+from .team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 from .verify import describe, verify_replay
 
 
@@ -305,13 +305,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"Ya existe {args.ocr_trace}; usa --force para reemplazarlo."
                     )
                 args.ocr_trace.unlink()
+            preview_resolver = ChampionsTeamPreviewResolver(
+                load_champions_catalog().species_types,
+            )
             detector = ChampionsOcrDetector(
                 context=detector_context,
                 trace_path=args.ocr_trace,
                 min_confidence=args.ocr_min_confidence,
-                team_preview_resolver=ChampionsTeamPreviewResolver(
-                    load_champions_catalog().species_types,
-                ),
+                team_preview_resolver=preview_resolver,
+                alias_resolver=ChampionsHudIconResolver(preview_resolver),
             )
             detector_label = "OCR local determinista"
         if args.command != "trace":

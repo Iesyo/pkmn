@@ -27,6 +27,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
 from pkmn_vgc.champions_replay.pipeline import CaptureSeed, ReplayCapturePipeline
 from pkmn_vgc.champions_replay.showdown import build_replay_document
 from pkmn_vgc.champions_replay.team_preview import (
+    ChampionsHudIconResolver,
     ChampionsTeamPreviewResolver,
     looks_like_a_nickname,
 )
@@ -2018,6 +2019,29 @@ class ChampionsOcrTests(unittest.TestCase):
             line(label, x=x, y=0.466, width=0.088, height=0.035),
         )
 
+    def test_an_item_banner_that_looks_like_an_ability_stays_an_item(self) -> None:
+        # COL-102, job 347da1c2ff16491b, frame 181: "Silveria's / Psychic
+        # Seed" es el objeto de Sneasler, pero se parece a "Psychic Surge" por
+        # encima del umbral y el replay le daba a Sneasler esa habilidad.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Sneasler",), p1_aliases=(("Silveria", "Sneasler"),)),
+            catalog=ChampionsCatalog(
+                species=("Sneasler",),
+                abilities=("Psychic Surge",),
+                items=("Psychic Seed",),
+            ),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Sneasler"
+
+        detections = parser.parse(
+            self.banner("Silveria's", "Psychic Seed", right=False),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual([event for event in detections.events if event.kind == "ability"], [])
+
     def test_a_heal_after_an_item_banner_names_the_item(self) -> None:
         # COL-102, job 82923f56ce264a92, frames 631-637: el juego no narra la
         # Sitrus Berry en el cuadro de texto; muestra "Incineroar's / Sitrus
@@ -2955,6 +2979,77 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertIn("Basculegion", candidates)
         self.assertNotIn("Basculegion-F", candidates)
+
+    @staticmethod
+    def job_frame(name: str, left: int, top: int) -> FramePacket:
+        """Un recorte real del vídeo de un job, en su sitio de un frame 1080p."""
+
+        import io
+
+        from PIL import Image
+
+        frame = Image.new("RGB", (1920, 1080))
+        frame.paste(Image.open(Path(__file__).parent / "data" / "champions" / name), (left, top))
+        encoded = io.BytesIO()
+        frame.save(encoded, format="JPEG", quality=92)
+        return FramePacket(index=0, timestamp_ms=0, image=encoded.getvalue())
+
+    def test_the_rival_preview_is_read_by_the_whole_sprite(self) -> None:
+        # COL-102, job 347da1c2ff16491b, 30 s: captura de PC. La silueta del
+        # sprite rojo y negro de Incineroar se perdía contra el carmesí de la
+        # tarjeta y salían Houndoom y Dragonite (mismos tipos que Incineroar y
+        # Salamence). Sin roster rival, la batalla se descartaba.
+        resolver = ChampionsTeamPreviewResolver(load_champions_catalog().species_types)
+        frame = self.job_frame("347da1c2-preview-p2-1540x140.jpg", 1540, 140)
+
+        self.assertEqual(
+            resolver.resolve_rows(frame, side="p2"),
+            ("Golisopod", "Incineroar", "Indeedee-F", "Salamence", "Hatterene", "Torkoal"),
+        )
+
+    def test_a_rival_nickname_is_tied_by_its_hud_icon(self) -> None:
+        # COL-102, job 347da1c2ff16491b: "Lilith" y "Rapunzel" nunca dicen su
+        # especie en un texto; su icono del HUD, sí. Geometría de las lecturas
+        # OCR reales de los frames de 101 s y 296 s.
+        resolver = ChampionsHudIconResolver(
+            ChampionsTeamPreviewResolver(load_champions_catalog().species_types)
+        )
+        roster = {
+            "p2": ("Golisopod", "Incineroar", "Indeedee-F", "Salamence", "Hatterene", "Torkoal")
+        }
+
+        def label(text: str, left: float, top: float, bottom: float) -> tuple[str, str, OcrLine]:
+            return (
+                "p2",
+                text,
+                OcrLine(text=text, confidence=1.0, left=left, top=top, right=left + 0.05, bottom=bottom),
+            )
+
+        leads = resolver.resolve_icons(
+            self.job_frame("347da1c2-hud-101s-1100x0.jpg", 1100, 0),
+            (label("Lilith", 0.8313, 0.05, 0.0833),),
+            roster,
+        )
+        late = resolver.resolve_icons(
+            self.job_frame("347da1c2-hud-296s-1100x0.jpg", 1100, 0),
+            (label("Rapunzel", 0.624, 0.0491, 0.0898), label("Lord Drakkon", 0.8313, 0.05, 0.0833)),
+            roster,
+        )
+        # Sin roster no se compara contra nada: el fallo sigue siendo explícito.
+        unknown = resolver.resolve_icons(
+            self.job_frame("347da1c2-hud-101s-1100x0.jpg", 1100, 0),
+            (label("Lilith", 0.8313, 0.05, 0.0833),),
+            {"p2": ()},
+        )
+
+        self.assertEqual([(alias.nickname, alias.species) for alias in leads], [("Lilith", "Indeedee-F")])
+        # Lord Drakkon ya es Mega Salamence en ese frame: su icono es el de la
+        # mega y ata igual a la especie del roster.
+        self.assertEqual(
+            [(alias.nickname, alias.species) for alias in late],
+            [("Rapunzel", "Hatterene"), ("Lord Drakkon", "Salamence")],
+        )
+        self.assertEqual(unknown, ())
 
     def test_champions_sprites_ship_with_the_repository(self) -> None:
         """Los sprites del Team Preview son datos del repo, no una descarga."""

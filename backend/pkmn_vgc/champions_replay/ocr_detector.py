@@ -669,6 +669,10 @@ def load_champions_catalog() -> ChampionsCatalog:
     return ChampionsCatalog()
 
 
+def _similarity(first: str, second: str) -> float:
+    return SequenceMatcher(None, _text_key(first), _text_key(second)).ratio()
+
+
 class _NameMatcher:
     def __init__(self, values: Sequence[str]) -> None:
         unique: dict[str, str] = {}
@@ -2007,8 +2011,16 @@ class ChampionsTextParser:
         for banner in self._banner_observations(lines):
             actor_line, ability_line = banner.owner, banner.label
             ability = self._abilities.resolve(ability_line.text, threshold=0.78)
+            item = self._items.resolve(ability_line.text, threshold=0.78)
+            # COL-102, job 347da1c2ff16491b, frame 181: "Silveria's / Psychic
+            # Seed" es el objeto de Sneasler, pero se parece a "Psychic Surge"
+            # por encima del umbral y se escribía como su habilidad. Si el
+            # rótulo encaja con las dos listas, gana la más parecida.
+            if ability and item and _similarity(ability_line.text, item) > _similarity(
+                ability_line.text, ability
+            ):
+                ability = None
             if not ability:
-                item = self._items.resolve(ability_line.text, threshold=0.78)
                 if item:
                     self._note_item_banner(banner, item, timestamp_ms=timestamp_ms)
                 continue
@@ -2430,6 +2442,11 @@ class ChampionsTextParser:
         return found[:2]
 
     def visual_alias_candidates(self, lines: Sequence[OcrLine]) -> tuple[tuple[str, str], ...]:
+        return tuple((side, nickname) for side, nickname, _line in self.visual_alias_labels(lines))
+
+    def visual_alias_labels(
+        self, lines: Sequence[OcrLine]
+    ) -> tuple[tuple[str, str, OcrLine], ...]:
         """Encuentra nicknames desconocidos colocados junto a una barra de HP.
 
         El icono queda inmediatamente a la izquierda del texto. La geometría
@@ -2440,7 +2457,7 @@ class ChampionsTextParser:
         if text_keys.intersection({"close", "hidesummary", "helditem", "movesmore"}):
             return ()
 
-        candidates: list[tuple[str, str, float]] = []
+        candidates: list[tuple[str, str, OcrLine]] = []
         seen: set[tuple[str, str]] = set()
         for health_line, _health in _health_readings(lines):
             if health_line.center_y <= 0.24:
@@ -2476,11 +2493,8 @@ class ChampionsTextParser:
             if not key[1] or key in seen:
                 continue
             seen.add(key)
-            candidates.append((side, label.text, label.center_x))
-        return tuple(
-            (side, nickname)
-            for side, nickname, _x in sorted(candidates, key=lambda value: (value[0], value[2]))
-        )
+            candidates.append((side, label.text, label))
+        return tuple(sorted(candidates, key=lambda value: (value[0], value[2].center_x)))
 
     def bind_visual_aliases(self, aliases: Sequence[HudAlias]) -> tuple[HudAlias, ...]:
         """Valida especies visuales contra el catálogo y aprende sus aliases."""
@@ -3887,7 +3901,8 @@ class ChampionsOcrDetector:
             return ()
         frame = prepared.frame
         lines = prepared.lines
-        candidates = self.parser.visual_alias_candidates(lines)
+        labels = self.parser.visual_alias_labels(lines)
+        candidates = tuple((side, nickname) for side, nickname, _line in labels)
         if not candidates:
             return ()
         signature = tuple(candidates)
@@ -3896,6 +3911,20 @@ class ChampionsOcrDetector:
         if count < 2 or signature in self._visual_attempted:
             return signature
         self._visual_attempted.add(signature)
+        resolve_icons = getattr(self._alias_resolver, "resolve_icons", None)
+        if callable(resolve_icons):
+            # Comparación local del icono: el frame tal cual y la posición de
+            # cada mote, contra el roster que ya se leyó del Team Preview.
+            self._alias_source = prepared
+            self._alias_future_generation = self._alias_generation
+            self._alias_future = self._alias_executor.submit(
+                resolve_icons,
+                frame,
+                labels,
+                {side: tuple(self.parser._teams[side]) for side in ("p1", "p2")},
+                rotation_degrees=prepared.rotation_degrees,
+            )
+            return signature
         vision_frame = frame
         prepare_hud_frame = getattr(self.engine, "prepare_hud_frame", None)
         if callable(prepare_hud_frame):

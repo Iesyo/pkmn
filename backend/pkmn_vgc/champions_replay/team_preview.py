@@ -8,9 +8,9 @@ from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
-from .detector import DetectionError
+from .detector import DetectionError, HudAlias
 from .sources import FramePacket
 
 
@@ -204,6 +204,14 @@ class ChampionsTeamPreviewResolver:
     _SHAPE_WEIGHT = 0.75
     _COLOUR_WEIGHT = 0.15
     _ASPECT_WEIGHT = 0.10
+    # Comparación por apariencia (ver _appearance_decision): dónde dibuja el
+    # juego el lienzo del sprite dentro de la tarjeta rival, en fracciones de
+    # su ancho, y cuándo una fila se da por segura.
+    _CARD_CANVAS_LEFT = 0.205
+    _CARD_CANVAS_SIZE = 0.36
+    _CANVAS_SHORTLIST = 10
+    _CANVAS_MAX_COST = 35.0
+    _CANVAS_MARGIN = 1.3
 
     def __init__(
         self,
@@ -216,7 +224,8 @@ class ChampionsTeamPreviewResolver:
         )
         self._template_lock = threading.Lock()
         self._templates: dict[str, tuple[_SpriteShape, ...]] = {}
-        self._sprite_root, self._sprite_sources = self._load_manifest()
+        self._canvas_cache: dict[tuple[str, int], tuple[tuple[object, object], ...]] = {}
+        self._sprite_root, self._sprite_sources, self._shiny_sources = self._load_manifest()
         self._shadowed = self._shadowed_species(self._sprite_sources)
 
     @staticmethod
@@ -249,7 +258,9 @@ class ChampionsTeamPreviewResolver:
         )
 
     @classmethod
-    def _load_manifest(cls) -> tuple[Path, dict[str, tuple[str, ...]]]:
+    def _load_manifest(
+        cls,
+    ) -> tuple[Path, dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
         for candidate in cls._manifest_candidates():
             if not candidate.is_file():
                 continue
@@ -266,8 +277,15 @@ class ChampionsTeamPreviewResolver:
             }
             if not sprites:
                 raise DetectionError("El manifiesto de sprites de Champions está vacío.")
+            # Los shiny sólo sirven a la comparación por color; la silueta es
+            # la misma, así que no entran entre los candidatos de siempre.
+            shiny = {
+                species: tuple(names)
+                for species, names in payload.get("shiny", {}).items()
+                if names
+            }
             root = candidate.with_name(payload.get("directory") or "champions-sprites")
-            return root, sprites
+            return root, sprites, shiny
         raise DetectionError(
             "Faltan los sprites de Champions. Genéralos con: npm run data:champions-sprites"
         )
@@ -921,6 +939,154 @@ class ChampionsTeamPreviewResolver:
             + cls._ASPECT_WEIGHT * aspect
         )
 
+    def _canvases(self, species: str, size: int) -> tuple[tuple[object, object], ...]:
+        """Los lienzos de una especie a `size` px: (color, máscara del sprite).
+
+        El juego dibuja el lienzo entero del menu sprite, no sólo lo pintado,
+        así que se reescala el cuadrado completo. Se guardan por tamaño: en una
+        misma captura el tamaño no cambia y cada comparación es una resta.
+        """
+
+        import numpy as np  # type: ignore[import-not-found]
+        from PIL import Image  # type: ignore[import-not-found]
+
+        key = (species, size)
+        with self._template_lock:
+            cached = self._canvas_cache.get(key)
+        if cached is not None:
+            return cached
+        canvases = []
+        for path in self._appearance_paths(species):
+            rgba = Image.open(path).convert("RGBA").resize((size, size), Image.BILINEAR)
+            pixels = np.asarray(rgba, dtype=np.int16)
+            mask = pixels[:, :, 3] > 128
+            if mask.any():
+                canvases.append((pixels[:, :, :3][mask], mask))
+        result = tuple(canvases)
+        with self._template_lock:
+            self._canvas_cache[key] = result
+        return result
+
+    def _appearance_paths(self, species: str) -> tuple[Path, ...]:
+        """Sprites normales y, si el manifiesto los trae, shiny."""
+
+        paths = list(self._sprite_paths(species))
+        for name in self._shiny_sources.get(species, ()):
+            path = self._sprite_root / name
+            if path.is_file() and path.stat().st_size:
+                paths.append(path)
+        return tuple(paths)
+
+    def canvas_ranking(
+        self,
+        image: object,
+        candidates: Sequence[str],
+        *,
+        left: int,
+        top: int,
+        size: int,
+        slack_x: int,
+        slack_y: tuple[int, int],
+    ) -> list[tuple[float, str]]:
+        """Candidatos de más a menos parecido al sprite dibujado en ese sitio.
+
+        Compara sólo los píxeles que el sprite pinta, color a color, así que ni
+        el fondo de la tarjeta ni la arena detrás del icono del HUD cuentan.
+        La posición se ajusta unos píxeles (`slack_*`): el recorte de la
+        tarjeta o de la placa no es exacto al píxel. Con muchas candidatas,
+        una primera pasada a un cuarto de tamaño deja sólo las más parecidas.
+        """
+
+        import numpy as np  # type: ignore[import-not-found]
+        from numpy.lib.stride_tricks import sliding_window_view  # type: ignore[import-not-found]
+
+        frame = np.asarray(image, dtype=np.int16)  # type: ignore[arg-type]
+        height, width = frame.shape[:2]
+
+        def rank(species_names: Sequence[str], scale: int) -> list[tuple[float, str]]:
+            side = max(8, size // scale)
+            x1 = max(0, (left - slack_x) // scale)
+            x2 = min(width // scale, (left + slack_x) // scale + side)
+            y1 = max(0, (top + slack_y[0]) // scale)
+            y2 = min(height // scale, (top + slack_y[1]) // scale + side)
+            region = frame[y1 * scale : y2 * scale : scale, x1 * scale : x2 * scale : scale]
+            if region.shape[0] < side or region.shape[1] < side:
+                return []
+            windows = sliding_window_view(region, (side, side, 3))[:, :, 0]
+            ranking = []
+            for species in species_names:
+                try:
+                    canvases = self._canvases(species, side)
+                except DetectionError:
+                    continue
+                costs = [
+                    float(np.abs(windows[:, :, mask] - colour).mean(axis=(2, 3)).min())
+                    for colour, mask in canvases
+                ]
+                if costs:
+                    ranking.append((min(costs), species))
+            return sorted(ranking)
+
+        if len(candidates) > self._CANVAS_SHORTLIST:
+            coarse = rank(candidates, 4)
+            candidates = [species for _cost, species in coarse[: self._CANVAS_SHORTLIST]]
+        return rank(candidates, 1)
+
+    def _appearance_decision(
+        self,
+        image: object,
+        card: tuple[int, int, int, int],
+        candidates: Sequence[str],
+        gender: str | None,
+    ) -> tuple[str | None, str | None]:
+        """(especie segura, mejor conjetura) de una fila rival por apariencia.
+
+        COL-102, job 347da1c2ff16491b: en una captura de PC la tarjeta rival
+        es del mismo carmesí que Incineroar, y la silueta se quedaba con el
+        pecho y el cinturón. Salían Houndoom y Dragonite, con los mismos tipos
+        que Incineroar y Salamence. Comparando el sprite con sus colores, la
+        buena gana con holgura. El lienzo del sprite ocupa siempre el mismo
+        sitio de la tarjeta (medido en dos capturas: 0,36 de su ancho, a 0,205
+        del borde izquierdo), así que no hay que buscar el tamaño.
+        """
+
+        x1, x2, y1, _y2 = card
+        card_width = x2 - x1
+        size = round(card_width * self._CARD_CANVAS_SIZE)
+        # Con color, macho y hembra pueden ser dibujos distintos (Indeedee-F
+        # queda a 12,8 de su tarjeta; Indeedee, a 61). Compiten las dos formas
+        # y el margen se mide contra la mejor de otra especie.
+        forms = list(candidates)
+        for species in candidates:
+            female = f"{species}-F"
+            if female in self._sprite_sources and female not in forms:
+                forms.append(female)
+        ranking = self.canvas_ranking(
+            image,
+            forms,
+            left=x1 + round(card_width * self._CARD_CANVAS_LEFT),
+            top=y1,
+            size=size,
+            slack_x=max(2, round(card_width * 0.01)),
+            slack_y=(-round(size * 0.05), round(size * 0.15)),
+        )
+        if not ranking:
+            return None, None
+        best_cost, best_species = ranking[0]
+        guess = self._gendered_variant(best_species, gender)
+        base = _text_id(best_species.removesuffix("-F").removesuffix("-M"))
+        runner_up = next(
+            (
+                cost
+                for cost, species in ranking[1:]
+                if _text_id(species.removesuffix("-F").removesuffix("-M")) != base
+            ),
+            math.inf,
+        )
+        if best_cost > self._CANVAS_MAX_COST or runner_up < best_cost * self._CANVAS_MARGIN:
+            return None, guess
+        return guess, guess
+
     def _templates_for(
         self,
         species_names: Sequence[str] | set[str],
@@ -1132,7 +1298,9 @@ class ChampionsTeamPreviewResolver:
             if len(candidates) > 1 and self._gendered_candidate(candidates, gender) is None
             for species in candidates
         }
-        loaded = self._templates_for(required_templates, {})
+        # El panel rival se compara por apariencia (ver _appearance_decision);
+        # las siluetas sólo hacen falta para el del jugador.
+        loaded = self._templates_for(required_templates, {}) if side == "p1" else {}
 
         roster: list[tuple[str | None, str | None]] = []
         for row_number, (card, candidates, gender) in enumerate(
@@ -1145,6 +1313,11 @@ class ChampionsTeamPreviewResolver:
             gendered = self._gendered_candidate(candidates, gender)
             if gendered:
                 roster.append((gendered, gendered))
+                continue
+            if side == "p2":
+                roster.append(
+                    self._appearance_decision(image, card, candidates, gender)
+                )
                 continue
             readings = self._observed_shapes(
                 image,
@@ -1211,3 +1384,91 @@ class ChampionsTeamPreviewResolver:
         if len({_text_id(species) for species in named}) != len(named):
             raise DetectionError(f"el Team Preview de {side} repitió alguna especie")
         return tuple(roster)
+
+
+class ChampionsHudIconResolver:
+    """Ata un mote rival a su especie comparando el icono que lo acompaña.
+
+    La placa del HUD dibuja, a la izquierda del mote, el mismo menu sprite
+    del Team Preview. COL-102, job 347da1c2ff16491b: "Lilith" y "Rapunzel"
+    no dijeron su especie en ningún texto de la batalla y se descartaba la
+    batalla entera, con Indeedee-F y Hatterene a la vista todo el combate.
+    Sólo compara contra el roster rival ya leído del Team Preview (y sus
+    megas): sin roster no se intenta, y un icono que no se parezca a ninguno
+    con margen se deja sin atar.
+    """
+
+    # Medido en cuatro placas de 1080p: el lienzo del sprite mide 0,10 del
+    # alto del frame, empieza 0,100 a la izquierda del mote y 0,008 por
+    # encima de su borde superior. Es proporcional al alto: el HUD escala con
+    # la resolución.
+    _ICON_SIZE = 0.10
+    _ICON_LEFT = 0.100
+    _ICON_TOP = -0.008
+    _MAX_COST = 35.0
+    _MARGIN = 1.3
+
+    def __init__(self, sprites: ChampionsTeamPreviewResolver) -> None:
+        self.sprites = sprites
+
+    def resolve(
+        self,
+        frame: FramePacket,
+        candidates: Sequence[tuple[str, str]],
+    ) -> tuple[HudAlias, ...]:
+        """Sin la posición del mote no hay icono que recortar."""
+
+        return ()
+
+    def _forms(self, roster: Sequence[str]) -> dict[str, str]:
+        """Sprite -> especie del roster: la especie y sus megas."""
+
+        forms: dict[str, str] = {}
+        sources = self.sprites._sprite_sources
+        for species in roster:
+            if species in sources:
+                forms[species] = species
+            for name in sources:
+                if name.startswith(f"{species}-Mega"):
+                    forms[name] = species
+        return forms
+
+    def resolve_icons(
+        self,
+        frame: FramePacket,
+        labels: Sequence[tuple[str, str, object]],
+        rosters: Mapping[str, Sequence[str]],
+        *,
+        rotation_degrees: int = 0,
+    ) -> tuple[HudAlias, ...]:
+        image = self.sprites._decode_frame(frame, rotation_degrees)
+        height, width = image.shape[:2]  # type: ignore[union-attr]
+        size = round(height * self._ICON_SIZE)
+        found: list[HudAlias] = []
+        for side, nickname, line in labels:
+            forms = self._forms(rosters.get(side, ()))
+            if side != "p2" or len(forms) < 2:
+                continue
+            left = round(line.left * width - height * self._ICON_LEFT)  # type: ignore[attr-defined]
+            top = round(line.top * height + height * self._ICON_TOP)  # type: ignore[attr-defined]
+            ranking = self.sprites.canvas_ranking(
+                image,
+                list(forms),
+                left=left,
+                top=top,
+                size=size,
+                slack_x=max(2, round(size * 0.05)),
+                slack_y=(-round(size * 0.05), round(size * 0.05)),
+            )
+            if not ranking:
+                continue
+            best_cost, best_form = ranking[0]
+            species = forms[best_form]
+            runner_up = next(
+                (cost for cost, form in ranking[1:] if forms[form] != species),
+                math.inf,
+            )
+            if best_cost > self._MAX_COST or runner_up < best_cost * self._MARGIN:
+                continue
+            found.append(HudAlias(side=side, nickname=nickname, species=species, confidence=0.95))
+        return tuple(found)

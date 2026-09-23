@@ -19,7 +19,7 @@ from pkmn_vgc.champions_replay.models import (
 from pkmn_vgc.champions_replay.ocr_detector import OcrTraceDetector
 from pkmn_vgc.champions_replay.pipeline import CaptureProgress
 from pkmn_vgc.champions_replay.sources import OcrTraceFrameSource
-from pkmn_vgc.champions_replay.team_preview import ChampionsTeamPreviewResolver
+from pkmn_vgc.champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 
 
 def fake_processor(
@@ -73,7 +73,12 @@ class ChampionsJobTests(unittest.TestCase):
             )
 
         self.assertEqual(documents, ())
-        self.assertNotIn("alias_resolver", detector_type.call_args.kwargs)
+        # Los motes rivales se atan comparando el icono del HUD con los sprites
+        # del repositorio, en local: nada de Ollama.
+        self.assertIsInstance(
+            detector_type.call_args.kwargs["alias_resolver"],
+            ChampionsHudIconResolver,
+        )
         self.assertIsInstance(
             detector_type.call_args.kwargs["team_preview_resolver"],
             ChampionsTeamPreviewResolver,
