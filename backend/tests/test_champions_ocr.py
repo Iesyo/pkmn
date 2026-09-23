@@ -1760,6 +1760,28 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(events, [])
 
+    def test_a_focus_sash_message_is_the_item_being_used_up(self) -> None:
+        # COL-102, job 4eb88ad277cf4546, frame 357: "The opposing Kratos hung
+        # on using its Focus Sash!" (Kratos = Ceruledge) quedaba como mensaje
+        # suelto; en Showdown es un -enditem del Sash.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Ceruledge", "Armarouge"), p2_aliases=(("Kratos", "Ceruledge"),)),
+            catalog=ChampionsCatalog(species=("Ceruledge", "Armarouge"), items=("Focus Sash",)),
+        )
+        parser._battle_open = True
+        parser._active["p2a"] = "Ceruledge"
+
+        detections = parser.parse(
+            (line("The opposing Kratos hung on using its Focus Sash!", x=0.154, y=0.73, width=0.5),),
+            timestamp_ms=178_000,
+            source_frame=357,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species, event.value) for event in detections.events],
+            [("enditem", "p2a", "Ceruledge", "Focus Sash")],
+        )
+
     def test_champions_paralysis_wording_sets_the_status(self) -> None:
         # COL-102, job 5748b289aa5b445b, frame 765: Champions anuncia la
         # parálisis como "…is paralyzed, so it may be unable to move!" y el

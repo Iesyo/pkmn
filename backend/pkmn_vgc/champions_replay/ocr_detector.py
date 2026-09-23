@@ -2993,6 +2993,32 @@ class ChampionsTextParser:
                     announced_as=go.group(1),
                 )
 
+        # COL-102, job 4eb88ad277cf4546, frame 357: "The opposing Kratos hung
+        # on using its Focus Sash!" es el texto que Showdown escribe para un
+        # -enditem de Focus Sash: el objeto se gasta y el golpe deja 1 PS (ver
+        # el acumulador). Sólo el Sash se consume; otro objeto que "aguante"
+        # queda como mensaje.
+        hung_on = re.match(
+            r"^(The opposing )?(.+?) hung on using its (.+?)[!.]?$",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if hung_on and _text_key(hung_on.group(3)) == "focussash":
+            side = "p2" if hung_on.group(1) else "p1"
+            actor = self._actor_for_value(side, hung_on.group(2))
+            if actor:
+                return (
+                    BattleEvent(
+                        kind="enditem",
+                        timestamp_ms=timestamp_ms,
+                        confidence=confidence,
+                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
+                        species=actor,
+                        value="Focus Sash",
+                        source_frame=source_frame,
+                    ),
+                )
+
         knocked_off = re.match(
             r"^(The opposing )?(.+?)\s+knocked of?f\s+(the opposing )?(.+?)[\'’]s\s+(.+?)[!.]?$",
             cleaned,

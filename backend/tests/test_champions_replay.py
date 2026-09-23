@@ -642,6 +642,30 @@ class ChampionsReplayTests(unittest.TestCase):
             [("damage", "p2a", "0/100"), ("damage", "p1a", "0/155")],
         )
 
+    def test_a_focus_sash_closes_the_hit_that_triggered_it_at_one(self) -> None:
+        # COL-102, job 4eb88ad277cf4546, turno 1 (frames 340-359): el Wave
+        # Crash crítico deja a Ceruledge en "1 %", pero el OCR pierde ese 1 y
+        # quedaba el 69 % de mitad de animación. "Hung on using its Focus
+        # Sash!" sólo pasa si el golpe deja 1 PS. Un debilitado en una acción
+        # posterior no vuelve a tocar ese golpe.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(kind="move", timestamp_ms=167_000, slot="p1a", species="Basculegion", move="Wave Crash"),
+                    BattleEvent(kind="damage", timestamp_ms=169_500, slot="p2a", species="Ceruledge", health="69/100"),
+                    BattleEvent(kind="enditem", timestamp_ms=178_000, slot="p2a", species="Ceruledge", value="Focus Sash"),
+                    BattleEvent(kind="move", timestamp_ms=190_000, slot="p2a", species="Ceruledge", move="Phantom Force"),
+                    BattleEvent(kind="faint", timestamp_ms=200_000, slot="p2a", species="Ceruledge"),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.health or event.value) for event in accumulator.events if event.kind in {"damage", "enditem"}],
+            [("damage", "p2a", "1/100"), ("enditem", "p2a", "Focus Sash")],
+        )
+
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [
             FramePacket(index=0, timestamp_ms=0, image=b"first"),

@@ -170,7 +170,9 @@ class CaptureAccumulator:
                 continue
             self._last_event_at[signature] = event.timestamp_ms
             if event.kind == "faint":
-                self._close_hit_at_zero(event)
+                self._close_last_hit(event, 0)
+            elif event.kind == "enditem" and event.value == "Focus Sash":
+                self._close_last_hit(event, 1)
             self.events.append(event)
             if event.kind in {"damage", "heal"}:
                 self._last_health_event[(event.kind, event.slot, event.species)] = (
@@ -188,8 +190,8 @@ class CaptureAccumulator:
             self.winner = detections.winner
         self.complete = self.complete or detections.battle_complete
 
-    def _close_hit_at_zero(self, faint: BattleEvent) -> None:
-        """El golpe que precede a un debilitado deja la barra en 0.
+    def _close_last_hit(self, outcome: BattleEvent, remaining: int) -> None:
+        """El golpe que precede a un debilitado o a un Focus Sash cierra su barra.
 
         COL-102, job 5748b289aa5b445b, turnos 4 y 5: las barras de Dragonite
         y Sinistcha llegan a "0 %", pero ese 0 es un solo dígito fino y el
@@ -198,20 +200,22 @@ class CaptureAccumulator:
         del 29 %. "Fainted" dice por sí solo que la vida llegó a 0, así que
         el último daño de ese Pokémon dentro de la misma acción se cierra en
         0. No se inventa ningún golpe: si no se leyó ninguno, no se toca nada.
+
+        COL-102, job 4eb88ad277cf4546, turno 1: el Focus Sash de Ceruledge
+        deja la barra en "1 %" y el OCR pierde ese 1 igual que el 0; quedaba
+        el 69 % de mitad de animación. "Hung on using its Focus Sash!" sólo
+        ocurre si el golpe deja 1 PS, así que ese golpe se cierra en 1.
         """
 
         for index in range(len(self.events) - 1, -1, -1):
             previous = self.events[index]
             if previous.kind in {"move", "switch", "drag", "turn"}:
                 return
-            if (
-                previous.kind == "damage"
-                and previous.slot == faint.slot
-                and previous.species == faint.species
-                and previous.health
-            ):
+            # Por slot: sin un cambio de por medio (ver arriba) es el mismo
+            # Pokémon, aunque uno de los dos eventos lo nombre por su mote.
+            if previous.kind == "damage" and previous.slot == outcome.slot and previous.health:
                 _current, _sep, maximum = previous.health.partition("/")
-                closed = f"0/{maximum or 100}"
+                closed = f"{remaining}/{maximum or 100}"
                 if previous.health != closed:
                     self._last_event_at.pop(previous.signature(), None)
                     self.events[index] = replace(previous, health=closed)
