@@ -1,27 +1,28 @@
 {
   "schemaVersion": 1,
-  "id": "MC-20260916T200255271236Z",
-  "label": "Battle Lab M-C · BC+PPO 2026-09-16",
+  "id": "MC-20260922T182640086766Z",
+  "label": "Battle Lab M-C · NORMAL BC+PPO 2026-09-22",
   "format": "gen9championsvgc2026regmc",
-  "sourceRun": "20260916T200255271236Z",
-  "fileName": "mc-20260916-bc-ppo.zip",
-  "bytes": 35683341,
-  "sha256": "5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2",
-  "downloadUrl": "https://drive.google.com/file/d/1B8-CutEs9Eb2CO-hMnXKx0KVXH6q3e5G/view",
+  "sourceRun": "20260922T182640086766Z",
+  "fileName": "step-000786432.zip",
+  "bytes": 35683342,
+  "sha256": "93f3d185e7f5b9e32d1fa3c4a64defac9dd86152f166660b4508d911e49fa0ab",
+  "downloadUrl": "https://drive.google.com/file/d/1vvKQJv59lmoYqjRVE0r-APC-JToEpQLb/view",
   "benchmark": {
     "protocol": "direct-v1",
-    "reportUrl": "https://drive.google.com/file/d/1wEzJ-55lrvlLrb72idWYs3l1sp2Lz8o8/view",
-    "artifactSha256": "50232bc9e11ad1e313aaf63bae0fc2b9d76118b4d1ded182450a6e52d51c1aa7",
+    "reportUrl": "https://drive.google.com/file/d/1jvu4RPLs5q7DH3Pepspcih_Ht_AdCYCv/view",
+    "artifactSha256": "ce149a8cff7ba2fb04d780639864bc5104d203fc8ad51ac9ce66c05e8c622227",
     "battles": 1500,
-    "productionWins": 290,
+    "productionWins": 282,
     "productionGames": 500,
+    "productionSha256": "5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2",
     "baseWins": 311,
-    "heuristicsWins": 323
+    "heuristicsWins": 337
   },
   "previous": {
-    "id": "LIGHT-MC-196608",
-    "label": "Battle Lab LIGHT M-C",
-    "sha256": "fa8687d08feeb169f4eb4f4a078b65971346e2ef5b0ca0ff899e811721075759",
-    "downloadUrl": "https://drive.google.com/file/d/1hmKrYaLg5u0aUpzuxtA3ZwWUpz-w9c6_/view"
+    "id": "MC-20260916T200255271236Z",
+    "label": "Battle Lab M-C · BC+PPO 2026-09-16",
+    "sha256": "5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2",
+    "downloadUrl": "https://drive.google.com/file/d/1zpDji8VebiB1NbFdiktQ3pB7qR-7bmg-/view"
   }
 }
