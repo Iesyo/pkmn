@@ -169,6 +169,8 @@ class CaptureAccumulator:
                 self._last_event_at[signature] = event.timestamp_ms
                 continue
             self._last_event_at[signature] = event.timestamp_ms
+            if event.kind == "faint":
+                self._close_hit_at_zero(event)
             self.events.append(event)
             if event.kind in {"damage", "heal"}:
                 self._last_health_event[(event.kind, event.slot, event.species)] = (
@@ -185,6 +187,36 @@ class CaptureAccumulator:
         if detections.winner:
             self.winner = detections.winner
         self.complete = self.complete or detections.battle_complete
+
+    def _close_hit_at_zero(self, faint: BattleEvent) -> None:
+        """El golpe que precede a un debilitado deja la barra en 0.
+
+        COL-102, job 5748b289aa5b445b, turnos 4 y 5: las barras de Dragonite
+        y Sinistcha llegan a "0 %", pero ese 0 es un solo dígito fino y el
+        OCR lo pierde (lee "%" suelto, o "0" sin su "%"). Quedaba la lectura
+        de mitad de animación: Zap Cannon salía como un golpe del 3 % en vez
+        del 29 %. "Fainted" dice por sí solo que la vida llegó a 0, así que
+        el último daño de ese Pokémon dentro de la misma acción se cierra en
+        0. No se inventa ningún golpe: si no se leyó ninguno, no se toca nada.
+        """
+
+        for index in range(len(self.events) - 1, -1, -1):
+            previous = self.events[index]
+            if previous.kind in {"move", "switch", "drag", "turn"}:
+                return
+            if (
+                previous.kind == "damage"
+                and previous.slot == faint.slot
+                and previous.species == faint.species
+                and previous.health
+            ):
+                _current, _sep, maximum = previous.health.partition("/")
+                closed = f"0/{maximum or 100}"
+                if previous.health != closed:
+                    self._last_event_at.pop(previous.signature(), None)
+                    self.events[index] = replace(previous, health=closed)
+                    self._last_event_at[self.events[index].signature()] = previous.timestamp_ms
+                return
 
     def finalize(self, identities: Mapping[str, str] | None = None) -> CapturedBattle:
         if not self.winner:

@@ -3220,7 +3220,14 @@ class ChampionsTextParser:
             (r"^(The opposing )?(.+?) was badly poisoned[!.]?$", "tox"),
             (r"^(The opposing )?(.+?) was poisoned[!.]?$", "psn"),
             (r"^(The opposing )?(.+?) was burned[!.]?$", "brn"),
-            (r"^(The opposing )?(.+?) (?:was paralyzed|is paralyzed)[!.]?$", "par"),
+            # Champions lo anuncia como "…is paralyzed, so it may be unable to
+            # move!" (COL-102, job 5748b289aa5b445b: Dragonite en el turno 3 y
+            # Sableye en el 5 quedaban sin -status, sólo con el mensaje).
+            (
+                r"^(The opposing )?(.+?) (?:was paralyzed|is paralyzed)"
+                r"(?:,? so it may be unable to move)?[!.]?$",
+                "par",
+            ),
             (r"^(The opposing )?(.+?) fell asleep[!.]?$", "slp"),
             (r"^(The opposing )?(.+?) was frozen solid[!.]?$", "frz"),
         )

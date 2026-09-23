@@ -1760,6 +1760,35 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(events, [])
 
+    def test_champions_paralysis_wording_sets_the_status(self) -> None:
+        # COL-102, job 5748b289aa5b445b, frame 765: Champions anuncia la
+        # parálisis como "…is paralyzed, so it may be unable to move!" y el
+        # replay sólo lo copiaba como mensaje, sin -status.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Sableye", "Sinistcha")),
+            catalog=ChampionsCatalog(species=("Sableye", "Sinistcha")),
+        )
+        parser._battle_open = True
+        parser._active["p2b"] = "Sableye"
+
+        detections = parser.parse(
+            (
+                line(
+                    "The opposing Sableye is paralyzed, so it may be unable to move!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.5,
+                ),
+            ),
+            timestamp_ms=382_000,
+            source_frame=765,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("status", "p2b", "par")],
+        )
+
     def test_uses_known_gendered_form_when_hud_omits_the_suffix(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_team=("Indeedee-F",)),

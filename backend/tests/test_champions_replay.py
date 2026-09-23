@@ -614,6 +614,34 @@ class ChampionsReplayTests(unittest.TestCase):
             [("damage", "p2a", "28/100"), ("heal", "p2a", "52/100")],
         )
 
+    def test_a_faint_closes_the_hit_that_caused_it_at_zero(self) -> None:
+        # COL-102, job 5748b289aa5b445b, turno 4 (frames 636-645): Zap Cannon
+        # baja a Dragonite de 29 % a 0 %, pero el OCR pierde el "0" de "0 %" y
+        # sólo queda la lectura de mitad de animación (26 %). Luego llega "The
+        # opposing Dragonite fainted!": ese golpe terminó en 0. Un debilitado
+        # sin daño leído en su acción (por ejemplo, tras cambiar) no inventa
+        # ninguno.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(kind="move", timestamp_ms=317_500, slot="p1b", species="Raichu", move="Zap Cannon"),
+                    BattleEvent(kind="damage", timestamp_ms=320_000, slot="p2a", species="Dragonite", health="26/100"),
+                    BattleEvent(kind="faint", timestamp_ms=322_000, slot="p2a", species="Dragonite"),
+                    BattleEvent(kind="move", timestamp_ms=326_000, slot="p2b", species="Sableye", move="Foul Play"),
+                    BattleEvent(kind="damage", timestamp_ms=328_500, slot="p1a", species="Sneasler", health="10/155"),
+                    BattleEvent(kind="faint", timestamp_ms=332_000, slot="p1a", species="Sneasler"),
+                    BattleEvent(kind="switch", timestamp_ms=346_500, slot="p1a", species="Kingambit", health="177/177"),
+                    BattleEvent(kind="faint", timestamp_ms=350_000, slot="p2b", species="Sableye"),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.health) for event in accumulator.events if event.kind == "damage"],
+            [("damage", "p2a", "0/100"), ("damage", "p1a", "0/155")],
+        )
+
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [
             FramePacket(index=0, timestamp_ms=0, image=b"first"),
