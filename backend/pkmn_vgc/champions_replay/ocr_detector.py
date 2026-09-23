@@ -787,10 +787,34 @@ def _health_readings(lines: Sequence[OcrLine]) -> list[tuple[OcrLine, str]]:
     """Une porcentajes que RapidOCR separa como `33` + `%`."""
 
     percent_signs = [line for line in lines if line.text.strip() == "%"]
+    # COL-102, job 347da1c2ff16491b, frame 380: la barra de Torkoal dice
+    # 63 % y el OCR devolvió "63" y, encima de su cola, "3%". El 3 se leyó
+    # dos veces y el "3%" pasaba por una barra del 3 %: daño y, al frame
+    # siguiente, una cura que nunca ocurrió. Un "N%" que empieza dentro de un
+    # número de la misma fila y repite sus últimas cifras es ese número.
+    tails: dict[int, OcrLine] = {}
+    for line in lines:
+        compact = line.text.replace(" ", "").replace("O", "0").replace("o", "0")
+        if not re.fullmatch(r"\d{1,3}", compact):
+            continue
+        for candidate in lines:
+            tail = re.fullmatch(r"(\d{1,2})%", candidate.text.replace(" ", ""))
+            if (
+                tail
+                and line.left < candidate.left < line.right
+                and abs(candidate.center_y - line.center_y) <= 0.035
+                and compact.endswith(tail.group(1))
+                and len(compact) > len(tail.group(1))
+            ):
+                tails[id(line)] = candidate
     readings: list[tuple[OcrLine, str]] = []
     for line in lines:
+        if any(tail is line for tail in tails.values()):
+            continue
         health = _health_value(line.text)
         compact = line.text.replace(" ", "").replace("O", "0").replace("o", "0")
+        if health is None and id(line) in tails:
+            health = _health_value(f"{compact}%")
         if health is None and re.fullmatch(r"\d{1,3}", compact):
             suffix = min(
                 (

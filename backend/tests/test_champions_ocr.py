@@ -1726,6 +1726,40 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(detections.events[0].slot, "p2a")
         self.assertEqual(detections.events[0].health, "33/100")
 
+    def test_a_percent_reread_over_the_tail_of_the_number_is_that_number(self) -> None:
+        # COL-102, job 347da1c2ff16491b, frames 379-381 (turno 2, tras el Wave
+        # Crash): la barra de Torkoal marca 63 % todo el tramo. En el frame
+        # 380 el OCR devolvió "63" y, empezando dentro de su caja, "3%". Ese
+        # "3%" se leía como una barra del 3 %: daño y, al frame siguiente, una
+        # cura sin causa. Cajas reales de la traza.
+        def hud(*readings: OcrLine) -> tuple[OcrLine, ...]:
+            return (
+                OcrLine(text="Torkoal", confidence=1.0, left=0.6255, top=0.0463, right=0.6802, bottom=0.0852),
+                *readings,
+            )
+
+        number = OcrLine(text="63", confidence=1.0, left=0.7026, top=0.1111, right=0.7385, bottom=0.1583)
+        sign = OcrLine(text="%", confidence=1.0, left=0.7312, top=0.1204, right=0.75, bottom=0.1546)
+        reread = OcrLine(text="3%", confidence=0.89, left=0.7276, top=0.1157, right=0.7521, bottom=0.1583)
+
+        self.assertEqual([health for _line, health in _health_readings(hud(number, reread))], ["63/100"])
+
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Torkoal", "Indeedee-F")),
+            catalog=ChampionsCatalog(species=("Torkoal", "Indeedee-F")),
+        )
+        parser.parse(hud(number, sign), timestamp_ms=189_000, source_frame=378)
+        events = [
+            event
+            for frame, detections in enumerate(
+                (hud(number, reread), hud(number, sign)), start=379
+            )
+            for event in parser.parse(detections, timestamp_ms=189_500 + 500 * (frame - 379), source_frame=frame).events
+            if event.kind in {"damage", "heal"}
+        ]
+
+        self.assertEqual(events, [])
+
     def test_uses_known_gendered_form_when_hud_omits_the_suffix(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_team=("Indeedee-F",)),
