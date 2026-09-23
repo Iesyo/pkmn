@@ -111,6 +111,15 @@ seguidos se agrupan y el aviso se lee una vez, en su primer frame, con la
 lectura cuyas palabras más se repiten en el resto de la traza
 (`champions_replay/notices.py`).
 
+La misma pasada previa guarda qué confirmó el HUD en cada frame
+(`champions_replay/armado.py`). Con eso, cuando el juego anuncia una entrada
+con dos slots libres ("sent out Pelipper!" tras un relevo y un debilitado), la
+segunda fase mira dónde la confirma el HUD, sin pasar del turno siguiente, y
+escribe el switch en el momento del anuncio en vez de esperar. En vivo, sin
+futuro que mirar, sigue esperando. Lo narrado antes de que entren los líderes
+se sigue escribiendo detrás de sus cuatro switches, que es el orden de
+Showdown.
+
 Un vídeo con varias batallas genera `replay-001.*`,
 `replay-002.*`, etc. La versión seleccionada aporta el Team propio y sus alias,
 mientras el rival se reconstruye desde lo visible. Cada resultado vuelve al

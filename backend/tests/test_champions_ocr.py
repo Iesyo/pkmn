@@ -7,6 +7,7 @@ import unittest
 from dataclasses import asdict
 from pathlib import Path
 
+from pkmn_vgc.champions_replay.armado import BattleView, HudFrame
 from pkmn_vgc.champions_replay.cli import _load_mapping, _seed_from_context, build_parser
 from pkmn_vgc.champions_replay.detector import DetectionError, DetectorContext, HudAlias
 from pkmn_vgc.champions_replay.ocr_detector import (
@@ -945,6 +946,32 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(
             [(event.kind, event.value) for event in unreadable_hud.events],
             [("weather", "RainDance"), ("turn", None)],
+        )
+        self.assertEqual(parser._unplaced_entries, [])
+
+    def test_with_the_battle_in_view_an_entry_is_placed_when_announced(self) -> None:
+        # Capa de armado (COL-102): en la segunda fase la traza ya dice que el
+        # HUD confirma a Pelipper en p2a en el frame 712, así que el switch se
+        # escribe en el anuncio (frame 669) sin esperar, y su Drizzle se
+        # atribuye en cuanto sale, porque Pelipper ya está en el campo.
+        parser = self.pelipper_parser()
+        # Como en la segunda fase: el roster rival ya se conoce desde el principio.
+        parser.bind_preview_team(("Incineroar", "Sneasler", "Pelipper"), side="p2")
+        parser.battle_view = BattleView(
+            (HudFrame(frame=712, slots={"p2a": "Pelipper", "p2b": "Incineroar"}, opens_turn=True),)
+        )
+        emitted = {
+            frame: [
+                (event.kind, event.slot, event.species, event.value)
+                for event in parser.parse(lines, timestamp_ms=ts, source_frame=frame).events
+            ]
+            for frame, ts, lines in self.pelipper_opening_frames()
+        }
+
+        self.assertEqual(emitted[669], [("switch", "p2a", "Pelipper", None)])
+        self.assertEqual(
+            emitted[679],
+            [("ability", "p2a", "Pelipper", "Drizzle"), ("weather", None, None, "RainDance")],
         )
         self.assertEqual(parser._unplaced_entries, [])
 

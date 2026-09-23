@@ -16,6 +16,7 @@ from typing import Any, Callable, Hashable, Mapping, Protocol, Sequence
 
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, FrameDetections, is_actor_identity
+from .armado import BattleView, HudFrame
 from .notices import notice_readings
 from .sources import FramePacket, OcrTraceFrameSource
 from .team_preview import TeamPreviewResolver, looks_like_a_nickname
@@ -898,6 +899,9 @@ class ChampionsTextParser:
             _text_key(mega_forme): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
         }
+        # Capa de armado: lo que el HUD confirmó en toda la batalla. Sólo la
+        # tiene la segunda fase; sin ella el parser espera como en vivo.
+        self.battle_view: BattleView | None = None
         self.reset_battle_state()
 
     def reset_battle_state(self) -> None:
@@ -945,6 +949,7 @@ class ChampionsTextParser:
         self._pending_switch_timestamps: dict[str, int] = {}
         self._visible_messages: set[str] = set()
         self.last_message_texts: tuple[str, ...] = ()
+        self.last_hud_observations: dict[str, tuple[str, str | None]] = {}
         self._visible_abilities: set[tuple[str, str, str]] = set()
         self._pending_abilities: dict[tuple[str, str, str], tuple[float, int]] = {}
         self._pending_fieldstarts: set[str] = set()
@@ -1599,22 +1604,36 @@ class ChampionsTextParser:
             # actually took Incineroar's. Announcement order doesn't track
             # which physical slot a "Go!"/"sent out" refers to once more
             # than one is open; only the HUD, reading both names together,
-            # does. Wait for it instead of guessing -but remember that the
-            # entry happened here, so what follows it waits too.
-            if not any(
-                entry.side == side and self._same_species(entry.species, species)
-                for entry in self._unplaced_entries
-            ):
-                self._unplaced_entries.append(
-                    _UnplacedEntry(
-                        side=side,
-                        species=species,
-                        name_key=_text_key(announced_as or species),
-                        timestamp_ms=timestamp_ms,
-                        held=[],
-                    )
+            # does. With the whole battle in view (second phase), look up
+            # where the HUD confirms it; otherwise wait for it instead of
+            # guessing -but remember that the entry happened here, so what
+            # follows it waits too.
+            confirmed = (
+                self.battle_view.slot_confirmed(
+                    side,
+                    lambda pokemon: self._same_species(pokemon, species),
+                    from_frame=source_frame,
                 )
-            return ()
+                if self.battle_view is not None
+                else None
+            )
+            if confirmed not in slots:
+                if not any(
+                    entry.side == side and self._same_species(entry.species, species)
+                    for entry in self._unplaced_entries
+                ):
+                    self._unplaced_entries.append(
+                        _UnplacedEntry(
+                            side=side,
+                            species=species,
+                            name_key=_text_key(announced_as or species),
+                            timestamp_ms=timestamp_ms,
+                            held=[],
+                        )
+                    )
+                return ()
+            slots.remove(confirmed)
+            slots.insert(0, confirmed)
         slot = slots.pop(0)
         self._pending_switch_timestamps.pop(slot, None)
         if self._active.get(slot) == species:
@@ -3324,6 +3343,7 @@ class ChampionsTextParser:
 
         events: list[BattleEvent] = []
         observations = self._hud_observations(lines)
+        self.last_hud_observations = observations
         text_keys = {_text_key(line.text) for line in lines}
         selection_visible = bool(
             text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo"})
@@ -4159,6 +4179,7 @@ class OcrTraceDetector:
         }
         self._battle_index = 0
         self._notice_readings: dict[tuple[Hashable, str], str] = {}
+        self._views_by_battle: dict[int, BattleView] = {}
         self.parser = ChampionsTextParser(context=self._context_for_battle(0))
 
     @classmethod
@@ -4170,19 +4191,31 @@ class OcrTraceDetector:
                 rosters_by_battle=load_trace_rosters(path),
             )
 
-        # Una pasada de reconocimiento anota qué tomó el parser como mensaje
-        # en cada frame; con la batalla entera a la vista, las relecturas de
-        # cada aviso se agrupan y la pasada real lee en todas la mejor.
+        # Una pasada de reconocimiento anota, frame a frame, qué tomó el parser
+        # como mensaje y qué confirmó el HUD. Con eso la pasada real lee cada
+        # aviso con su mejor lectura y mira el HUD por delante en vez de
+        # esperarlo.
         detector = build()
         if not path.is_file():
             return detector
         scout = build()
         read: list[tuple[Hashable, Sequence[str]]] = []
+        hud: dict[int, list[HudFrame]] = {}
         for frame in OcrTraceFrameSource(path=path):
             scout.parser.last_message_texts = ()
-            scout.detect(frame)
+            scout.parser.last_hud_observations = {}
+            detections = scout.detect(frame)
             read.append(((scout._battle_index, frame.index), scout.parser.last_message_texts))
+            hud.setdefault(scout._battle_index, []).append(
+                HudFrame(
+                    frame=frame.index,
+                    slots={slot: pokemon for slot, (pokemon, _health) in scout.parser.last_hud_observations.items()},
+                    opens_turn=any(event.kind == "turn" for event in detections.events),
+                )
+            )
         detector._notice_readings = notice_readings(read)
+        detector._views_by_battle = {battle: BattleView(frames) for battle, frames in hud.items()}
+        detector.parser.battle_view = detector._views_by_battle.get(detector._battle_index)
         return detector
 
     @staticmethod
@@ -4254,6 +4287,7 @@ class OcrTraceDetector:
             self.parser = ChampionsTextParser(
                 context=self._context_for_battle(battle_index)
             )
+            self.parser.battle_view = self._views_by_battle.get(battle_index)
         if recorded.p2_team:
             self.parser.bind_preview_team(recorded.p2_team, side="p2")
         self.parser.bind_visual_aliases(visual_aliases)
