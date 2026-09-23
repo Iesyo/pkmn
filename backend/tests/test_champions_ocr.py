@@ -3577,6 +3577,58 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertLess(log.index("|switch|p2a: Metagross"), turn)
         self.assertLess(log.index("|switch|p2b: Sableye"), turn)
 
+    def test_the_trace_phase_reads_a_reread_notice_once_with_its_best_reading(self) -> None:
+        # COL-102, job 82923f56ce264a92: el OCR relee "Speed fell!" como
+        # "Speed fel!" en los frames siguientes del mismo aviso, y leído frame
+        # a frame cada variante salía como otro -message.
+        def record(frame: int, lines: tuple[OcrLine, ...]) -> dict[str, object]:
+            return {
+                "frame": frame,
+                "timestamp_ms": frame * 500,
+                "battle_index": 0,
+                "phase": "frame",
+                "ocr": [asdict(value) for value in lines],
+                "resolved_aliases": {"p1": {}, "p2": {}},
+            }
+
+        def message(text: str) -> tuple[OcrLine, ...]:
+            return (line(text, x=0.15, y=0.72, width=0.35),)
+
+        records = (
+            record(1, self.command_frame()),
+            record(2, message("Delphox's Attack fell!")),
+            record(3, message("Delphox's Attack fell!")),
+            record(4, ()),
+            record(5, message("The opposing Steelix's Speed fell!")),
+            record(6, message("The opposing Steelix's Speed fel!")),
+            record(7, message("The opposing Steelix's Speed fel!")),
+        )
+        context = DetectorContext(
+            p1_name="IesYo",
+            p2_name="Rival",
+            p1_team=("Delphox", "Victreebel"),
+            p2_team=("Steelix", "Drampa", "Umbreon"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "battle.trace.jsonl"
+            trace.write_text(
+                "".join(json.dumps(value, ensure_ascii=False) + "\n" for value in records),
+                encoding="utf-8",
+            )
+            detector = OcrTraceDetector.from_trace(trace, context=context)
+            messages = [
+                (frame.index, event.value)
+                for frame in OcrTraceFrameSource(trace)
+                for event in detector.detect(frame).events
+                if event.kind == "message"
+            ]
+
+        # Una vez cada aviso, en su primer frame, con la lectura buena.
+        self.assertEqual(
+            messages,
+            [(1, "Delphox's Attack fell!"), (4, "The opposing Steelix's Speed fell!")],
+        )
+
     def test_a_roster_resolved_when_its_battle_closes_stays_in_that_battle(self) -> None:
         # COL-102, job 82923f56ce264a92: el Team Preview de la Partida 1 sólo
         # se resolvió al cerrarla, y en vivo entró en la Partida 1. La traza

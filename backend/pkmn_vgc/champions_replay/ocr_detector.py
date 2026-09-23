@@ -12,11 +12,12 @@ from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Hashable, Mapping, Protocol, Sequence
 
 from .detector import DetectionError, DetectorContext, HudAlias, HudAliasResolver
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, FrameDetections, is_actor_identity
-from .sources import FramePacket
+from .notices import notice_readings
+from .sources import FramePacket, OcrTraceFrameSource
 from .team_preview import TeamPreviewResolver, looks_like_a_nickname
 
 
@@ -820,6 +821,7 @@ class ChampionsTextParser:
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
         self._pending_switch_timestamps: dict[str, int] = {}
         self._visible_messages: set[str] = set()
+        self.last_message_texts: tuple[str, ...] = ()
         self._visible_abilities: set[tuple[str, str, str]] = set()
         self._pending_abilities: dict[tuple[str, str, str], tuple[float, int]] = {}
         self._pending_fieldstarts: set[str] = set()
@@ -3141,6 +3143,9 @@ class ChampionsTextParser:
             self._battle_open = True
 
         message_lines = self._message_lines(lines)
+        # Lo que este frame tomó como mensajes; la segunda fase lo recoge en una
+        # pasada previa para agrupar las relecturas de cada aviso.
+        self.last_message_texts = tuple(line.text for line in message_lines)
         current_messages = {_text_key(line.text) for line in message_lines}
         for line in message_lines:
             key = _text_key(line.text)
@@ -3909,15 +3914,32 @@ class OcrTraceDetector:
             for battle_index, team in (rosters_by_battle or {}).items()
         }
         self._battle_index = 0
+        self._notice_readings: dict[tuple[Hashable, str], str] = {}
         self.parser = ChampionsTextParser(context=self._context_for_battle(0))
 
     @classmethod
     def from_trace(cls, path: Path, *, context: DetectorContext | None = None) -> OcrTraceDetector:
-        return cls(
-            context=context,
-            aliases_by_battle=load_trace_aliases(path),
-            rosters_by_battle=load_trace_rosters(path),
-        )
+        def build() -> OcrTraceDetector:
+            return cls(
+                context=context,
+                aliases_by_battle=load_trace_aliases(path),
+                rosters_by_battle=load_trace_rosters(path),
+            )
+
+        # Una pasada de reconocimiento anota qué tomó el parser como mensaje
+        # en cada frame; con la batalla entera a la vista, las relecturas de
+        # cada aviso se agrupan y la pasada real lee en todas la mejor.
+        detector = build()
+        if not path.is_file():
+            return detector
+        scout = build()
+        read: list[tuple[Hashable, Sequence[str]]] = []
+        for frame in OcrTraceFrameSource(path=path):
+            scout.parser.last_message_texts = ()
+            scout.detect(frame)
+            read.append(((scout._battle_index, frame.index), scout.parser.last_message_texts))
+        detector._notice_readings = notice_readings(read)
+        return detector
 
     @staticmethod
     def _merged_aliases(
@@ -3991,6 +4013,13 @@ class OcrTraceDetector:
         if recorded.p2_team:
             self.parser.bind_preview_team(recorded.p2_team, side="p2")
         self.parser.bind_visual_aliases(visual_aliases)
+        if self._notice_readings:
+            lines = tuple(
+                replace(line, text=best)
+                if (best := self._notice_readings.get(((battle_index, frame.index), _text_key(line.text))))
+                else line
+                for line in lines
+            )
         detections = self.parser.parse(
             lines,
             timestamp_ms=frame.timestamp_ms,

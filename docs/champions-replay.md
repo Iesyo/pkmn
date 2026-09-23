@@ -104,6 +104,13 @@ batalla). La segunda construye los replays desde esa traza ya completa, con el
 roster rival y los motes finales de cada batalla conocidos desde su primer
 frame. Tarda segundos y es exactamente lo que hace el subcomando `trace`.
 
+En esa segunda fase cada texto del juego cuenta como un solo aviso aunque el
+OCR lo relea con variantes durante varios frames ("Speed fell!", "Speed
+fel!", o cortado mientras se borra). Las lecturas casi iguales de frames
+seguidos se agrupan y el aviso se lee una vez, en su primer frame, con la
+lectura cuyas palabras más se repiten en el resto de la traza
+(`champions_replay/notices.py`).
+
 Un vídeo con varias batallas genera `replay-001.*`,
 `replay-002.*`, etc. La versión seleccionada aporta el Team propio y sus alias,
 mientras el rival se reconstruye desde lo visible. Cada resultado vuelve al
