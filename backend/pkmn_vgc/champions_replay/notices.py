@@ -2,8 +2,10 @@
 
 El cuadro de texto del juego muestra cada aviso durante varios frames y el OCR
 lo relee en cada uno, a veces con una letra de más o de menos ("Speed fell!",
-"Speed fel!") o cortado mientras se borra ("The battle has en"). Leído frame a
-frame, cada variante parecía un aviso nuevo y el replay lo repetía.
+"Speed fel!"), cortado mientras se borra ("The battle has en") o sin su
+comienzo mientras el cuadro entra o sale con un fundido ("used Zap Cannon!").
+Leído frame a frame, cada variante parecía un aviso nuevo y el replay lo
+repetía.
 
 Con la traza completa se ve el aviso entero: los frames seguidos en que el
 cuadro muestra lecturas casi iguales son el mismo aviso, y de todas sus
@@ -87,12 +89,31 @@ class _Notice:
         )
 
 
-def _same_notice(key: str, notice: _Notice) -> bool:
+def _starts_cut(text: str) -> bool:
+    """Una lectura a la que le falta el comienzo.
+
+    Las frases del juego empiezan siempre en mayúscula: un mote, "The
+    opposing…", "It's…". Mientras el cuadro entra o sale con un fundido, el
+    comienzo puede quedar ilegible sobre el sprite de detrás y el OCR lee sólo
+    el resto ("used Zap Cannon!", "and Sp. Def fell!").
+    """
+
+    first = next((character for character in text if character.isalpha()), "")
+    return first.islower()
+
+
+def _same_notice(key: str, text: str, notice: _Notice) -> bool:
     last = notice.last_key
     if key == last:
         return True
     shorter, longer = sorted((key, last), key=len)
     if len(shorter) >= MIN_PREFIX and longer.startswith(shorter):
+        return True
+    # Sólo se ata por el final una lectura que sin duda perdió su comienzo. Una
+    # frase entera puede ser el final de otra distinta ("Raichu protected
+    # itself!" y "The opposing Raichu protected itself!" en un espejo).
+    shorter_text = text if shorter == key else notice.readings[-1][2]
+    if len(shorter) >= MIN_PREFIX and longer.endswith(shorter) and _starts_cut(shorter_text):
         return True
     return SequenceMatcher(None, key, last).ratio() >= SAME_NOTICE
 
@@ -124,7 +145,7 @@ def notice_readings(
                 (
                     candidate
                     for candidate in open_notices
-                    if candidate not in continued and _same_notice(key, candidate)
+                    if candidate not in continued and _same_notice(key, text, candidate)
                 ),
                 None,
             )

@@ -54,6 +54,41 @@ class ChampionsNoticeTests(unittest.TestCase):
 
         self.assertEqual(corrected(read), {2: "The battle has ended due to a forfeit."})
 
+    def test_a_notice_that_fades_in_without_its_nickname_keeps_its_full_reading(self) -> None:
+        # Job 7cf4fc1532d04b7a, frames 526-529: el cuadro entra con un fundido
+        # y "Itzmin" queda ilegible sobre el sprite amarillo de Raichu. El
+        # replay escribía un "used Zap Cannon!" suelto antes del movimiento.
+        read = frames(
+            "Itzmin used Protect!",
+            None,
+            "used Zap Cannon!",
+            "Itzmin used Zap Cannon!",
+            "Itzmin used Zap Cannon!",
+        )
+
+        self.assertEqual(corrected(read), {2: "Itzmin used Zap Cannon!"})
+
+    def test_a_notice_that_fades_out_without_its_start_keeps_its_full_reading(self) -> None:
+        # Job 3ec5e67a35e849ca, frames 206-209: al borrarse, el OCR parte la
+        # línea y sólo el final parece una frase.
+        read = frames(
+            "Silveria's Defense and Sp. Def fell!",
+            "Silveria's Defense and Sp. Def fell!",
+            "and Sp. Def fell!",
+        )
+
+        self.assertEqual(corrected(read), {2: "Silveria's Defense and Sp. Def fell!"})
+
+    def test_a_whole_sentence_ending_another_one_stays_apart(self) -> None:
+        # En un espejo, dos avisos seguidos pueden ser uno el final del otro.
+        # Sólo se ata por el final una lectura que empieza en minúscula.
+        read = frames(
+            "Raichu protected itself!",
+            "The opposing Raichu protected itself!",
+        )
+
+        self.assertEqual(corrected(read), {})
+
     def test_two_different_notices_in_a_row_stay_apart(self) -> None:
         # Job 82923f56ce264a92, Partida 2, frames 1901-1902 y 2396-2397: sin
         # ningún frame vacío entre medio, pero se parecen como mucho 0,76.
