@@ -41,60 +41,68 @@ El cliente clásico entra al room como **espectador**. Por eso el campo animado 
 
 ## Modelo promovido y actualización
 
-El modelo promovido es **M-C BC+PPO 2026-09-16**, de la corrida
-`20260916T200255271236Z`. El manifiesto `battle_lab/model_release.json` fija su
-identidad, tamaño, SHA-256 y resultado del benchmark directo: 58% contra LIGHT
-productivo, 62.2% contra el base y 64.6% contra Simple Heuristics (500 partidas/rival).
+El productivo canónico es **M-C NORMAL BC+PPO 2026-09-22**, corrida
+`20260922T182640086766Z`, SHA-256
+`93f3d185e7f5b9e32d1fa3c4a64defac9dd86152f166660b4508d911e49fa0ab`.
+El benchmark directo espejado ganó 282/500 (56,4 %) al productivo anterior
+`5abbed702…`; la carga en la ROG se comprobó con `/model-info` y se probó
+en varias partidas de sparring. El registro de Colab es
+`Colabs/LikeNoOneEverWas/BattleLab/MC-Training/Refresh/champion.json`.
 
-[Descargar mc-20260916-bc-ppo.zip](https://drive.google.com/file/d/1B8-CutEs9Eb2CO-hMnXKx0KVXH6q3e5G/view).
-Guárdalo sin descomprimir en **`models/` dentro del proyecto**, por ejemplo
-`C:\workspace\pkmn\models\mc-20260916-bc-ppo.zip`. Esa carpeta se incluye con sus
-instrucciones; los pesos locales quedan excluidos de Git.
-SHA-256: `5abbed702f2801c8fad33e8bca0df008f51cc113d9007e95bb5fe393961fe3c2`.
+[Descargar step-000786432.zip](https://drive.google.com/file/d/1vvKQJv59lmoYqjRVE0r-APC-JToEpQLb/view).
+Guárdalo sin descomprimir en `models/`, por ejemplo
+`C:\workspace\pkmn\models\step-000786432.zip`. La versión promovida
+está fijada en `battle_lab/model_release.json`.
 
-Detén únicamente el runtime Python de Battle Lab con Ctrl+C y, desde la raíz del
-repositorio actualizado, ejecuta en PowerShell:
+Detén únicamente el runtime Python de Battle Lab con Ctrl+C. Desde la raíz
+del repositorio actualizado, ejecuta:
 
 ```powershell
 .\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release install --runtime-root .\.battle-lab-runtime
 ```
 
-Busca el ZIP correcto en la carpeta `models/` del proyecto por tamaño y hash.
-Acepta también el nombre original `step-000196608.zip` y sufijos de descarga;
-con varios modelos, selecciona el que coincide con el manifiesto de la versión
-promovida. Para otro archivo añade `--source "C:\ruta\mc-20260916-bc-ppo.zip"`,
-o usa `--models-dir "C:\otra\carpeta"` para cambiar la carpeta de búsqueda.
-Verifica tamaño, SHA y estructura SB3 antes de reemplazar nada. Conserva el modelo
-anterior en `.battle-lab-runtime/models/backups/<sha>.zip`, reemplaza atómicamente
-`.battle-lab-runtime/models/step-000196608.zip` y registra
-`.battle-lab-runtime/models/active-model.json`. La ruta existente
-permanece compatible con tus comandos de arranque. No toca equipos ni memoria Nana.
+El instalador verifica tamaño, SHA y estructura SB3. Respalda el modelo anterior
+en `.battle-lab-runtime/models/backups/<sha>.zip` y reemplaza atómicamente
+`.battle-lab-runtime/models/step-000196608.zip`. Ese nombre de archivo histórico
+se mantiene para no romper los launchers; los pesos reales se identifican por SHA.
+El respaldo no se considera un segundo productivo.
 
-Reinicia **el mismo comando de runtime que ya usabas** (incluido Nana/LAN). Desde
-otra terminal confirma el hash cargado:
+Reinicia el launcher N4 LIVE + Speed Tier con el mismo `--runtime-root` y
+`--nana-profile ies`, **sin** el argumento temporal
+`--checkpoint .\models\step-000786432.zip`. El checkpoint instalado se carga
+por defecto. Desde otra terminal:
 
 ```powershell
 .\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release verify --runtime-root .\.battle-lab-runtime
 ```
 
-`verify` consulta `/model-info`, compara hash y regulación, y guarda
-`.battle-lab-runtime/models/activation.json`. Instalar el archivo y seleccionar el champion de Colab
-son pasos distintos de comprobar que el runtime vivo lo cargó. Sparring y Auto Lab
-(Auditar y evaluación de variantes) comparten esa política. Nana identifica el
-nuevo teacher por SHA y separa su confianza previa; conserva el historial personal.
-Las funciones de cálculo, legalidad y consulta de datos que no consumen el modelo
-no requieren cambiar pesos.
+`verify` comprueba SHA y regulación del modelo realmente cargado y guarda
+`.battle-lab-runtime/models/activation.json`. La instalación local y el
+`champion.json` de Colab son registros separados; ambos deben apuntar a la misma
+versión tras esta actualización.
 
-Para volver al modelo anterior, detén el runtime, ejecuta lo siguiente y reinicia
-el mismo comando habitual:
+Nana conserva sesiones, hábitos, consejos y memoria de Team en
+`.battle-lab-runtime/nana/profiles/ies/`; instalar un modelo no borra esa
+carpeta. La confianza del advisor y la autocrítica por teacher se consultan por
+SHA del checkpoint. Al cambiar el SHA, esos valores empiezan con `fresh-prior`
+hasta que haya evidencia del teacher nuevo; puede parecer un reinicio aunque
+el historial y la memoria personal permanezcan. Confirma que el runtime use
+siempre el mismo `--runtime-root` y `--nana-profile` antes de atribuir la
+pérdida al modelo.
+
+Para comprobar el perfil sin modificarlo, en PowerShell:
 
 ```powershell
-.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release rollback --runtime-root .\.battle-lab-runtime
+$perfil = '.\.battle-lab-runtime\nana\profiles\ies'
+Get-ChildItem (Join-Path $perfil 'sessions') -Filter *.jsonl | Measure-Object
+Get-Content (Join-Path $perfil 'habits.json') | ConvertFrom-Json | Select-Object profileId,sessions,completedSessions,turnChoices
+Get-Content (Join-Path $perfil 'coach_memory.json') | ConvertFrom-Json | Select-Object profileId,@{Name='advices';Expression={$_.advices.Count}}
 ```
 
-El LIGHT anterior también permanece en su
-[archivo original de Drive](https://drive.google.com/file/d/1hmKrYaLg5u0aUpzuxtA3ZwWUpz-w9c6_/view),
-SHA `fa8687d08feeb169f4eb4f4a078b65971346e2ef5b0ca0ff899e811721075759`.
+Para restaurar el productivo anterior en la ROG, detén el runtime, ejecuta
+`.\.venv-battle-lab\Scripts\python.exe -m battle_lab.model_release rollback --runtime-root .\.battle-lab-runtime`
+y reinicia el mismo launcher sin `--checkpoint`. Esto restaura la instalación
+local; la referencia canónica en Drive no cambia automáticamente.
 
 ## Preparación local
 
