@@ -130,6 +130,25 @@ class PreparedOcrFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class _HudPlate:
+    """Una placa de nombre del HUD tal como se ve en el frame.
+
+    `order` es su puesto de izquierda a derecha entre las placas leídas de su
+    lado. `health` es la barra emparejada con ella, si la hay; `legacy_band`
+    dice si está en la franja donde el HUD clásico pone el nombre aunque la
+    barra no se haya leído.
+    """
+
+    side: str
+    order: int
+    label: str
+    species: str | None
+    line: OcrLine
+    health: str | None
+    legacy_band: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Banner:
     """Un banner lateral leído en un frame: de quién es y qué dice."""
 
@@ -2463,82 +2482,111 @@ class ChampionsTextParser:
             )
         return tuple(applied)
 
+    def _read_hud_side(
+        self,
+        lines: Sequence[OcrLine],
+        side: str,
+        readings: Sequence[tuple[OcrLine, str]],
+    ) -> tuple[list[_HudPlate], list[tuple[OcrLine, str]]]:
+        """Capa de lectura del HUD: las placas de un lado y sus barras.
+
+        Sólo mira la pantalla y lo que el parser ya sabe (motes, anuncios) para
+        reconocer cada placa; no cambia nada. Qué slot ocupa una placa cuando
+        se lee sola, y a qué identidad corresponde, lo decide
+        `_hud_observations`.
+        """
+
+        side_readings = sorted(
+            (
+                (line, health)
+                for line, health in readings
+                if (side == "p2" and line.center_y <= 0.24)
+                or (side == "p1" and line.center_y >= 0.76)
+            ),
+            key=lambda item: item[0].center_x,
+        )
+        species_lines = self._hud_species(lines, side)
+        paired = _paired_health([line for _label, _species, line in species_lines], readings)
+        plates = [
+            _HudPlate(
+                side=side,
+                order=index,
+                label=label,
+                species=species,
+                line=line,
+                health=paired.get(index),
+                legacy_band=(side == "p1" and line.center_y >= 0.82)
+                or (side == "p2" and line.center_y <= 0.18),
+            )
+            for index, (label, species, line) in enumerate(species_lines)
+        ]
+        return plates, side_readings
+
+    def _hud_plate_slot(
+        self,
+        plate: _HudPlate,
+        plates_on_side: int,
+        side_readings: Sequence[tuple[OcrLine, str]],
+    ) -> str:
+        """El slot de una placa: su orden si se leen las dos, si no, deducido."""
+
+        side = plate.side
+        if plates_on_side > 1:
+            return f"{side}{'ab'[plate.order]}"
+        slot = next(
+            (
+                slot
+                for slot, active_species in self._active.items()
+                if plate.species
+                and slot.startswith(side)
+                and _text_key(self._canonical_actor(active_species)) == _text_key(plate.species)
+            ),
+            None,
+        )
+        if slot is None and len(side_readings) >= 2:
+            nearest_index = min(
+                range(len(side_readings)),
+                key=lambda index: (
+                    abs(side_readings[index][0].center_x - plate.line.center_x)
+                    + abs(side_readings[index][0].center_y - plate.line.center_y)
+                ),
+            )
+            slot = f"{side}{'a' if nearest_index == 0 else 'b'}"
+        if slot is None:
+            midpoint = 0.24 if side == "p1" else 0.75
+            slot = f"{side}{'a' if plate.line.center_x < midpoint else 'b'}"
+        return slot
+
     def _hud_observations(self, lines: Sequence[OcrLine]) -> dict[str, tuple[str, str | None]]:
+        """Decide, a partir de lo que se lee en el HUD, quién está en cada slot."""
+
         text_keys = {_text_key(line.text) for line in lines}
         if text_keys.intersection({"close", "hidesummary", "helditem", "movesmore"}):
             return {}
 
         observations: dict[str, tuple[str, str | None]] = {}
         readings = _health_readings(lines)
+        # Lado a lado: lo que se decide con las placas propias ya cuenta al
+        # leer las del rival.
         for side in ("p1", "p2"):
-            species_lines = self._hud_species(lines, side)
-            if not species_lines:
+            plates, side_readings = self._read_hud_side(lines, side, readings)
+            if not plates:
                 continue
-
-            side_readings = sorted(
-                (
-                    (line, health)
-                    for line, health in readings
-                    if (side == "p2" and line.center_y <= 0.24)
-                    or (side == "p1" and line.center_y >= 0.76)
-                ),
-                key=lambda item: item[0].center_x,
-            )
-
-            slot_lines: list[tuple[str, str, str | None, OcrLine]] = []
-            if len(species_lines) == 1:
-                label, species, line = species_lines[0]
-                slot = next(
-                    (
-                        slot
-                        for slot, active_species in self._active.items()
-                        if species
-                        and slot.startswith(side)
-                        and _text_key(self._canonical_actor(active_species)) == _text_key(species)
-                    ),
-                    None,
-                )
-                if slot is None and len(side_readings) >= 2:
-                    nearest_index = min(
-                        range(len(side_readings)),
-                        key=lambda index: (
-                            abs(side_readings[index][0].center_x - line.center_x)
-                            + abs(side_readings[index][0].center_y - line.center_y)
-                        ),
-                    )
-                    slot = f"{side}{'a' if nearest_index == 0 else 'b'}"
-                if slot is None:
-                    midpoint = 0.24 if side == "p1" else 0.75
-                    slot = f"{side}{'a' if line.center_x < midpoint else 'b'}"
-                slot_lines.append((slot, label, species, line))
-            else:
-                for index, (label, species, line) in enumerate(species_lines):
-                    slot_lines.append((f"{side}{'ab'[index]}", label, species, line))
-
-            paired = _paired_health(
-                [species_line for _slot, _label, _species, species_line in slot_lines],
-                readings,
-            )
-            for index, (slot, label, species, species_line) in enumerate(slot_lines):
-                health = paired.get(index)
-                legacy_hud_band = (
-                    side == "p1" and species_line.center_y >= 0.82
-                ) or (
-                    side == "p2" and species_line.center_y <= 0.18
-                )
-                if health is None and not legacy_hud_band:
+            for plate in plates:
+                slot = self._hud_plate_slot(plate, len(plates), side_readings)
+                if plate.health is None and not plate.legacy_band:
                     continue
-                identity = self._identity_for_value(side, label)
+                identity = self._identity_for_value(side, plate.label)
                 if identity:
                     actor = identity
-                    if species:
-                        self._set_identity_species(identity, species, evidence="inferred")
-                elif species:
-                    actor = species
+                    if plate.species:
+                        self._set_identity_species(identity, plate.species, evidence="inferred")
+                elif plate.species:
+                    actor = plate.species
                 else:
-                    actor = self._ensure_identity(side, label, slot)
-                observations[slot] = (actor, health)
-                announced_key = self._matching_announced_lead_key(side, species_line.text)
+                    actor = self._ensure_identity(side, plate.label, slot)
+                observations[slot] = (actor, plate.health)
+                announced_key = self._matching_announced_lead_key(side, plate.line.text)
                 if announced_key:
                     self._hud_alias_slots[side][announced_key] = slot
                     if is_actor_identity(actor):

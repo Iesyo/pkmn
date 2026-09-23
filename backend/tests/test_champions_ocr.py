@@ -17,6 +17,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     OcrLine,
     OcrTraceDetector,
     RapidOcrEngine,
+    _health_readings,
     _health_value,
     _with_japanese_second_opinion,
     load_champions_catalog,
@@ -1000,6 +1001,34 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(notification_score[1], 0)
         self.assertGreater(battle_score[1], 0)
         self.assertGreater(battle_score, notification_score)
+
+    def test_reading_the_hud_decides_nothing(self) -> None:
+        # Capa de lectura (COL-102): las placas del HUD salen tal como se ven,
+        # en su orden y con su barra; qué slot e identidad les toca lo decide
+        # `_hud_observations`, que es lo único que cambia el estado.
+        parser = self.parser()
+        lines = self.command_frame()
+        before = (dict(parser._active), {side: dict(slots) for side, slots in parser._hud_alias_slots.items()})
+
+        plates, _side_readings = parser._read_hud_side(lines, "p2", _health_readings(lines))
+
+        self.assertEqual(
+            [(plate.order, plate.species, plate.health) for plate in plates],
+            [(0, "Steelix", "100/100"), (1, "Drampa", "100/100")],
+        )
+        self.assertEqual(
+            (dict(parser._active), {side: dict(slots) for side, slots in parser._hud_alias_slots.items()}),
+            before,
+        )
+        self.assertEqual(
+            parser._hud_observations(lines),
+            {
+                "p1a": ("Delphox", "152/152"),
+                "p1b": ("Victreebel", "187/187"),
+                "p2a": ("Steelix", "100/100"),
+                "p2b": ("Drampa", "100/100"),
+            },
+        )
 
     def test_the_second_reader_decides_only_lines_with_japanese(self) -> None:
         # COL-102, job 18241f89f82c4e83: lecturas reales de un mismo frame por
