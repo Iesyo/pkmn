@@ -157,6 +157,18 @@ del entorno local; la reconstrucción y la inferencia de aliases no salen de la
 computadora. La primera reanálisis con Team Preview puede llenar la caché local
 de sprites de Showdown; los siguientes trabajos reutilizan esos archivos.
 
+Para vídeos con motes japoneses hay un segundo lector opcional: el modelo
+`PP-OCRv6_rec_medium.onnx` (73 MB, del repositorio de modelos de RapidOCR)
+relee sólo las frases del juego en las que el modelo habitual ya vio japonés,
+y se queda con su lectura cuando no pierde caracteres ni palabras. En el
+vídeo de referencia actúa en el 4 % de los frames y suma un 10 % de tiempo.
+No se descarga solo: si no está en `.venv-champions\Lib\site-packages\rapidocr\models`,
+el análisis sigue como siempre con el modelo `small`. Para instalarlo:
+
+```powershell
+.\.venv-champions\Scripts\python.exe -c "from rapidocr import RapidOCR, ModelType; RapidOCR(params={'Rec.model_type': ModelType.MEDIUM})"
+```
+
 ## Contexto conocido
 
 Dar al detector el Team que se está probando reduce errores de nombres y
