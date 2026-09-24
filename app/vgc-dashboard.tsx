@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { MatchRecord, ScoutingAnalysis, TeamFolder, TeamGroup, TeamVersion } from "@/lib/types";
+import type { TeamFolder, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
 import { readComparisonSelection, resolveComparedVersions, writeComparisonSelection, type ComparisonSelection } from "@/lib/comparison-selection";
 import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
@@ -145,8 +145,6 @@ export function VgcDashboard() {
   const [warRoomMounted, setWarRoomMounted] = useState(false);
   const [warRoomTeam, setWarRoomTeam] = useState<PendingWarRoomTeam | null>(null);
   const warRoomSequence = useRef(0);
-  const [scoutingMatchId, setScoutingMatchId] = useState("");
-  const [runningScoutingIds, setRunningScoutingIds] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -205,47 +203,6 @@ export function VgcDashboard() {
       active = false;
     };
   }, []);
-
-  useEffect(() => {
-    let active = true;
-    fetch("/api/scouting", { cache: "no-store" })
-      .then(async (response) => response.ok ? (await response.json()) as { analyses?: ScoutingAnalysis[] } : { analyses: [] })
-      .then((payload) => {
-        if (active) setRunningScoutingIds(payload.analyses?.map((analysis) => analysis.matchId) ?? []);
-      })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (!runningScoutingIds.length) return;
-    let active = true;
-    const timer = window.setTimeout(async () => {
-      const finished = new Set<string>();
-      await Promise.all(runningScoutingIds.map(async (matchId) => {
-        try {
-          const response = await fetch("/api/scouting", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ matchId, action: "step" }),
-          });
-          if (response.status === 404) {
-            finished.add(matchId);
-            return;
-          }
-          const payload = (await response.json()) as { analysis?: ScoutingAnalysis };
-          if (response.ok && payload.analysis && (payload.analysis.status === "complete" || payload.analysis.status === "error")) finished.add(matchId);
-        } catch {
-          // A transient network failure leaves the persisted job available for the next pass.
-        }
-      }));
-      if (active) setRunningScoutingIds((current) => current.filter((matchId) => !finished.has(matchId)));
-    }, 650);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [runningScoutingIds]);
 
   const versions = useMemo(() => storedGroups.flatMap((group) => group.versions), [storedGroups]);
   const { left, right } = resolveComparedVersions(storedGroups, comparisonIds.leftVersionId, comparisonIds.rightVersionId);
@@ -438,15 +395,6 @@ export function VgcDashboard() {
     window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
   }
 
-  function openScouting(_version: TeamVersion, match: MatchRecord) {
-    setScoutingMatchId(match.id);
-    setActiveView("scouting");
-  }
-
-  function runScouting(matchId: string) {
-    setRunningScoutingIds((current) => current.includes(matchId) ? current : [...current, matchId]);
-  }
-
   return (
     <Tabs value={activeView} onValueChange={changeActiveView} className="vgc-app min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/7 bg-[#070b14]/88 backdrop-blur-2xl">
@@ -481,7 +429,7 @@ export function VgcDashboard() {
             <div className="mx-auto hidden size-14 items-center justify-center rounded-full border border-white/10 bg-slate-950 text-sm font-black italic tracking-tight text-white shadow-[0_0_35px_rgba(255,255,255,0.08)] xl:flex">VS</div>
             <TeamSelector label="Team B" value={right?.id ?? ""} groups={storedGroups} onChange={(rightVersionId) => setComparisonIds((current) => ({ ...current, rightVersionId }))} accent="violet" />
           </section>
-          {left && right ? <div className="grid items-start gap-5 xl:grid-cols-2"><TeamPanel version={left} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} /><TeamPanel version={right} accent="violet" onMatchCreated={refresh} onScoutingRequested={openScouting} /></div> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-10 text-center text-sm text-slate-500">No hay equipos guardados para comparar. Guarda un equipo desde Team Builder.</div>}
+          {left && right ? <div className="grid items-start gap-5 xl:grid-cols-2"><TeamPanel version={left} accent="cyan" onMatchCreated={refresh} /><TeamPanel version={right} accent="violet" onMatchCreated={refresh} /></div> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-10 text-center text-sm text-slate-500">No hay equipos guardados para comparar. Guarda un equipo desde Team Builder.</div>}
         </TabsContent>
 
         <TabsContent value="library" className="mt-0 outline-none">
@@ -547,7 +495,7 @@ export function VgcDashboard() {
               </ScrollArea>
             </aside>
             <div className="min-w-0">
-              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select><NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /></div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} extraAction={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openInWarRoom(libraryVersion)} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button></div>} /></> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-12 text-center"><BookOpen className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm font-semibold text-slate-400">Todavía no hay equipos guardados</p><p className="mt-1 text-xs text-slate-600">Crea tu primer Team para ver aquí sus versiones, estadísticas e historial.</p></div>}
+              {libraryTeam && libraryVersion ? <><div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-slate-950/60 p-3"><div><p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Equipo seleccionado</p><p className="mt-1 text-sm font-bold text-white">{libraryTeam.name}</p></div><div className="flex flex-wrap items-center gap-2"><Select value={libraryVersion.id} onValueChange={setLibraryVersionId}><SelectTrigger className="min-w-44 border-white/10 bg-white/4 sm:min-w-48"><SelectValue /></SelectTrigger><SelectContent className="border-white/10 bg-slate-950 text-slate-200">{libraryTeam.versions.map((version) => <SelectItem key={version.id} value={version.id}>Versión {formatVersion(version)} · {version.games} G</SelectItem>)}</SelectContent></Select><NewVersionDialog team={libraryTeam} onCreated={handleVersionCreated} /></div></div><TeamPanel version={libraryVersion} accent="cyan" onMatchCreated={refresh} extraAction={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => openInWarRoom(libraryVersion)} className="gap-2 rounded-full border-rose-300/15 bg-rose-300/5 text-rose-100"><Swords className="size-4" />Enviar a War Room</Button><Button variant="outline" onClick={() => openInBuilder(libraryVersion)} className="gap-2 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-100"><Hammer className="size-4" />Editar en Builder</Button></div>} /></> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-12 text-center"><BookOpen className="mx-auto size-7 text-slate-700" /><p className="mt-3 text-sm font-semibold text-slate-400">Todavía no hay equipos guardados</p><p className="mt-1 text-xs text-slate-600">Crea tu primer Team para ver aquí sus versiones, estadísticas e historial.</p></div>}
             </div>
           </div>
         </TabsContent>
@@ -557,7 +505,7 @@ export function VgcDashboard() {
         </TabsContent>
 
         <TabsContent value="scouting" className="mt-0 outline-none">
-          <ScoutingView key={scoutingMatchId || "scouting"} groups={storedGroups} initialMatchId={scoutingMatchId} onJobStarted={runScouting} onTournamentTeamImport={importTournamentTeam} />
+          <ScoutingView onTournamentTeamImport={importTournamentTeam} />
         </TabsContent>
 
         {warRoomMounted ? (
