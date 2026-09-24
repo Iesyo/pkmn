@@ -247,7 +247,7 @@ export function MatchHistory({
       <div className="flex items-center justify-between gap-3 border-b border-white/7 px-4 py-3">
         <h3 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><History className="size-3.5 text-violet-300" />Historial reciente</h3>
         <div className="flex items-center gap-2">
-          <span className="hidden text-[10px] text-slate-600 sm:inline">Últimas {Math.min(matches.length, 5)} de {matches.length}</span>
+          <span className="hidden text-[10px] text-slate-600 sm:inline">Últimas {Math.min(matches.length, 10)} de {matches.length}</span>
           {matches.length ? (
             <Dialog>
               <DialogTrigger asChild>
@@ -328,7 +328,7 @@ export function MatchHistory({
       {matches.length ? (
         <div className="overflow-x-auto">
           <MatchHistoryTable
-            matches={matches.slice(0, 5)}
+            matches={matches.slice(0, 10)}
             version={version}
             deletingMatchId={deletingMatchId}
             onDelete={(match) => void removeMatch(match)}
