@@ -556,6 +556,8 @@ class ChampionsOcrTests(unittest.TestCase):
             self.assertTrue(looks_like_a_nickname(nickname), nickname)
 
         parser = self.parser()
+        # Filas ya confirmadas por la lectura del Team Preview.
+        parser.bind_preview_team(("Delphox", "Victreebel"), side="p1")
         # El símbolo cae en la misma banda que el mote y más cerca del centro de
         # la fila, así que ganaba el desempate por cercanía.
         parser._preview_detections(
@@ -1415,6 +1417,8 @@ class ChampionsOcrTests(unittest.TestCase):
             context=DetectorContext(p1_team=team),
             catalog=ChampionsCatalog(species=team),
         )
+        # La lectura del Team Preview confirmó que las filas van en este orden.
+        parser.bind_preview_team(team, side="p1")
         preview = parser.parse(
             (
                 line("Roku", x=0.21, y=0.055),
@@ -1473,6 +1477,43 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.slot, event.species) for event in hud.events],
             [("p1a", "Blaziken"), ("p1b", "Basculegion")],
         )
+
+    def test_own_preview_rows_are_not_the_saved_team_order(self) -> None:
+        # COL-102, job 8b7488cb5914449f (13 s): el equipo del job guarda
+        # Rillaboom antes que Blaziken; la pantalla los muestra al revés.
+        # Atando la fila 4 ("Tonatiuh", con Blazikenite) a roster[3], Blaziken
+        # pasó toda la batalla como Rillaboom. Sin confirmar el orden, ni motes
+        # ni picks; con las filas confirmadas, cada mote con su especie.
+        saved = ("Indeedee-F", "Gardevoir", "Basculegion", "Rillaboom", "Blaziken", "Kingambit")
+        on_screen = ("Indeedee-F", "Gardevoir", "Basculegion", "Blaziken", "Rillaboom", "Kingambit")
+        panel = (
+            line("Roku", x=0.21, y=0.055),
+            line("Select 4 Pokémon", x=0.38, y=0.17, width=0.15),
+            line("to send into battle.", x=0.38, y=0.215, width=0.16),
+            line("Dee Dee", x=0.072, y=0.135),
+            line("Suzuko", x=0.072, y=0.252),
+            line("Revenant", x=0.073, y=0.371),
+            line("Tonatiuh", x=0.073, y=0.486),
+            line("Gori", x=0.072, y=0.602),
+            line("Tomoe", x=0.072, y=0.717),
+            line("1", x=0.125, y=0.486, width=0.02),
+            line("1/4", x=0.17, y=0.83, width=0.04),
+        )
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=saved),
+            catalog=ChampionsCatalog(species=saved),
+        )
+
+        unconfirmed = parser.parse(panel, timestamp_ms=13_000, source_frame=27)
+        self.assertNotIn("tonatiuh", parser.resolved_aliases()["p1"])
+        self.assertEqual(unconfirmed.p1_selected, ())
+
+        parser.bind_preview_team(on_screen, side="p1")
+        confirmed = parser.parse(panel, timestamp_ms=20_000, source_frame=41)
+
+        self.assertEqual(parser.resolved_aliases()["p1"]["tonatiuh"], "Blaziken")
+        self.assertEqual(parser.resolved_aliases()["p1"]["gori"], "Rillaboom")
+        self.assertEqual(confirmed.p1_selected, ("Blaziken",))
 
     def test_team_preview_emits_the_visual_opponent_roster(self) -> None:
         opponent = (
@@ -3090,6 +3131,21 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(
             resolver.resolve_rows(frame, side="p2"),
             ("Golisopod", "Incineroar", "Indeedee-F", "Salamence", "Hatterene", "Torkoal"),
+        )
+
+    def test_own_preview_rows_are_read_from_their_own_sprite(self) -> None:
+        # COL-102, job 8b7488cb5914449f, 20 s: nuestro panel en el orden del
+        # juego (… Blaziken, Rillaboom …), distinto del orden guardado del
+        # equipo. Con el equipo como candidatas, cada fila sale de su sprite.
+        resolver = ChampionsTeamPreviewResolver(load_champions_catalog().species_types)
+        frame = self.job_frame("8b7488cb-preview-p1-60x140.jpg", 60, 140)
+        saved_order = ("Indeedee-F", "Gardevoir", "Basculegion", "Rillaboom", "Blaziken", "Kingambit")
+
+        rows = resolver.resolve_labelled_rows(frame, side="p1", team=saved_order)
+
+        self.assertEqual(
+            tuple(species for species, _label in rows),
+            ("Indeedee-F", "Gardevoir", "Basculegion", "Blaziken", "Rillaboom", "Kingambit"),
         )
 
     def test_a_rival_nickname_is_tied_by_its_hud_icon(self) -> None:

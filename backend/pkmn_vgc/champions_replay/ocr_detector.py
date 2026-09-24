@@ -967,6 +967,8 @@ class ChampionsTextParser:
             "p1": tuple(self.context.p1_team),
             "p2": tuple(self.context.p2_team),
         }
+        # Vuelve el orden en que se guardó el equipo, no el de la pantalla.
+        self._preview_rows_confirmed = False
         self._side_species = {
             side: _NameMatcher(team or self.catalog.species)
             for side, team in self._teams.items()
@@ -999,8 +1001,17 @@ class ChampionsTextParser:
         self._announced_slots: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
         self._announced_leads: dict[str, tuple[str, ...]] = {"p1": (), "p2": ()}
         self._hud_alias_slots: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
-        self._preview_ranks: dict[int, str] = {}
+        # Fila del panel propio que ocupa cada pick (1-4). La especie de esa
+        # fila sólo se sabe cuando el propio Team Preview confirma el orden.
+        self._preview_ranks: dict[int, int] = {}
         self._preview_count = 0
+        # El equipo propio del job viene en el orden en que se guardó, no en el
+        # de la pantalla. Hasta que la lectura del Team Preview no confirme el
+        # orden de sus filas (bind_preview_team), fila i no es roster[i].
+        self._preview_rows_confirmed = False
+        # Sólo para trazas antiguas, que no guardan esa confirmación (ver
+        # OcrTraceDetector._parser_for_battle).
+        self.trust_saved_team_order = False
         self._open_slots: dict[str, list[str]] = {"p1": [], "p2": []}
         self._pending_switch_timestamps: dict[str, int] = {}
         self._visible_messages: set[str] = set()
@@ -1223,6 +1234,9 @@ class ChampionsTextParser:
         roster = tuple(canonical[:6])
         allowed = {_text_key(species) for species in roster}
         self._teams[side] = roster
+        if side == "p1":
+            # El roster viene de las filas del Team Preview, en su orden.
+            self._preview_rows_confirmed = True
         self._side_species[side] = _NameMatcher(roster)
         self._known_teams[side] = True
 
@@ -2345,11 +2359,17 @@ class ChampionsTextParser:
 
         Champions coloca las seis filas propias siempre en las mismas bandas.
         Asociarlas con el Team conocido evita depender de que el HUD muestre la
-        especie en lugar del nickname durante la batalla.
+        especie en lugar del nickname durante la batalla, pero sólo cuando la
+        lectura del propio Team Preview ya confirmó qué especie hay en cada
+        fila. COL-102, job 8b7488cb5914449f: el equipo del job guardaba
+        Rillaboom antes que Blaziken y el juego los muestra al revés; atar la
+        fila 4 ("Tonatiuh", con Blazikenite) a roster[3] la hizo Rillaboom
+        durante toda la batalla, con prioridad sobre la lectura buena.
         """
 
         row_centers = (0.145, 0.26, 0.38, 0.495, 0.61, 0.73)
-        roster = self._teams["p1"][:6]
+        trusted = self._preview_rows_confirmed or self.trust_saved_team_order
+        roster = self._teams["p1"][:6] if trusted else ()
         for index, center_y in enumerate(row_centers[: len(roster)]):
             label = min(
                 (
@@ -2387,14 +2407,16 @@ class ChampionsTextParser:
                 range(len(row_centers)),
                 key=lambda index: abs(line.center_y - row_centers[index]),
             )
-            if row_index >= len(roster) or abs(line.center_y - row_centers[row_index]) > 0.05:
+            if abs(line.center_y - row_centers[row_index]) > 0.05:
                 continue
-            self._preview_ranks[int(rank_match.group(1))] = roster[row_index]
+            self._preview_ranks[int(rank_match.group(1))] = row_index
 
+        # Los picks se guardan por fila; la especie de cada fila, sólo si ya
+        # está confirmada.
         selected = tuple(
-            self._preview_ranks[rank]
+            roster[self._preview_ranks[rank]]
             for rank in sorted(self._preview_ranks)
-            if rank <= count and rank in self._preview_ranks
+            if rank <= count and self._preview_ranks[rank] < len(roster)
         )
 
         p1_name = min(
@@ -3928,8 +3950,15 @@ class ChampionsOcrDetector:
             if labelled is None:
                 rosters["p1"] = read(frame, rotation_degrees=rotation_degrees, side="p1")
             else:
+                # El equipo propio del job, como conjunto de candidatas: su
+                # orden guardado no dice nada de las filas (ver
+                # ChampionsTextParser._preview_detections).
                 rosters["p1"] = labelled(
-                    frame, lines, rotation_degrees=rotation_degrees, side="p1"
+                    frame,
+                    lines,
+                    rotation_degrees=rotation_degrees,
+                    side="p1",
+                    team=tuple(self._base_context.p1_team),
                 )
         except Exception:  # noqa: BLE001 - el panel propio es opcional
             rosters["p1"] = ()
@@ -4297,7 +4326,16 @@ class OcrTraceDetector:
         self._battle_index = 0
         self._notice_readings: dict[tuple[Hashable, str], str] = {}
         self._views_by_battle: dict[int, BattleView] = {}
-        self.parser = ChampionsTextParser(context=self._context_for_battle(0))
+        self.parser = self._parser_for_battle(0)
+
+    def _parser_for_battle(self, battle_index: int) -> ChampionsTextParser:
+        parser = ChampionsTextParser(context=self._context_for_battle(battle_index))
+        # Una traza anterior a resolved_aliases no guarda qué especie leyó el
+        # Team Preview en cada fila propia: el orden guardado del equipo es lo
+        # único que tiene, como antes. Las trazas actuales traen los motes ya
+        # confirmados por la primera fase.
+        parser.trust_saved_team_order = not self._aliases_by_battle
+        return parser
 
     @classmethod
     def from_trace(cls, path: Path, *, context: DetectorContext | None = None) -> OcrTraceDetector:
@@ -4401,9 +4439,7 @@ class OcrTraceDetector:
             return FrameDetections()
         if battle_index != self._battle_index:
             self._battle_index = battle_index
-            self.parser = ChampionsTextParser(
-                context=self._context_for_battle(battle_index)
-            )
+            self.parser = self._parser_for_battle(battle_index)
             self.parser.battle_view = self._views_by_battle.get(battle_index)
         if recorded.p2_team:
             self.parser.bind_preview_team(recorded.p2_team, side="p2")

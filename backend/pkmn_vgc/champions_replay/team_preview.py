@@ -209,6 +209,13 @@ class ChampionsTeamPreviewResolver:
     # su ancho, y cuándo una fila se da por segura.
     _CARD_CANVAS_LEFT = 0.205
     _CARD_CANVAS_SIZE = 0.36
+    # En la tarjeta propia el sprite va a la derecha. Su borde derecho no se
+    # mide bien (los sprites que asoman por arriba cortan la franja con que se
+    # mide: 597, 536 o 532 px en frames del mismo panel), así que se ancla al
+    # borde izquierdo y se escala con el paso entre filas, que sí es estable:
+    # lienzo de 0,849 pasos, a 3,246 pasos del borde (job 8b7488cb5914449f).
+    _PLAYER_CANVAS_LEFT = 3.246
+    _PLAYER_CANVAS_SIZE = 0.849
     _CANVAS_SHORTLIST = 10
     _CANVAS_MAX_COST = 35.0
     _CANVAS_MARGIN = 1.3
@@ -1038,8 +1045,10 @@ class ChampionsTeamPreviewResolver:
         card: tuple[int, int, int, int],
         candidates: Sequence[str],
         gender: str | None,
+        *,
+        pitch: float | None = None,
     ) -> tuple[str | None, str | None]:
-        """(especie segura, mejor conjetura) de una fila rival por apariencia.
+        """(especie segura, mejor conjetura) de una fila por apariencia.
 
         COL-102, job 347da1c2ff16491b: en una captura de PC la tarjeta rival
         es del mismo carmesí que Incineroar, y la silueta se quedaba con el
@@ -1052,7 +1061,13 @@ class ChampionsTeamPreviewResolver:
 
         x1, x2, y1, _y2 = card
         card_width = x2 - x1
-        size = round(card_width * self._CARD_CANVAS_SIZE)
+        # Con `pitch`, tarjeta propia: medida en pasos entre filas.
+        scale, left_fraction, size_fraction = (
+            (pitch, self._PLAYER_CANVAS_LEFT, self._PLAYER_CANVAS_SIZE)
+            if pitch
+            else (card_width, self._CARD_CANVAS_LEFT, self._CARD_CANVAS_SIZE)
+        )
+        size = round(scale * size_fraction)
         # Con color, macho y hembra pueden ser dibujos distintos (Indeedee-F
         # queda a 12,8 de su tarjeta; Indeedee, a 61). Compiten las dos formas
         # y el margen se mide contra la mejor de otra especie.
@@ -1064,7 +1079,7 @@ class ChampionsTeamPreviewResolver:
         ranking = self.canvas_ranking(
             image,
             forms,
-            left=x1 + round(card_width * self._CARD_CANVAS_LEFT),
+            left=x1 + round(scale * left_fraction),
             top=y1,
             size=size,
             slack_x=max(2, round(card_width * 0.01)),
@@ -1074,6 +1089,8 @@ class ChampionsTeamPreviewResolver:
             return None, None
         best_cost, best_species = ranking[0]
         guess = self._gendered_variant(best_species, gender)
+        if guess not in forms:
+            guess = best_species
         base = _text_id(best_species.removesuffix("-F").removesuffix("-M"))
         runner_up = next(
             (
@@ -1192,6 +1209,7 @@ class ChampionsTeamPreviewResolver:
         *,
         rotation_degrees: int = 0,
         side: str = "p1",
+        team: Sequence[str] = (),
     ) -> tuple[tuple[str | None, str | None], ...]:
         """Especie y mote de cada fila, leídos de la misma tarjeta.
 
@@ -1203,7 +1221,23 @@ class ChampionsTeamPreviewResolver:
 
         image = self._decode_frame(frame, rotation_degrees)
         cards = self._card_boxes(image, side)
-        species = self._species_for_cards(image, cards, side)
+        if team and len(cards) > 1:
+            centres = [(top + bottom) / 2 for _x1, _x2, top, bottom in cards]
+            pitch = sorted(second - first for first, second in zip(centres, centres[1:]))[
+                (len(centres) - 1) // 2
+            ]
+            # COL-102, job 8b7488cb5914449f: con el equipo propio conocido
+            # sólo hay seis candidatas, y el sprite con color las separa por un
+            # margen de tres a cinco veces. La silueta daba Blaziken como segura
+            # en 8 de 55 lecturas y el panel nunca llegaba a aceptarse.
+            species = tuple(
+                # El equipo ya dice qué forma es; el género de una tarjeta
+                # resaltada en lima se lee mal y la cambiaba.
+                self._appearance_decision(image, card, team, None, pitch=pitch)[0]
+                for card in cards
+            )
+        else:
+            species = self._species_for_cards(image, cards, side)
         names = self._labels_for_cards(image, cards, lines)
         return tuple(zip(species, names, strict=True))
 
