@@ -37,7 +37,7 @@ function Metric({ label, value, detail, accent }: { label: string; value: string
   );
 }
 
-export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: keyof typeof accents }) {
+export function PokemonCard({ pokemon, totalGames, accent }: { pokemon: PokemonSet; totalGames: number; accent: keyof typeof accents }) {
   const style = accents[accent];
   const performance = pokemon.performance;
 
@@ -71,9 +71,10 @@ export function PokemonCard({ pokemon, accent }: { pokemon: PokemonSet; accent: 
         </div>
       </div>
 
-      <div className="relative grid grid-cols-2 gap-3 border-b border-white/7 bg-black/15 px-3 py-2.5">
+      <div className="relative grid grid-cols-3 gap-2 border-b border-white/7 bg-black/15 px-3 py-2.5">
         <Metric label="Win %" value={`${winRate(performance.wins, performance.games)}%`} detail={`${performance.wins} de ${performance.games}`} accent={style.metric} />
         <Metric label="Lead win %" value={`${winRate(performance.leadWins, performance.leadGames)}%`} detail={`${performance.leadWins} de ${performance.leadGames}`} accent={style.metric} />
+        <Metric label="Uso %" value={totalGames ? `${performance.selectionRate}%` : "—"} detail={totalGames ? `${performance.games} de ${totalGames}` : "sin partidas"} accent={style.metric} />
       </div>
 
       <div className="relative space-y-2.5 p-3">
