@@ -703,11 +703,13 @@ test("allows all six identities to be locked", async () => {
   assert.equal(result.members.length, 0);
 });
 
-test("offers four partners per unlocked slot up to twenty and can consume the previous batch", async () => {
+test("offers four partners per slot, groups them by species and consumes the previous batch", async () => {
   const snapshot = await readSnapshot();
   const {
     MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
     MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT,
+    applyWarRoomMemberSuggestion,
+    groupWarRoomMemberSuggestions,
     optimizeTeam,
   } = await vite.ssrLoadModule("/lib/war-room.ts");
   const team = ownTeam();
@@ -729,6 +731,18 @@ test("offers four partners per unlocked slot up to twenty and can consume the pr
   const firstPerSlot = first.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
   assert.deepEqual([...firstPerSlot.values()], [4, 4, 4, 4, 4]);
   assert.equal(firstPerSlot.has(team[1].id), false);
+
+  const grouped = groupWarRoomMemberSuggestions(first.members);
+  assert.equal(grouped.length, new Set(first.members.map((member) => member.species)).size);
+  assert.equal(grouped.flat().length, first.members.length);
+  const shared = grouped.find((options) => options.length > 1);
+  assert.ok(shared);
+  const selected = shared[1];
+  const otherTarget = shared[0].replacesSetId;
+  assert.notEqual(selected.replacesSetId, otherTarget);
+  const replaced = applyWarRoomMemberSuggestion(team, selected, snapshot);
+  assert.equal(replaced.find((pokemon) => pokemon.id === selected.replacesSetId)?.species, selected.species);
+  assert.equal(replaced.find((pokemon) => pokemon.id === otherTarget)?.species, team.find((pokemon) => pokemon.id === otherTarget)?.species);
 
   const previousBatch = [...new Set(first.members.map((member) => member.species))];
   const next = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
