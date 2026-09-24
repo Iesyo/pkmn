@@ -59,10 +59,10 @@ test("opens public and reconstructed replays through links in a new tab", async 
   assert.equal(getMatchReplayHref(baseMatch), "");
 });
 
-test("recent history stays capped at five while exposing the complete filtered history", async () => {
+test("recent history stays capped at ten while exposing the complete filtered history", async () => {
   const source = await readFile(new URL("../components/vgc/match-history.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /matches=\{matches\.slice\(0, 5\)\}/);
+  assert.match(source, /matches=\{matches\.slice\(0, 10\)\}/);
   assert.match(source, /Historial completo/);
   assert.match(source, /Todas las partidas guardadas de esta versión/);
   assert.match(source, /value: "all", label: "Todos"/);
