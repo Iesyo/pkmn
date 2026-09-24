@@ -21,7 +21,6 @@ import { LeadsPanel } from "./leads-panel";
 import { MatchHistory } from "./match-history";
 import { MatchupAttendance } from "./matchup-attendance";
 import { PokemonCard } from "./pokemon-card";
-import { TypeAnalysis } from "./type-analysis";
 
 const accentStyles = {
   cyan: {
@@ -81,7 +80,9 @@ export function TeamPanel({
 }) {
   const style = accentStyles[accent];
   const rate = winRate(version.wins, version.games);
-  const mostUsed = [...version.pokemon].sort((a, b) => b.performance.selectionRate - a.performance.selectionRate)[0];
+  const mostUsed = version.games
+    ? [...version.pokemon].sort((a, b) => b.performance.selectionRate - a.performance.selectionRate)[0]
+    : undefined;
 
   return (
     <section className="relative min-w-0 overflow-hidden rounded-[28px] border border-white/8 bg-slate-900/45 shadow-[0_32px_90px_rgba(0,0,0,0.28)] backdrop-blur-xl">
@@ -122,10 +123,9 @@ export function TeamPanel({
 
       <div className="space-y-4 p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2">
-          {version.pokemon.map((pokemon) => <PokemonCard key={pokemon.id} pokemon={pokemon} accent={accent} />)}
+          {version.pokemon.map((pokemon) => <PokemonCard key={pokemon.id} pokemon={pokemon} totalGames={version.games} accent={accent} />)}
         </div>
         <LeadsPanel leads={version.leads} />
-        <TypeAnalysis pokemon={version.pokemon} allowTera={(version.mechanics ?? ["tera"]).includes("tera")} />
         <MatchupAttendance matches={version.matches} />
         <MatchHistory key={version.id} version={version} onMatchCreated={onMatchCreated} onScoutingRequested={onScoutingRequested} />
       </div>
