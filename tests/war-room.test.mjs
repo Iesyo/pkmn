@@ -636,9 +636,9 @@ test("rejects Grassy Seed without a terrain activator when applying a partner", 
   assert.notEqual(replacement.item, "Grassy Seed");
 });
 
-test("limits Mega partner cards according to the Megas already configured on the team", async () => {
+test("reserves legal Mega partner cards according to the Megas already configured on the team", async () => {
   const snapshot = await readSnapshot();
-  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { groupWarRoomMemberSuggestions, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
   const partnerCorpus = [
     corpusTeam("mega-a", ["Rillaboom", "Incineroar", "Salamence-Mega", "Golisopod-Mega", "Sneasler", "Pelipper"]),
     corpusTeam("mega-b", ["Rillaboom", "Incineroar", "Mawile-Mega", "Venusaur-Mega", "Basculegion", "Indeedee-F"]),
@@ -650,13 +650,13 @@ test("limits Mega partner cards according to the Megas already configured on the
   const noMegas = ownTeam();
   const noMegaResult = optimizeTeam(noMegas, locks(noMegas), partnerCorpus, snapshot);
   assert.deepEqual(noMegaResult.megaPolicy, { configured: 0, maximum: 2, recommendationSlots: 2 });
-  assert.ok(noMegaResult.members.filter((member) => member.isMega).length <= 2);
+  assert.equal(groupWarRoomMemberSuggestions(noMegaResult.members).filter((group) => group[0].isMega).length, 2);
 
   const oneMega = ownTeam();
   oneMega[0].item = "Charizardite X";
   const oneMegaResult = optimizeTeam(oneMega, locks(oneMega), partnerCorpus, snapshot);
   assert.deepEqual(oneMegaResult.megaPolicy, { configured: 1, maximum: 2, recommendationSlots: 1 });
-  assert.ok(oneMegaResult.members.filter((member) => member.isMega).length <= 1);
+  assert.equal(groupWarRoomMemberSuggestions(oneMegaResult.members).filter((group) => group[0].isMega).length, 1);
 
   const twoMegas = ownTeam();
   twoMegas[0].item = "Charizardite X";
@@ -668,9 +668,62 @@ test("limits Mega partner cards according to the Megas already configured on the
   assert.match(twoMegaResult.notes.join(" "), /limita las alternativas Mega a dos/i);
 });
 
+test("offers Mega-capable species even when the comparable roster lists only their base forms", async () => {
+  const snapshot = await readSnapshot();
+  const { applyWarRoomMemberSuggestion, groupWarRoomMemberSuggestions, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const own = ownTeam();
+  const current = new Set(own.map((pokemon) => pokemon.species));
+  const megaBases = new Set(snapshot.formats.champions
+    .map((id) => snapshot.species[id]?.name)
+    .filter((name) => name?.includes("-Mega"))
+    .map((name) => name.split("-Mega")[0]));
+  const ordinary = [...new Set(snapshot.formats.champions
+    .map((id) => snapshot.species[id]?.name)
+    .filter((name) => name && !name.includes("-Mega") && !current.has(name) && !megaBases.has(name)))].slice(0, 18);
+  assert.equal(ordinary.length, 18);
+  const partnerCorpus = [
+    ...Array.from({ length: 4 }, (_, index) => corpusTeam(`ordinary-${index}`, ["Rillaboom", ...ordinary.slice(index * 5, index * 5 + 5)])),
+    corpusTeam("base-megas", ["Rillaboom", "Salamence", "Mawile", ...ordinary.slice(0, 3)]),
+  ];
+  const groups = groupWarRoomMemberSuggestions(optimizeTeam(own, [own[1].id], partnerCorpus, snapshot).members);
+  assert.equal(groups.length, 12);
+  assert.deepEqual(groups.filter((group) => group[0].isMega).map((group) => group[0].species).sort(), ["Mawile", "Salamence"]);
+  assert.ok(groups.filter((group) => group[0].isMega).every((group) => group[0].observedAs.includes("-Mega")));
+  assert.ok(groups.filter((group) => group[0].isMega).every((group) => group[0].reasons.join(" ").includes("no necesariamente a esta forma Mega")));
+  const mega = groups.find((group) => group[0].isMega)[0];
+  const replacement = applyWarRoomMemberSuggestion(own, mega, snapshot).find((pokemon) => pokemon.id === mega.replacesSetId);
+  assert.equal(replacement?.species, mega.species);
+  assert.equal(replacement?.mechanics.megaEvolution, true);
+  assert.ok(replacement?.item);
+});
+
+test("a normal partner card cannot add a third Mega from an observed paste", async () => {
+  const snapshot = await readSnapshot();
+  const { buildWarRoomMemberReplacement, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { getLegalAbilities, getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
+  const team = ownTeam();
+  team[0].item = "Charizardite X";
+  team[4].item = "Garchompite Z";
+  const suggestion = optimizeTeam(team, [team[1].id], [corpusTeam("mawile", ["Rillaboom", "Mawile", "Pelipper", "Whimsicott", "Sneasler", "Gholdengo"])], snapshot)
+    .members.find((member) => member.species === "Mawile" && member.replacesSetId === team[5].id);
+  assert.ok(suggestion);
+  assert.equal(suggestion.isMega, false);
+  const observed = set("Mawile", getLegalMoves(snapshot, "Mawile", "champions").slice(0, 4), 6, {
+    item: "Mawilite",
+    ability: getLegalAbilities(snapshot, "Mawile", "champions")[0],
+    nature: "Adamant",
+    evs: "32 HP / 32 Atk / 2 SpD",
+  });
+  const result = buildWarRoomMemberReplacement(team, suggestion, snapshot, [], [pasteEvidenceTeam("mega-paste", [observed, ...team.slice(0, 5)])]);
+  const replacement = result.pokemon.find((pokemon) => pokemon.id === team[5].id);
+  assert.equal(replacement?.species, "Mawile");
+  assert.notEqual(replacement?.item, "Mawilite");
+  assert.equal(optimizeTeam(result.pokemon, [team[1].id], [], snapshot).megaPolicy.configured, 2);
+});
+
 test("uses historical partner relationships only after the current-regulation legality gate", async () => {
   const snapshot = await readSnapshot();
-  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { groupWarRoomMemberSuggestions, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
   const { isSpeciesAvailable } = await vite.ssrLoadModule("/lib/showdown-data.ts");
   const team = ownTeam();
   const legalPartners = ["Blaziken", "Typhlosion-Hisui", "Sinistcha", "Whimsicott"];
@@ -681,7 +734,8 @@ test("uses historical partner relationships only after the current-regulation le
   const historical = historicalCorpusTeam("old-core", [team[1].species, illegalSpecies, ...legalPartners]);
 
   const result = optimizeTeam(team, [team[1].id], [], snapshot, {}, { historicalCorpus: [historical] });
-  assert.equal(result.members.length, 20, "four legal candidates should fill every unlocked slot without the illegal species consuming a card");
+  assert.equal(groupWarRoomMemberSuggestions(result.members).length, 4, "only legal species should occupy the visible cards");
+  assert.equal(result.members.length, 20, "each of the four species can replace the five unlocked members");
   const perSlot = result.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
   assert.deepEqual([...perSlot.values()], [4, 4, 4, 4, 4]);
   assert.equal(result.members.some((member) => member.species === illegalSpecies), false);
@@ -703,11 +757,10 @@ test("allows all six identities to be locked", async () => {
   assert.equal(result.members.length, 0);
 });
 
-test("offers four partners per slot, groups them by species and consumes the previous batch", async () => {
+test("offers twelve distinct partners with every eligible replacement target and consumes the previous batch", async () => {
   const snapshot = await readSnapshot();
   const {
     MAX_WAR_ROOM_MEMBER_SUGGESTIONS,
-    MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT,
     applyWarRoomMemberSuggestion,
     groupWarRoomMemberSuggestions,
     optimizeTeam,
@@ -725,11 +778,11 @@ test("offers four partners per slot, groups them by species and consumes the pre
   ));
   const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
 
-  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT, 4);
-  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS, 20);
-  assert.equal(first.members.length, 20);
+  assert.equal(MAX_WAR_ROOM_MEMBER_SUGGESTIONS, 12);
+  assert.equal(groupWarRoomMemberSuggestions(first.members).length, 12);
+  assert.equal(first.members.length, 60);
   const firstPerSlot = first.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
-  assert.deepEqual([...firstPerSlot.values()], [4, 4, 4, 4, 4]);
+  assert.deepEqual([...firstPerSlot.values()], [12, 12, 12, 12, 12]);
   assert.equal(firstPerSlot.has(team[1].id), false);
 
   const grouped = groupWarRoomMemberSuggestions(first.members);
@@ -746,15 +799,16 @@ test("offers four partners per slot, groups them by species and consumes the pre
 
   const previousBatch = [...new Set(first.members.map((member) => member.species))];
   const next = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
-  assert.equal(next.members.length, 20);
+  assert.equal(groupWarRoomMemberSuggestions(next.members).length, 12);
+  assert.equal(next.members.length, 60);
   const nextPerSlot = next.members.reduce((counts, member) => counts.set(member.replacesSetId, (counts.get(member.replacesSetId) ?? 0) + 1), new Map());
-  assert.deepEqual([...nextPerSlot.values()], [4, 4, 4, 4, 4]);
+  assert.deepEqual([...nextPerSlot.values()], [12, 12, 12, 12, 12]);
   assert.ok(next.members.every((member) => !previousBatch.includes(member.species)));
 });
 
-test("expands beyond an exhausted exact-core sample without repeating earlier batches", async () => {
+test("expands beyond an exhausted exact-core sample without repeating the twelve-card batch", async () => {
   const snapshot = await readSnapshot();
-  const { optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
+  const { groupWarRoomMemberSuggestions, optimizeTeam } = await vite.ssrLoadModule("/lib/war-room.ts");
   const team = ownTeam();
   const current = new Set(team.map((pokemon) => pokemon.species.toLowerCase()));
   const candidates = [...new Set(snapshot.formats.champions
@@ -771,13 +825,13 @@ test("expands beyond an exhausted exact-core sample without repeating earlier ba
   ];
 
   const first = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot);
-  assert.equal(first.members.length, 20);
+  assert.equal(groupWarRoomMemberSuggestions(first.members).length, 12);
   assert.ok(first.members.some((member) => member.evidenceMode === "core"));
   assert.ok(first.members.some((member) => member.evidenceMode === "expanded"));
 
   const previousBatch = [...new Set(first.members.map((member) => member.species))];
   const second = optimizeTeam(team, [team[1].id], partnerCorpus, snapshot, {}, { excludedMemberSpecies: previousBatch });
-  assert.equal(second.members.length, 20);
+  assert.equal(groupWarRoomMemberSuggestions(second.members).length, 12);
   assert.ok(second.members.every((member) => member.evidenceMode === "expanded"));
   assert.ok(second.members.every((member) => !previousBatch.includes(member.species)));
 });
@@ -1028,7 +1082,6 @@ test("exposes War Room as a top-level dashboard section, separate from Scouting"
   assert.match(warRoom, /member\.isMega/);
   assert.match(warRoom, /MAX_WAR_ROOM_LOCKED_IDENTITIES/);
   assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS/);
-  assert.match(warRoom, /MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT/);
   assert.match(warRoom, /permite proteger los seis miembros del Team/);
   assert.match(warRoom, /Elegir y recalcular/);
   assert.match(warRoom, /buildWarRoomMemberReplacement/);
