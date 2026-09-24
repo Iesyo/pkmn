@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useMemo, useState } from "react";
-import { ExternalLink, History, ListFilter, LoaderCircle, ScanSearch, Trash2, Trophy } from "lucide-react";
+import { ExternalLink, History, ListFilter, LoaderCircle, Trash2, Trophy } from "lucide-react";
 
 import {
   AlertDialog,
@@ -94,7 +94,6 @@ function MatchHistoryTable({
   version,
   deletingMatchId,
   onDelete,
-  onScoutingRequested,
   showOrigin = false,
   showFullDate = false,
 }: {
@@ -102,7 +101,6 @@ function MatchHistoryTable({
   version: TeamVersion;
   deletingMatchId: string | null;
   onDelete: (match: MatchRecord) => void;
-  onScoutingRequested?: (version: TeamVersion, match: MatchRecord) => void;
   showOrigin?: boolean;
   showFullDate?: boolean;
 }) {
@@ -138,21 +136,7 @@ function MatchHistoryTable({
             <TableCell className="max-w-36 truncate font-medium text-slate-300">{match.opponentName}</TableCell>
             {showOrigin ? <TableCell><OriginBadge match={match} /></TableCell> : null}
             <TableCell>
-              <div className="flex min-w-max items-center gap-2">
-                <PokemonSpriteStrip species={match.opponentSelected} label={isChampions ? "Pokémon rival" : "Equipo rival"} />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  disabled={version.demo || !match.replayUrl || !onScoutingRequested}
-                  onClick={() => onScoutingRequested?.(version, match)}
-                  title={version.demo ? "Guarda una partida real para analizarla" : match.replayUrl ? `Analizar el equipo de ${match.opponentName}` : "Esta partida no tiene replay"}
-                  aria-label={`Analizar el equipo rival de ${match.opponentName}`}
-                  className="shrink-0 rounded-full border-cyan-300/15 bg-cyan-300/5 text-cyan-300 hover:bg-cyan-300/10 hover:text-cyan-200"
-                >
-                  <ScanSearch className="size-3.5" />
-                </Button>
-              </div>
+              <PokemonSpriteStrip species={match.opponentSelected} label={isChampions ? "Pokémon rival" : "Equipo rival"} />
             </TableCell>
             <TableCell><PokemonSpriteStrip species={match.opponentPicks ?? []} label="Picks rival" limit={4} /></TableCell>
             <TableCell><PokemonSpriteStrip species={match.selected} label="Tus picks" tone="cyan" limit={4} /></TableCell>
@@ -201,11 +185,9 @@ function MatchHistoryTable({
 export function MatchHistory({
   version,
   onMatchCreated,
-  onScoutingRequested,
 }: {
   version: TeamVersion;
   onMatchCreated?: () => void;
-  onScoutingRequested?: (version: TeamVersion, match: MatchRecord) => void;
 }) {
   const matches = version.matches;
   const [deletingMatchId, setDeletingMatchId] = useState<string | null>(null);
@@ -296,7 +278,6 @@ export function MatchHistory({
                       version={version}
                       deletingMatchId={deletingMatchId}
                       onDelete={(match) => void removeMatch(match)}
-                      onScoutingRequested={onScoutingRequested}
                       showOrigin
                       showFullDate
                     />
@@ -332,7 +313,6 @@ export function MatchHistory({
             version={version}
             deletingMatchId={deletingMatchId}
             onDelete={(match) => void removeMatch(match)}
-            onScoutingRequested={onScoutingRequested}
           />
         </div>
       ) : (
