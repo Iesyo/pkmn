@@ -220,6 +220,16 @@ export interface WarRoomMemberSuggestion {
   reasons: string[];
 }
 
+export function groupWarRoomMemberSuggestions(members: readonly WarRoomMemberSuggestion[]): WarRoomMemberSuggestion[][] {
+  const groups = new Map<string, WarRoomMemberSuggestion[]>();
+  for (const member of members) {
+    const options = groups.get(member.species) ?? [];
+    options.push(member);
+    groups.set(member.species, options);
+  }
+  return [...groups.values()];
+}
+
 export interface WarRoomMemberApplicationResult {
   pokemon: PokemonSet[];
   setSource: "observed-paste" | "observed-paste-patched" | "battle-data-fallback" | "legal-fallback";
