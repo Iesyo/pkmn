@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { MatchRecord, ScoutingAnalysis, TeamFolder, TeamGroup, TeamVersion } from "@/lib/types";
 import { formatVersion } from "@/lib/team-builder";
+import { readComparisonSelection, resolveComparedVersions, writeComparisonSelection, type ComparisonSelection } from "@/lib/comparison-selection";
 import type { TournamentTeamBuilderImport } from "@/lib/tournament-scouting";
 
 type ConnectionState = "checking" | "ready" | "error";
@@ -125,8 +126,15 @@ export function VgcDashboard() {
   const [showdownNames, setShowdownNames] = useState<string[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [activeView, setActiveView] = useState("compare");
-  const [leftId, setLeftId] = useState("");
-  const [rightId, setRightId] = useState("");
+  const [comparisonIds, setComparisonIds] = useState<ComparisonSelection>(() => {
+    const defaults = { leftVersionId: "", rightVersionId: "" };
+    if (typeof window === "undefined") return defaults;
+    try {
+      return readComparisonSelection(window.localStorage) ?? defaults;
+    } catch {
+      return defaults;
+    }
+  });
   const [libraryTeamId, setLibraryTeamId] = useState("");
   const [libraryVersionId, setLibraryVersionId] = useState("");
   const [builderVersionId, setBuilderVersionId] = useState("");
@@ -240,10 +248,19 @@ export function VgcDashboard() {
   }, [runningScoutingIds]);
 
   const versions = useMemo(() => storedGroups.flatMap((group) => group.versions), [storedGroups]);
-  const fallbackLeft = storedGroups[0]?.versions[0];
-  const fallbackRight = storedGroups[1]?.versions[0] ?? storedGroups[0]?.versions[1] ?? fallbackLeft;
-  const left = versions.find((version) => version.id === leftId) ?? fallbackLeft;
-  const right = versions.find((version) => version.id === rightId) ?? fallbackRight;
+  const { left, right } = resolveComparedVersions(storedGroups, comparisonIds.leftVersionId, comparisonIds.rightVersionId);
+  const leftVersionId = left?.id;
+  const rightVersionId = right?.id;
+
+  useEffect(() => {
+    if (connection !== "ready" || !leftVersionId || !rightVersionId) return;
+    try {
+      writeComparisonSelection(window.localStorage, { leftVersionId, rightVersionId });
+    } catch {
+      // Keep the current comparison usable when browser storage is unavailable.
+    }
+  }, [connection, leftVersionId, rightVersionId]);
+
   const libraryTeam = storedGroups.find((team) => team.id === libraryTeamId) ?? storedGroups[0];
   const libraryVersion = libraryTeam?.versions.find((version) => version.id === libraryVersionId) ?? libraryTeam?.versions[0];
   const folderIds = useMemo(() => new Set(teamFolders.map((folder) => folder.id)), [teamFolders]);
@@ -460,9 +477,9 @@ export function VgcDashboard() {
 
         <TabsContent value="compare" className="mt-0 outline-none">
           <section aria-label="Selección de equipos" className="relative mb-5 grid items-center gap-3 xl:grid-cols-[minmax(0,1fr)_72px_minmax(0,1fr)]">
-            <TeamSelector label="Team A" value={left?.id ?? ""} groups={storedGroups} onChange={setLeftId} accent="cyan" />
+            <TeamSelector label="Team A" value={left?.id ?? ""} groups={storedGroups} onChange={(leftVersionId) => setComparisonIds((current) => ({ ...current, leftVersionId }))} accent="cyan" />
             <div className="mx-auto hidden size-14 items-center justify-center rounded-full border border-white/10 bg-slate-950 text-sm font-black italic tracking-tight text-white shadow-[0_0_35px_rgba(255,255,255,0.08)] xl:flex">VS</div>
-            <TeamSelector label="Team B" value={right?.id ?? ""} groups={storedGroups} onChange={setRightId} accent="violet" />
+            <TeamSelector label="Team B" value={right?.id ?? ""} groups={storedGroups} onChange={(rightVersionId) => setComparisonIds((current) => ({ ...current, rightVersionId }))} accent="violet" />
           </section>
           {left && right ? <div className="grid items-start gap-5 xl:grid-cols-2"><TeamPanel version={left} accent="cyan" onMatchCreated={refresh} onScoutingRequested={openScouting} /><TeamPanel version={right} accent="violet" onMatchCreated={refresh} onScoutingRequested={openScouting} /></div> : <div className="rounded-2xl border border-white/8 bg-slate-950/55 px-5 py-10 text-center text-sm text-slate-500">No hay equipos guardados para comparar. Guarda un equipo desde Team Builder.</div>}
         </TabsContent>
