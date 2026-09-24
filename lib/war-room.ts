@@ -43,8 +43,7 @@ export const MAX_WAR_ROOM_CORPUS_TEAMS = 5_000;
 export const MAX_WAR_ROOM_HISTORICAL_TEAMS = 5_000;
 export const MAX_WAR_ROOM_TEAM_MEGAS = 2;
 export const MAX_WAR_ROOM_LOCKED_IDENTITIES = 6;
-export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT = 4;
-export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 20;
+export const MAX_WAR_ROOM_MEMBER_SUGGESTIONS = 12;
 
 export type WarRoomEvidenceScope = "exact-set" | "team-preview" | "corpus";
 export type WarRoomSeverity = "blocker" | "high" | "medium" | "low";
@@ -756,6 +755,13 @@ export function buildWarRoomMemberReplacement(
     performance: { games: 0, wins: 0, leadGames: 0, leadWins: 0, selectionRate: 0 },
   }, WAR_ROOM_BATTLE_FORMAT);
 
+  const configuredOtherMegas = team.filter((set) => set.id !== source.id && profileFromSet(snapshot, set).megaActive).length;
+  const memberProposalIsLegal = (proposal: WarRoomSetProposal) => {
+    if (!proposalIsLegal(team, shell, proposal, snapshot)) return false;
+    const proposedMega = profileFromSet(snapshot, proposalToSet(snapshot, shell, proposal)).megaActive;
+    return proposedMega === suggestion.isMega && configuredOtherMegas + Number(proposedMega) <= MAX_WAR_ROOM_TEAM_MEGAS;
+  };
+
   const fallback = fallbackMemberProposal(team, source.id, snapshot, species, suggestion.observedAs);
   const meta = presets[0];
   const otherSpecies = new Set(team.filter((_, index) => index !== targetIndex).map((set) => baseSpeciesKey(set.species)));
@@ -775,7 +781,7 @@ export function buildWarRoomMemberReplacement(
       evs: observed.evs || meta?.evs || fallback.evs,
       moves,
     } satisfies WarRoomSetProposal;
-    if (!proposalIsLegal(team, shell, proposal, snapshot)) return [];
+    if (!memberProposalIsLegal(proposal)) return [];
     const context = proposalContextEvaluation(team, shell, proposal, snapshot);
     if (!context.compatible) return [];
     const overlap = evidenceTeam.pokemon.filter((pokemon) => otherSpecies.has(baseSpeciesKey(pokemon))).length;
@@ -813,7 +819,7 @@ export function buildWarRoomMemberReplacement(
       evs: preset.evs,
       moves: [...preset.moves],
     } satisfies WarRoomSetProposal;
-    if (!proposalIsLegal(team, shell, proposal, snapshot)) continue;
+    if (!memberProposalIsLegal(proposal)) continue;
     if (!proposalContextEvaluation(team, shell, proposal, snapshot).compatible) continue;
     const replacement = proposalToSet(snapshot, shell, proposal);
     return {
@@ -824,7 +830,7 @@ export function buildWarRoomMemberReplacement(
     };
   }
 
-  if (!proposalIsLegal(team, shell, fallback, snapshot) || !proposalContextEvaluation(team, shell, fallback, snapshot).compatible) {
+  if (!memberProposalIsLegal(fallback) || !proposalContextEvaluation(team, shell, fallback, snapshot).compatible) {
     return { pokemon: team, setSource: "legal-fallback", presetId: null, evidenceTeamId: null };
   }
   const replacement = proposalToSet(snapshot, shell, fallback);
@@ -2319,6 +2325,9 @@ function memberSuggestions(
     observedAs: string;
     observedPriority: number;
     observedWeight: number;
+    observedMegaAs: string;
+    observedMegaPriority: number;
+    observedMegaWeight: number;
     currentCoreAppearances: number;
     historicalCoreAppearances: number;
     currentCorpusAppearances: number;
@@ -2348,6 +2357,9 @@ function memberSuggestions(
           observedAs,
           observedPriority: 0,
           observedWeight: 0,
+          observedMegaAs: "",
+          observedMegaPriority: 0,
+          observedMegaWeight: 0,
           currentCoreAppearances: 0,
           historicalCoreAppearances: 0,
           currentCorpusAppearances: 0,
@@ -2362,6 +2374,11 @@ function memberSuggestions(
           current.observedAs = observedAs;
           current.observedPriority = observedPriority;
           current.observedWeight = evidenceWeight;
+        }
+        if (isMegaSpeciesLabel(observedAs) && (observedPriority > current.observedMegaPriority || (observedPriority === current.observedMegaPriority && evidenceWeight > current.observedMegaWeight))) {
+          current.observedMegaAs = observedAs;
+          current.observedMegaPriority = observedPriority;
+          current.observedMegaWeight = evidenceWeight;
         }
         if (scope === "current-core") {
           current.currentCoreAppearances += 1;
@@ -2388,6 +2405,15 @@ function memberSuggestions(
   const unlocked = teamProfiles.filter((profile) => !lockedIds.has(profile.id));
   const openSlots = unlocked.filter((profile) => !profile.species.trim());
   const replacementPool = openSlots.length ? openSlots : unlocked;
+  const megaFormsByBase = new Map<string, string[]>();
+  if (recommendationSlots) {
+    for (const speciesId of snapshot.formats[WAR_ROOM_BATTLE_FORMAT] ?? []) {
+      const form = snapshot.species[speciesId]?.name;
+      if (!form || !isMegaSpeciesLabel(form)) continue;
+      const key = baseSpeciesKey(form);
+      megaFormsByBase.set(key, [...(megaFormsByBase.get(key) ?? []), form]);
+    }
+  }
   const maxCurrentCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCurrentCoreAppearances));
   const maxHistoricalCoreAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedHistoricalCoreAppearances));
   const maxCorpusAppearances = Math.max(1, ...[...candidates.values()].map((candidate) => candidate.weightedCurrentCorpusAppearances));
@@ -2397,13 +2423,18 @@ function memberSuggestions(
     return sum + sourceWeight(entry) * (regulation?.regulationWeight ?? 0);
   }, 0));
   const members = [...candidates.values()].flatMap((candidate): WarRoomMemberSuggestion[] => {
-    const profile = profileFromPreview(snapshot, candidate.observedAs);
-    if (!profile.types.length || !isSpeciesAvailable(snapshot, candidate.species, WAR_ROOM_BATTLE_FORMAT)) return [];
-    if (profile.megaActive) {
-      const rayquazaMega = toId(candidate.species) === "rayquaza" && toId(candidate.observedAs) === "rayquazamega";
-      const megaItem = itemForObservedMega(snapshot, candidate.species, candidate.observedAs);
-      if (!rayquazaMega && (!megaItem || !isItemLegal(snapshot, megaItem, WAR_ROOM_BATTLE_FORMAT))) return [];
-    }
+    if (!isSpeciesAvailable(snapshot, candidate.species, WAR_ROOM_BATTLE_FORMAT)) return [];
+    const legalMegaForm = recommendationSlots
+      ? [candidate.observedMegaAs, ...(megaFormsByBase.get(baseSpeciesKey(candidate.species)) ?? [])].find((form) => {
+        if (!form || !isSpeciesAvailable(snapshot, form, WAR_ROOM_BATTLE_FORMAT)) return false;
+        const rayquazaMega = toId(candidate.species) === "rayquaza" && toId(form) === "rayquazamega";
+        const megaItem = itemForObservedMega(snapshot, candidate.species, form);
+        return rayquazaMega || Boolean(megaItem && isItemLegal(snapshot, megaItem, WAR_ROOM_BATTLE_FORMAT));
+      })
+      : undefined;
+    const observedAs = legalMegaForm || (isMegaSpeciesLabel(candidate.observedAs) ? candidate.species : candidate.observedAs);
+    const profile = profileFromPreview(snapshot, observedAs);
+    if (!profile.types.length) return [];
     const replacements = replacementPool.map((removed) => {
       const next = [...teamProfiles.filter((entry) => entry.id !== removed.id), profile];
       return { removed, delta: currentPenalty - teamDefensePenalty(next), next };
@@ -2460,7 +2491,7 @@ function memberSuggestions(
       const replacementLabel = removed.species || `Slot ${removed.slot}`;
       return {
         species: candidate.species,
-        observedAs: candidate.observedAs,
+        observedAs,
         isMega: profile.megaActive,
         score,
         appearancesWithCore: candidate.currentCoreAppearances + candidate.historicalCoreAppearances,
@@ -2481,6 +2512,9 @@ function memberSuggestions(
               : `El lote del core se agotó; aparece en ${candidate.currentCorpusAppearances}/${corpus.length} equipos M-C del corpus ampliado.`,
           delta > 0 ? `Reduce el desequilibrio defensivo al reemplazar a ${replacementLabel}.` : `La prueba estructural para este hueco no garantiza una mejora defensiva al reemplazar a ${replacementLabel}.`,
           patchedTypes.length ? `Mejora el balance frente a ${patchedTypes.slice(0, 4).join(", ")}.` : evidenceMode === "expanded" ? "Se propone por frecuencia M-C y encaje estructural; no por coaparición directa con el core." : "Su valor procede de coaparición; no corrige una debilidad de tipos directa.",
+          ...(profile.megaActive && (candidate.observedMegaAs !== observedAs || candidate.observedMegaPriority < 2)
+            ? ["Puede megaevolucionar legalmente en M-C; la evidencia de coaparición corresponde a la especie, no necesariamente a esta forma Mega."]
+            : []),
         ],
       };
     });
@@ -2491,23 +2525,21 @@ function memberSuggestions(
     || left.species.localeCompare(right.species)
     || left.replacesSetId.localeCompare(right.replacesSetId)
   ));
-  let recommendedMegas = 0;
-  const limitedMembers: WarRoomMemberSuggestion[] = [];
-  for (const replacement of replacementPool) {
-    let slotSuggestions = 0;
-    for (const member of members) {
-      if (member.replacesSetId !== replacement.id) continue;
-      if (member.isMega && recommendedMegas >= recommendationSlots) continue;
-      limitedMembers.push(member);
-      slotSuggestions += 1;
-      if (member.isMega) recommendedMegas += 1;
-      if (
-        slotSuggestions >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT
-        || limitedMembers.length >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS
-      ) break;
+  const groups = groupWarRoomMemberSuggestions(members);
+  const megaSlots = Math.min(recommendationSlots, groups.filter((group) => group[0].isMega).length);
+  const nonMegaSlots = MAX_WAR_ROOM_MEMBER_SUGGESTIONS - megaSlots;
+  let selectedMegas = 0;
+  let selectedNonMegas = 0;
+  const limitedMembers = groups.filter((group) => {
+    if (group[0].isMega) {
+      if (selectedMegas >= megaSlots) return false;
+      selectedMegas += 1;
+      return true;
     }
-    if (limitedMembers.length >= MAX_WAR_ROOM_MEMBER_SUGGESTIONS) break;
-  }
+    if (selectedNonMegas >= nonMegaSlots) return false;
+    selectedNonMegas += 1;
+    return true;
+  }).flat();
   return {
     members: limitedMembers,
     sampleSize: pool.length + historicalPool.length,
