@@ -55,6 +55,7 @@ import {
   auditTeam,
   buildWarRoomMemberReplacement,
   createWarRoomPokemonLocks,
+  groupWarRoomMemberSuggestions,
   isWarRoomCorpusResponse,
   optimizeTeam,
   prepareMatchup,
@@ -612,7 +613,10 @@ function SetSuggestionCard({ suggestion, onApply }: { suggestion: WarRoomSetSugg
   );
 }
 
-function MemberSuggestionCard({ member, loading, disabled, onApply }: { member: WarRoomMemberSuggestion; loading: boolean; disabled: boolean; onApply: () => void }) {
+function MemberSuggestionCard({ members, loadingSetId, disabled, onApply }: { members: WarRoomMemberSuggestion[]; loadingSetId: string; disabled: boolean; onApply: (member: WarRoomMemberSuggestion) => void }) {
+  const [selectedSetId, setSelectedSetId] = useState(members[0].replacesSetId);
+  const member = members.find((option) => option.replacesSetId === selectedSetId) ?? members[0];
+  const loading = loadingSetId === member.replacesSetId;
   return (
     <article className="flex flex-col rounded-2xl border border-white/7 bg-slate-950/55 p-4 transition hover:border-violet-300/20">
       <div className="flex items-center gap-3">
@@ -624,13 +628,22 @@ function MemberSuggestionCard({ member, loading, disabled, onApply }: { member: 
             {member.evidenceMode === "historical" ? <Badge variant="outline" className="shrink-0 border-cyan-300/18 bg-cyan-300/7 px-1.5 text-[8px] text-cyan-200">Histórico · {member.evidenceRegulations.join("/")}</Badge> : null}
             {member.evidenceMode === "expanded" ? <Badge variant="outline" className="shrink-0 border-amber-300/18 bg-amber-300/7 px-1.5 text-[8px] text-amber-200">Corpus ampliado</Badge> : null}
           </div>
-          <p className="mt-0.5 text-[9px] text-violet-200">por {member.replaces}</p>
           <div className="mt-2 flex items-center gap-2"><Progress value={member.score} className="h-1.5 bg-white/7 [&_[data-slot=progress-indicator]]:bg-violet-300" /><span className="whitespace-nowrap font-mono text-[9px] text-violet-200">Encaje {member.score}/100</span></div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <p className="text-[9px] font-bold text-slate-500">Reemplazar a</p>
+        <div role="group" aria-label={`Reemplazar con ${member.species}`} className="mt-1.5 flex flex-wrap gap-1.5">
+          {members.map((option) => (
+            <Button key={option.replacesSetId} type="button" variant="outline" size="sm" aria-pressed={member.replacesSetId === option.replacesSetId} aria-label={`Reemplazar a ${option.replaces} con ${member.species}: Encaje ${option.score}/100`} onClick={() => setSelectedSetId(option.replacesSetId)} disabled={disabled} className={cn("h-7 gap-1.5 rounded-full px-2.5 text-[9px] font-bold", member.replacesSetId === option.replacesSetId ? "border-violet-300/40 bg-violet-300/15 text-violet-100" : "border-white/10 bg-white/3 text-slate-400 hover:border-violet-300/25 hover:text-violet-200")}>
+              {option.replaces}<span className="font-mono text-[8px] opacity-65">{option.score}</span>
+            </Button>
+          ))}
         </div>
       </div>
       <p className="mt-3 flex-1 text-[10px] leading-4 text-slate-500">{member.reasons.join(" ")}</p>
       {member.patchedTypes.length ? <div className="mt-3 flex flex-wrap gap-1">{member.patchedTypes.map((type) => <Badge key={type} variant="outline" className="border-emerald-300/12 bg-emerald-300/5 text-[8px] text-emerald-200">+ {type}</Badge>)}</div> : null}
-      <Button type="button" variant="outline" size="sm" onClick={onApply} disabled={disabled} className="mt-3 w-full gap-2 border-violet-300/18 bg-violet-300/7 text-[9px] font-black text-violet-100 hover:bg-violet-300/14">{loading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}{loading ? "Armando set viable…" : "Elegir y recalcular"}</Button>
+      <Button type="button" variant="outline" size="sm" onClick={() => onApply(member)} disabled={disabled} className="mt-3 w-full gap-2 border-violet-300/18 bg-violet-300/7 text-[9px] font-black text-violet-100 hover:bg-violet-300/14">{loading ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}{loading ? "Armando set viable…" : "Elegir y recalcular"}</Button>
     </article>
   );
 }
@@ -680,6 +693,7 @@ function OptimizationView({
       : "sin coincidencia directa";
   const usesExpandedCorpus = result.members.some((member) => member.evidenceMode === "expanded");
   const usesHistoricalCorpus = result.members.some((member) => member.evidenceMode === "historical");
+  const memberGroups = groupWarRoomMemberSuggestions(result.members);
   const allIdentitiesLocked = team.pokemon.every((set) => optimizationLocks[set.id]?.identity);
   return (
     <div className="space-y-4">
@@ -719,9 +733,9 @@ function OptimizationView({
 
       {!identityCount ? <section className="rounded-[24px] border border-dashed border-cyan-300/15 bg-cyan-300/[0.025] px-6 py-14 text-center"><Lock className="mx-auto size-8 text-cyan-300/50" /><h3 className="mt-3 text-sm font-black text-white">Bloquea al menos una identidad para buscar partners</h3><p className="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-600">Los bloqueos de set ya se respetan. Al proteger una identidad, el motor además buscará compañeros observados con ese núcleo sin proponer reemplazarla.</p></section> : (
         <section className="rounded-[24px] border border-white/8 bg-slate-900/45 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Orden: coaparición en M-C → relación histórica ponderada → frecuencia general en M-C. Dentro de cada grupo gana el mayor Encaje, que combina evidencia contextual y balance defensivo.</p><p className="mt-1 text-[9px] text-slate-700">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT} alternativas por identidad desbloqueada y {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} por ronda; máximo dos Megas por Team. La legalidad de M-C se valida antes de mostrar cada tarjeta.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {coreSampleLabel}</Badge>{usesHistoricalCorpus ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/5 text-[9px] text-cyan-200">Evidencia histórica</Badge> : null}{usesExpandedCorpus ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/5 text-[9px] text-amber-200">Búsqueda ampliada</Badge> : null}</div></div>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">Partner search</p><h2 className="mt-1 text-lg font-black text-white">Integrantes que encajan con el core</h2><p className="mt-1 text-[10px] text-slate-600">Orden: coaparición en M-C → relación histórica ponderada → frecuencia general en M-C. Dentro de cada grupo gana el mayor Encaje, que combina evidencia contextual y balance defensivo.</p><p className="mt-1 text-[9px] text-slate-700">Hasta {MAX_WAR_ROOM_MEMBER_SUGGESTIONS_PER_SLOT} opciones por identidad desbloqueada y {MAX_WAR_ROOM_MEMBER_SUGGESTIONS} combinaciones por ronda, agrupadas por especie. Elige a quién reemplazar en cada tarjeta; máximo dos Megas por Team. La legalidad de M-C se valida antes de mostrar cada tarjeta.</p></div><div className="flex flex-wrap items-center gap-2"><Badge variant="outline" className={cn("text-[9px]", result.megaPolicy.configured >= result.megaPolicy.maximum ? "border-fuchsia-300/18 bg-fuchsia-300/7 text-fuchsia-200" : "border-white/8 text-slate-400")}>{result.megaPolicy.configured >= result.megaPolicy.maximum ? `${result.megaPolicy.configured} Megas · sin extras` : `${result.megaPolicy.configured}/${result.megaPolicy.maximum} Megas`}</Badge><Badge variant="outline" className={cn("text-[9px]", result.coreSample.mode === "exact" ? "border-emerald-300/15 text-emerald-200" : "border-amber-300/15 text-amber-200")}>{result.coreSample.size} teams · {coreSampleLabel}</Badge>{usesHistoricalCorpus ? <Badge variant="outline" className="border-cyan-300/15 bg-cyan-300/5 text-[9px] text-cyan-200">Evidencia histórica</Badge> : null}{usesExpandedCorpus ? <Badge variant="outline" className="border-amber-300/15 bg-amber-300/5 text-[9px] text-amber-200">Búsqueda ampliada</Badge> : null}</div></div>
           {memberApplyState.message ? <p className={cn("mt-3 rounded-xl border px-3 py-2 text-[10px]", memberApplyState.status === "error" ? "border-rose-300/18 bg-rose-300/7 text-rose-100" : memberApplyState.status === "fallback" ? "border-amber-300/18 bg-amber-300/7 text-amber-100" : "border-emerald-300/15 bg-emerald-300/5 text-emerald-100")}>{memberApplyState.message}</p> : null}
-          {result.members.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{result.members.map((member) => <MemberSuggestionCard key={`${member.replacesSetId}-${member.species}`} member={member} loading={memberApplyState.status === "loading" && memberApplyState.species === member.species && memberApplyState.setId === member.replacesSetId} disabled={memberApplyState.status === "loading"} onApply={() => onApplyMember(member)} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">{allIdentitiesLocked ? "Los seis integrantes están bloqueados. Libera una identidad para buscar sustitutos." : "Ya agotaste las alternativas compatibles disponibles en el corpus para este estado del Team."}</p>}
+          {memberGroups.length ? <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{memberGroups.map((members) => <MemberSuggestionCard key={members[0].species} members={members} loadingSetId={memberApplyState.status === "loading" && memberApplyState.species === members[0].species ? memberApplyState.setId : ""} disabled={memberApplyState.status === "loading"} onApply={onApplyMember} />)}</div> : <p className="mt-5 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-8 text-center text-xs text-slate-600">{allIdentitiesLocked ? "Los seis integrantes están bloqueados. Libera una identidad para buscar sustitutos." : "Ya agotaste las alternativas compatibles disponibles en el corpus para este estado del Team."}</p>}
         </section>
       )}
 
