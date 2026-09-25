@@ -465,6 +465,33 @@ class ChampionsOcrTests(unittest.TestCase):
             [("move", "Venusaur", "Sleep Powder")],
         )
 
+    def test_a_move_menu_sidebar_fragment_before_move_info_renders_is_not_a_message(self) -> None:
+        # COL-102, job c5010e62d19e4663, partida 2, frame 1150 (574,5 s): el
+        # panel de movimientos de Dee Dee ya mostraba su lista -incluido un
+        # "rrain Pulse" a medio leer (el "Te" inicial de "Terrain Pulse" se
+        # pierde)- un frame antes de que apareciera su propio rótulo "Move
+        # Info". Sin él en pantalla todavía, esa lista no se reconocía como
+        # menú y "rrain Pulse" pasaba el filtro de mensajes de batalla por
+        # la palabra clave de clima "rain" -sustring de "rrain"-, quedando
+        # como un "-message" sin dueño justo al abrir el turno siguiente.
+        # "MOVE TIME"/"Battle Info" ya estaban en pantalla desde antes.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Indeedee-F",)),
+            catalog=ChampionsCatalog(species=("Indeedee-F",), moves=("Terrain Pulse",)),
+        )
+        parser._battle_open = True
+        parser._active["p1b"] = "Indeedee-F"
+
+        sidebar_before_label = (
+            line("MOVE TIME", x=0.829, y=0.286, width=0.067),
+            line("Battle Info", x=0.897, y=0.351, width=0.066),
+            line("rrain Pulse", x=0.796, y=0.534, width=0.065, height=0.038),
+        )
+
+        detections = parser.parse(sidebar_before_label, timestamp_ms=574_500, source_frame=1150)
+
+        self.assertEqual(detections.events, ())
+
     def test_one_readable_bar_does_not_feed_both_opponent_slots(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)

@@ -2770,8 +2770,22 @@ class ChampionsTextParser:
 
     def _message_lines(self, lines: Sequence[OcrLine]) -> list[OcrLine]:
         messages: list[OcrLine] = []
+        # COL-102, job c5010e62d19e4663, partida 2, frame 1150 (574,5 s): el
+        # panel de movimientos de Dee Dee ya mostraba su lista -"Terrain
+        # Pulse", "Helping Hand", "Follow Me", "Trick Room"- un frame antes
+        # de que su propio rótulo "Move Info" se leyera; a "moveinfo" solo
+        # le llegaba tarde para excluir esa lista como menú. Ese único
+        # frame, el "1" inicial de "Terrain Pulse" se pierde -"rrain
+        # Pulse"- y la palabra suelta contiene "rain", una de las palabras
+        # clave de clima de abajo: se leía como si fuera un mensaje real de
+        # batalla, en vez de una etiqueta de menú, y sobrevivía al turno
+        # siguiente como un "-message" sin dueño. "MOVE TIME"/"Battle Info"
+        # ya estaban en pantalla varios frames antes de "Move Info": se
+        # agregan al mismo conjunto que abre el menú, para no depender de
+        # cuál de sus rótulos se lea primero.
         move_menu_visible = any(
-            _text_key(line.text) in {"moveinfo", "movesmore"}
+            _text_key(line.text)
+            in {"battleinfo", "fight", "pokemon", "movetime", "moveinfo", "movesmore"}
             for line in lines
         )
         move_description = _move_info_description(lines)
