@@ -1227,6 +1227,37 @@ class ChampionsOcrTests(unittest.TestCase):
             [3],
         )
 
+    def test_a_transitional_menu_frame_does_not_leak_a_bad_hp_reading(self) -> None:
+        # COL-102, job c5010e62d19e4663: el primer frame del menú sólo
+        # enseña Battle Info; OCR pierde el 1 inicial del 100 % del rival.
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        transition = tuple(
+            item
+            for item in self.command_frame()
+            if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+            and not (item.text == "100%" and item.left > 0.8)
+        ) + (
+            line("00%", x=0.90, y=0.11),
+            line("Battle Info", x=0.82, y=0.83),
+        )
+
+        first_menu_frame = parser.parse(transition, timestamp_ms=500, source_frame=1)
+        menu_open = parser.parse(self.command_frame(), timestamp_ms=1_000, source_frame=2)
+        after_menu = parser.parse(
+            tuple(
+                item
+                for item in self.command_frame()
+                if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+            ),
+            timestamp_ms=1_500,
+            source_frame=3,
+        )
+
+        self.assertFalse(any(event.kind == "damage" for event in first_menu_frame.events))
+        self.assertFalse(any(event.kind == "heal" for event in after_menu.events))
+        self.assertFalse(any(event.kind in {"damage", "heal"} for event in menu_open.events))
+
     def test_pre_battle_weather_does_not_leave_turn_one_empty(self) -> None:
         # COL-102 (reabierta): un clima revelado por la habilidad de un lead,
         # antes de que exista turno 1, marcaba "actividad" que sobrevivía al
