@@ -1,4 +1,4 @@
-import { getMoveData, getSpeciesTypes, toId } from "@/lib/pokemon-data";
+import { getMoveData, getStoredSpeciesTypes, toId } from "@/lib/pokemon-data";
 import { hashPaste } from "@/lib/paste";
 import {
   EV_STATS,
@@ -123,7 +123,7 @@ function toPokemonSet(row: SnapshotRow): PokemonSet {
     evs: row.evs,
     nature: row.nature,
     moves: normalizeMoves(row.moves_json),
-    types: types.length ? types : getSpeciesTypes(row.species),
+    types: getStoredSpeciesTypes(row.species, types),
     performance: {
       games: 0,
       wins: 0,
@@ -339,6 +339,7 @@ export async function listPokemonLibrary(format?: string) {
 
   const entries = new Map<string, PokemonLibraryEntry>();
   for (const row of versionResult.results) {
+    const storedSet = parseJson<PokemonSet>(row.set_json, {} as PokemonSet);
     const current = entries.get(row.entry_id) ?? {
       id: row.entry_id,
       species: row.species,
@@ -350,7 +351,7 @@ export async function listPokemonLibrary(format?: string) {
       version: row.version_number,
       paste: row.paste,
       createdAt: row.created_at,
-      set: parseJson<PokemonSet>(row.set_json, {} as PokemonSet),
+      set: { ...storedSet, types: getStoredSpeciesTypes(row.species, Array.isArray(storedSet.types) ? storedSet.types : []) },
       sources: sourcesByVersion.get(row.id) ?? [],
     });
     entries.set(row.entry_id, current);
