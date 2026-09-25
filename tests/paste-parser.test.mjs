@@ -58,6 +58,28 @@ test("parses an exact six-Pokémon Showdown paste", async () => {
   assert.deepEqual(team[3].types, ["Grass", "Water"]);
 });
 
+test("shows real types for imported species and moves absent from the old catalog", async () => {
+  const { parseShowdownPaste } = await vite.ssrLoadModule("/lib/paste.ts");
+  const blocks = paste.split("\n\n");
+  blocks[0] = "Blaziken @ Blazikenite\nAbility: Speed Boost\n- Flare Blitz";
+  blocks[1] = "Kingambit @ Focus Sash\nAbility: Defiant\n- Kowtow Cleave\n- Low Kick\n- Iron Head\n- Sucker Punch";
+  const team = parseShowdownPaste(blocks.join("\n\n"));
+
+  assert.deepEqual(team[0].types, ["Fire", "Fighting"]);
+  assert.deepEqual(team[1].types, ["Dark", "Steel"]);
+  assert.deepEqual(team[1].moves.map((move) => move.type), ["Dark", "Fighting", "Steel", "Dark"]);
+});
+
+test("repairs saved Normal placeholders without changing genuine Normal species", async () => {
+  const { getSpeciesTypes, getStoredSpeciesTypes } = await vite.ssrLoadModule("/lib/pokemon-data.ts");
+
+  assert.deepEqual(getStoredSpeciesTypes("Blaziken", ["Normal"]), ["Fire", "Fighting"]);
+  assert.deepEqual(getStoredSpeciesTypes("Kingambit", ["Normal"]), ["Dark", "Steel"]);
+  assert.deepEqual(getStoredSpeciesTypes("Snorlax", ["Normal"]), ["Normal"]);
+  assert.deepEqual(getStoredSpeciesTypes("Indeedee-F", ["Psychic", "Normal"]), ["Psychic", "Normal"]);
+  assert.deepEqual(getSpeciesTypes("Especie inexistente"), []);
+});
+
 test("rejects a partial paste", async () => {
   const { parseShowdownPaste } = await vite.ssrLoadModule("/lib/paste.ts");
 
