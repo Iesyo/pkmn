@@ -47,6 +47,17 @@ test("uses the official Showdown Champions types, abilities and learnsets", asyn
   assert.ok(getLegalMoves(snapshot, "Charizard", "champions").includes("Dragon Claw"));
 });
 
+test("the Teams type index covers the bundled Champions roster", async () => {
+  const snapshot = await readSnapshot();
+  const { getSpeciesTypes } = await vite.ssrLoadModule("/lib/pokemon-data.ts");
+
+  for (const id of snapshot.formats.champions) {
+    const species = snapshot.species[id];
+    assert.ok(species, `Falta la especie ${id} en la Pokédex`);
+    assert.deepEqual(getSpeciesTypes(species.name), species.championsOverride?.types ?? species.types, species.name);
+  }
+});
+
 test("inherits a Champions learnset for Mega formes", async () => {
   const snapshot = await readSnapshot();
   const { getLegalMoves } = await vite.ssrLoadModule("/lib/showdown-data.ts");
