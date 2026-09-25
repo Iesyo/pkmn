@@ -1350,6 +1350,28 @@ class ChampionsTextParser:
             )
             if resolved:
                 return resolved
+            if self._known_teams[side]:
+                # COL-102, reapertura estructural del 25 sep, job
+                # `90403f16712d4d41`: "Warrior96 sent out Zoroark!" nunca
+                # resolvió a la Zoroark-Hisui del roster confirmado -el
+                # juego omite la forma regional en el texto de batalla, el
+                # Team Preview no. "zoroark" (7) contra "zoroarkhisui" (12)
+                # ni siquiera llegaba a puntuarse: la guarda de longitud del
+                # comparador difuso (pensada para no emparejar especies sin
+                # relación) descartaba la comparación antes de calcularla, y
+                # aunque la calculara el ratio (0,74) queda bajo el umbral
+                # (0,78). Esa identidad nunca resuelta debilitó al final de
+                # esta misma batalla y descartó la partida completa -no fue
+                # sólo un mote perdido. Se compara además contra el nombre
+                # base de cada especie del roster ya confirmado -antes de su
+                # guion, el mismo criterio que ya usa `verify.py` para el
+                # roster- sin pasar por la guarda de longitud ni el umbral
+                # difuso: no es una lectura ruidosa que tolerar, es la forma
+                # exacta en que el juego siempre nombra a un Pokémon con
+                # forma regional en un mensaje de batalla.
+                for species in self._teams[side]:
+                    if _text_key(species.split("-", 1)[0]) == value_key:
+                        return species
             if not self._known_teams[side]:
                 # COL-102, job 82923f56ce264a92: sin equipo rival conocido,
                 # el matcher cae al catálogo completo (~1000 especies) y sólo

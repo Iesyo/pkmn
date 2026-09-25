@@ -1606,6 +1606,41 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(parser.resolved_aliases()["p1"]["gori"], "Rillaboom")
         self.assertEqual(confirmed.p1_selected, ("Blaziken",))
 
+    def test_a_battle_message_names_a_regional_form_by_its_base_species(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`:
+        # "Warrior96 sent out Zoroark!" nunca resolvió a la Zoroark-Hisui del
+        # roster ya confirmado -el juego omite la forma regional en el texto
+        # de batalla, el Team Preview no. La identidad quedó sin especie toda
+        # la partida y su debilitado, sin resolver, descartó la batalla
+        # completa. "zoroark" (7) contra "zoroarkhisui" (12) ni siquiera
+        # llegaba a puntuarse en el comparador difuso -su propia guarda de
+        # longitud lo descartaba antes.
+        roster = ("Zoroark-Hisui", "Sableye", "Garchomp", "Mimikyu", "Kingambit", "Charizard")
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Warrior96"),
+            catalog=ChampionsCatalog(species=roster),
+        )
+        parser.bind_preview_team(roster, side="p2")
+        # Kingambit ya estaba en p2a y se debilita, abriendo el slot -tal
+        # como en el job real: Zoroark-Hisui entra como relevo, no como lead.
+        parser._active["p2a"] = "Kingambit"
+        parser.parse(
+            (line("The opposing Kingambit fainted!", x=0.15, y=0.72, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        detections = parser.parse(
+            (line("Warrior96 sent out Zoroark!", x=0.15, y=0.72, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=1,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species) for event in detections.events],
+            [("switch", "p2a", "Zoroark-Hisui")],
+        )
+
     def test_team_preview_emits_the_visual_opponent_roster(self) -> None:
         opponent = (
             "Swampert",
