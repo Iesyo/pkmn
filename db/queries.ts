@@ -1,4 +1,4 @@
-import { getMoveData, getSpeciesTypes } from "@/lib/pokemon-data";
+import { getMoveData, getStoredSpeciesTypes } from "@/lib/pokemon-data";
 import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
@@ -227,7 +227,7 @@ function toPokemon(row: PokemonRow): PokemonSet {
         usage: move.usage ?? 0,
       };
     }),
-    types: parseArray<PokemonType>(row.types_json, getSpeciesTypes(row.species)),
+    types: getStoredSpeciesTypes(row.species, parseArray<PokemonType>(row.types_json)),
     performance: {
       games: 0,
       wins: 0,
