@@ -3494,7 +3494,7 @@ class ChampionsTextParser:
         self.last_hud_observations = observations
         text_keys = {_text_key(line.text) for line in lines}
         selection_visible = bool(
-            text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo"})
+            text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo", "battleinfo"})
         )
         changed_slots: set[str] = set()
         switch_events: list[BattleEvent] = []
