@@ -1,4 +1,5 @@
 import type { PokemonType } from "./types";
+import pokemonTypeIndex from "./pokemon-type-index.json";
 
 export const SHOWDOWN_SNAPSHOT = {
   source: "Pokémon Showdown data",
@@ -209,14 +210,28 @@ const conditionalEffects: Record<string, string> = {
 };
 
 export function getSpeciesTypes(species: string): PokemonType[] {
-  return speciesTypes[toId(species)] ?? ["Normal"];
+  const id = toId(species);
+  const types = (pokemonTypeIndex.species as Record<string, PokemonType[]>)[id] ?? speciesTypes[id];
+  return types ? [...types] : [];
+}
+
+export function getStoredSpeciesTypes(species: string, stored: PokemonType[]): PokemonType[] {
+  const known = getSpeciesTypes(species);
+  if (!stored.length) return known;
+  // Older imports used Normal when the species was absent from the small
+  // hand-written catalog. Repair those rows on read without rewriting versions.
+  if (stored.length === 1 && stored[0] === "Normal" && known.length && (known.length !== 1 || known[0] !== "Normal")) {
+    return known;
+  }
+  return stored;
 }
 
 export function getMoveData(move: string) {
   const id = toId(move);
+  const known = (pokemonTypeIndex.moves as unknown as Record<string, [PokemonType, boolean]>)[id];
   return {
-    type: moveTypes[id] ?? null,
-    damaging: !statusMoves.has(id),
+    type: known?.[0] ?? moveTypes[id] ?? null,
+    damaging: known?.[1] ?? !statusMoves.has(id),
   };
 }
 
