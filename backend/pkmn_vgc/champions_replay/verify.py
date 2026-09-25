@@ -36,6 +36,10 @@ _POKE_LINE = re.compile(r"^\|poke\|(?P<side>p[12])\|(?P<species>[^,|]+)")
 _FAINT_LINE = re.compile(r"^\|faint\|(?P<slot>p[12][ab]): (?P<species>.+)$")
 _MEGA_LINE = re.compile(r"^\|-mega\|(?P<slot>p[12][ab]): (?P<species>[^|]+)\|")
 _TURN_LINE = re.compile(r"^\|turn\|(?P<number>\d+)$")
+_HP_LINE = re.compile(
+    r"^\|-(?P<kind>damage|heal)\|(?P<slot>p[12][ab]): (?P<species>[^|]+)\|(?P<current>\d+)/(?P<max>\d+)"
+)
+_ENTRY_LINE = re.compile(r"^\|(?:switch|drag)\|(?P<slot>p[12][ab]): ")
 
 _GAP_FRAMES = 4
 _SIMILAR = 0.80
@@ -144,6 +148,46 @@ def _turn_problems(log: Path) -> tuple[str, ...]:
         if turn_indexes[position + 1] == index + 1:
             number = _TURN_LINE.match(lines[index])["number"]
             problems.append(f"turno {number} vacío: nada entre su |turn| y el siguiente")
+    return tuple(problems)
+
+
+def _hp_zero_without_faint_problems(log: Path) -> tuple[str, ...]:
+    """Un Pokémon en 0 PS que sigue actuando o curándose no estuvo ahí de verdad.
+
+    COL-102, reapertura estructural del 25 sep, job `331e6e783c3e45a4`,
+    partida 3: Salamence baja a 0/100 en el turno 6 sin `faint` y se cura a
+    65/100 en el turno 7 sin ningún move/item/habilidad que lo explique -un
+    Pokémon vivo no puede estar en 0 PS. Si el 0 fue real, el `faint` tiene
+    que llegar antes de la siguiente línea que vuelva a tocar a ese Pokémon;
+    un `switch`/`drag` al mismo slot también lo cierra -entró otro distinto.
+    """
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    pending: dict[str, str] = {}
+    problems: list[str] = []
+    for line in lines:
+        faint = _FAINT_LINE.match(line)
+        if faint:
+            pending.pop(faint["slot"], None)
+            continue
+        entry = _ENTRY_LINE.match(line)
+        if entry:
+            pending.pop(entry["slot"], None)
+            continue
+        hp = _HP_LINE.match(line)
+        if not hp:
+            continue
+        slot = hp["slot"]
+        if slot in pending:
+            verb = "se curó" if hp["kind"] == "heal" else "volvió a recibir daño"
+            problems.append(f"{slot}: {pending[slot]} {verb} en 0 PS sin faint de por medio")
+            pending.pop(slot, None)
+        if hp["current"] == "0":
+            pending[slot] = hp["species"].strip()
+        else:
+            pending.pop(slot, None)
+    for slot, species in pending.items():
+        problems.append(f"{slot}: {species} queda en 0 PS al final del replay sin faint")
     return tuple(problems)
 
 
@@ -290,7 +334,7 @@ def verify_replay(
         _roster_problems(rosters, _named_on_screen(trace, battle_index, species_names))
         if species_names
         else ()
-    ) + _turn_problems(log)
+    ) + _turn_problems(log) + _hp_zero_without_faint_problems(log)
     return VerificationReport(
         rosters=problems,
         on_screen=sum(screen.values()),

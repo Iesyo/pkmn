@@ -100,6 +100,71 @@ class VerifyReplayTests(unittest.TestCase):
 
         self.assertEqual(report.rosters, ())
 
+    def test_a_pokemon_that_keeps_acting_at_zero_hp_is_reported(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `331e6e783c3e45a4`,
+        # partida 3: Salamence baja a 0/100 sin faint y se cura a 65/100 sin
+        # ningún move/item que lo explique -un Pokémon vivo no puede estar
+        # en 0 PS.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Psychic Fangs|",
+                    "|-damage|p2b: Salamence|0/100",
+                    "|-heal|p2b: Salamence|65/100",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertTrue(
+            any("Salamence" in problem and "0 PS" in problem for problem in report.rosters),
+            report.rosters,
+        )
+
+    def test_a_pokemon_that_faints_at_zero_hp_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Psychic Fangs|",
+                    "|-damage|p2b: Salamence|0/100",
+                    "|faint|p2b: Salamence",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertEqual(report.rosters, ())
+
+    def test_a_pokemon_left_at_zero_hp_with_no_faint_at_all_is_reported(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `10a7fba6fda04585`,
+        # partida 4: Milotic queda en 0 PS y sigue en campo hasta el final del
+        # replay -nunca llega su `faint`.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Psychic Fangs|",
+                    "|-damage|p2b: Milotic|0/100",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertTrue(
+            any("Milotic" in problem and "final" in problem for problem in report.rosters),
+            report.rosters,
+        )
+
     def test_an_event_the_screen_never_showed_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
