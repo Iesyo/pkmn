@@ -1285,6 +1285,39 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertFalse(any(event.kind == "heal" for event in after_menu.events))
         self.assertFalse(any(event.kind in {"damage", "heal"} for event in menu_open.events))
 
+    def test_a_garbled_team_preview_label_does_not_leak_a_ghost_switch(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `331e6e783c3e45a4`,
+        # partida 1 (frame 162, 80,5 s): "Select 4 Pokémon" se leyó "Seleet 4
+        # Pokémon" en un único frame -los vecinos inmediatos lo leyeron bien-
+        # y _is_team_preview exigía ese texto exacto. El frame se cayó del
+        # Team Preview y todo lo que había en pantalla -el roster visible,
+        # "Kingambit", y el contador "3/4" de Pokémon marcados- se escribió
+        # como un switch real de Kingambit con esa salud inventada.
+        team = ("Indeedee-F", "Gardevoir", "Basculegion", "Rillaboom", "Blaziken", "Kingambit")
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=team),
+            catalog=ChampionsCatalog(species=team),
+        )
+        garbled = parser.parse(
+            (
+                line("sky", x=0.79, y=0.055),
+                line("Roku", x=0.21, y=0.055),
+                line("Seleet 4 Pokémon", x=0.38, y=0.17, width=0.15),
+                line("tø send into battle.", x=0.38, y=0.215, width=0.16),
+                line("Suzuko", x=0.072, y=0.135),
+                line("Gori", x=0.073, y=0.486),
+                line("Tonatiuh", x=0.072, y=0.602),
+                line("Tomoe", x=0.072, y=0.717),
+                line("3/4", x=0.17, y=0.83, width=0.04),
+            ),
+            timestamp_ms=80_500,
+            source_frame=161,
+        )
+
+        self.assertTrue(garbled.team_preview)
+        self.assertFalse(garbled.battle_started)
+        self.assertEqual(garbled.events, ())
+
     def test_pre_battle_weather_does_not_leave_turn_one_empty(self) -> None:
         # COL-102 (reabierta): un clima revelado por la habilidad de un lead,
         # antes de que exista turno 1, marcaba "actividad" que sobrevivía al

@@ -27,6 +27,46 @@ def _text_key(value: str) -> str:
     return "".join(character for character in normalized if character.isalnum())
 
 
+_PHASE_LABEL_MATCH_RATIO = 0.85
+
+
+def _phase_label_seen(keys: Sequence[str], label: str) -> bool:
+    """¿Aparece esta etiqueta de fase (menú, Team Preview...) en el frame?
+
+    COL-102, reapertura estructural del 25 sep, job `331e6e783c3e45a4`: los
+    gates de fase de `ChampionsTextParser` (Team Preview, `selection_visible`,
+    `move_menu_visible`) comparaban la clave de cada línea contra una
+    etiqueta EXACTA ("select4pokemon", "battleinfo"...). Bastó que un frame
+    leyera "Select" como "Seleet" para que el gate de Team Preview fallara en
+    ese único frame -no en los vecinos- y todo lo que hubiera en pantalla en
+    ese instante (el roster visible, un contador de selección) se escribiera
+    como si fuera de la batalla real, con salud inventada. Ya se había vuelto
+    a topar con la misma forma del problema dos veces esta ronda (con
+    "Battle Info" y con "Move Info"), cada vez ampliando a mano el conjunto
+    de textos exactos aceptados; el vídeo siguiente puede corromper una
+    etiqueta distinta de cualquiera de los tres gates, así que la
+    comparación en sí -no la lista de qué etiqueta- es lo que necesitaba
+    tolerar el ruido de OCR.
+
+    Sólo se compara con una línea corta, del mismo orden de tamaño que la
+    etiqueta: una oración de mensaje que la nombre de paso ("The opposing
+    Pokémon fainted!" contiene "pokemon") no es el botón "POKÉMON" del menú,
+    y admitirla por substring rompería esa distinción. Dentro de ese margen
+    de tamaño, la clave se compara entera contra `label` -exacta primero, y
+    si no calza, con el mismo umbral que ya usa esta clase para nicknames y
+    motes (`_unplaced_entry_named`).
+    """
+
+    for key in keys:
+        if not key or len(key) > len(label) + 4:
+            continue
+        if key == label:
+            return True
+        if SequenceMatcher(None, key, label).ratio() >= _PHASE_LABEL_MATCH_RATIO:
+            return True
+    return False
+
+
 def _clean_ocr_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
@@ -2349,9 +2389,9 @@ class ChampionsTextParser:
 
     @staticmethod
     def _is_team_preview(lines: Sequence[OcrLine]) -> bool:
-        keys = {_text_key(line.text) for line in lines}
-        return any(key.startswith("select4pokemon") for key in keys) and any(
-            "sendintobattle" in key for key in keys
+        keys = [_text_key(line.text) for line in lines]
+        return _phase_label_seen(keys, "select4pokemon") and _phase_label_seen(
+            keys, "sendintobattle"
         )
 
     def _preview_detections(self, lines: Sequence[OcrLine]) -> FrameDetections:
@@ -2783,10 +2823,10 @@ class ChampionsTextParser:
         # ya estaban en pantalla varios frames antes de "Move Info": se
         # agregan al mismo conjunto que abre el menú, para no depender de
         # cuál de sus rótulos se lea primero.
+        move_menu_keys = [_text_key(line.text) for line in lines]
         move_menu_visible = any(
-            _text_key(line.text)
-            in {"battleinfo", "fight", "pokemon", "movetime", "moveinfo", "movesmore"}
-            for line in lines
+            _phase_label_seen(move_menu_keys, label)
+            for label in ("battleinfo", "fight", "pokemon", "movetime", "moveinfo", "movesmore")
         )
         move_description = _move_info_description(lines)
         keywords = (
@@ -3506,9 +3546,10 @@ class ChampionsTextParser:
         events: list[BattleEvent] = []
         observations = self._hud_observations(lines)
         self.last_hud_observations = observations
-        text_keys = {_text_key(line.text) for line in lines}
-        selection_visible = bool(
-            text_keys.intersection({"fight", "pokemon", "movetime", "moveinfo", "battleinfo"})
+        text_keys = [_text_key(line.text) for line in lines]
+        selection_visible = any(
+            _phase_label_seen(text_keys, label)
+            for label in ("fight", "pokemon", "movetime", "moveinfo", "battleinfo")
         )
         changed_slots: set[str] = set()
         switch_events: list[BattleEvent] = []
@@ -3620,8 +3661,13 @@ class ChampionsTextParser:
             )
             self._turn_has_activity = True
 
-        command_visible = "fight" in text_keys and (
-            "pokemon" in text_keys or "movetime" in text_keys
+        # Mismo riesgo que Team Preview/selection_visible/move_menu_visible:
+        # este gate decide cuándo avanza el turno (más abajo), así que una
+        # sola lectura corrupta de "FIGHT" no sólo perdería un evento, podría
+        # dejar un turno sin abrir o abrirlo de más. Pasa por el mismo
+        # comparador tolerante a ruido de OCR que los otros tres.
+        command_visible = _phase_label_seen(text_keys, "fight") and (
+            _phase_label_seen(text_keys, "pokemon") or _phase_label_seen(text_keys, "movetime")
         )
         if command_visible and not self._command_visible:
             if self._turn == 0:
