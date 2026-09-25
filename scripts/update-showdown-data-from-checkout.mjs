@@ -14,6 +14,7 @@ import {
   assertChampionsRegulationSnapshot,
 } from "../lib/champions-regulation.mjs";
 import { buildShowdownSnapshot } from "../lib/showdown-snapshot-builder.mjs";
+import { writePokemonTypeIndex } from "./write-pokemon-type-index.mjs";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -137,6 +138,7 @@ await writeFile(
   new URL("../public/data/showdown-dex.json.gz", import.meta.url),
   gzipSync(`${JSON.stringify(snapshot)}\n`, { level: 9 }),
 );
+await writePokemonTypeIndex(snapshot);
 
 console.log(
   `Snapshot ${CHAMPIONS_REGULATION} creado desde Showdown ${revision.slice(0, 7)}: `
