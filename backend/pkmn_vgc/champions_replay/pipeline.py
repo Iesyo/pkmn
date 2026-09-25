@@ -124,6 +124,8 @@ class CaptureAccumulator:
                 team = self.p1_team if event.slot.startswith("p1") else self.p2_team
                 _merge_species(selected, (event.species,), limit=4)
                 _merge_species(team, (event.species,), limit=6)
+            if event.kind in {"damage", "heal"} and self._settle_late_reading(event):
+                continue
             if event.kind in {"damage", "heal"}:
                 health_key = (event.kind, event.slot, event.species)
                 previous_health = self._last_health_event.get(health_key)
@@ -189,6 +191,45 @@ class CaptureAccumulator:
         if detections.winner:
             self.winner = detections.winner
         self.complete = self.complete or detections.battle_complete
+
+    def _settle_late_reading(self, event: BattleEvent) -> bool:
+        """Una barra leída entre el inicio de un turno y su primera acción.
+
+        COL-102, job 8b7488cb5914449f, partida 2: Terrain Pulse deja a
+        Venusaur en "1 %" en el turno 1, pero ese 1 es un dígito fino y el OCR
+        no lo lee hasta el frame 1392, ya con el turno 2 abierto y antes de
+        ningún movimiento. Entraba como un daño nuevo, sin causa, y el visor
+        lo animaba como un segundo golpe. Entre el turno y su primera acción
+        no puede haber daño ni cura reales: es el final del último cambio de
+        ese Pokémon en el turno anterior, y corrige su valor. Si no hay tal
+        cambio (sin cruzar su entrada o su debilitado), no se toca nada.
+        """
+
+        turn_index = None
+        for index in range(len(self.events) - 1, -1, -1):
+            kind = self.events[index].kind
+            if kind == "turn":
+                turn_index = index
+                break
+            if kind not in {"damage", "heal"}:
+                return False
+        if turn_index is None:
+            return False
+        for index in range(turn_index - 1, -1, -1):
+            previous = self.events[index]
+            if previous.slot != event.slot:
+                continue
+            if previous.kind in {"switch", "drag", "faint"}:
+                return False
+            if previous.kind in {"damage", "heal"}:
+                if previous.kind != event.kind or previous.species != event.species:
+                    return False
+                if previous.health != event.health:
+                    self._last_event_at.pop(previous.signature(), None)
+                    self.events[index] = replace(previous, health=event.health)
+                    self._last_event_at[self.events[index].signature()] = previous.timestamp_ms
+                return True
+        return False
 
     def _close_last_hit(self, outcome: BattleEvent, remaining: int) -> None:
         """El golpe que precede a un debilitado o a un Focus Sash cierra su barra.

@@ -240,6 +240,14 @@ def _event_lines(
             f"|-mega|{identifier}|{event.species}|{event.value}",
         ]
 
+    if event.kind == "cant":
+        # "|cant|p2b: Pelipper|flinch": el visor escribe el mismo "flinched
+        # and couldn't move!" y además lo representa en la batalla, cosa que
+        # un -message no hace.
+        assert event.slot and event.value
+        species = active.get(event.slot) or event.species or "Pokémon"
+        return [f"|cant|{_identifier(event.slot, species)}|{event.value}"]
+
     if event.kind in {"faint", "crit"}:
         assert event.slot
         species = _named_species(event, active)

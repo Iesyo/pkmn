@@ -24,6 +24,7 @@ EventKind = Literal[
     "terastallize",
     "crit",
     "miss",
+    "cant",
     "weather",
     "fieldstart",
     "fieldend",
@@ -50,6 +51,7 @@ VALID_EVENT_KINDS = {
     "terastallize",
     "crit",
     "miss",
+    "cant",
     "weather",
     "fieldstart",
     "fieldend",
@@ -168,7 +170,7 @@ class BattleEvent:
             raise ValueError("Un movimiento necesita slot y nombre.")
         if self.kind in {"damage", "heal"} and (not self.slot or not self.health):
             raise ValueError("Un cambio de HP necesita slot y lectura de vida.")
-        if self.kind in {"status", "curestatus", "ability", "item", "enditem", "terastallize"} and (
+        if self.kind in {"status", "curestatus", "ability", "item", "enditem", "terastallize", "cant"} and (
             not self.slot or not self.value
         ):
             raise ValueError(f"El evento {self.kind} necesita slot y valor.")

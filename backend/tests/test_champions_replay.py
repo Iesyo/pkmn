@@ -373,6 +373,29 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertIn("|move|p2a: Sableye|Will-O-Wisp|p1a: Kleavor", document.log)
         self.assertIn("|-miss|p2a: Sableye|p1a: Kleavor", document.log)
 
+    def test_renders_a_flinch_as_a_showdown_cant(self) -> None:
+        # COL-102, job 8b7488cb5914449f, partida 3: como -message el visor sólo
+        # escribía el flinch en el log; como "cant" lo representa.
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=battle.p1,
+                p2=BattleSide("Rival", ("Pelipper",), ("Pelipper",)),
+                events=(
+                    BattleEvent(kind="switch", timestamp_ms=100, slot="p1a", species="Kleavor"),
+                    BattleEvent(kind="switch", timestamp_ms=500, slot="p2b", species="Pelipper"),
+                    BattleEvent(kind="cant", timestamp_ms=1_000, slot="p2b", species="Pelipper", value="flinch"),
+                ),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|cant|p2b: Pelipper|flinch", document.log)
+        self.assertNotIn("flinched and couldn't move", document.log)
+
     def test_does_not_reorder_a_late_switch_around_an_existing_move(self) -> None:
         battle = self.capture()
         document = build_replay_document(
@@ -664,6 +687,41 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(
             [(event.kind, event.slot, event.health or event.value) for event in accumulator.events if event.kind in {"damage", "enditem"}],
             [("damage", "p2a", "1/100"), ("enditem", "p2a", "Focus Sash")],
+        )
+
+    def test_a_bar_read_before_the_turns_first_action_settles_the_previous_hit(self) -> None:
+        # COL-102, job 8b7488cb5914449f, partida 2 (frames 1346-1418): Terrain
+        # Pulse deja a Venusaur en 1 %, leído a mitad de animación (79 %); el
+        # "1%" no se lee hasta el frame 1392, con el turno 2 ya abierto y
+        # antes de cualquier movimiento. Era un segundo golpe sin causa: es el
+        # final del único golpe. Un cambio leído después de una acción del
+        # turno sigue siendo suyo.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(kind="move", timestamp_ms=672_500, slot="p1b", species="Indeedee-F", move="Terrain Pulse"),
+                    BattleEvent(kind="damage", timestamp_ms=674_500, slot="p2a", species="Venusaur", health="79/100"),
+                    BattleEvent(kind="message", timestamp_ms=676_000, value="It's super effective on the opposing Venusaur!"),
+                    BattleEvent(kind="turn", timestamp_ms=681_500, turn=2),
+                    BattleEvent(kind="damage", timestamp_ms=695_500, slot="p2a", species="Venusaur", health="1/100"),
+                    BattleEvent(kind="move", timestamp_ms=703_000, slot="p1b", species="Indeedee-F", move="Follow Me"),
+                    BattleEvent(kind="move", timestamp_ms=716_500, slot="p1a", species="Blaziken", move="Rock Slide"),
+                    BattleEvent(kind="damage", timestamp_ms=718_500, slot="p2a", species="Venusaur", health="0/100"),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.kind, event.health or event.move) for event in accumulator.events if event.kind in {"move", "damage", "turn"}],
+            [
+                ("move", "Terrain Pulse"),
+                ("damage", "1/100"),
+                ("turn", None),
+                ("move", "Follow Me"),
+                ("move", "Rock Slide"),
+                ("damage", "0/100"),
+            ],
         )
 
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:

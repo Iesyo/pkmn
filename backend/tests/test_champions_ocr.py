@@ -1823,6 +1823,26 @@ class ChampionsOcrTests(unittest.TestCase):
             [("enditem", "p2a", "Ceruledge", "Focus Sash")],
         )
 
+    def test_a_flinch_is_a_lost_action_not_a_message(self) -> None:
+        # COL-102, job 8b7488cb5914449f, partida 3.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Pelipper", "Dragonite")),
+            catalog=ChampionsCatalog(species=("Pelipper", "Dragonite")),
+        )
+        parser._battle_open = True
+        parser._active["p2b"] = "Pelipper"
+
+        detections = parser.parse(
+            (line("The opposing Pelipper flinched and couldn't move!", x=0.154, y=0.73, width=0.5),),
+            timestamp_ms=0,
+            source_frame=0,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("cant", "p2b", "flinch")],
+        )
+
     def test_champions_paralysis_wording_sets_the_status(self) -> None:
         # COL-102, job 5748b289aa5b445b, frame 765: Champions anuncia la
         # parálisis como "…is paralyzed, so it may be unable to move!" y el
