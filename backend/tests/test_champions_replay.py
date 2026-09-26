@@ -938,6 +938,69 @@ class ChampionsReplayTests(unittest.TestCase):
             [("damage", "82/100"), ("heal", "65/100")],
         )
 
+    def test_a_switch_in_reading_caught_mid_animation_settles_to_full_hp(self) -> None:
+        # Segundo corte de Roku, 26 sep, job real `10a7fba6fda04585`,
+        # partida 5 (Ender): Pelipper ("MineMine") entra a p2a y el OCR lee
+        # "74 %" en su primer frame. Confirmado contra el vídeo -no a
+        # ciegas- sacando los fotogramas exactos: la barra mostraba 100 %
+        # un instante antes y seguía bajando, animando el golpe real que
+        # la dejó en 37 % un frame después. El 74 nunca se leyó estable.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p2a", species="Pelipper", health="74/100", source_frame=5549
+            ),
+            BattleEvent(kind="ability", timestamp_ms=1_000, slot="p2a", species="Pelipper", value="Drizzle", source_frame=5549),
+            BattleEvent(kind="damage", timestamp_ms=1_500, slot="p2a", species="Pelipper", health="37/100", source_frame=5550),
+        ]
+
+        accumulator._settle_switch_in_hp()
+
+        self.assertEqual(
+            [(event.kind, event.health) for event in accumulator.events],
+            [("switch", "100/100"), ("ability", None), ("damage", "37/100")],
+        )
+
+    def test_an_isolated_switch_in_reading_without_corroboration_is_left_alone(self) -> None:
+        # Un switch con HP reducido y NADA después que lo contradiga en la
+        # misma ventana puede ser un caso real (hazard de entrada); sin
+        # corroboración de que la barra seguía animando, no se toca.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p2a", species="Pelipper", health="88/100", source_frame=100
+            ),
+            BattleEvent(kind="move", timestamp_ms=5_000, slot="p2a", species="Pelipper", move="Hurricane", source_frame=110),
+        ]
+
+        accumulator._settle_switch_in_hp()
+
+        self.assertEqual(accumulator.events[0].health, "88/100")
+
+    def test_a_legitimate_re_entry_at_partial_hp_is_left_alone(self) -> None:
+        # Una reentrada real a media vida (el Pokémon ya estuvo en el
+        # campo, salió con HP reducido y vuelve a entrar) no es la barra
+        # animando: es su HP real. Sólo la PRIMERA aparición se corrige.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p2a", species="Pelipper", health="100/100", source_frame=10
+            ),
+            BattleEvent(kind="damage", timestamp_ms=2_000, slot="p2a", species="Pelipper", health="60/100", source_frame=12),
+            BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Kingambit", health="177/177", source_frame=14),
+            BattleEvent(
+                kind="switch", timestamp_ms=10_000, slot="p2a", species="Pelipper", health="60/100", source_frame=50
+            ),
+            BattleEvent(kind="damage", timestamp_ms=10_500, slot="p2a", species="Pelipper", health="30/100", source_frame=51),
+        ]
+
+        accumulator._settle_switch_in_hp()
+
+        pelipper_switches = [
+            event.health for event in accumulator.events if event.kind == "switch" and event.species == "Pelipper"
+        ]
+        self.assertEqual(pelipper_switches, ["100/100", "60/100"])
+
     def test_an_unresolved_identity_that_faints_instantly_is_the_same_death(self) -> None:
         # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`,
         # partida 3: Indeedee-F llega a 0 PS; 1,5 s después una identidad sin

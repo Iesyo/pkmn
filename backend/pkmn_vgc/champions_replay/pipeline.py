@@ -350,6 +350,66 @@ class CaptureAccumulator:
         if drop:
             self.events = [event for index, event in enumerate(self.events) if index not in drop]
 
+    def _settle_switch_in_hp(self) -> None:
+        """La primera lectura de HP de una entrada puede ser la barra a
+        mitad de animación, no el valor real de entrada.
+
+        Segundo corte de Roku, 26 sep, job real `10a7fba6fda04585`,
+        partida 5 (Ender): Pelipper ("MineMine") entra a p2a y el OCR lee
+        "74 %" en su primer frame. Confirmado contra el vídeo -no a
+        ciegas- sacando los fotogramas exactos (t≈2774.5 s a 2776.0 s): la
+        barra mostraba 100 % un instante antes de esa lectura y seguía
+        bajando, animando el golpe real que la dejó en 37 % un frame
+        después -el mismo valor que el evento de daño siguiente ya
+        registra bien; ese no se toca. El dígito de la entrada nunca se
+        leyó estable: no hay dos lecturas consecutivas iguales, así que no
+        hay forma de confiar en él sólo con esa lectura.
+
+        Acotado al patrón confirmado: sólo se corrige la PRIMERA aparición
+        de una identidad en la batalla (una reentrada legítima a media
+        vida no se toca), y sólo si un evento damage/heal del mismo slot
+        llega dentro de pocos frames -en `source_frame`, no en
+        `timestamp_ms`: un switch reconstruido desde un mensaje ("Ender
+        sent out MineMine") lleva su marca de tiempo retrasada a propósito
+        al primer movimiento pendiente (ver el comentario "Place the
+        reconstructed send-out immediately before that move" en
+        `ocr_detector.py`), así que puede diferir en segundos reales del
+        instante en que la pantalla realmente mostró esa lectura; el
+        frame de origen no miente- sin que un `move`/`turn` se interponga
+        antes: eso es lo que demuestra que la barra seguía en movimiento.
+        Sin esa corroboración no se toca nada -un switch aislado, sin nada
+        después que lo contradiga, puede ser un caso real de HP reducido
+        al entrar.
+        """
+
+        max_frame_gap = 6
+        seen_identities: set[str] = set()
+        for index, event in enumerate(self.events):
+            if event.kind not in {"switch", "drag"} or not event.slot or not event.species:
+                continue
+            first_appearance = event.species not in seen_identities
+            seen_identities.add(event.species)
+            if not first_appearance or not event.health or event.source_frame is None:
+                continue
+            current, _, maximum = event.health.partition("/")
+            if not current.isdigit() or not maximum.isdigit() or int(current) >= int(maximum):
+                continue
+            confirmed = False
+            for later in self.events[index + 1 :]:
+                if later.source_frame is None or later.source_frame - event.source_frame > max_frame_gap:
+                    break
+                if later.slot == event.slot and later.kind in {"damage", "heal"}:
+                    confirmed = True
+                    break
+                if later.kind in {"move", "turn"}:
+                    break
+            if not confirmed:
+                continue
+            settled = f"{maximum}/{maximum}"
+            self._last_event_at.pop(event.signature(), None)
+            self.events[index] = replace(event, health=settled)
+            self._last_event_at[self.events[index].signature()] = event.timestamp_ms
+
     def _reconcile_zero_hp(self) -> None:
         """0 PS o es un debilitado o fue ruido de OCR; nunca las dos cosas.
 
@@ -474,6 +534,7 @@ class CaptureAccumulator:
     ) -> CapturedBattle:
         identity_map = dict(identities or {})
         self._drop_ghost_reentries()
+        self._settle_switch_in_hp()
         self._reconcile_zero_hp()
         self._drop_redundant_reswitches(identity_map)
         if not self.winner:
