@@ -387,6 +387,70 @@ class RapidOcrEngine:
             return decoded
         return self._np.ascontiguousarray(self._np.rot90(decoded, k=-quarter_turns))
 
+    def _rescan_thin_digits(self, oriented: Any, lines: tuple[OcrLine, ...]) -> tuple[OcrLine, ...]:
+        """Recorta y amplía una lectura de HP sospechosa antes de aceptarla.
+
+        COL-102, reapertura estructural del 25 sep: un dígito fino de la
+        barra de HP (el "1" de 100 %, el "0" de un debilitado) puede
+        perderse en la detección de texto sobre el frame completo, aunque
+        el resto de la lectura -el "%" suelto- sí se detecte. Confirmado
+        contra un caso real (job `90403f16712d4d41`): tres frames seguidos
+        donde la pantalla completa leía "%" solo; recortar esa misma región
+        y ampliarla 6x, en el mismo frame, sin releer nada, recuperó "0%"
+        con ~97 % de confianza en los tres. No hace falta esperar a que
+        otro frame corrija el dato -se lee bien desde el origen.
+
+        Acotado a propósito al patrón ya confirmado (un "%" solo, sin
+        dígitos): recortar cualquier número suelto sin corroborar que es
+        HP arriesgaría confundir otros contadores de la pantalla (el "3/4"
+        de Team Preview, un timer) con una barra de vida.
+        """
+
+        height, width = oriented.shape[:2]
+        replacements: dict[int, OcrLine] = {}
+        for index, line in enumerate(lines):
+            if line.text.strip() != "%":
+                continue
+            line_width = max(line.right - line.left, 1e-6)
+            line_height = max(line.bottom - line.top, 1e-6)
+            left = max(0.0, line.left - line_width * 3.5)
+            right = min(1.0, line.right + line_width * 0.5)
+            top = max(0.0, line.top - line_height * 0.6)
+            bottom = min(1.0, line.bottom + line_height * 0.6)
+            x0, x1 = round(left * width), round(right * width)
+            y0, y1 = round(top * height), round(bottom * height)
+            if x1 - x0 < 4 or y1 - y0 < 4:
+                continue
+            crop = oriented[y0:y1, x0:x1]
+            upscaled = self._cv2.resize(
+                crop, None, fx=6.0, fy=6.0, interpolation=self._cv2.INTER_CUBIC
+            )
+            rescanned = self._read_decoded(upscaled)
+            best = max(
+                (
+                    candidate
+                    for candidate in rescanned
+                    if re.fullmatch(r"\d{1,3}%", candidate.text.replace(" ", ""))
+                ),
+                key=lambda candidate: candidate.confidence,
+                default=None,
+            )
+            if best is None:
+                continue
+            crop_width = max(right - left, 1e-6)
+            crop_height = max(bottom - top, 1e-6)
+            replacements[index] = OcrLine(
+                text=best.text.replace(" ", ""),
+                confidence=best.confidence,
+                left=left + best.left * crop_width,
+                top=top + best.top * crop_height,
+                right=left + best.right * crop_width,
+                bottom=top + best.bottom * crop_height,
+            )
+        if not replacements:
+            return lines
+        return tuple(replacements.get(index, line) for index, line in enumerate(lines))
+
     def read(self, image: bytes) -> tuple[OcrLine, ...]:
         encoded = self._np.frombuffer(image, dtype=self._np.uint8)
         decoded = self._cv2.imdecode(encoded, self._cv2.IMREAD_COLOR)
@@ -399,7 +463,8 @@ class RapidOcrEngine:
                 self.rotation_quarter_turns = 0
                 self._orientation_locked = True
             oriented = self._rotate(decoded, self.rotation_quarter_turns)
-            return self._with_second_opinion(oriented, self._read_decoded(oriented))
+            found = self._with_second_opinion(oriented, self._read_decoded(oriented))
+            return self._rescan_thin_digits(oriented, found)
 
         # Algunos screen recordings móviles conservan 1126x2436 aunque el
         # juego y su texto estén girados. Probamos ambas orientaciones una sola
@@ -424,7 +489,8 @@ class RapidOcrEngine:
         if lines and battle_signals and (quarter_turns != 0 or battle_signals >= 2):
             self.rotation_quarter_turns = quarter_turns
             self._orientation_locked = True
-        return self._with_second_opinion(oriented, lines)
+        found = self._with_second_opinion(oriented, lines)
+        return self._rescan_thin_digits(oriented, found)
 
     def prepare_hud_frame(
         self,

@@ -3315,6 +3315,29 @@ class ChampionsOcrTests(unittest.TestCase):
             ("Indeedee-F", "Gardevoir", "Basculegion", "Blaziken", "Rillaboom", "Kingambit"),
         )
 
+    def test_a_thin_hp_digit_lost_on_the_full_frame_is_recovered_by_cropping(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`:
+        # sobre el frame completo, RapidOCR pierde el "0" de "0%" -devuelve
+        # sólo el "%" suelto, no un dígito equivocado. Recortar esa misma
+        # región y ampliarla 6x, en el mismo frame, sin releer nada, recupera
+        # "0%". Frame real, sin reprocesar: hasta una recompresión leve del
+        # mismo JPEG ya alcanza a "arreglarlo" por accidente, así que la
+        # fixture son los bytes tal como los entregó FFmpeg.
+        try:
+            engine = RapidOcrEngine(min_confidence=0.1)
+        except DetectionError as error:
+            self.skipTest(f"RapidOCR no está instalado en este entorno: {error}")
+
+        image_bytes = (
+            Path(__file__).parent / "data" / "champions" / "90403f16-fullframe-475s.jpg"
+        ).read_bytes()
+
+        lines = engine.read(image_bytes)
+
+        percentages = [line.text for line in lines if line.text.strip().endswith("%")]
+        self.assertIn("0%", percentages, percentages)
+        self.assertNotIn("%", percentages, percentages)
+
     def test_a_rival_nickname_is_tied_by_its_hud_icon(self) -> None:
         # COL-102, job 347da1c2ff16491b: "Lilith" y "Rapunzel" nunca dicen su
         # especie en un texto; su icono del HUD, sí. Geometría de las lecturas
