@@ -11,7 +11,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as { replayUrl?: string; replay?: unknown; teamSpecies?: string[] };
+    const payload = (await request.json()) as {
+      replayUrl?: string;
+      replay?: unknown;
+      teamSpecies?: string[];
+      championsJobId?: string;
+      championsReplayNumber?: number;
+    };
     const teamSpecies = (payload.teamSpecies ?? []).map((species) => species.trim()).filter(Boolean).slice(0, 6);
     if (teamSpecies.length !== 6) {
       throw new ReplayValidationError("El replay debe asociarse con una versión completa de seis Pokémon.");
@@ -31,6 +37,11 @@ export async function POST(request: Request) {
       teamSpecies,
       origin: reconstructed ? "champions" : "showdown",
       replayArtifact: reconstructed ? source.replay : null,
+      // Roku, revisión del cuarto corte, 26 sep: acompaña al replay para
+      // que "Guardar partida" pueda mandarlos a `createMatch`, que vuelve
+      // a buscar el replay canónico en el job en vez de confiar en éste.
+      championsJobId: reconstructed ? payload.championsJobId : undefined,
+      championsReplayNumber: reconstructed ? payload.championsReplayNumber : undefined,
     });
     return Response.json({ match });
   } catch (error) {

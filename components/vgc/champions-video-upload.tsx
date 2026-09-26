@@ -113,7 +113,7 @@ export function ChampionsVideoUpload({
 }: {
   version: TeamVersion;
   disabled?: boolean;
-  onReplayReady: (replay: unknown) => Promise<void>;
+  onReplayReady: (replay: unknown, source: { championsJobId: string; championsReplayNumber: number }) => Promise<void>;
 }) {
   const inputId = useId();
   const [open, setOpen] = useState(false);
@@ -244,7 +244,7 @@ export function ChampionsVideoUpload({
       const payload = await readJson<{ replay: unknown }>(
         await fetch(`/api/champions-jobs/jobs/${currentJob.id}/replays/${replayNumber}`, { cache: "no-store" }),
       );
-      await onReplayReady(payload.replay);
+      await onReplayReady(payload.replay, { championsJobId: currentJob.id, championsReplayNumber: replayNumber });
       setOpen(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No pudimos abrir el replay generado.");

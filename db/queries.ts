@@ -3,7 +3,8 @@ import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
-import { collectScoutingReplayEvidence, fetchShowdownReplay, hasBlockingIssues, normalizeShowdownReplayDocument, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
+import { fetchCanonicalChampionsReplay } from "@/lib/champions-jobs";
+import { collectScoutingReplayEvidence, fetchShowdownReplay, hasBlockingIssues, normalizeShowdownReplayDocument, type ScoutingReplayEvidence, type ShowdownReplayDocument } from "@/lib/showdown-replay";
 import type {
   MatchRecord,
   MatchResult,
@@ -416,6 +417,12 @@ export interface CreateMatchInput {
   replayUrl?: string;
   origin?: MatchSource;
   replayArtifact?: unknown;
+  // Roku, revisión del cuarto corte, 26 sep: el job y el número de replay
+  // que el propio job de Champions le dio a este resultado -con esto el
+  // servidor puede volver a buscar el replay canónico él mismo, en vez de
+  // confiar en el `replayArtifact` (y sus `issues`) que mandó el cliente.
+  championsJobId?: string;
+  championsReplayNumber?: number;
   selected?: string[];
   opponentSelected?: string[];
   lead?: string[];
@@ -443,16 +450,38 @@ export async function createMatch(input: CreateMatchInput) {
   if (origin === "champions" && replayUrl) {
     throw new DomainError("Una partida de Champions no puede usar una URL pública de Showdown.");
   }
-  const replayArtifact = input.replayArtifact === undefined || input.replayArtifact === null
-    ? null
-    : normalizeShowdownReplayDocument(input.replayArtifact);
-  if (replayArtifact && origin !== "champions") {
+  // Roku, revisión del cuarto corte, 26 sep: antes esto normalizaba y
+  // confiaba en `input.replayArtifact` tal cual llegó del navegador -una
+  // petición con el mismo log pero sin `issues` evitaba la compuerta por
+  // completo, porque el servidor sólo miraba el JSON que el propio
+  // cliente eligió mandar. Ahora, para origin "champions", el servidor
+  // vuelve a buscar el replay él mismo en el job (`championsJobId` +
+  // `championsReplayNumber`, que sí identifican algo verificable del
+  // lado del servidor) y usa ESE documento -nunca el que mandó el
+  // cliente- tanto para la compuerta de incidencias como para lo que se
+  // persiste. Sin esa referencia no hay nada que verificar: se bloquea,
+  // no se confía a ciegas en el cliente.
+  let replayArtifact: ShowdownReplayDocument | null = null;
+  if (origin === "champions") {
+    const championsJobId = input.championsJobId?.trim() || "";
+    const championsReplayNumber = input.championsReplayNumber;
+    if (!championsJobId || !championsReplayNumber) {
+      throw new DomainError(
+        "Falta el job y el número de replay de Champions; el servidor no puede verificar esta partida.",
+      );
+    }
+    let canonicalReplay: unknown;
+    try {
+      canonicalReplay = await fetchCanonicalChampionsReplay(championsJobId, championsReplayNumber);
+    } catch (error) {
+      throw new DomainError(
+        error instanceof Error ? error.message : "No pudimos verificar el replay contra el job de Champions.",
+      );
+    }
+    replayArtifact = normalizeShowdownReplayDocument(canonicalReplay);
+  } else if (input.replayArtifact !== undefined && input.replayArtifact !== null) {
     throw new DomainError("El replay reconstruido sólo puede guardarse con origen Champions.");
   }
-  // Roku, revisión del tercer corte, 26 sep: el cliente sólo mostraba
-  // `issues` como texto -"Guardar partida" no las revisaba, y una
-  // incidencia `severity: "blocking"` podía persistirse igual. La
-  // compuerta real tiene que estar acá, no sólo en el botón.
   if (replayArtifact && hasBlockingIssues(replayArtifact)) {
     throw new DomainError(
       "El replay reconstruido tiene incidencias sin resolver (bloqueantes); revísalas antes de guardar la partida.",

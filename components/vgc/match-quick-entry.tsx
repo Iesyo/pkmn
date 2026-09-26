@@ -33,7 +33,12 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
   const hasReplayInput = replayUrl.trim().length > 0;
   const championsMode = version.format === "champions" && !hasReplayInput;
 
-  async function readReplay(source: { replayUrl: string } | { replay: unknown }) {
+  async function readReplay(
+    source:
+      | { replayUrl: string }
+      | { replay: unknown }
+      | { replay: unknown; championsJobId: string; championsReplayNumber: number },
+  ) {
     const payload = await readResponse<{ match: ImportedReplayMatch }>(
       await fetch("/api/replays", {
         method: "POST",
@@ -155,7 +160,8 @@ export function MatchQuickEntry({ version, onCreated }: { version: TeamVersion; 
               <ChampionsVideoUpload
                 version={version}
                 disabled={disabled || reading}
-                onReplayReady={async (replay) => readReplay({ replay })}
+                onReplayReady={async (replay, { championsJobId, championsReplayNumber }) =>
+                  readReplay({ replay, championsJobId, championsReplayNumber })}
               />
             </>
           ) : null}

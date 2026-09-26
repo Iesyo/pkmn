@@ -59,6 +59,13 @@ export interface ImportedReplayMatch {
   // que la UI decida qué mostrar y `hasBlockingIssues` pueda usarla para
   // bloquear el guardado, en vez de perderla en el camino.
   issues: ReplayCaptureIssue[];
+  // Roku, revisión del cuarto corte, 26 sep: identifican el replay dentro
+  // de su job de Champions -"Guardar partida" los manda a `createMatch`,
+  // que vuelve a buscar el replay canónico ahí en vez de confiar en lo
+  // que este objeto ya trae. `null` para partidas de Showdown o para un
+  // archivo reconstruido importado a mano, sin job detrás.
+  championsJobId: string | null;
+  championsReplayNumber: number | null;
 }
 
 /** Roku, revisión del tercer corte, 26 sep: "Guardar partida" no revisaba
@@ -543,6 +550,8 @@ export function importShowdownReplay(
     teamSpecies: string[];
     origin?: MatchSource;
     replayArtifact?: ShowdownReplayDocument | null;
+    championsJobId?: string;
+    championsReplayNumber?: number;
   },
 ): ImportedReplayMatch {
   if (!document.log?.trim()) {
@@ -592,6 +601,11 @@ export function importShowdownReplay(
     format: document.format?.trim() ?? "",
     warnings,
     issues: document.issues ?? [],
+    championsJobId: options.championsJobId?.trim() || null,
+    championsReplayNumber:
+      typeof options.championsReplayNumber === "number" && Number.isInteger(options.championsReplayNumber)
+        ? options.championsReplayNumber
+        : null,
   };
 }
 
