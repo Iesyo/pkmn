@@ -20,6 +20,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     RapidOcrEngine,
     _health_readings,
     _health_value,
+    _strip_pokemon_title,
     _with_japanese_second_opinion,
     load_champions_catalog,
     load_trace_aliases,
@@ -193,6 +194,45 @@ class ChampionsOcrTests(unittest.TestCase):
             [(event.kind, event.species) for event in resolved.events],
             [("switch", "Basculegion-F"), ("move", "Basculegion-F")],
         )
+
+    def test_a_title_pegged_to_a_sent_out_nickname_does_not_poison_the_announcement(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender). "MineMine the Peckish" no es
+        una entrada doble ni un mote mangled: "the Peckish" es un Título
+        real de Pokémon Champions (Lunchtime Mark, heredado de Espada/Escudo
+        vía Pokémon HOME) que el propio juego pega al mote al anunciar la
+        entrada. Sin descartarlo, "MineMine the Peckish" se registraba
+        entero como una sola cadena mezclada y "MineMine" solo nunca
+        calzaba contra ella -así nació el actor huérfano de Pelipper.
+        """
+
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_name="Ender"),
+            catalog=ChampionsCatalog(species=("Pelipper", "Golisopod")),
+        )
+        parser.parse(
+            (line("Ender sent out MineMine the Peckish!", x=0.2, y=0.72, width=0.5),),
+            timestamp_ms=2_748_500,
+            source_frame=5498,
+        )
+
+        self.assertEqual(parser._announced_slot("p2", "MineMine"), "p2a")
+
+    def test_strip_pokemon_title_removes_a_known_title_from_a_nickname(self) -> None:
+        self.assertEqual(_strip_pokemon_title("MineMine the Peckish"), "MineMine")
+
+    def test_strip_pokemon_title_handles_a_title_that_itself_contains_and(self) -> None:
+        # "the Tried and True" es un título real; si se buscara " and " antes
+        # de descartar el título, una entrada simple se leería como doble.
+        self.assertEqual(_strip_pokemon_title("Rex the Tried and True"), "Rex")
+
+    def test_strip_pokemon_title_leaves_a_plain_nickname_untouched(self) -> None:
+        self.assertEqual(_strip_pokemon_title("MineMine"), "MineMine")
+
+    def test_strip_pokemon_title_does_not_cut_a_multi_word_title_short(self) -> None:
+        # "the Royal Master" no debe cortarse en "the Royal" y dejar
+        # "Master" pegado al mote.
+        self.assertEqual(_strip_pokemon_title("Judge the Royal Master"), "Judge")
 
     def test_historical_teammates_break_a_move_evidence_tie(self) -> None:
         parser = ChampionsTextParser(
