@@ -25,6 +25,27 @@ test("registers a minimal Champions match against the exact team version", async
   assert.match(queries, /match\.id,\s*\n\s*input\.teamVersionId,/);
 });
 
+test("derives result/picks/leads/moves from the server-verified replay, not the client's claim, when one is bound", async () => {
+  // Roku, revisión del quinto corte, 26 sep: `createMatch` ya usaba el log
+  // canónico para `replay_artifact_json`, pero seguía copiando
+  // result/opponentName/selected/opponentSelected/lead/movesUsed del
+  // payload del cliente sin comprobarlos contra ese mismo log -una
+  // victoria con picks inventados podía guardarse igual. Ahora, cuando
+  // hay un replay verificado (`derived`, de `importShowdownReplay` sobre
+  // el documento que el propio servidor buscó), esos campos salen de ahí
+  // -el `input` del cliente queda sólo de respaldo para el registro
+  // manual sin replay.
+  const queries = await source("db/queries.ts");
+
+  assert.match(queries, /derived = importShowdownReplay\(replayArtifact,/);
+  assert.match(queries, /result: derived\?\.result \?\? input\.result/);
+  assert.match(queries, /opponentName: \(derived\?\.opponentName \?\? input\.opponentName\)/);
+  assert.match(queries, /selected: derived\?\.selected \?\? input\.selected/);
+  assert.match(queries, /opponentSelected: derived\?\.opponentSelected \?\? input\.opponentSelected/);
+  assert.match(queries, /lead: derived\?\.lead \?\? input\.lead/);
+  assert.match(queries, /rawMovesUsed = derived \? derived\.movesUsed : input\.movesUsed/);
+});
+
 test("uses one adaptive control for Champions quick entry and replay import", async () => {
   const [history, entry, quickMatch] = await Promise.all([
     source("components/vgc/match-history.tsx"),

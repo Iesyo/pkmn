@@ -25,6 +25,23 @@ export interface ShowdownReplayDocument {
   // para que `importShowdownReplay` las sume a `warnings`, visibles antes
   // de confirmar la partida.
   issues?: ReplayCaptureIssue[];
+  // Quinto corte de Roku, 26 sep: constancia positiva de que `issues`
+  // viene de una corrida real del reconciliador actual (backend,
+  // `reconcile.RECONCILE_VERSION`) -un artefacto de job viejo, de antes
+  // de que `issues` existiera, no la trae. `hasCurrentReconciliation`
+  // exige esto explícitamente: ausencia de `issues` nunca se lee como
+  // "revisado, sin hallazgos".
+  reconciliation_version?: string | null;
+}
+
+// Roku, revisión del quinto corte, 26 sep: debe coincidir exactamente con
+// `RECONCILE_VERSION` en backend/pkmn_vgc/champions_replay/reconcile.py.
+// Subir los dos juntos cuando la lógica de análisis cambie de forma que
+// invalide una revisión anterior.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r5";
+
+export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
+  return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;
 }
 
 interface ReplaySide {
@@ -182,6 +199,7 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     p2rating: rawReplay.p2rating,
     format: replayText(rawReplay.format, 100),
     issues: normalizeReplayIssues(rawReplay.issues),
+    reconciliation_version: replayText(rawReplay.reconciliation_version, 40) ?? null,
   };
 }
 

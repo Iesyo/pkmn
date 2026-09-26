@@ -49,11 +49,13 @@ function mockChampionsJobsLoopback(t, respond) {
 
 test("createMatch fetches the canonical replay from the job and rejects on its blocking issue, ignoring the client's copy", async (t) => {
   const { createMatch, DomainError } = await vite.ssrLoadModule("/db/queries.ts");
+  const { CHAMPIONS_RECONCILIATION_VERSION } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
   mockChampionsJobsLoopback(t, (href) => {
     assert.equal(href, "http://127.0.0.1:8770/jobs/0123456789abcdef/replays/1");
     return jsonResponse({
       replay: {
         log: "|start\n|win|IesYo",
+        reconciliation_version: CHAMPIONS_RECONCILIATION_VERSION,
         issues: [{ severity: "blocking", message: "0 imposible sin faint confirmado." }],
       },
     });
@@ -75,14 +77,30 @@ test("createMatch fetches the canonical replay from the job and rejects on its b
   );
 });
 
-test("createMatch requires championsJobId and championsReplayNumber for a champions-origin match", async () => {
+test("createMatch requires championsReplayNumber when championsJobId is given (a partial claim), but allows a fully manual entry with neither", async (t) => {
   const { createMatch, DomainError } = await vite.ssrLoadModule("/db/queries.ts");
 
   await assert.rejects(
-    () => createMatch({ teamVersionId: "x", result: "win", origin: "champions" }),
+    () => createMatch({ teamVersionId: "x", result: "win", origin: "champions", championsJobId: baseInput.championsJobId }),
     (error) => {
       assert.ok(error instanceof DomainError, `expected DomainError, got ${error}`);
       assert.match(error.message, /no puede verificar/);
+      return true;
+    },
+  );
+
+  // Roku, revisión del quinto corte, 26 sep: ChampionsQuickMatchDialog
+  // (registro rápido manual) manda origin:"champions" sin ningún replay
+  // -ni championsJobId ni championsReplayNumber. Antes de este fix,
+  // 3cea879 exigía ambos para TODO origin:"champions" y rompía esta
+  // función existente. Sin ninguno de los dos, esto ya no debe rechazar
+  // por "falta el job" -sigue de largo hasta getDatabase(), que sí falla
+  // en este harness sin D1, probando que ninguna validación de replay lo
+  // frenó antes.
+  await assert.rejects(
+    () => createMatch({ teamVersionId: "x", result: "win", origin: "champions", selected: ["Pelipper"], opponentSelected: ["Rival"], lead: ["Pelipper"] }),
+    (error) => {
+      assert.doesNotMatch(String(error?.message ?? error), /no puede verificar|bloqueantes|revisión vigente/);
       return true;
     },
   );
@@ -120,8 +138,15 @@ test("createMatch blocks the save when the local Champions processor is unreacha
 
 test("createMatch proceeds past validation when the canonical replay has no blocking issues", async (t) => {
   const { createMatch } = await vite.ssrLoadModule("/db/queries.ts");
+  const { CHAMPIONS_RECONCILIATION_VERSION } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
   mockChampionsJobsLoopback(t, () =>
-    jsonResponse({ replay: { log: "|start\n|win|IesYo", issues: [{ severity: "warning", message: "Aviso menor." }] } }),
+    jsonResponse({
+      replay: {
+        log: "|start\n|win|IesYo",
+        reconciliation_version: CHAMPIONS_RECONCILIATION_VERSION,
+        issues: [{ severity: "warning", message: "Aviso menor." }],
+      },
+    }),
   );
 
   // Sin D1 disponible en este harness: pasar la compuerta llega hasta
@@ -130,7 +155,28 @@ test("createMatch proceeds past validation when the canonical replay has no bloc
   await assert.rejects(
     () => createMatch({ ...baseInput, replayArtifact: { log: "|start\n|win|IesYo" } }),
     (error) => {
-      assert.doesNotMatch(String(error?.message ?? error), /bloqueantes|no puede verificar|No encontramos|no respondió/);
+      assert.doesNotMatch(
+        String(error?.message ?? error),
+        /bloqueantes|no puede verificar|No encontramos|no respondió|revisión vigente/,
+      );
+      return true;
+    },
+  );
+});
+
+test("createMatch rejects a canonical replay without a current reconciliation marker", async (t) => {
+  // Roku, revisión del quinto corte, 26 sep: los tres jobs protegidos son
+  // del 25 sep, de antes de que este campo existiera -un replay canónico
+  // sin la marca vigente no puede leerse como "revisado, sin hallazgos"
+  // sólo porque `issues` viene vacío o ausente.
+  const { createMatch, DomainError } = await vite.ssrLoadModule("/db/queries.ts");
+  mockChampionsJobsLoopback(t, () => jsonResponse({ replay: { log: "|start\n|win|IesYo" } }));
+
+  await assert.rejects(
+    () => createMatch({ ...baseInput, replayArtifact: { log: "|start\n|win|IesYo" } }),
+    (error) => {
+      assert.ok(error instanceof DomainError, `expected DomainError, got ${error}`);
+      assert.match(error.message, /revisión vigente/);
       return true;
     },
   );

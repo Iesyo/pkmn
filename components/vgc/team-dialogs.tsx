@@ -296,6 +296,15 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
   }
 
   const opponentPreview = [...new Set(opponentTeam.split(/[\n,]/).map((species) => species.trim()).filter(Boolean))];
+  // Roku, revisión del quinto corte, 26 sep: un archivo .json reconstruido
+  // importado suelto (sin job en vivo detrás, en MatchQuickEntry) no tiene
+  // nada verificable del lado del servidor -createMatch ya lo rechaza,
+  // pero el botón debe decirlo desde el principio, no fallar recién al
+  // enviar. Conservamos la importación como vista previa/diagnóstico
+  // (el usuario puede seguir viendo el resumen y validar el replay).
+  const isUnverifiableChampionsReplay = Boolean(
+    initialReplay?.origin === "champions" && initialReplay.replayArtifact && !initialReplay.championsJobId,
+  );
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -305,6 +314,11 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
           <DialogHeader><DialogTitle>Confirmar partida · {version.name} v{formatVersion(version)}</DialogTitle><DialogDescription className="text-slate-500">Los datos se leyeron del replay. Revisa el resumen y guarda; solo completa lo que Showdown no haya publicado.</DialogDescription></DialogHeader>
           <div className="my-5 grid gap-4">
             {initialReplay ? <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/8 px-3 py-2 text-xs text-emerald-100"><span className="font-bold">Replay importado</span><span className="text-emerald-200/70"> · {initialReplay.playerName}{initialReplay.format ? ` · ${initialReplay.format}` : ""}</span></div> : null}
+            {isUnverifiableChampionsReplay ? (
+              <div className="rounded-xl border border-rose-300/25 bg-rose-300/10 px-3 py-2 text-[11px] leading-5 text-rose-100">
+                <p><span className="font-bold uppercase">Sólo vista previa</span> · este archivo no tiene un job de Champions verificable en servidor. Podés revisar el resumen y validar el replay, pero no se puede guardar como estadística.</p>
+              </div>
+            ) : null}
             {initialReplay?.warnings.length ? <div className="rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-[11px] leading-5 text-amber-100">{initialReplay.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
             {initialReplay?.issues.length ? (
               <div className="grid gap-1.5">
@@ -357,7 +371,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
             <div className="grid gap-2"><Label htmlFor="match-notes">Notas</Label><Textarea id="match-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Qué funcionó, qué revisar..." className="min-h-20 border-white/10 bg-white/5" /></div>
             {error ? <p role="alert" className="rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}
           </div>
-          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving || selected.length !== 4 || lead.length !== 2 || hasBlockingIssues(initialReplay?.replayArtifact)} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar partida</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving || selected.length !== 4 || lead.length !== 2 || isUnverifiableChampionsReplay || hasBlockingIssues(initialReplay?.replayArtifact)} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar partida</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

@@ -4,7 +4,17 @@ import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normali
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
 import { fetchCanonicalChampionsReplay } from "@/lib/champions-jobs";
-import { collectScoutingReplayEvidence, fetchShowdownReplay, hasBlockingIssues, normalizeShowdownReplayDocument, type ScoutingReplayEvidence, type ShowdownReplayDocument } from "@/lib/showdown-replay";
+import {
+  collectScoutingReplayEvidence,
+  fetchShowdownReplay,
+  hasBlockingIssues,
+  hasCurrentReconciliation,
+  importShowdownReplay,
+  normalizeShowdownReplayDocument,
+  type ImportedReplayMatch,
+  type ScoutingReplayEvidence,
+  type ShowdownReplayDocument,
+} from "@/lib/showdown-replay";
 import type {
   MatchRecord,
   MatchResult,
@@ -421,10 +431,15 @@ export interface CreateMatchInput {
   // que el propio job de Champions le dio a este resultado -con esto el
   // servidor puede volver a buscar el replay canónico él mismo, en vez de
   // confiar en el `replayArtifact` (y sus `issues`) que mandó el cliente.
+  // Su AUSENCIA es lo que distingue una partida manual (registro rápido,
+  // sin ningún replay) de una con replay reconstruido -quinto corte de
+  // Roku: exigirlos siempre rompía `ChampionsQuickMatchDialog`, que nunca
+  // tuvo ni tiene un job detrás.
   championsJobId?: string;
   championsReplayNumber?: number;
   selected?: string[];
   opponentSelected?: string[];
+  opponentPicks?: string[];
   lead?: string[];
   movesUsed?: Record<string, string[]> | null;
   rating?: number | null;
@@ -450,49 +465,100 @@ export async function createMatch(input: CreateMatchInput) {
   if (origin === "champions" && replayUrl) {
     throw new DomainError("Una partida de Champions no puede usar una URL pública de Showdown.");
   }
-  // Roku, revisión del cuarto corte, 26 sep: antes esto normalizaba y
-  // confiaba en `input.replayArtifact` tal cual llegó del navegador -una
-  // petición con el mismo log pero sin `issues` evitaba la compuerta por
-  // completo, porque el servidor sólo miraba el JSON que el propio
-  // cliente eligió mandar. Ahora, para origin "champions", el servidor
-  // vuelve a buscar el replay él mismo en el job (`championsJobId` +
-  // `championsReplayNumber`, que sí identifican algo verificable del
-  // lado del servidor) y usa ESE documento -nunca el que mandó el
-  // cliente- tanto para la compuerta de incidencias como para lo que se
-  // persiste. Sin esa referencia no hay nada que verificar: se bloquea,
-  // no se confía a ciegas en el cliente.
-  let replayArtifact: ShowdownReplayDocument | null = null;
-  if (origin === "champions") {
-    const championsJobId = input.championsJobId?.trim() || "";
-    const championsReplayNumber = input.championsReplayNumber;
-    if (!championsJobId || !championsReplayNumber) {
-      throw new DomainError(
-        "Falta el job y el número de replay de Champions; el servidor no puede verificar esta partida.",
-      );
-    }
-    let canonicalReplay: unknown;
-    try {
-      canonicalReplay = await fetchCanonicalChampionsReplay(championsJobId, championsReplayNumber);
-    } catch (error) {
-      throw new DomainError(
-        error instanceof Error ? error.message : "No pudimos verificar el replay contra el job de Champions.",
-      );
-    }
-    replayArtifact = normalizeShowdownReplayDocument(canonicalReplay);
-  } else if (input.replayArtifact !== undefined && input.replayArtifact !== null) {
-    throw new DomainError("El replay reconstruido sólo puede guardarse con origen Champions.");
-  }
-  if (replayArtifact && hasBlockingIssues(replayArtifact)) {
-    throw new DomainError(
-      "El replay reconstruido tiene incidencias sin resolver (bloqueantes); revísalas antes de guardar la partida.",
-    );
-  }
   if ((input.opponentSelected?.length ?? 0) > 6) {
     throw new DomainError("El equipo rival puede contener como máximo 6 Pokémon.");
   }
-  const movesUsed = input.movesUsed
+
+  // Roku, revisión del cuarto/quinto corte, 26 sep: antes esto normalizaba
+  // y confiaba en `input.replayArtifact` tal cual llegó del navegador -una
+  // petición con el mismo log pero sin `issues` evitaba la compuerta por
+  // completo. Ahora, si la partida CLAMA tener un replay reconstruido
+  // (trae `championsJobId` o `championsReplayNumber`), el servidor vuelve
+  // a buscarlo él mismo en el job -único documento que usa, nunca el que
+  // mandó el cliente- y exige además una constancia vigente de que el
+  // reconciliador actual corrió sobre él: un artefacto de job viejo (los
+  // tres protegidos son del 25 sep) no la trae, y la ausencia de `issues`
+  // ahí NUNCA se lee como "revisado, sin hallazgos". Sin esa reclamación
+  // (`ChampionsQuickMatchDialog`, registro manual sin video) esto no
+  // aplica: se guarda sin pretender fidelidad de ningún log.
+  let replayArtifact: ShowdownReplayDocument | null = null;
+  let claimsReplay = false;
+  if (origin === "champions") {
+    const championsJobId = input.championsJobId?.trim() || "";
+    const championsReplayNumber = input.championsReplayNumber;
+    claimsReplay = Boolean(championsJobId || championsReplayNumber);
+    if (claimsReplay) {
+      if (!championsJobId || !championsReplayNumber) {
+        throw new DomainError(
+          "Falta el job o el número de replay de Champions; el servidor no puede verificar esta partida.",
+        );
+      }
+      let canonicalReplay: unknown;
+      try {
+        canonicalReplay = await fetchCanonicalChampionsReplay(championsJobId, championsReplayNumber);
+      } catch (error) {
+        throw new DomainError(
+          error instanceof Error ? error.message : "No pudimos verificar el replay contra el job de Champions.",
+        );
+      }
+      replayArtifact = normalizeShowdownReplayDocument(canonicalReplay);
+      if (!hasCurrentReconciliation(replayArtifact)) {
+        throw new DomainError(
+          "Este replay no tiene una revisión vigente del reconciliador; regenera el job con el pipeline actual antes de guardar.",
+        );
+      }
+      if (hasBlockingIssues(replayArtifact)) {
+        throw new DomainError(
+          "El replay reconstruido tiene incidencias sin resolver (bloqueantes); revísalas antes de guardar la partida.",
+        );
+      }
+    }
+  } else if (input.replayArtifact !== undefined && input.replayArtifact !== null) {
+    throw new DomainError("El replay reconstruido sólo puede guardarse con origen Champions.");
+  }
+
+  // `db` sólo se toca acá -después de todo lo que un payload malo o no
+  // verificable puede rechazar sin base de datos- y se reutiliza tanto
+  // para confirmar la versión del equipo como, si corresponde, para leer
+  // su roster real más abajo.
+  const db = await getDatabase();
+  const version = await db
+    .prepare("SELECT id FROM team_versions WHERE id = ?")
+    .bind(input.teamVersionId)
+    .first<{ id: string }>();
+  if (!version) throw new DomainError("No encontramos esa versión del equipo.", 404);
+
+  // Roku, revisión del quinto corte, 26 sep: `result`, `selected`,
+  // `opponentSelected`/`opponentPicks`, `lead` y `movesUsed` ahora se
+  // reconstruyen del propio log verificado -antes se copiaban del
+  // cliente sin comprobar nada, así que una petición podía declarar
+  // "victoria" con picks inventados sobre un log que decía otra cosa.
+  let derived: ImportedReplayMatch | null = null;
+  if (claimsReplay && replayArtifact) {
+    const teamSpeciesRows = await db
+      .prepare("SELECT species FROM pokemon_sets WHERE team_version_id = ? ORDER BY slot")
+      .bind(input.teamVersionId)
+      .all<{ species: string }>();
+    const teamSpecies = teamSpeciesRows.results.map((row) => row.species);
+    try {
+      derived = importShowdownReplay(replayArtifact, {
+        replayUrl: "",
+        showdownNames: await getShowdownNames(),
+        teamSpecies,
+        origin: "champions",
+        replayArtifact,
+      });
+    } catch (error) {
+      throw new DomainError(
+        error instanceof Error ? error.message : "No pudimos reconstruir el resultado desde el replay verificado.",
+      );
+    }
+  }
+
+  const rawMovesUsed = derived ? derived.movesUsed : input.movesUsed;
+  const movesUsed = rawMovesUsed
     ? Object.fromEntries(
-        Object.entries(input.movesUsed)
+        Object.entries(rawMovesUsed)
           .slice(0, 6)
           .map(([species, moves]) => [
             species.trim().slice(0, 80),
@@ -502,28 +568,30 @@ export async function createMatch(input: CreateMatchInput) {
       )
     : null;
 
-  const db = await getDatabase();
-  const version = await db
-    .prepare("SELECT id FROM team_versions WHERE id = ?")
-    .bind(input.teamVersionId)
-    .first<{ id: string }>();
-  if (!version) throw new DomainError("No encontramos esa versión del equipo.", 404);
+  const opponentPicks = derived
+    ? derived.opponentPicks
+    : input.opponentPicks !== undefined
+      ? input.opponentPicks
+      : !replayUrl && input.opponentSelected?.length === 4
+        ? input.opponentSelected
+        : [];
 
   const match: MatchRecord = {
     id: crypto.randomUUID(),
-    result: input.result,
-    opponentName: input.opponentName?.trim() || "Rival",
+    result: derived?.result ?? input.result,
+    opponentName: (derived?.opponentName ?? input.opponentName)?.trim() || "Rival",
     opponentPaste: input.opponentPaste?.trim() || "",
     replayUrl,
     origin,
     hasReplayArtifact: Boolean(replayArtifact),
-    selected: input.selected ?? [],
-    opponentSelected: input.opponentSelected ?? [],
-    lead: input.lead ?? [],
+    selected: derived?.selected ?? input.selected ?? [],
+    opponentSelected: derived?.opponentSelected ?? input.opponentSelected ?? [],
+    opponentPicks,
+    lead: derived?.lead ?? input.lead ?? [],
     movesUsed,
-    rating: input.rating ?? null,
+    rating: derived?.rating ?? input.rating ?? null,
     notes: input.notes?.trim() || "",
-    playedAt: input.playedAt ?? new Date().toISOString(),
+    playedAt: derived?.playedAt ?? input.playedAt ?? new Date().toISOString(),
   };
 
   await db

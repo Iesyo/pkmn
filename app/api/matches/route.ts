@@ -4,19 +4,16 @@ import { apiError } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
-type MatchPayload = CreateMatchInput & { opponentPicks?: string[] };
-
-function opponentPicksFromPayload(payload: MatchPayload) {
-  if (payload.opponentPicks !== undefined) return payload.opponentPicks;
-  if (!payload.replayUrl && payload.opponentSelected?.length === 4) return payload.opponentSelected;
-  return [];
-}
-
 export async function POST(request: Request) {
   try {
-    const payload = (await request.json()) as MatchPayload;
+    const payload = (await request.json()) as CreateMatchInput;
     const match = await createMatch(payload);
-    const opponentPicks = await saveOpponentPicks(match.id, opponentPicksFromPayload(payload));
+    // Roku, revisión del quinto corte, 26 sep: `createMatch` ya resuelve
+    // `opponentPicks` -del replay verificado en servidor cuando lo hay,
+    // o del payload para el registro manual- así que esto persiste lo
+    // que `match` realmente dice, no una segunda lectura del payload
+    // crudo que podía no coincidir.
+    const opponentPicks = await saveOpponentPicks(match.id, match.opponentPicks ?? []);
     return Response.json({ match: { ...match, opponentPicks } }, { status: 201 });
   } catch (error) {
     return apiError(error);
