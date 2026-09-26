@@ -8,7 +8,7 @@ import time
 import unicodedata
 from collections import Counter, defaultdict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
@@ -976,6 +976,66 @@ def _paired_health(
     return paired
 
 
+@dataclass(slots=True)
+class _AliasBook:
+    """Diccionario mote -> especie e identidad -> especie de la batalla.
+
+    COL-102, reapertura estructural del 26 sep: esta resolución vivía como
+    nueve atributos sueltos directamente en `ChampionsTextParser`, mezclados
+    en la misma clase que decide slots y turnos. El síntoma concreto fue
+    MineMine/Pelipper: un mote clarísimo, con su icono y su barra de vida al
+    100 %, se quedó sin resolver porque el código que lo hubiera atado
+    exigía primero que un anuncio de texto ambiguo hubiera calzado bien -una
+    condición de rastreo de turno, no de identificación de motes. Este
+    objeto agrupa esa contabilidad (motes, evidencia acumulada, identidades
+    estables y sus especies) en un solo lugar con nombre propio. No sabe qué
+    slot ocupa nadie ni de qué turno es: eso lo sigue llevando el parser, y
+    los pocos métodos que necesitan cruzarlo (`_bind_alias`,
+    `_identity_for_value`, `bind_preview_labels`, `resolved_identities`)
+    siguen en la clase de arriba, ahora leyendo y escribiendo aquí en vez de
+    en sus propios atributos.
+    """
+
+    aliases: dict[str, dict[str, str]] = field(default_factory=lambda: {"p1": {}, "p2": {}})
+    bound_alias_keys: dict[str, set[str]] = field(default_factory=lambda: {"p1": set(), "p2": set()})
+    message_aliases: dict[str, dict[str, str]] = field(default_factory=lambda: {"p1": {}, "p2": {}})
+    identity_by_alias: dict[str, dict[str, str]] = field(default_factory=lambda: {"p1": {}, "p2": {}})
+    alias_evidence: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    alias_evidence_labels: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    identity_species: dict[str, str] = field(default_factory=dict)
+    identity_evidence: dict[str, int] = field(default_factory=dict)
+    identity_counter: int = 0
+
+    # Qué tan firme es la prueba de que una identidad es cierta especie. El
+    # juego escribiéndola en pantalla pesa más que el Team Preview leído por
+    # imagen, y cualquiera de los dos pesa más que deducirla de un movimiento.
+    EVIDENCE_RANK = {"inferred": 1, "preview": 2, "explicit": 3}
+
+    def new_identity_key(self, side: str) -> str:
+        """Siguiente identidad estable de este lado; no la ata a ningún mote."""
+
+        self.identity_counter += 1
+        return f"{ACTOR_IDENTITY_PREFIX}{side}_{self.identity_counter:04d}__"
+
+    def remember_identity_alias(self, side: str, value: str, identity: str) -> None:
+        key = _text_key(value)
+        if key:
+            self.identity_by_alias[side][key] = identity
+
+    def set_identity_species(self, identity: str, species: str, *, evidence: str = "explicit") -> bool:
+        """Fija la especie de una identidad sin dejar que la pise algo más flojo."""
+
+        rank = self.EVIDENCE_RANK[evidence]
+        if self.identity_evidence.get(identity, 0) > rank:
+            return False
+        self.identity_species[identity] = species
+        self.identity_evidence[identity] = rank
+        return True
+
+    def canonical_actor(self, actor: str) -> str:
+        return self.identity_species.get(actor, actor)
+
+
 class ChampionsTextParser:
     """Convierte texto y posiciones OCR en observaciones de batalla con estado."""
 
@@ -1001,13 +1061,18 @@ class ChampionsTextParser:
             "p1": bool(self._teams["p1"]),
             "p2": bool(self._teams["p2"]),
         }
-        self._aliases = {
+        configured_aliases = {
             "p1": self._team_form_aliases(self.context.p1_team),
             "p2": self._team_form_aliases(self.context.p2_team),
         }
-        self._aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
-        self._aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
-        self._message_aliases: dict[str, dict[str, str]] = {
+        configured_aliases["p1"].update(self._canonical_aliases(self.context.p1_aliases))
+        configured_aliases["p2"].update(self._canonical_aliases(self.context.p2_aliases))
+        self._configured_aliases = configured_aliases
+        self._configured_bound_alias_keys = {
+            "p1": {_text_key(alias) for alias, _species in self.context.p1_aliases},
+            "p2": {_text_key(alias) for alias, _species in self.context.p2_aliases},
+        }
+        self._configured_message_aliases = {
             "p1": {
                 alias.casefold(): species
                 for alias, species in self.context.p1_aliases
@@ -1018,22 +1083,6 @@ class ChampionsTextParser:
                 for alias, species in self.context.p2_aliases
                 if alias.strip() and _text_key(alias) != _text_key(species)
             },
-        }
-        self._configured_aliases = {
-            side: dict(values)
-            for side, values in self._aliases.items()
-        }
-        self._configured_bound_alias_keys = {
-            "p1": {_text_key(alias) for alias, _species in self.context.p1_aliases},
-            "p2": {_text_key(alias) for alias, _species in self.context.p2_aliases},
-        }
-        self._configured_message_aliases = {
-            side: dict(values)
-            for side, values in self._message_aliases.items()
-        }
-        self._bound_alias_keys = {
-            side: set(values)
-            for side, values in self._configured_bound_alias_keys.items()
         }
         self._moves = _NameMatcher(self.catalog.moves)
         self._abilities = _NameMatcher(self.catalog.abilities)
@@ -1086,18 +1135,11 @@ class ChampionsTextParser:
         # Los aliases aprendidos pertenecen a una sola batalla. Reutilizarlos
         # en la siguiente mezcla identidades cuando dos rivales usan el mismo
         # mote o cuando cambia la pareja de leads.
-        self._aliases = {
-            side: dict(values)
-            for side, values in self._configured_aliases.items()
-        }
-        self._bound_alias_keys = {
-            side: set(values)
-            for side, values in self._configured_bound_alias_keys.items()
-        }
-        self._message_aliases = {
-            side: dict(values)
-            for side, values in self._configured_message_aliases.items()
-        }
+        self._alias_book = _AliasBook(
+            aliases={side: dict(values) for side, values in self._configured_aliases.items()},
+            bound_alias_keys={side: set(values) for side, values in self._configured_bound_alias_keys.items()},
+            message_aliases={side: dict(values) for side, values in self._configured_message_aliases.items()},
+        )
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
         self._player_names = {
@@ -1164,17 +1206,11 @@ class ChampionsTextParser:
         # baja una vez por turno y por slot, pero "fell" sale relaído como
         # "fll" o "fel t" en frames distintos del mismo aviso.
         self._perish_count_seen: set[tuple[str, int]] = set()
-        self._alias_evidence: dict[tuple[str, str], set[str]] = {}
-        self._alias_evidence_labels: dict[tuple[str, str], set[str]] = {}
+        self._identity_slots: dict[str, str] = {}
         self._pending_alias_moves: dict[
             tuple[str, str],
             list[tuple[str, int, float, int]],
         ] = {}
-        self._identity_counter = 0
-        self._identity_by_alias: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
-        self._identity_species: dict[str, str] = {}
-        self._identity_evidence: dict[str, int] = {}
-        self._identity_slots: dict[str, str] = {}
 
     def _infer_alias(
         self,
@@ -1197,26 +1233,26 @@ class ChampionsTextParser:
             candidates &= known_team
         assigned = {
             species
-            for alias_key, species in self._aliases[side].items()
-            if alias_key != nickname_key and alias_key in self._bound_alias_keys[side]
+            for alias_key, species in self._alias_book.aliases[side].items()
+            if alias_key != nickname_key and alias_key in self._alias_book.bound_alias_keys[side]
         }
         candidates -= assigned
         evidence_key = (side, nickname_key)
-        self._alias_evidence_labels.setdefault(evidence_key, set()).add(evidence)
-        previous = self._alias_evidence.get(evidence_key)
+        self._alias_book.alias_evidence_labels.setdefault(evidence_key, set()).add(evidence)
+        previous = self._alias_book.alias_evidence.get(evidence_key)
         narrowed = candidates if previous is None else previous & candidates
         if not narrowed:
             return None, None, False
-        self._alias_evidence[evidence_key] = narrowed
+        self._alias_book.alias_evidence[evidence_key] = narrowed
         if (
             len(narrowed) > 1
             and not self._known_teams[side]
-            and len(self._alias_evidence_labels[evidence_key]) >= 2
+            and len(self._alias_book.alias_evidence_labels[evidence_key]) >= 2
         ):
             observed_teammates = {
                 species
-                for alias_key, species in self._aliases[side].items()
-                if alias_key != nickname_key and alias_key in self._bound_alias_keys[side]
+                for alias_key, species in self._alias_book.aliases[side].items()
+                if alias_key != nickname_key and alias_key in self._alias_book.bound_alias_keys[side]
             }
             scores = {
                 species: sum(
@@ -1232,7 +1268,7 @@ class ChampionsTextParser:
                 runner_up = ranked[1][1] if len(ranked) > 1 else 0
                 if top_score >= 3 and top_score >= max(1, runner_up * 2):
                     narrowed = {top_species}
-                    self._alias_evidence[evidence_key] = narrowed
+                    self._alias_book.alias_evidence[evidence_key] = narrowed
         if len(narrowed) != 1:
             return None, None, False
         species = next(iter(narrowed))
@@ -1347,42 +1383,42 @@ class ChampionsTextParser:
         self._known_teams[side] = True
 
         configured_keys = self._configured_bound_alias_keys[side]
-        for alias_key, species in tuple(self._aliases[side].items()):
+        for alias_key, species in tuple(self._alias_book.aliases[side].items()):
             if alias_key in configured_keys and _text_key(species) in allowed:
                 continue
             if _text_key(species) not in allowed:
-                self._aliases[side].pop(alias_key, None)
-                self._bound_alias_keys[side].discard(alias_key)
-        self._aliases[side].update(self._team_form_aliases(roster))
+                self._alias_book.aliases[side].pop(alias_key, None)
+                self._alias_book.bound_alias_keys[side].discard(alias_key)
+        self._alias_book.aliases[side].update(self._team_form_aliases(roster))
 
         configured_messages = self._configured_message_aliases[side]
-        for alias, species in tuple(self._message_aliases[side].items()):
+        for alias, species in tuple(self._alias_book.message_aliases[side].items()):
             if alias in configured_messages and _text_key(species) in allowed:
                 continue
             if _text_key(species) not in allowed:
-                self._message_aliases[side].pop(alias, None)
+                self._alias_book.message_aliases[side].pop(alias, None)
 
-        side_identities = set(self._identity_by_alias[side].values())
+        side_identities = set(self._alias_book.identity_by_alias[side].values())
         for identity in side_identities:
-            species = self._identity_species.get(identity)
+            species = self._alias_book.identity_species.get(identity)
             if species and _text_key(species) not in allowed:
-                self._identity_species.pop(identity, None)
-                self._identity_evidence.pop(identity, None)
+                self._alias_book.identity_species.pop(identity, None)
+                self._alias_book.identity_evidence.pop(identity, None)
 
-        for evidence_key, candidates in tuple(self._alias_evidence.items()):
+        for evidence_key, candidates in tuple(self._alias_book.alias_evidence.items()):
             evidence_side, alias_key = evidence_key
             if evidence_side != side:
                 continue
             narrowed = {species for species in candidates if _text_key(species) in allowed}
             if narrowed:
-                self._alias_evidence[evidence_key] = narrowed
+                self._alias_book.alias_evidence[evidence_key] = narrowed
             else:
-                self._alias_evidence.pop(evidence_key, None)
+                self._alias_book.alias_evidence.pop(evidence_key, None)
             if len(narrowed) == 1:
                 species = next(iter(narrowed))
-                self._aliases[side][alias_key] = species
-                self._bound_alias_keys[side].add(alias_key)
-                identity = self._identity_by_alias[side].get(alias_key)
+                self._alias_book.aliases[side][alias_key] = species
+                self._alias_book.bound_alias_keys[side].add(alias_key)
+                identity = self._alias_book.identity_by_alias[side].get(alias_key)
                 if identity:
                     self._set_identity_species(identity, species, evidence="preview")
         return roster
@@ -1396,14 +1432,14 @@ class ChampionsTextParser:
             # Pokémon y ocupara un slot del HUD.
             if len(value_key) < 3:
                 return None
-            alias = self._aliases[side].get(value_key)
+            alias = self._alias_book.aliases[side].get(value_key)
             if alias:
                 return alias
             if len(value_key) >= 4:
                 fuzzy_alias = max(
                     (
                         (SequenceMatcher(None, value_key, alias_key).ratio(), species)
-                        for alias_key, species in self._aliases[side].items()
+                        for alias_key, species in self._alias_book.aliases[side].items()
                         if abs(len(alias_key) - len(value_key)) <= max(3, len(value_key) // 2)
                     ),
                     default=(0.0, ""),
@@ -1470,25 +1506,20 @@ class ChampionsTextParser:
         return best_name
 
     def _new_identity(self, side: str, value: str, slot: str | None = None) -> str:
-        self._identity_counter += 1
-        identity = f"{ACTOR_IDENTITY_PREFIX}{side}_{self._identity_counter:04d}__"
-        key = _text_key(value)
-        if key:
-            self._identity_by_alias[side][key] = identity
+        identity = self._alias_book.new_identity_key(side)
+        self._alias_book.remember_identity_alias(side, value, identity)
         if slot:
             self._identity_slots[slot] = identity
         return identity
 
     def _remember_identity_alias(self, side: str, value: str, identity: str) -> None:
-        key = _text_key(value)
-        if key:
-            self._identity_by_alias[side][key] = identity
+        self._alias_book.remember_identity_alias(side, value, identity)
 
     def _identity_for_value(self, side: str, value: str) -> str | None:
         """Resuelve un mote a la identidad estable observada, no a su especie."""
 
         value_key = _text_key(value)
-        identity = self._identity_by_alias[side].get(value_key)
+        identity = self._alias_book.identity_by_alias[side].get(value_key)
         if identity:
             return identity
         if len(value_key) >= 3:
@@ -1496,7 +1527,7 @@ class ChampionsTextParser:
             # mismo mote de muchas formas; comparando lecturas, dos variantes
             # del mismo Pokémon empataban y tumbaban su propia identidad.
             best: dict[str, float] = {}
-            for alias_key, candidate in self._identity_by_alias[side].items():
+            for alias_key, candidate in self._alias_book.identity_by_alias[side].items():
                 if abs(len(alias_key) - len(value_key)) > max(3, len(value_key) // 2):
                     continue
                 score = SequenceMatcher(None, value_key, alias_key).ratio()
@@ -1532,7 +1563,7 @@ class ChampionsTextParser:
         return identity
 
     def _canonical_actor(self, actor: str) -> str:
-        return self._identity_species.get(actor, actor)
+        return self._alias_book.canonical_actor(actor)
 
     def _actor_for_value(self, side: str, value: str) -> str | None:
         identity = self._identity_for_value(side, value)
@@ -1633,11 +1664,6 @@ class ChampionsTextParser:
         threshold = 0.55 if len(value_key) <= 3 else 0.64
         return slot if score >= threshold and score - runner_up >= 0.15 else None
 
-    # Qué tan firme es la prueba de que una identidad es cierta especie. El
-    # juego escribiéndola en pantalla pesa más que el Team Preview leído por
-    # imagen, y cualquiera de los dos pesa más que deducirla de un movimiento.
-    _EVIDENCE_RANK = {"inferred": 1, "preview": 2, "explicit": 3}
-
     def _set_identity_species(
         self,
         identity: str,
@@ -1647,12 +1673,7 @@ class ChampionsTextParser:
     ) -> bool:
         """Fija la especie de una identidad sin dejar que la pise algo más flojo."""
 
-        rank = self._EVIDENCE_RANK[evidence]
-        if self._identity_evidence.get(identity, 0) > rank:
-            return False
-        self._identity_species[identity] = species
-        self._identity_evidence[identity] = rank
-        return True
+        return self._alias_book.set_identity_species(identity, species, evidence=evidence)
 
     def _bind_alias(
         self,
@@ -1668,18 +1689,18 @@ class ChampionsTextParser:
         # El OCR lee el mismo mote de varias formas. Si esta lectura es una
         # variante de un mote ya identificado con mejor evidencia, hereda su
         # especie en vez de abrir una entrada que la contradiga.
-        established = self._identity_species.get(identity) if identity else None
+        established = self._alias_book.identity_species.get(identity) if identity else None
         if (
             established
-            and self._identity_evidence.get(identity, 0) > self._EVIDENCE_RANK[evidence]
+            and self._alias_book.identity_evidence.get(identity, 0) > self._alias_book.EVIDENCE_RANK[evidence]
         ):
             species = established
         key = _text_key(value)
         if key:
-            self._aliases[side][key] = species
-            self._bound_alias_keys[side].add(key)
+            self._alias_book.aliases[side][key] = species
+            self._alias_book.bound_alias_keys[side].add(key)
             if _text_key(value) != _text_key(species):
-                self._message_aliases[side][value.casefold()] = species
+                self._alias_book.message_aliases[side][value.casefold()] = species
         slot = self._announced_slot(side, value)
         if identity:
             self._set_identity_species(identity, species, evidence=evidence)
@@ -1699,7 +1720,7 @@ class ChampionsTextParser:
         for alias, species in sorted(
             (
                 item
-                for aliases in self._message_aliases.values()
+                for aliases in self._alias_book.message_aliases.values()
                 for item in aliases.items()
             ),
             key=lambda item: len(item[0]),
@@ -1718,7 +1739,7 @@ class ChampionsTextParser:
 
         return {
             side: dict(values)
-            for side, values in self._message_aliases.items()
+            for side, values in self._alias_book.message_aliases.items()
         }
 
     def resolved_identities(self) -> dict[str, str]:
@@ -1743,10 +1764,10 @@ class ChampionsTextParser:
         cuando ninguna identidad tiene evidencia propia.
         """
 
-        resolved = dict(self._identity_species)
-        for side, aliases in self._identity_by_alias.items():
+        resolved = dict(self._alias_book.identity_species)
+        for side, aliases in self._alias_book.identity_by_alias.items():
             for alias_key, identity in aliases.items():
-                species = self._aliases[side].get(alias_key)
+                species = self._alias_book.aliases[side].get(alias_key)
                 if species:
                     resolved[identity] = species
             side_identities = set(aliases.values())
@@ -1764,7 +1785,7 @@ class ChampionsTextParser:
                 if identity in side_identities
             )
             base_candidates = set(self._teams[side])
-            base_candidates.update(self._aliases[side].values())
+            base_candidates.update(self._alias_book.aliases[side].values())
 
             def remaining_candidates() -> set[str]:
                 used_keys = {_text_key(value) for value in used}
@@ -1778,7 +1799,7 @@ class ChampionsTextParser:
                     if not candidates:
                         continue
                     for alias_key in aliases_of.get(identity, ()):
-                        evidence = self._alias_evidence.get((side, alias_key))
+                        evidence = self._alias_book.alias_evidence.get((side, alias_key))
                         if evidence is not None:
                             candidates = candidates & evidence
                     if len(candidates) == 1:
@@ -1813,7 +1834,7 @@ class ChampionsTextParser:
         candidate_key = _text_key(candidate)
         named_values = {
             **{_text_key(species): species for species in self._teams[side]},
-            **self._aliases[side],
+            **self._alias_book.aliases[side],
         }
         for name_key, species in sorted(named_values.items(), key=lambda item: len(item[0]), reverse=True):
             if candidate_key.startswith(f"{name_key}the"):
@@ -2608,10 +2629,10 @@ class ChampionsTextParser:
             default=self._player_names["p2"],
         )
         if _text_key(p2_name) != _text_key(self._player_names["p2"]):
-            self._aliases["p2"] = dict(self._configured_aliases["p2"])
-            self._aliases["p2"].update(self._team_form_aliases(self._teams["p2"]))
-            self._bound_alias_keys["p2"] = set(self._configured_bound_alias_keys["p2"])
-            self._message_aliases["p2"] = dict(self._configured_message_aliases["p2"])
+            self._alias_book.aliases["p2"] = dict(self._configured_aliases["p2"])
+            self._alias_book.aliases["p2"].update(self._team_form_aliases(self._teams["p2"]))
+            self._alias_book.bound_alias_keys["p2"] = set(self._configured_bound_alias_keys["p2"])
+            self._alias_book.message_aliases["p2"] = dict(self._configured_message_aliases["p2"])
         self._player_names.update({"p1": p1_name, "p2": p2_name})
 
         return FrameDetections(
@@ -2754,13 +2775,13 @@ class ChampionsTextParser:
             # La geometría del HUD decide p2a/p2b. El orden textual del anuncio
             # rival puede venir invertido, así que aquí aprendemos sólo el alias
             # y dejamos que ``parse`` emita los switches con sus slots visuales.
-            self._aliases[alias.side][nickname_key] = canonical
-            self._bound_alias_keys[alias.side].add(nickname_key)
+            self._alias_book.aliases[alias.side][nickname_key] = canonical
+            self._alias_book.bound_alias_keys[alias.side].add(nickname_key)
             identity = self._identity_for_value(alias.side, alias.nickname)
             if identity:
                 self._set_identity_species(identity, canonical, evidence="preview")
             if _text_key(alias.nickname) != _text_key(canonical):
-                self._message_aliases[alias.side][alias.nickname.casefold()] = canonical
+                self._alias_book.message_aliases[alias.side][alias.nickname.casefold()] = canonical
             applied.append(
                 HudAlias(
                     side=alias.side,
@@ -2939,7 +2960,7 @@ class ChampionsTextParser:
         }
         for lead_key in leads:
             slot = mapped.get(lead_key)
-            species = self._aliases[side].get(lead_key)
+            species = self._alias_book.aliases[side].get(lead_key)
             if not slot or slot in observations:
                 continue
             identity = self._identity_for_value(side, lead_key)

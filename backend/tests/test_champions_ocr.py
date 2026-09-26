@@ -1715,7 +1715,7 @@ class ChampionsOcrTests(unittest.TestCase):
 
         parser._bind_alias("p2", "せんtl)", "Lycanroc-Dusk", evidence="inferred")
 
-        self.assertEqual(set(parser._aliases["p2"].values()), {"Metagross"})
+        self.assertEqual(set(parser._alias_book.aliases["p2"].values()), {"Metagross"})
 
     def test_the_game_text_still_corrects_a_misread_team_preview(self) -> None:
         parser = ChampionsTextParser(
@@ -1809,7 +1809,7 @@ class ChampionsOcrTests(unittest.TestCase):
         )
 
         self.assertEqual(bound, 2)
-        self.assertEqual(set(parser._aliases["p1"].values()), {"Gardevoir", "Sneasler"})
+        self.assertEqual(set(parser._alias_book.aliases["p1"].values()), {"Gardevoir", "Sneasler"})
 
     def test_mega_stone_reveals_an_unknown_opponent_nickname_and_slot(self) -> None:
         parser = ChampionsTextParser(
