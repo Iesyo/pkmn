@@ -1874,12 +1874,30 @@ class ChampionsTextParser:
         return normalized
 
     def resolved_aliases(self) -> dict[str, dict[str, str]]:
-        """Devuelve el mapa final mote -> especie, separado por lado."""
+        """Devuelve el mapa final mote -> especie, separado por lado.
 
-        return {
-            side: dict(values)
-            for side, values in self._alias_book.message_aliases.items()
-        }
+        COL-102, reapertura estructural del 26 sep: `message_aliases` sólo
+        guarda lo que se ató mote por mote en vivo. Un actor que sólo se
+        resolvió por eliminación de roster al cerrar la batalla
+        (`resolved_identities`, job real `10a7fba6fda04585`: "MineMine" ->
+        Pelipper) nunca llegaba aquí, así que quedaba fuera de la traza y
+        `verify.py` -que sólo lee este mapa, no vuelve a correr el
+        detector- comparaba "MineMine" contra "Pelipper" como si fueran dos
+        cosas sin relación. Se suma la especie de cada identidad ya
+        resuelta para cada uno de sus alias conocidos, sin pisar un alias
+        que ya se ató en vivo con su forma textual original.
+        """
+
+        identities = self.resolved_identities()
+        result: dict[str, dict[str, str]] = {}
+        for side, values in self._alias_book.message_aliases.items():
+            merged = dict(values)
+            for alias_key, identity in self._alias_book.identity_by_alias[side].items():
+                species = identities.get(identity)
+                if species and alias_key not in merged and alias_key != _text_key(species):
+                    merged[alias_key] = species
+            result[side] = merged
+        return result
 
     def resolved_identities(self) -> dict[str, str]:
         """Mapa final de actor estable a especie, aplicado sólo al serializar.

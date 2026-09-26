@@ -1803,6 +1803,27 @@ class ChampionsOcrTests(unittest.TestCase):
             {orphan: "Zoroark-Hisui", metagross: "Metagross"},
         )
 
+    def test_resolved_aliases_includes_a_nickname_resolved_only_at_battle_close(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5: "MineMine" sólo se resolvía a
+        Pelipper por eliminación de roster al cerrar la batalla
+        (`resolved_identities`), nunca por un bind directo mote a mote. Como
+        `resolved_aliases()` -lo único que llega a la traza y lo único que
+        lee `verify.py`- sólo miraba lo atado en vivo, ese mapeo nunca
+        aparecía ahí: `verify.py` comparaba "MineMine" (pantalla) contra
+        "Pelipper" (replay) como si fueran dos cosas sin relación.
+        """
+
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Pelipper", "Golisopod")),
+        )
+        parser.bind_preview_team(("Pelipper", "Golisopod"), side="p2")
+        parser._new_identity("p2", "Golisopod", "p2a")
+        parser._bind_alias("p2", "Golisopod", "Golisopod", evidence="explicit")
+        parser._new_identity("p2", "MineMine", "p2b")
+
+        self.assertEqual(parser.resolved_aliases()["p2"].get("minemine"), "Pelipper")
+
     def test_both_sides_running_the_same_species_keep_their_moves(self) -> None:
         """El mensaje sin "The opposing" es del jugador, aunque el rival lleve lo mismo.
 
