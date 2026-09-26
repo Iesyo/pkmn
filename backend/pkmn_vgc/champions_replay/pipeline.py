@@ -466,7 +466,12 @@ class CaptureAccumulator:
                 )
         self.events = reconciled
 
-    def finalize(self, identities: Mapping[str, str] | None = None) -> CapturedBattle:
+    def finalize(
+        self,
+        identities: Mapping[str, str] | None = None,
+        *,
+        source_battle_index: int | None = None,
+    ) -> CapturedBattle:
         identity_map = dict(identities or {})
         self._drop_ghost_reentries()
         self._reconcile_zero_hp()
@@ -536,6 +541,7 @@ class CaptureAccumulator:
             started_at=self.started_at,
             format=self.seed.format,
             source_mode=self.seed.source_mode,
+            source_battle_index=source_battle_index,
         )
 
 
@@ -694,6 +700,13 @@ class ReplayCapturePipeline:
             identities = resolve()
             return identities if isinstance(identities, Mapping) else {}
 
+        def current_battle_index() -> int | None:
+            # Leído antes de `reset_detector_battle_state()`, que es lo que
+            # avanza este contador -mismo momento en que se lee
+            # `resolved_identities()` para la misma batalla que se cierra.
+            index = getattr(self.detector, "current_battle_index", None)
+            return index if isinstance(index, int) else None
+
         def report(frame_timestamp_ms: int) -> None:
             if not on_progress:
                 return
@@ -744,7 +757,9 @@ class ReplayCapturePipeline:
             if accumulator.complete and accumulator.winner and accumulator.has_battle_data:
                 flush_detector_pending()
                 try:
-                    capture = accumulator.finalize(resolved_identities())
+                    capture = accumulator.finalize(
+                        resolved_identities(), source_battle_index=current_battle_index()
+                    )
                 except (CaptureIncompleteError, ValueError) as error:
                     incomplete_battles += 1
                     if on_warning:
@@ -778,7 +793,11 @@ class ReplayCapturePipeline:
 
         if not awaiting_next_start and accumulator.winner and accumulator.has_battle_data:
             flush_detector_pending()
-            captures.append(accumulator.finalize(resolved_identities()))
+            captures.append(
+                accumulator.finalize(
+                    resolved_identities(), source_battle_index=current_battle_index()
+                )
+            )
         if not captures:
             raise CaptureIncompleteError("La fuente terminó sin una batalla completa.")
         return tuple(captures if max_battles == 0 else captures[:max_battles])

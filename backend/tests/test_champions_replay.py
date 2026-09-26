@@ -73,6 +73,22 @@ class ChampionsReplayTests(unittest.TestCase):
         expected = json.loads((DATA / "champions_replay.json").read_text(encoding="utf-8"))
         self.assertEqual(document.to_dict(), expected)
 
+    def test_captured_battle_round_trips_its_source_battle_index(self) -> None:
+        # COL-102, bloqueante de Roku del 26 sep: persistido explícitamente
+        # cuando la traza lo trae; `None` sólo en artefactos viejos que
+        # nunca lo escribieron (la fixture de este archivo no lo trae).
+        payload = json.loads((DATA / "champions_capture.json").read_text(encoding="utf-8"))
+        payload["source_battle_index"] = 3
+        battle = CapturedBattle.from_mapping(payload)
+
+        self.assertEqual(battle.source_battle_index, 3)
+        self.assertEqual(battle.to_dict()["source_battle_index"], 3)
+        self.assertIsNone(self.capture().source_battle_index)
+
+        document = build_replay_document(battle)
+        self.assertEqual(document.source_battle_index, 3)
+        self.assertEqual(document.to_dict()["source_battle_index"], 3)
+
     def test_sanitizes_protocol_fields_and_canonicalizes_selection_names(self) -> None:
         side = BattleSide(
             "Ies|Yo\nlocal",
@@ -1272,6 +1288,52 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertEqual(len(incomplete), 1)
         self.assertEqual([event.kind for event in incomplete[0]], ["message"])
+
+    def test_captured_battle_keeps_the_detectors_real_battle_index_across_a_discard(
+        self,
+    ) -> None:
+        # COL-102, bloqueante de Roku del 26 sep: el índice persistido tiene
+        # que ser el del detector -el mismo que ya se escribe en la traza-,
+        # no la posición en `captures`. Aquí la primera "batalla" (una
+        # notificación falsa) se descarta pero sí avanza el contador del
+        # detector; la batalla real que seis frames después sí se cierra
+        # tiene que salir con `source_battle_index=1`, no `0`.
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(4)
+        ]
+        detections = {
+            0: FrameDetections(
+                events=(BattleEvent(kind="message", timestamp_ms=0, value="WhatsApp notification."),),
+                battle_started=True,
+            ),
+            1: FrameDetections(winner="p1", battle_complete=True),
+            2: FrameDetections(
+                p2_team=("Miraidon",),
+                events=(BattleEvent(kind="turn", timestamp_ms=2_000, turn=1),),
+                battle_started=True,
+            ),
+            3: FrameDetections(winner="p2", battle_complete=True),
+        }
+
+        class CountingDetector:
+            def __init__(self) -> None:
+                self.current_battle_index = 0
+
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                return detections[frame.index]
+
+            def reset_battle_state(self) -> None:
+                self.current_battle_index += 1
+
+        captures = ReplayCapturePipeline(
+            frames,
+            CountingDetector(),
+            CaptureSeed(p1_team=("Kleavor",)),
+        ).capture(max_battles=0)
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0].source_battle_index, 1)
 
     def test_pipeline_rejects_negative_battle_limit(self) -> None:
         with self.assertRaisesRegex(ValueError, "usa 0"):

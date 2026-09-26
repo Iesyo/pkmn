@@ -330,6 +330,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
         p1=battle.p1.name,
         p2=battle.p2.name,
         format=battle.format,
+        source_battle_index=battle.source_battle_index,
     )
 
 

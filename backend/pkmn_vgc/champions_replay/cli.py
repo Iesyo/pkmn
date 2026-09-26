@@ -248,20 +248,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _persisted_battle_index(log: Path) -> int | None:
+    """Lee `source_battle_index` del `.json` que `write_replay_artifacts`
+    escribe junto a cada `.log`, si existe.
+
+    COL-102, bloqueante de Roku del 26 sep: este valor se persistió al
+    cerrar la batalla (ver `CapturedBattle.source_battle_index`), no se
+    reconstruye votando por el nombre del rival. Un artefacto viejo, de
+    antes de que el campo existiera, simplemente no lo tiene -de ahí el
+    fallback a `resolve_battle_index` en `_verify`.
+    """
+
+    sidecar = log.with_suffix(".json")
+    if not sidecar.exists():
+        return None
+    try:
+        value = _load_mapping(sidecar)
+    except ValueError:
+        return None
+    index = value.get("source_battle_index")
+    return index if isinstance(index, int) else None
+
+
 def _verify(trace: Path, logs: Sequence[Path]) -> int:
     """Informa de lo que el replay añade o se deja respecto a la pantalla.
 
     COL-102, reapertura estructural del 26 sep: el `battle_index` de cada
     log ya no se asume por su posición en `logs` -eso se rompe en cuanto
-    una batalla de en medio se descartó y nunca produjo su propio `.log`,
-    ver `resolve_battle_index`-, se resuelve por el jugador p2 que el
-    propio replay declaró.
+    una batalla de en medio se descartó y nunca produjo su propio `.log`.
+    Se prefiere el `source_battle_index` ya persistido en el `.json`
+    hermano (`_persisted_battle_index`); sólo a falta de eso se recurre a
+    `resolve_battle_index`, que lo reconstruye votando por el jugador p2
+    que el propio replay declaró -ambiguo si dos batallas comparten rival.
     """
 
     faithful = True
     species_names = [name for name, _types in load_champions_catalog().species_types]
     for log in logs:
-        battle_index, error = resolve_battle_index(trace, log)
+        battle_index = _persisted_battle_index(log)
+        error: str | None = None
+        if battle_index is None:
+            battle_index, error = resolve_battle_index(trace, log)
         if battle_index is None:
             print(f"{log.name}: no se pudo ubicar su batalla en la traza ({error})")
             faithful = False

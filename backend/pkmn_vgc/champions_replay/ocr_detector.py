@@ -4706,6 +4706,19 @@ class ChampionsOcrDetector:
     def resolved_identities(self) -> dict[str, str]:
         return self.parser.resolved_identities()
 
+    @property
+    def current_battle_index(self) -> int:
+        """El mismo ordinal que ya se escribe en cada frame de la traza.
+
+        COL-102, bloqueante de Roku del 26 sep: `resolve_battle_index`
+        (verify.py) reconstruye este número a ciegas, votando por el nombre
+        de p2 -ambiguo si dos batallas comparten rival. Exponerlo aquí deja
+        que el pipeline lo persista en `CapturedBattle` en el momento en que
+        se sabe con certeza, sin adivinar nada después.
+        """
+
+        return self._trace_battle_index
+
     def flush_pending(self) -> FrameDetections:
         """Espera el refuerzo visual antes de cerrar y perder sus aliases."""
 
@@ -5014,3 +5027,9 @@ class OcrTraceDetector:
 
     def resolved_identities(self) -> dict[str, str]:
         return self.parser.resolved_identities()
+
+    @property
+    def current_battle_index(self) -> int:
+        """El `battle_index` de la traza que se está reproduciendo ahora."""
+
+        return self._battle_index

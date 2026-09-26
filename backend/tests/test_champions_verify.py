@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import ANY, patch
 
+from pkmn_vgc.champions_replay.cli import _persisted_battle_index, _verify
 from pkmn_vgc.champions_replay.models import BattleEvent
 from pkmn_vgc.champions_replay.showdown import _event_lines, _named_species
-from pkmn_vgc.champions_replay.verify import resolve_battle_index, verify_replay
+from pkmn_vgc.champions_replay.verify import VerificationReport, resolve_battle_index, verify_replay
 
 
 def _trace(directory: Path, records: list[dict]) -> Path:
@@ -380,6 +384,63 @@ class ResolveBattleIndexTests(unittest.TestCase):
 
         self.assertIsNone(battle_index)
         self.assertIn("no declara", error)
+
+
+class PersistedBattleIndexTests(unittest.TestCase):
+    """COL-102, bloqueante de Roku del 26 sep: `source_battle_index` ya
+    persistido en el `.json` hermano del `.log` gana sobre el nombre del
+    rival, que es ambiguo si dos batallas comparten oponente (BO3, lote)."""
+
+    def test_reads_the_sidecar_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            log = directory / "replay-001.log"
+            log.write_text("|player|p2|Frate|2|\n", encoding="utf-8")
+            (directory / "replay-001.json").write_text(
+                json.dumps({"source_battle_index": 1}), encoding="utf-8"
+            )
+
+            self.assertEqual(_persisted_battle_index(log), 1)
+
+    def test_is_none_without_a_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            log = Path(raw) / "replay-001.log"
+            log.write_text("|player|p2|Frate|2|\n", encoding="utf-8")
+
+            self.assertIsNone(_persisted_battle_index(log))
+
+    def test_verify_prefers_the_persisted_index_over_the_ambiguous_rival_name(self) -> None:
+        # Mismo escenario que
+        # `ResolveBattleIndexTests.test_reports_ambiguity_instead_of_guessing`
+        # -dos batallas contra "Frate"- pero con el índice ya persistido:
+        # `_verify` no debe caer en "origen ambiguo".
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(
+                directory,
+                [
+                    {"frame": 1, "battle_index": 0, "detections": {"players": {"p2": "Frate"}}},
+                    {"frame": 2, "battle_index": 1, "detections": {"players": {"p2": "Frate"}}},
+                ],
+            )
+            log = directory / "replay-001.log"
+            log.write_text("|player|p2|Frate|2|\n", encoding="utf-8")
+            (directory / "replay-001.json").write_text(
+                json.dumps({"source_battle_index": 1}), encoding="utf-8"
+            )
+
+            fake_report = VerificationReport(on_screen=1, in_replay=1, matched=1, missing=(), invented=())
+            with patch(
+                "pkmn_vgc.champions_replay.cli.verify_replay", return_value=fake_report
+            ) as verify_replay_mock:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    exit_code = _verify(trace, [log])
+
+        self.assertEqual(exit_code, 0)
+        verify_replay_mock.assert_called_once_with(trace, log, battle_index=1, species_names=ANY)
+        self.assertIn("(batalla 1)", buffer.getvalue())
+        self.assertNotIn("ambiguo", buffer.getvalue())
 
 
 class OrderTests(unittest.TestCase):

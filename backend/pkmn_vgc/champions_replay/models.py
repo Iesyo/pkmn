@@ -280,6 +280,11 @@ class CapturedBattle:
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     format: str = "gen9championsvgc2026regmc"
     source_mode: SourceMode = "video"
+    # COL-102, bloqueante de Roku del 26 sep: el ordinal real de la traza,
+    # leído del detector al cerrar la batalla -no derivado después por
+    # nombre de rival, que es ambiguo con un rival repetido (BO3, lote).
+    # `None` sólo en artefactos viejos que nunca lo persistieron.
+    source_battle_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.winner not in {"p1", "p2"}:
@@ -336,6 +341,10 @@ class CapturedBattle:
         source_mode = value.get("source_mode", "fixture")
         if source_mode not in {"video", "live", "fixture"}:
             source_mode = "fixture"
+        raw_source_battle_index = value.get("source_battle_index")
+        source_battle_index = (
+            raw_source_battle_index if isinstance(raw_source_battle_index, int) else None
+        )
         return cls(
             p1=BattleSide.from_mapping(value.get("p1") if isinstance(value.get("p1"), Mapping) else {}),
             p2=BattleSide.from_mapping(value.get("p2") if isinstance(value.get("p2"), Mapping) else {}),
@@ -349,6 +358,7 @@ class CapturedBattle:
             started_at=started_at,
             format=_clean_text(value.get("format"), limit=100) or "gen9championsvgc2026regmc",
             source_mode=source_mode,
+            source_battle_index=source_battle_index,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -365,6 +375,7 @@ class ReplayDocument:
     p1: str
     p2: str
     format: str
+    source_battle_index: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
