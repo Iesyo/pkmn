@@ -6,7 +6,7 @@ import re
 import threading
 import time
 import unicodedata
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
@@ -1722,7 +1722,26 @@ class ChampionsTextParser:
         }
 
     def resolved_identities(self) -> dict[str, str]:
-        """Mapa final de actor estable a especie, aplicado sólo al serializar."""
+        """Mapa final de actor estable a especie, aplicado sólo al serializar.
+
+        COL-102, reapertura estructural del 26 sep: hasta ahora esto sólo
+        completaba por descarte cuando exactamente una identidad y
+        exactamente una especie quedaban sin asignar en todo el lado. Un
+        actor huérfano con evidencia parcial -movimientos u habilidades ya
+        acumulados en `_alias_evidence` por `_infer_alias`, la misma que
+        resuelve motes en vivo- se quedaba sin especie apenas había más de
+        un hueco a la vez, aunque esa evidencia ya lo señalara: es
+        exactamente lo que le pasó a Zoroark-Hisui en el job
+        `90403f16712d4d41`, cuyo roster confirmado sólo tenía una especie
+        capaz de usar el movimiento visto. Con la batalla completa ya
+        capturada -no en el momento en que se leyó el mote- se puede
+        cruzar esa evidencia contra lo que de verdad queda libre, y repetir
+        la eliminación hasta que no haya más progreso: resolver una
+        identidad libera su especie para las demás, así que una cascada de
+        huecos puede cerrarse aunque ninguno fuera resoluble aislado. El
+        caso original de "ambos lados inequívocos" sigue como respaldo
+        cuando ninguna identidad tiene evidencia propia.
+        """
 
         resolved = dict(self._identity_species)
         for side, aliases in self._identity_by_alias.items():
@@ -1731,7 +1750,9 @@ class ChampionsTextParser:
                 if species:
                     resolved[identity] = species
             side_identities = set(aliases.values())
-            unresolved = side_identities - resolved.keys()
+            aliases_of: dict[str, set[str]] = defaultdict(set)
+            for alias_key, identity in aliases.items():
+                aliases_of[identity].add(alias_key)
             used = {
                 self._canonical_actor(actor)
                 for slot, actor in self._active.items()
@@ -1742,17 +1763,38 @@ class ChampionsTextParser:
                 for identity, species in resolved.items()
                 if identity in side_identities
             )
-            candidates = set(self._teams[side])
-            candidates.update(self._aliases[side].values())
-            remaining = {
-                species
-                for species in candidates
-                if _text_key(species) not in {_text_key(value) for value in used}
-            }
-            # Sólo se completa por descarte cuando ambos lados son inequívocos;
-            # nunca se asignan dos identidades pendientes por orden o por slot.
-            if len(unresolved) == 1 and len(remaining) == 1:
-                resolved[next(iter(unresolved))] = next(iter(remaining))
+            base_candidates = set(self._teams[side])
+            base_candidates.update(self._aliases[side].values())
+
+            def remaining_candidates() -> set[str]:
+                used_keys = {_text_key(value) for value in used}
+                return {species for species in base_candidates if _text_key(species) not in used_keys}
+
+            progressed = True
+            while progressed:
+                progressed = False
+                for identity in sorted(side_identities - resolved.keys()):
+                    candidates = remaining_candidates()
+                    if not candidates:
+                        continue
+                    for alias_key in aliases_of.get(identity, ()):
+                        evidence = self._alias_evidence.get((side, alias_key))
+                        if evidence is not None:
+                            candidates = candidates & evidence
+                    if len(candidates) == 1:
+                        species = next(iter(candidates))
+                        resolved[identity] = species
+                        used.add(species)
+                        progressed = True
+                if not progressed:
+                    # Sin evidencia propia, sólo queda el caso ya conocido:
+                    # exactamente un hueco y una especie en todo el lado;
+                    # nunca se asignan dos identidades pendientes por orden.
+                    unresolved = sorted(side_identities - resolved.keys())
+                    candidates = remaining_candidates()
+                    if len(unresolved) == 1 and len(candidates) == 1:
+                        resolved[unresolved[0]] = next(iter(candidates))
+                        progressed = True
         return resolved
 
     def _mark_slot_open(self, slot: str) -> None:

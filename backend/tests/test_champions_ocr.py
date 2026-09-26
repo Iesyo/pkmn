@@ -1728,6 +1728,41 @@ class ChampionsOcrTests(unittest.TestCase):
 
         self.assertEqual(parser.resolved_identities(), {identity: "Sableye"})
 
+    def test_orphan_identity_resolves_by_crossing_move_evidence_with_remaining_roster(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real `90403f16712d4d41`.
+
+        Zoroark-Hisui nunca resolvía: en el momento en que se leyó su
+        movimiento, Metagross todavía no tenía un alias propio atado, así
+        que la resta de "especies ya asignadas" de `_infer_alias` no
+        alcanzaba a descartarlo -la evidencia quedaba en dos candidatos y
+        el desempate simple de `resolved_identities` (un solo hueco, una
+        sola especie en *todo* el lado) tampoco alcanzaba, porque Sableye
+        seguía libre. Sólo cruzando esa evidencia de movimiento contra lo
+        que de verdad queda sin asignar al cerrar la batalla -no contra el
+        roster entero- se llega a una sola opción.
+        """
+
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(
+                species=("Zoroark-Hisui", "Metagross", "Sableye"),
+                species_moves=(
+                    ("Zoroark-Hisui", ("Shadow Ball",)),
+                    ("Metagross", ("Shadow Ball",)),
+                ),
+            )
+        )
+        parser.bind_preview_team(("Zoroark-Hisui", "Metagross", "Sableye"))
+        orphan = parser._new_identity("p2", "せんtl", "p2b")
+        parser._infer_alias_from_move("p2", "せんtl", "Shadow Ball")
+
+        metagross = parser._new_identity("p2", "Metagross", "p2a")
+        parser._bind_alias("p2", "Metagross", "Metagross", evidence="explicit")
+
+        self.assertEqual(
+            parser.resolved_identities(),
+            {orphan: "Zoroark-Hisui", metagross: "Metagross"},
+        )
+
     def test_both_sides_running_the_same_species_keep_their_moves(self) -> None:
         """El mensaje sin "The opposing" es del jugador, aunque el rival lleve lo mismo.
 
