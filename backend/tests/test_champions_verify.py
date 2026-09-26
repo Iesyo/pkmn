@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pkmn_vgc.champions_replay.models import BattleEvent
 from pkmn_vgc.champions_replay.showdown import _event_lines, _named_species
-from pkmn_vgc.champions_replay.verify import verify_replay
+from pkmn_vgc.champions_replay.verify import resolve_battle_index, verify_replay
 
 
 def _trace(directory: Path, records: list[dict]) -> Path:
@@ -317,6 +317,118 @@ class VerifyReplayTests(unittest.TestCase):
                 ],
             )
             log = _log(directory, ["|move|p2a: Charizard|Weather Ball|"])
+
+            report = verify_replay(trace, log)
+
+        self.assertTrue(report.faithful, report)
+
+
+class ResolveBattleIndexTests(unittest.TestCase):
+    """COL-102, reapertura estructural del 26 sep: el N-ésimo replay no es
+    necesariamente la N-ésima batalla de la traza."""
+
+    def test_survives_a_discarded_battle_in_between(self) -> None:
+        # Job real `90403f16712d4d41`: replay-003.log es la batalla de
+        # "scarlat", pero es la CUARTA de la traza (battle_index=3) porque
+        # la de "Warrior96" (battle_index=2) se descartó y nunca produjo su
+        # propio .log -no es la tercera por orden de archivo.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(
+                directory,
+                [
+                    {"frame": 1, "battle_index": 0, "detections": {"players": {"p2": "Frate"}}},
+                    {"frame": 2, "battle_index": 1, "detections": {"players": {"p2": "SirRoso"}}},
+                    {"frame": 3, "battle_index": 2, "detections": {"players": {"p2": "Warrior96"}}},
+                    {"frame": 4, "battle_index": 3, "detections": {"players": {"p2": "scarlat"}}},
+                ],
+            )
+            log = directory / "replay-003.log"
+            log.write_text("|player|p2|scarlat|2|\n|move|p2a: Metagross|Ice Beam|\n", encoding="utf-8")
+
+            battle_index, error = resolve_battle_index(trace, log)
+
+        self.assertEqual(battle_index, 3)
+        self.assertIsNone(error)
+
+    def test_reports_ambiguity_instead_of_guessing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(
+                directory,
+                [
+                    {"frame": 1, "battle_index": 0, "detections": {"players": {"p2": "Frate"}}},
+                    {"frame": 2, "battle_index": 1, "detections": {"players": {"p2": "Frate"}}},
+                ],
+            )
+            log = directory / "replay-001.log"
+            log.write_text("|player|p2|Frate|2|\n", encoding="utf-8")
+
+            battle_index, error = resolve_battle_index(trace, log)
+
+        self.assertIsNone(battle_index)
+        self.assertIn("ambiguo", error)
+
+    def test_reports_a_missing_player_line_instead_of_defaulting_to_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [{"frame": 1, "battle_index": 0, "detections": {"players": {"p2": "Frate"}}}])
+            log = directory / "replay-001.log"
+            log.write_text("|move|p2a: Metagross|Ice Beam|\n", encoding="utf-8")
+
+            battle_index, error = resolve_battle_index(trace, log)
+
+        self.assertIsNone(battle_index)
+        self.assertIn("no declara", error)
+
+
+class OrderTests(unittest.TestCase):
+    def test_two_real_moves_swapped_in_order_are_reported(self) -> None:
+        # COL-102, reapertura estructural del 26 sep: `_pair_up` compara
+        # bolsas de eventos, así que dos movimientos reales que cambiaron
+        # de orden entre sí daban el mismo conteo en los dos lados y
+        # `verify` los declaraba fiel sin más.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(
+                directory,
+                [
+                    _frame(1, ["The opposing Metagross used Protect!"]),
+                    _frame(5, ["The opposing Metagross used Ice Beam!"]),
+                ],
+            )
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Ice Beam|",
+                    "|move|p2a: Metagross|Protect|",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertEqual(report.missing, ())
+        self.assertEqual(report.invented, ())
+        self.assertTrue(any("otro orden" in problem for problem in report.rosters), report.rosters)
+
+    def test_the_same_order_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(
+                directory,
+                [
+                    _frame(1, ["The opposing Metagross used Protect!"]),
+                    _frame(5, ["The opposing Metagross used Ice Beam!"]),
+                ],
+            )
+            log = _log(
+                directory,
+                [
+                    "|move|p2a: Metagross|Protect|",
+                    "|move|p2a: Metagross|Ice Beam|",
+                ],
+            )
 
             report = verify_replay(trace, log)
 

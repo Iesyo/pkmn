@@ -43,6 +43,7 @@ _ENTRY_LINE = re.compile(r"^\|(?:switch|drag)\|(?P<slot>p[12][ab]): ")
 _SLOT_SPECIES_LINE = re.compile(r"^\|[A-Za-z-]+\|(?P<slot>p[12][ab]): (?P<species>[^|]+)")
 _STATUS_LINE = re.compile(r"^\|-status\|(?P<slot>p[12][ab]): [^|]+\|(?P<status>\w+)")
 _CURESTATUS_LINE = re.compile(r"^\|-curestatus\|(?P<slot>p[12][ab]): ")
+_PLAYER_P2_LINE = re.compile(r"^\|player\|p2\|(?P<name>[^|]*)\|")
 
 _GAP_FRAMES = 4
 _SIMILAR = 0.80
@@ -50,6 +51,55 @@ _SIMILAR = 0.80
 
 def _key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def resolve_battle_index(trace: Path, log: Path) -> tuple[int | None, str | None]:
+    """Ubica a qué `battle_index` de la traza corresponde este replay.
+
+    COL-102, reapertura estructural del 26 sep: `cli.py` asumía que el
+    replay N-ésimo (por orden de archivo, `replay-001`, `replay-002`...)
+    es la N-ésima batalla de la traza (`enumerate(logs)`). Eso se rompe en
+    cuanto una batalla de en medio se descarta y nunca llega a producir su
+    propio `.log`. Confirmado contra el job real `90403f16712d4d41`:
+    `replay-003.log` es la batalla de `scarlat`, `battle_index=3`, porque
+    la de `Warrior96` (`battle_index=2`) se descartó -no es la tercera por
+    orden de archivo. Verificar con el índice equivocado compara el
+    replay contra el roster y los eventos de otra batalla por completo:
+    18 diferencias inventadas y 18 perdidas, contra 1 real con el índice
+    correcto.
+
+    Se identifica la batalla por el nombre de jugador p2 que el propio
+    replay escribió (`|player|p2|<nombre>|`), buscado entre las
+    detecciones de la traza; ambigüedad o ausencia se reporta en vez de
+    adivinar -esto es evidencia externa al conteo de eventos, así que no
+    puede fallar por la misma razón que el propio verificador.
+    """
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    match = next((m for line in lines if (m := _PLAYER_P2_LINE.match(line))), None)
+    name = match["name"].strip() if match else ""
+    if not name:
+        return None, "el replay no declara su jugador p2 (falta |player|p2|...|)"
+
+    votes: dict[int, Counter[str]] = defaultdict(Counter)
+    for raw in trace.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        record = json.loads(raw)
+        battle_index = record.get("battle_index")
+        if battle_index is None:
+            continue
+        p2 = ((record.get("detections") or {}).get("players") or {}).get("p2")
+        if p2:
+            votes[battle_index][_key(str(p2))] += 1
+
+    target = _key(name)
+    matches = sorted(
+        index for index, counted in votes.items() if counted and counted.most_common(1)[0][0] == target
+    )
+    if len(matches) != 1:
+        return None, f"origen ambiguo para p2={name!r}: batallas candidatas {matches}"
+    return matches[0], None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +126,9 @@ class VerificationReport:
         return not self.invented and not self.missing and not self.rosters
 
 
-def _screen_events(trace: Path, battle_index: int) -> tuple[Counter, dict[str, str]]:
+def _screen_events(
+    trace: Path, battle_index: int
+) -> tuple[Counter, dict[str, str], tuple[tuple[str, str, str, int], ...]]:
     aliases: dict[str, str] = {}
     frames: dict[tuple[str, str, str], list[int]] = defaultdict(list)
     for raw in trace.read_text(encoding="utf-8").splitlines():
@@ -117,11 +169,15 @@ def _screen_events(trace: Path, battle_index: int) -> tuple[Counter, dict[str, s
                 break
 
     occurrences: Counter = Counter()
+    sequence: list[tuple[str, str, str, int]] = []
     for event, seen in frames.items():
         seen.sort()
-        runs = 1 + sum(1 for a, b in zip(seen, seen[1:]) if b - a > _GAP_FRAMES)
-        occurrences[event] = runs
-    return occurrences, aliases
+        run_starts = [seen[0]] + [b for a, b in zip(seen, seen[1:]) if b - a > _GAP_FRAMES]
+        occurrences[event] = len(run_starts)
+        kind, side, value = event
+        sequence.extend((kind, side, value, start) for start in run_starts)
+    sequence.sort(key=lambda item: item[3])
+    return occurrences, aliases, tuple(sequence)
 
 
 def _species_for(nickname: str, aliases: dict[str, str]) -> str:
@@ -357,8 +413,10 @@ def _base_species(species: str) -> str:
     return _key(species.split("-", 1)[0])
 
 
-def _replay_events(log: Path) -> Counter:
-    events: Counter = Counter()
+def _replay_event_sequence(log: Path) -> tuple[tuple[str, str, str], ...]:
+    """Los mismos eventos que `_replay_events`, en el orden en que el log los escribió."""
+
+    sequence: list[tuple[str, str, str]] = []
     for line in log.read_text(encoding="utf-8").splitlines():
         for pattern, kind, group in (
             (_MOVE_LINE, "move", "move"),
@@ -368,9 +426,13 @@ def _replay_events(log: Path) -> Counter:
             match = pattern.match(line)
             if match:
                 value = match[group].strip().split(",")[0]
-                events[(kind, match["slot"][:2], value)] += 1
+                sequence.append((kind, match["slot"][:2], value))
                 break
-    return events
+    return tuple(sequence)
+
+
+def _replay_events(log: Path) -> Counter:
+    return Counter(_replay_event_sequence(log))
 
 
 def _pair_up(screen: Counter, replay: Counter) -> tuple[int, Counter, Counter]:
@@ -396,6 +458,74 @@ def _pair_up(screen: Counter, replay: Counter) -> tuple[int, Counter, Counter]:
     return matched, +screen, +replay
 
 
+def _order_problems(
+    sequence: tuple[tuple[str, str, str, int], ...],
+    events: tuple[tuple[str, str, str], ...],
+    aliases: dict[str, str],
+) -> tuple[str, ...]:
+    """Un intercambio de orden no es lo mismo que un evento perdido o inventado.
+
+    COL-102, reapertura estructural del 26 sep: `_pair_up` compara pantalla
+    contra replay como dos bolsas de eventos (`Counter`), así que dos
+    eventos reales que cambiaron de orden entre sí -por ejemplo la
+    pantalla muestra "Protect" y después "Ice Beam", pero el replay los
+    escribió al revés- dan el mismo conteo en los dos lados y `verify` los
+    declara emparejados sin más. Aquí se alinean ambas secuencias
+    preservando el orden, con el mismo criterio de similitud que
+    `_pair_up` (subsecuencia común más larga vía programación dinámica).
+    Sólo lo que quede fuera de esa alineación, y que además tenga una
+    contraparte de contenido igual del otro lado, se reporta como fuera de
+    orden: si no tiene contraparte, ya lo reportan `missing`/`invented` por
+    separado y no hay que duplicarlo aquí.
+    """
+
+    screen = tuple(
+        (kind, side, _species_for(value, aliases) if kind == "faint" else value)
+        for kind, side, value, _frame in sequence
+    )
+    n, m = len(screen), len(events)
+
+    def matches(a: tuple[str, str, str], b: tuple[str, str, str]) -> bool:
+        if a[0] != b[0] or a[1] != b[1]:
+            return False
+        if _key(a[2]) == _key(b[2]):
+            return True
+        return SequenceMatcher(None, _key(a[2]), _key(b[2])).ratio() >= _SIMILAR
+
+    table = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            table[i][j] = max(
+                table[i + 1][j],
+                table[i][j + 1],
+                1 + table[i + 1][j + 1] if matches(screen[i], events[j]) else 0,
+            )
+
+    aligned_screen: set[int] = set()
+    aligned_replay: set[int] = set()
+    i = j = 0
+    while i < n and j < m:
+        if matches(screen[i], events[j]) and table[i][j] == 1 + table[i + 1][j + 1]:
+            aligned_screen.add(i)
+            aligned_replay.add(j)
+            i += 1
+            j += 1
+        elif table[i + 1][j] >= table[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+
+    unmatched_replay = [events[j] for j in range(m) if j not in aligned_replay]
+    problems: list[str] = []
+    for i in range(n):
+        if i in aligned_screen:
+            continue
+        side, kind, value = screen[i][1], screen[i][0], screen[i][2]
+        if any(matches(screen[i], other) for other in unmatched_replay):
+            problems.append(f"{side} {kind} {value}: aparece en el replay en otro orden del que se vio en pantalla")
+    return tuple(problems)
+
+
 def verify_replay(
     trace: Path,
     log: Path,
@@ -403,12 +533,13 @@ def verify_replay(
     battle_index: int = 0,
     species_names: Iterable[str] = (),
 ) -> VerificationReport:
-    occurrences, aliases = _screen_events(trace, battle_index)
+    occurrences, aliases, sequence = _screen_events(trace, battle_index)
     screen: Counter = Counter()
     for (kind, side, value), times in occurrences.items():
         resolved = _species_for(value, aliases) if kind == "faint" else value
         screen[(kind, side, resolved)] += times
-    replay = _replay_events(log)
+    replay_sequence = _replay_event_sequence(log)
+    replay = Counter(replay_sequence)
     matched, missing, invented = _pair_up(screen, replay)
     rosters = _replay_rosters(log)
     problems = (
@@ -420,6 +551,7 @@ def verify_replay(
         + _hp_zero_without_faint_problems(log)
         + _slot_occupant_conflict_problems(log)
         + _status_conflict_problems(log)
+        + _order_problems(sequence, replay_sequence, aliases)
     )
     return VerificationReport(
         rosters=problems,

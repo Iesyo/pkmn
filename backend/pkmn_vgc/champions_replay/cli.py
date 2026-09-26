@@ -18,7 +18,7 @@ from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, Repl
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
 from .team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
-from .verify import describe, verify_replay
+from .verify import describe, resolve_battle_index, verify_replay
 
 
 def _load_mapping(path: Path) -> Mapping[str, Any]:
@@ -214,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         nargs="+",
-        help="Logs de Showdown, en el mismo orden que las batallas de la traza.",
+        help="Logs de Showdown; cada uno ubica su propia batalla en la traza por el jugador p2.",
     )
 
     events = subparsers.add_parser("events", help="Genera un replay desde un JSON de eventos ya revisado.")
@@ -249,16 +249,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _verify(trace: Path, logs: Sequence[Path]) -> int:
-    """Informa de lo que el replay añade o se deja respecto a la pantalla."""
+    """Informa de lo que el replay añade o se deja respecto a la pantalla.
+
+    COL-102, reapertura estructural del 26 sep: el `battle_index` de cada
+    log ya no se asume por su posición en `logs` -eso se rompe en cuanto
+    una batalla de en medio se descartó y nunca produjo su propio `.log`,
+    ver `resolve_battle_index`-, se resuelve por el jugador p2 que el
+    propio replay declaró.
+    """
 
     faithful = True
-    for battle_index, log in enumerate(logs):
-        report = verify_replay(
-            trace,
-            log,
-            battle_index=battle_index,
-            species_names=[name for name, _types in load_champions_catalog().species_types],
-        )
+    species_names = [name for name, _types in load_champions_catalog().species_types]
+    for log in logs:
+        battle_index, error = resolve_battle_index(trace, log)
+        if battle_index is None:
+            print(f"{log.name}: no se pudo ubicar su batalla en la traza ({error})")
+            faithful = False
+            continue
+        report = verify_replay(trace, log, battle_index=battle_index, species_names=species_names)
         print(f"{log.name} (batalla {battle_index}):")
         for line in describe(report):
             print(f"  {line}")
