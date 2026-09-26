@@ -23,6 +23,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from .pipeline import ReviewIssue
+
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
 _FAINT = re.compile(r"^(.*?) fainted!$", re.IGNORECASE)
@@ -340,8 +342,16 @@ def inventory(trace: Path, replays: list[Path]) -> dict[str, Any]:
     return {"unrepresented_battles": lost, "identity_candidates": {i: identity_candidates(records, i) for i in lost}}
 
 
-def analyze(trace: Path, replay: Path, *, source_battle_index: int | None = None) -> dict[str, Any]:
+def analyze(
+    trace: Path, replay: Path | str, *, source_battle_index: int | None = None
+) -> dict[str, Any]:
     """Compara un `.log` contra su traza y propone un borrador reparado.
+
+    `replay` acepta la ruta de un `.log` ya escrito (CLI, tests) o
+    directamente su texto (`ReplayDocument.log`, antes de escribirlo a
+    disco) -segundo corte de Roku, 26 sep: para que esto corra en el
+    cierre real de la captura no puede depender de que el archivo ya
+    exista.
 
     `source_battle_index`, si se pasa, evita `_battle_index_by_rival_name`
     -úsese el valor ya persistido en `CapturedBattle`/el `.json` hermano
@@ -349,7 +359,7 @@ def analyze(trace: Path, replay: Path, *, source_battle_index: int | None = None
     """
 
     records = [json.loads(raw) for raw in trace.read_text(encoding="utf-8").splitlines() if raw.strip()]
-    lines = replay.read_text(encoding="utf-8").splitlines()
+    lines = (replay.read_text(encoding="utf-8") if isinstance(replay, Path) else replay).splitlines()
     if source_battle_index is not None:
         source_index, source_error = source_battle_index, None
     else:
@@ -491,3 +501,43 @@ def analyze(trace: Path, replay: Path, *, source_battle_index: int | None = None
         "checks_passed": not findings,
         "patched_log": "\n".join(patched) + "\n",
     }
+
+
+def as_review_issues(result: dict[str, Any]) -> tuple[ReviewIssue, ...]:
+    """Convierte el resultado de `analyze` a las incidencias que ya
+    expone `ReplayDocument.issues` -la vía para que esto llegue al
+    replay real y a Teams, pedida por Roku en el segundo corte, en vez de
+    quedar sólo en el subcomando `reconcile`.
+
+    Cada `edit` ya trae una propuesta concreta con evidencia (lo que
+    reconcile.py encontró y por qué); se expone como hipótesis a
+    confirmar -`proposed_change`-, nunca aplicada al log. Un `finding`
+    sin `edit` asociado (falta evidencia suficiente para proponer nada)
+    queda igual como aviso, sin propuesta.
+    """
+
+    issues: list[ReviewIssue] = []
+    for edit in result.get("edits", ()):
+        issues.append(
+            ReviewIssue(
+                "warning",
+                edit["reason"],
+                frame=edit.get("frame"),
+                alternatives=(edit["before"],),
+                proposed_change=edit["after"] or "(eliminar esta línea)",
+            )
+        )
+    for finding in result.get("findings", ()):
+        if finding["category"] == "origen":
+            # Sin `source_battle_index` no hay nada que reconciliar; esto
+            # ya lo reporta `cli._verify`/`_persisted_battle_index` con
+            # más contexto -no duplicar el aviso acá.
+            continue
+        issues.append(
+            ReviewIssue(
+                "warning",
+                f"[{finding['category']}] {finding['detail']}",
+                frame=finding.get("frame"),
+            )
+        )
+    return tuple(issues)

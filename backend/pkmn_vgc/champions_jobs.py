@@ -8,11 +8,13 @@ import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
+from .champions_replay import reconcile
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import BattleEvent, CapturedBattle, ReplayDocument
 from .champions_replay.ocr_detector import (
@@ -42,6 +44,49 @@ def _safe_filename(value: str) -> tuple[str, str]:
         allowed = ", ".join(sorted(ALLOWED_VIDEO_SUFFIXES))
         raise ValueError(f"El vídeo debe usar una extensión compatible: {allowed}.")
     return filename, suffix
+
+
+def _documents_with_reconcile_issues(
+    captures: tuple[CapturedBattle, ...],
+    trace_path: Path,
+    on_warning: Callable[[str], None],
+) -> tuple[ReplayDocument, ...]:
+    """Conecta `reconcile.analyze` al cierre real de la captura.
+
+    Segundo corte de Roku, 26 sep: antes, sus hallazgos (switch fantasma
+    de Team Preview, HP=0 ruidoso, cura fantasma, faint sin evento) sólo
+    llegaban al subcomando `reconcile` -nunca al replay que arma el job,
+    ni a Teams. Nunca reescribe `document.log`; cada edición propuesta se
+    adjunta como `ReviewIssue` (needs_review, con evidencia), para que se
+    confirme antes de aplicarse, no para reemplazar el log solo.
+
+    Defensivo a propósito: esto es una capa asesora sobre un replay que
+    ya se armó bien; si el análisis falla con datos reales que el
+    prototipo no cubrió, no puede tumbar el job por eso.
+    """
+
+    documents: list[ReplayDocument] = []
+    for capture in captures:
+        document = build_replay_document(capture)
+        try:
+            result = reconcile.analyze(
+                trace_path, document.log, source_battle_index=capture.source_battle_index
+            )
+            reconcile_issues = reconcile.as_review_issues(result)
+        except Exception as error:
+            on_warning(
+                f"El reconciliador no pudo analizar la batalla {capture.source_battle_index}: {error}"
+            )
+        else:
+            if reconcile_issues:
+                # `document.issues` ya son dicts (`asdict`, vía `review_capture`
+                # dentro de `build_replay_document`) -mismo formato acá, para
+                # no mezclar dataclasses y dicts en el mismo campo serializado.
+                document = replace(
+                    document, issues=document.issues + tuple(asdict(issue) for issue in reconcile_issues)
+                )
+        documents.append(document)
+    return tuple(documents)
 
 
 def _default_processor(
@@ -136,7 +181,7 @@ def _default_processor(
         [capture.events for capture in draft_captures] + incomplete_battle_events
     )
     if not windows:
-        return tuple(build_replay_document(capture) for capture in draft_captures)
+        return _documents_with_reconcile_issues(draft_captures, trace_path, on_warning)
 
     if not enable_dense_rescan:
         # COL-102, bloqueante de Roku del 26 sep: esta segunda pasada
@@ -150,7 +195,7 @@ def _default_processor(
             "HP cerca de 0); la relectura densa está disponible pero apagada por "
             "defecto en el flujo normal. Se conserva el borrador."
         )
-        return tuple(build_replay_document(capture) for capture in draft_captures)
+        return _documents_with_reconcile_issues(draft_captures, trace_path, on_warning)
 
     on_warning(
         f"Releyendo {len(windows)} tramo(s) del vídeo a más fps para confirmar "
@@ -184,9 +229,9 @@ def _default_processor(
             f"densa: {sorted(index for index in dense_indices if index is not None)}); "
             "se conserva el borrador."
         )
-        return tuple(build_replay_document(capture) for capture in draft_captures)
+        return _documents_with_reconcile_issues(draft_captures, trace_path, on_warning)
 
-    return tuple(build_replay_document(capture) for capture in captures)
+    return _documents_with_reconcile_issues(captures, dense_trace_path, on_warning)
 
 
 Processor = Callable[

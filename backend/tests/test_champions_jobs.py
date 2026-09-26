@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import time
 import unittest
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor
+from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor, _documents_with_reconcile_issues
 from pkmn_vgc.champions_replay.models import (
     BattleEvent,
     BattleSide,
@@ -17,7 +19,7 @@ from pkmn_vgc.champions_replay.models import (
     ReplayDocument,
 )
 from pkmn_vgc.champions_replay.ocr_detector import OcrTraceDetector
-from pkmn_vgc.champions_replay.pipeline import CaptureProgress
+from pkmn_vgc.champions_replay.pipeline import CaptureProgress, review_capture
 from pkmn_vgc.champions_replay.sources import OcrTraceFrameSource
 from pkmn_vgc.champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 
@@ -291,6 +293,63 @@ class ChampionsJobTests(unittest.TestCase):
 
         self.assertEqual([document.p2 for document in documents], ["borrador batalla 0", "borrador batalla 1"])
         self.assertTrue(any("paridad de batallas" in warning for warning in warnings))
+
+    def test_documents_with_reconcile_issues_surfaces_findings_without_touching_the_log(self) -> None:
+        # Segundo corte de Roku, 26 sep: `reconcile.analyze` tiene que
+        # llegar al cierre real de la captura, no quedar sólo en el
+        # subcomando `reconcile`. Un aviso en pantalla sin evento en el
+        # log ("Meteor Mash") debe salir como incidencia -sin que el log
+        # mismo se toque.
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "ocr.trace.jsonl"
+            record = {
+                "frame": 1,
+                "battle_index": 0,
+                "detections": {"players": {"p2": "Rival"}},
+                "ocr": [{"text": "The opposing Metagross used Meteor Mash!", "top": 0.72, "confidence": 0.99}],
+            }
+            trace_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            battle = CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+                events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+                winner="p1",
+                source_battle_index=0,
+            )
+            warnings: list[str] = []
+
+            documents = _documents_with_reconcile_issues((battle,), trace_path, warnings.append)
+
+        self.assertEqual(len(documents), 1)
+        messages = " ".join(issue["message"] for issue in documents[0].issues)
+        self.assertIn("Meteor Mash", messages)
+        self.assertNotIn("Meteor Mash", documents[0].log)
+        self.assertEqual(warnings, [])
+
+    def test_documents_with_reconcile_issues_warns_instead_of_failing_the_job(self) -> None:
+        # Capa asesora sobre un replay que ya se armó bien: si el análisis
+        # falla (acá, una traza que no existe), avisa y sigue -no tumba
+        # el job por una incidencia que no pudo calcularse.
+        battle = CapturedBattle(
+            p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+            p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+            events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+            winner="p1",
+            source_battle_index=0,
+        )
+        warnings: list[str] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing_trace = Path(directory) / "no-existe.jsonl"
+            documents = _documents_with_reconcile_issues((battle,), missing_trace, warnings.append)
+
+        self.assertEqual(len(documents), 1)
+        # Sin hallazgos del reconciliador (falló, avisado abajo); lo que
+        # queda es sólo lo que ya ponía `review_capture` por su cuenta.
+        expected = tuple(asdict(issue) for issue in review_capture(battle))
+        self.assertEqual(documents[0].issues, expected)
+        self.assertTrue(warnings)
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0
