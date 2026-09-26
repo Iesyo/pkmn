@@ -2968,6 +2968,49 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(faint.events[0].slot, "p2a")
         self.assertEqual(result.winner, "p1")
 
+    def test_mark_slot_open_clears_the_departed_occupant(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender): `_active[slot]` nunca se
+        limpiaba al faint/withdrew/"come back"/"went back to" -sólo se
+        anotaba el slot como abierto aparte. Un mensaje de habilidad para
+        el siguiente ocupante, leído antes de que el HUD confirmara su
+        especie, heredaba por error al que ya se había ido -Basculegion,
+        ya fuera del campo, se quedó con la Drizzle de Pelipper.
+        """
+
+        parser = self.parser()
+        parser._active["p2a"] = "Basculegion"
+        parser._health["p2a"] = "100/100"
+
+        parser._mark_slot_open("p2a")
+
+        self.assertNotIn("p2a", parser._active)
+        self.assertNotIn("p2a", parser._health)
+        self.assertIn("p2a", parser._open_slots["p2"])
+
+    def test_a_new_entrant_does_not_inherit_the_departed_occupants_identity(self) -> None:
+        """Reproduce el caso real: Basculegion se retira sin fainted
+        (Parting Shot/U-turn/Volt Switch, que el juego narra sin
+        "withdrew"... salvo que sí lo diga, como aquí -"Ender withdrew
+        Nemo'sKiller!"-, y antes de este fix ese mensaje no alcanzaba a
+        evitar que el siguiente mote heredara la identidad vieja.
+        """
+
+        parser = self.parser()
+        parser._active["p2a"] = "Umbreon"
+        parser._battle_open = True
+
+        withdrew = parser.parse(
+            (line("Rival withdrew Umbreon!", x=0.2, y=0.7, width=0.35),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+        identity_before = parser._identity_for_value("p2", "MineMine")
+
+        self.assertEqual(withdrew.events, ())
+        self.assertNotIn("p2a", parser._active)
+        self.assertIsNone(identity_before)
+
     def test_a_faint_message_attributes_to_the_only_unresolved_occupant(self) -> None:
         # COL-102, reapertura estructural del 25 sep: una identidad sin
         # resolver por HUD puede debilitarse antes de que nada la confirme

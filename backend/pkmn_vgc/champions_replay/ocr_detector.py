@@ -1976,9 +1976,27 @@ class ChampionsTextParser:
         return resolved
 
     def _mark_slot_open(self, slot: str) -> None:
+        """Un slot recién vacío no conserva a quien se fue.
+
+        COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender): `_active[slot]` nunca se
+        limpiaba al faint, `withdrew`, "come back" ni "went back to" -sólo
+        se anotaba el slot como abierto en una lista aparte. Cuando el
+        siguiente ocupante se anunciaba por texto (un mensaje de habilidad,
+        "MineMine's Drizzle") antes de que el HUD confirmara el switch, el
+        resolutor de identidad (`_identity_for_value`) preguntaba "¿quién
+        está activo en este slot ahora?" y heredaba al Pokémon que ya se
+        había ido -Basculegion, ya debilitado, se quedó con la Drizzle de
+        Pelipper. Limpiar aquí, en el único lugar que marca un slot como
+        vacío, es que ese ocupante viejo deje de contestar esa pregunta en
+        cuanto se confirma que ya no está.
+        """
+
         side = slot[:2]
         if side in self._open_slots and slot not in self._open_slots[side]:
             self._open_slots[side].append(slot)
+        self._active.pop(slot, None)
+        self._health.pop(slot, None)
 
     def _announced_species(self, value: str, side: str) -> str | None:
         # Champions sometimes appends a battle-only form in parentheses, e.g.
@@ -4105,7 +4123,15 @@ class ChampionsTextParser:
                 or any(event.kind == "turn" for event in events[hold_marks[0][0]:]),
             )
 
-        if not self._active and events:
+        # COL-102, reapertura estructural del 26 sep: `_active` vacío ya no
+        # significa sólo "antes de que exista cualquier switch confirmado"
+        # -desde que `_mark_slot_open` limpia el slot al irse su ocupante
+        # (faint, withdrew, "come back", "went back to"), también queda
+        # vacío a mitad de batalla cuando el único activo de un lado se
+        # debilita. Un slot que pasó por `_open_slots` ya tuvo ocupante
+        # antes; sólo represar cuando de verdad no hubo ninguno todavía.
+        never_had_active = not self._active and not self._open_slots["p1"] and not self._open_slots["p2"]
+        if never_had_active and events:
             self._pending_pre_switch_events.extend(events)
             events = []
 
