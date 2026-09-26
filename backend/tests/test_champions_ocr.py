@@ -1880,6 +1880,30 @@ class ChampionsOcrTests(unittest.TestCase):
             [("p2a", "Metagross"), ("p2b", "Sableye")],
         )
 
+    def test_visual_hud_alias_candidate_does_not_require_a_successful_announcement(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender). "Ender sent out MineMine the
+        Peckish!" es casi seguro una entrada doble ("MineMine and Peckish")
+        donde el OCR leyó "and" como "the"; al no calzar el separador
+        exacto, el mote completo quedó registrado como una sola cadena
+        mezclada ("mineminethepeckish") y "MineMine" solo nunca alcanzó el
+        margen de desempate contra ella -así que nunca quedaba "anunciado".
+        El banner con el icono y "MineMine" al 100 % estaba clarísimo en el
+        vídeo (confirmado contra el frame real); exigir además que el
+        anuncio de texto hubiera salido bien lo bloqueaba sin necesidad,
+        cuando la geometría junto a una barra de vida real ya alcanza.
+        """
+
+        parser = ChampionsTextParser(
+            catalog=ChampionsCatalog(species=("Pelipper", "Golisopod")),
+        )
+        hud = (
+            line("MineMine", x=0.629, y=0.05, width=0.06),
+            line("100%", x=0.629, y=0.11, width=0.053),
+        )
+
+        self.assertEqual(parser.visual_alias_candidates(hud), (("p2", "MineMine"),))
+
     def test_visual_hud_gender_selects_the_canonical_gendered_form(self) -> None:
         parser = ChampionsTextParser(
             catalog=ChampionsCatalog(species=("Indeedee", "Indeedee-F")),

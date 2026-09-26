@@ -2667,6 +2667,20 @@ class ChampionsTextParser:
 
         El icono queda inmediatamente a la izquierda del texto. La geometría
         evita enviar mensajes, temporizadores o notificaciones al modelo visual.
+
+        COL-102, reapertura estructural del 26 sep, job real `10a7fba6fda04585`,
+        partida 5 (Ender): exigía además que el mote ya estuviera "anunciado"
+        por una `_announced_slot` aprendida de texto ("X sent out Y!"). El
+        aviso real fue "Ender sent out MineMine the Peckish!" -una entrada
+        doble donde el separador " and " se leyó "the"-, así que el mote
+        completo quedó registrado como una sola cadena mezclada
+        ("mineminethepeckish") y "MineMine" solo nunca alcanzó el margen de
+        desempate contra ella. El banner con el icono y "MineMine" al 100 %
+        se veía clarísimo -confirmado contra el vídeo- pero nunca llegó a
+        pedirse el icono porque este chequeo lo bloqueaba antes. El resto de
+        condiciones (barra de vida real al lado, confianza alta, que no sea
+        ya una especie conocida ni texto de UI) ya acota bastante esta lista
+        como para exigir además que el aviso de texto haya salido bien.
         """
 
         text_keys = {_text_key(line.text) for line in lines}
@@ -2695,7 +2709,6 @@ class ChampionsTextParser:
                     and not _health_value(line.text)
                     and _text_key(line.text) not in _UI_TEXT
                     and self._resolve_species(line.text, side) is None
-                    and self._announced_slot(side, line.text) is not None
                 ),
                 key=lambda line: (
                     abs(health_line.center_x - line.center_x)
