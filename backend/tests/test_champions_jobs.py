@@ -7,7 +7,6 @@ import tempfile
 import time
 import unittest
 import zipfile
-from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +18,7 @@ from pkmn_vgc.champions_replay.models import (
     ReplayDocument,
 )
 from pkmn_vgc.champions_replay.ocr_detector import OcrTraceDetector
-from pkmn_vgc.champions_replay.pipeline import CaptureProgress, review_capture
+from pkmn_vgc.champions_replay.pipeline import CaptureProgress
 from pkmn_vgc.champions_replay.sources import OcrTraceFrameSource
 from pkmn_vgc.champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 
@@ -322,15 +321,23 @@ class ChampionsJobTests(unittest.TestCase):
             documents = _documents_with_reconcile_issues((battle,), trace_path, warnings.append)
 
         self.assertEqual(len(documents), 1)
-        messages = " ".join(issue["message"] for issue in documents[0].issues)
-        self.assertIn("Meteor Mash", messages)
+        matching = [issue for issue in documents[0].issues if "Meteor Mash" in issue["message"]]
+        self.assertEqual(len(matching), 1)
+        # Roku, revisión del cuarto corte, 26 sep: una contradicción de
+        # contenido real es bloqueante, no un simple aviso.
+        self.assertEqual(matching[0]["severity"], "blocking")
         self.assertNotIn("Meteor Mash", documents[0].log)
         self.assertEqual(warnings, [])
 
-    def test_documents_with_reconcile_issues_warns_instead_of_failing_the_job(self) -> None:
-        # Capa asesora sobre un replay que ya se armó bien: si el análisis
-        # falla (acá, una traza que no existe), avisa y sigue -no tumba
-        # el job por una incidencia que no pudo calcularse.
+    def test_documents_with_reconcile_issues_blocks_when_analysis_fails(self) -> None:
+        # Roku, revisión del cuarto corte, 26 sep: un fallo de análisis no
+        # es "sin hallazgos" -es que no se pudo verificar nada, que es
+        # exactamente cuando menos hay que confiar en el replay. Antes
+        # esto sólo avisaba a nivel job y el documento quedaba limpio
+        # -una partida podía parecer lista para guardar precisamente
+        # cuando la reconciliación nunca corrió. El job sigue disponible
+        # (la captura no se descarta); el documento de esa batalla ahora
+        # lleva su propio issue bloqueante.
         battle = CapturedBattle(
             p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
             p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
@@ -345,11 +352,35 @@ class ChampionsJobTests(unittest.TestCase):
             documents = _documents_with_reconcile_issues((battle,), missing_trace, warnings.append)
 
         self.assertEqual(len(documents), 1)
-        # Sin hallazgos del reconciliador (falló, avisado abajo); lo que
-        # queda es sólo lo que ya ponía `review_capture` por su cuenta.
-        expected = tuple(asdict(issue) for issue in review_capture(battle))
-        self.assertEqual(documents[0].issues, expected)
+        blocking = [issue for issue in documents[0].issues if issue["severity"] == "blocking"]
+        self.assertTrue(blocking)
+        self.assertTrue(any("reconciliador no pudo analizar" in issue["message"] for issue in blocking))
         self.assertTrue(warnings)
+
+    def test_documents_with_reconcile_issues_blocks_when_battle_index_has_no_frames(self) -> None:
+        # Complementa el caso de arriba: acá el análisis SÍ corre, pero el
+        # `source_battle_index` recibido no tiene ningún frame en esta
+        # traza (job equivocado, traza truncada) -`analyze` ya lo
+        # detecta; el resultado no puede leerse como "sin hallazgos".
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = Path(directory) / "ocr.trace.jsonl"
+            record = {"frame": 1, "battle_index": 0, "detections": {"players": {"p2": "Rival"}}, "ocr": []}
+            trace_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            battle = CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+                events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+                winner="p1",
+                source_battle_index=7,
+            )
+            warnings: list[str] = []
+
+            documents = _documents_with_reconcile_issues((battle,), trace_path, warnings.append)
+
+        self.assertEqual(len(documents), 1)
+        blocking = [issue for issue in documents[0].issues if issue["severity"] == "blocking"]
+        self.assertTrue(any("origen" in issue["message"] for issue in blocking))
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0

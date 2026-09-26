@@ -22,7 +22,7 @@ from .champions_replay.ocr_detector import (
     OcrTraceDetector,
     load_champions_catalog,
 )
-from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline, risk_windows
+from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline, ReviewIssue, risk_windows
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
 from .champions_replay.sources import OcrTraceFrameSource, SegmentedVideoFrameSource, VideoFrameSource
 from .champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
@@ -60,9 +60,16 @@ def _documents_with_reconcile_issues(
     adjunta como `ReviewIssue` (needs_review, con evidencia), para que se
     confirme antes de aplicarse, no para reemplazar el log solo.
 
-    Defensivo a propósito: esto es una capa asesora sobre un replay que
-    ya se armó bien; si el análisis falla con datos reales que el
-    prototipo no cubrió, no puede tumbar el job por eso.
+    Cuarto corte de Roku, 26 sep: si el análisis falla, o si el
+    `source_battle_index` recibido no tiene frames en esta traza
+    (`analyze` ya lo detecta y lo reporta como finding de origen), eso
+    NO es "sin hallazgos" -es que no se pudo cotejar nada, justo el
+    momento en que menos hay que confiar en el replay. Antes eso sólo
+    avisaba a nivel job (`on_warning`) y el documento de esa batalla
+    quedaba sin ninguna marca propia -una partida podía parecer lista
+    para guardar precisamente cuando no se pudo verificar. El job sigue
+    disponible para inspección (nunca se descarta la captura), pero ese
+    documento en particular ahora lleva su propio issue bloqueante.
     """
 
     documents: list[ReplayDocument] = []
@@ -74,17 +81,19 @@ def _documents_with_reconcile_issues(
             )
             reconcile_issues = reconcile.as_review_issues(result)
         except Exception as error:
-            on_warning(
-                f"El reconciliador no pudo analizar la batalla {capture.source_battle_index}: {error}"
+            message = (
+                f"El reconciliador no pudo analizar la batalla {capture.source_battle_index} "
+                f"contra la traza: {error}. Sin verificación, revisar antes de guardar."
             )
-        else:
-            if reconcile_issues:
-                # `document.issues` ya son dicts (`asdict`, vía `review_capture`
-                # dentro de `build_replay_document`) -mismo formato acá, para
-                # no mezclar dataclasses y dicts en el mismo campo serializado.
-                document = replace(
-                    document, issues=document.issues + tuple(asdict(issue) for issue in reconcile_issues)
-                )
+            on_warning(message)
+            reconcile_issues = (ReviewIssue("blocking", message),)
+        # `document.issues` ya son dicts (`asdict`, vía `review_capture` dentro
+        # de `build_replay_document`) -mismo formato acá, para no mezclar
+        # dataclasses y dicts en el mismo campo serializado.
+        if reconcile_issues:
+            document = replace(
+                document, issues=document.issues + tuple(asdict(issue) for issue in reconcile_issues)
+            )
         documents.append(document)
     return tuple(documents)
 

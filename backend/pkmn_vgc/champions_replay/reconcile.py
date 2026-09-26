@@ -361,7 +361,19 @@ def analyze(
     records = [json.loads(raw) for raw in trace.read_text(encoding="utf-8").splitlines() if raw.strip()]
     lines = (replay.read_text(encoding="utf-8") if isinstance(replay, Path) else replay).splitlines()
     if source_battle_index is not None:
-        source_index, source_error = source_battle_index, None
+        # Roku, revisión del cuarto corte, 26 sep: un `source_battle_index`
+        # recibido sin verificar podía apuntar a un índice sin ningún
+        # frame en esta traza (job equivocado, traza truncada) y `analyze`
+        # lo tomaba igual -`selected` salía vacío, sin episodios ni
+        # eventos que comparar, así que no había nada que objetar y el
+        # resultado parecía "limpio" precisamente cuando no se pudo
+        # cotejar nada. Tratado igual que el origen ambiguo por nombre.
+        if any(r.get("battle_index") == source_battle_index for r in records):
+            source_index, source_error = source_battle_index, None
+        else:
+            source_index, source_error = None, (
+                f"la traza no tiene ningún frame con battle_index={source_battle_index}"
+            )
     else:
         source_index, source_error = _battle_index_by_rival_name(records, lines)
     findings = [Finding("origen", source_error)] if source_error else []
@@ -513,14 +525,24 @@ def as_review_issues(result: dict[str, Any]) -> tuple[ReviewIssue, ...]:
     reconcile.py encontró y por qué); se expone como hipótesis a
     confirmar -`proposed_change`-, nunca aplicada al log. Un `finding`
     sin `edit` asociado (falta evidencia suficiente para proponer nada)
-    queda igual como aviso, sin propuesta.
+    queda igual, sin propuesta.
+
+    Roku, revisión del cuarto corte, 26 sep: todo esto es `"blocking"`,
+    no `"warning"` -son exactamente las contradicciones de contenido que
+    motivaron COL-102 (switch fantasma, HP/curación imposible, faint
+    faltante, evento sin respaldo, origen sin ubicar). `"warning"` queda
+    reservado para lo que ya emitía `review_capture` antes de esto y no
+    afecta fidelidad (tamaño de roster). Tampoco se descarta más el
+    finding de `"origen"`: si no se pudo ubicar la batalla en la traza,
+    eso es la razón misma por la que nada más de acá es confiable, y
+    antes se perdía en silencio.
     """
 
     issues: list[ReviewIssue] = []
     for edit in result.get("edits", ()):
         issues.append(
             ReviewIssue(
-                "warning",
+                "blocking",
                 edit["reason"],
                 frame=edit.get("frame"),
                 alternatives=(edit["before"],),
@@ -528,14 +550,9 @@ def as_review_issues(result: dict[str, Any]) -> tuple[ReviewIssue, ...]:
             )
         )
     for finding in result.get("findings", ()):
-        if finding["category"] == "origen":
-            # Sin `source_battle_index` no hay nada que reconciliar; esto
-            # ya lo reporta `cli._verify`/`_persisted_battle_index` con
-            # más contexto -no duplicar el aviso acá.
-            continue
         issues.append(
             ReviewIssue(
-                "warning",
+                "blocking",
                 f"[{finding['category']}] {finding['detail']}",
                 frame=finding.get("frame"),
             )

@@ -609,7 +609,10 @@ def _switch_in_hp_issues(battle: CapturedBattle) -> tuple[ReviewIssue, ...]:
             continue
         issues.append(
             ReviewIssue(
-                "warning",
+                # Roku, revisión del cuarto corte, 26 sep: HP dudoso es
+                # exactamente el tipo de contradicción que COL-102 no
+                # puede dejar pasar en silencio -bloqueante, no aviso.
+                "blocking",
                 f"{event.slot}: {event.species} entra con una lectura de HP ({event.health}) que puede "
                 "ser la barra a mitad de animación -sin confirmar contra el vídeo.",
                 frame=event.source_frame,
