@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor, _documents_with_reconcile_issues
+from pkmn_vgc.champions_replay import reconcile
 from pkmn_vgc.champions_replay.models import (
     BattleEvent,
     BattleSide,
@@ -328,6 +329,30 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(matching[0]["severity"], "blocking")
         self.assertNotIn("Meteor Mash", documents[0].log)
         self.assertEqual(warnings, [])
+        # Roku, revisión del quinto corte, 26 sep: constancia positiva de
+        # que esto sí corrió con el reconciliador actual -sin esto, el
+        # servidor no puede distinguir "revisado, sin hallazgos" de "nunca
+        # se revisó" en un artefacto viejo.
+        self.assertEqual(documents[0].reconciliation_version, reconcile.RECONCILE_VERSION)
+
+    def test_documents_with_reconcile_issues_leaves_reconciliation_version_unset_on_failure(self) -> None:
+        # Complementa el test de arriba: si el análisis falla, el
+        # documento no puede llevar la constancia de "revisado" -ya lleva
+        # su propio issue bloqueante (test de abajo), pero la ausencia de
+        # `reconciliation_version` es la segunda barrera, independiente de
+        # que algún día se filtre un issue no bloqueante por error.
+        battle = CapturedBattle(
+            p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+            p2=BattleSide("Rival", ("Metagross",), ("Metagross",)),
+            events=(BattleEvent(kind="turn", timestamp_ms=1, turn=1),),
+            winner="p1",
+            source_battle_index=0,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            missing_trace = Path(directory) / "no-existe.jsonl"
+            documents = _documents_with_reconcile_issues((battle,), missing_trace, lambda _message: None)
+
+        self.assertIsNone(documents[0].reconciliation_version)
 
     def test_documents_with_reconcile_issues_blocks_when_analysis_fails(self) -> None:
         # Roku, revisión del cuarto corte, 26 sep: un fallo de análisis no
@@ -381,6 +406,9 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(len(documents), 1)
         blocking = [issue for issue in documents[0].issues if issue["severity"] == "blocking"]
         self.assertTrue(any("origen" in issue["message"] for issue in blocking))
+        # `analyze` sí corrió (no lanzó); el bloqueo real es el issue de
+        # origen de arriba, no la ausencia de esta constancia.
+        self.assertEqual(documents[0].reconciliation_version, reconcile.RECONCILE_VERSION)
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0

@@ -25,6 +25,18 @@ from typing import Any
 
 from .pipeline import ReviewIssue
 
+# Roku, revisión del quinto corte, 26 sep: la ausencia de `issues` en un
+# replay servido nunca puede leerse como "revisado, sin hallazgos" -los
+# tres jobs protegidos son del 25 sep, de antes de que `ReplayDocument`
+# tuviera este campo siquiera, y esa lectura habría dejado pasar
+# exactamente el replay corrupto que Ies denunció. `_documents_with_reconcile_issues`
+# (`champions_jobs.py`) estampa este valor en `ReplayDocument.reconciliation_version`
+# sólo cuando `analyze()` corrió de verdad sobre el documento con el
+# código actual; el servidor (`db/queries.ts`) exige que coincida antes
+# de confiar en `issues`. Subir este número cuando la lógica de análisis
+# cambie de forma que invalide una revisión anterior.
+RECONCILE_VERSION = "col102-r5"
+
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
 _FAINT = re.compile(r"^(.*?) fainted!$", re.IGNORECASE)

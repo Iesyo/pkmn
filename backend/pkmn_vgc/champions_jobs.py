@@ -70,6 +70,14 @@ def _documents_with_reconcile_issues(
     para guardar precisamente cuando no se pudo verificar. El job sigue
     disponible para inspección (nunca se descarta la captura), pero ese
     documento en particular ahora lleva su propio issue bloqueante.
+
+    Quinto corte de Roku, 26 sep: además, `document.reconciliation_version`
+    sólo se estampa en el camino de éxito -nunca en la excepción, aunque
+    ahí ya quede el issue bloqueante de todas formas. Es la constancia
+    positiva que `db/queries.ts` exige antes de confiar en `issues`: un
+    artefacto viejo en disco (de antes de que este campo existiera) no la
+    trae, y el servidor lo trata como no revisado, no como "revisado sin
+    hallazgos".
     """
 
     documents: list[ReplayDocument] = []
@@ -87,6 +95,8 @@ def _documents_with_reconcile_issues(
             )
             on_warning(message)
             reconcile_issues = (ReviewIssue("blocking", message),)
+        else:
+            document = replace(document, reconciliation_version=reconcile.RECONCILE_VERSION)
         # `document.issues` ya son dicts (`asdict`, vía `review_capture` dentro
         # de `build_replay_document`) -mismo formato acá, para no mezclar
         # dataclasses y dicts en el mismo campo serializado.

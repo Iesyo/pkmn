@@ -382,6 +382,12 @@ class ReplayDocument:
     # mismo JSON que ya sirve `GET /jobs/{id}/replays/{n}`, sin endpoint
     # nuevo ni tocar el protocolo (`log`).
     issues: tuple[Mapping[str, Any], ...] = ()
+    # Quinto corte de Roku, 26 sep: constancia positiva de que `issues`
+    # viene de una corrida real de `reconcile.analyze` con el código
+    # actual -`None` (el default) es exactamente lo que trae cualquier
+    # artefacto viejo en disco, y el servidor lo trata como no revisado,
+    # nunca como "revisado sin hallazgos". Ver `reconcile.RECONCILE_VERSION`.
+    reconciliation_version: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
