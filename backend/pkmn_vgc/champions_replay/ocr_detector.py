@@ -3326,8 +3326,34 @@ class ChampionsTextParser:
             opposing = bool(faint_match.group(1))
             side = "p2" if opposing else "p1"
             actor = self._actor_for_value(side, faint_match.group(2))
-            if actor:
-                slot = self._slot_for_species(actor, side)
+            slot: str | None = self._slot_for_species(actor, side) if actor else None
+            if not actor:
+                # COL-102, reapertura estructural del 25 sep: una identidad
+                # sin resolver (por HUD, sin mote ni especie todavía atados)
+                # puede debilitarse antes de que nada la confirme por texto.
+                # Si es la única ocupante sin especie de ese lado, el
+                # debilitado sólo puede ser suya -no hay otro candidato con
+                # quien confundirla.
+                #
+                # No cubre el caso de `10a7fba6fda04585`, partida 5
+                # ("MineMine"): ahí el mote nunca llegó a atarse a ninguna
+                # identidad al entrar (species resolution falló y el switch
+                # de un solo Pokémon no reserva identidad de reserva), y
+                # para cuando llega su "fainted!" los dos slots de ese lado
+                # ya muestran especies reales distintas -el mensaje llegó
+                # tarde, después de que el bookkeeping ya hubiera pasado a
+                # la siguiente entrada. Reservar una identidad nueva ahí
+                # arriesgaba dejarla sin resolver para siempre y descartar
+                # la partida entera (la falla de Zoroark, más grave que el
+                # mensaje suelto actual); se dejó sin corregir a propósito.
+                unresolved = [
+                    (occupant_slot, occupant)
+                    for occupant_slot, occupant in self._active.items()
+                    if occupant_slot.startswith(side) and is_actor_identity(occupant)
+                ]
+                if len(unresolved) == 1:
+                    slot, actor = unresolved[0]
+            if actor and slot:
                 self._mark_slot_open(slot)
                 return (
                     BattleEvent(

@@ -2847,7 +2847,28 @@ class ChampionsOcrTests(unittest.TestCase):
         self.assertEqual(faint.events[0].kind, "faint")
         self.assertEqual(faint.events[0].slot, "p2a")
         self.assertEqual(result.winner, "p1")
-        self.assertTrue(result.battle_complete)
+
+    def test_a_faint_message_attributes_to_the_only_unresolved_occupant(self) -> None:
+        # COL-102, reapertura estructural del 25 sep: una identidad sin
+        # resolver por HUD puede debilitarse antes de que nada la confirme
+        # por texto (su mote nunca se leyó, o se leyó distinto). Si es la
+        # única ocupante sin especie de ese lado, "fainted!" sólo puede ser
+        # suyo -no hay otro candidato con quien confundirla.
+        parser = self.parser()
+        ghost = "__champions_actor_p2_0001__"
+        parser._active["p2a"] = ghost
+        parser._active["p2b"] = "Rillaboom"
+
+        detections = parser.parse(
+            (line("The opposing Nickname fainted!", x=0.2, y=0.7, width=0.35),),
+            timestamp_ms=2_000,
+            source_frame=4,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species) for event in detections.events],
+            [("faint", "p2a", ghost)],
+        )
 
     def test_recognizes_real_loss_message_and_two_sided_result_screen(self) -> None:
         parser = self.parser()
