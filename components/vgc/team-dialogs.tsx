@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getSpriteUrl } from "@/lib/pokemon-data";
-import { renderShowdownReplayHtml, type ImportedReplayMatch } from "@/lib/showdown-replay";
+import { hasBlockingIssues, renderShowdownReplayHtml, type ImportedReplayMatch } from "@/lib/showdown-replay";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion } from "@/lib/team-builder";
 import type { MatchResult, TeamGroup, TeamVersion } from "@/lib/types";
 
@@ -306,6 +306,24 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
           <div className="my-5 grid gap-4">
             {initialReplay ? <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/8 px-3 py-2 text-xs text-emerald-100"><span className="font-bold">Replay importado</span><span className="text-emerald-200/70"> · {initialReplay.playerName}{initialReplay.format ? ` · ${initialReplay.format}` : ""}</span></div> : null}
             {initialReplay?.warnings.length ? <div className="rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-[11px] leading-5 text-amber-100">{initialReplay.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
+            {initialReplay?.issues.length ? (
+              <div className="grid gap-1.5">
+                {initialReplay.issues.map((issue, index) => (
+                  <div
+                    key={`${issue.message}-${index}`}
+                    className={
+                      issue.severity === "blocking"
+                        ? "rounded-xl border border-rose-300/25 bg-rose-300/10 px-3 py-2 text-[11px] leading-5 text-rose-100"
+                        : "rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-[11px] leading-5 text-amber-100"
+                    }
+                  >
+                    <p><span className="font-bold uppercase">{issue.severity === "blocking" ? "Bloqueante" : "Revisar"}</span>{typeof issue.frame === "number" ? ` · frame ${issue.frame}` : ""} · {issue.message}</p>
+                    {issue.alternatives?.length ? <p className="text-[10px] opacity-80">Lectura vista: {issue.alternatives.join(", ")}</p> : null}
+                    {issue.proposed_change ? <p className="text-[10px] opacity-80">Propuesta: {issue.proposed_change}</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-2"><Label>Resultado</Label><Select value={result} onValueChange={(value) => setResult(value as MatchResult)}><SelectTrigger className="w-full border-white/10 bg-white/5"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="win">Victoria</SelectItem><SelectItem value="loss">Derrota</SelectItem></SelectContent></Select></div>
               <div className="grid gap-2"><Label htmlFor="match-rating">Rating final</Label><Input id="match-rating" inputMode="numeric" value={rating} onChange={(event) => setRating(event.target.value)} placeholder="1428" className="border-white/10 bg-white/5" /></div>
@@ -339,7 +357,7 @@ export function AddMatchDialog({ version, onCreated, open: controlledOpen, onOpe
             <div className="grid gap-2"><Label htmlFor="match-notes">Notas</Label><Textarea id="match-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Qué funcionó, qué revisar..." className="min-h-20 border-white/10 bg-white/5" /></div>
             {error ? <p role="alert" className="rounded-xl border border-rose-300/20 bg-rose-300/8 px-3 py-2 text-xs text-rose-200">{error}</p> : null}
           </div>
-          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving || selected.length !== 4 || lead.length !== 2} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar partida</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" disabled={saving || selected.length !== 4 || lead.length !== 2 || hasBlockingIssues(initialReplay?.replayArtifact)} className="gap-2 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar partida</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

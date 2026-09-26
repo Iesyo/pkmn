@@ -107,10 +107,11 @@ test("imports a replay reconstructed from Pokémon Champions video", async () =>
   assert.match(match.warnings.join(" "), /rating final/);
 });
 
-test("surfaces the backend's review_capture issues as import warnings", async () => {
-  // Segundo corte de Roku, 26 sep: `review_capture` ya viaja en el JSON
-  // del replay -esto confirma que llega hasta `match.warnings`, visible
-  // antes de confirmar la partida, sin que nada la haya aplicado sola.
+test("surfaces the backend's review_capture issues on match.issues, structured", async () => {
+  // Roku, revisión del tercer corte, 26 sep: aplanar a texto perdía
+  // severidad/alternativas -esto confirma que `match.issues` conserva la
+  // estructura completa, visible antes de confirmar la partida, sin que
+  // nada la haya aplicado sola.
   const { importShowdownReplay, normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
   const rawReplay = JSON.parse(
     await readFile(new URL("../backend/tests/data/champions_replay.json", import.meta.url), "utf8"),
@@ -134,7 +135,24 @@ test("surfaces the backend's review_capture issues as import warnings", async ()
   });
 
   assert.deepEqual(replay.issues, rawReplay.issues);
-  assert.match(match.warnings.join(" "), /lectura de HP sospechosa.*frame 5549.*Propuesta: 100\/100/);
+  assert.deepEqual(match.issues, rawReplay.issues);
+  assert.equal(match.warnings.some((warning) => warning.includes("lectura de HP sospechosa")), false);
+});
+
+test("hasBlockingIssues flags a blocking severity and nothing less", async () => {
+  const { hasBlockingIssues, normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const rawReplay = JSON.parse(
+    await readFile(new URL("../backend/tests/data/champions_replay.json", import.meta.url), "utf8"),
+  );
+
+  rawReplay.issues = [{ severity: "warning", message: "Aviso menor." }];
+  assert.equal(hasBlockingIssues(normalizeShowdownReplayDocument(rawReplay)), false);
+
+  rawReplay.issues = [{ severity: "blocking", message: "Selección incompleta." }];
+  assert.equal(hasBlockingIssues(normalizeShowdownReplayDocument(rawReplay)), true);
+
+  assert.equal(hasBlockingIssues(null), false);
+  assert.equal(hasBlockingIssues(undefined), false);
 });
 
 test("validates reconstructed replay documents before importing them", async () => {

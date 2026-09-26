@@ -3,7 +3,7 @@ import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
-import { collectScoutingReplayEvidence, fetchShowdownReplay, normalizeShowdownReplayDocument, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
+import { collectScoutingReplayEvidence, fetchShowdownReplay, hasBlockingIssues, normalizeShowdownReplayDocument, type ScoutingReplayEvidence } from "@/lib/showdown-replay";
 import type {
   MatchRecord,
   MatchResult,
@@ -448,6 +448,15 @@ export async function createMatch(input: CreateMatchInput) {
     : normalizeShowdownReplayDocument(input.replayArtifact);
   if (replayArtifact && origin !== "champions") {
     throw new DomainError("El replay reconstruido sólo puede guardarse con origen Champions.");
+  }
+  // Roku, revisión del tercer corte, 26 sep: el cliente sólo mostraba
+  // `issues` como texto -"Guardar partida" no las revisaba, y una
+  // incidencia `severity: "blocking"` podía persistirse igual. La
+  // compuerta real tiene que estar acá, no sólo en el botón.
+  if (replayArtifact && hasBlockingIssues(replayArtifact)) {
+    throw new DomainError(
+      "El replay reconstruido tiene incidencias sin resolver (bloqueantes); revísalas antes de guardar la partida.",
+    );
   }
   if ((input.opponentSelected?.length ?? 0) > 6) {
     throw new DomainError("El equipo rival puede contener como máximo 6 Pokémon.");

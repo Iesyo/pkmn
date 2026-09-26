@@ -54,6 +54,20 @@ export interface ImportedReplayMatch {
   playedAt: string | null;
   format: string;
   warnings: string[];
+  // Roku, revisión del tercer corte, 26 sep: `warnings` aplana severidad,
+  // frame y alternativas a texto plano -esto conserva la estructura para
+  // que la UI decida qué mostrar y `hasBlockingIssues` pueda usarla para
+  // bloquear el guardado, en vez de perderla en el camino.
+  issues: ReplayCaptureIssue[];
+}
+
+/** Roku, revisión del tercer corte, 26 sep: "Guardar partida" no revisaba
+ * `issues` -una incidencia `severity: "blocking"` detectada por el
+ * backend podía persistirse igual. Esta misma función la usa tanto el
+ * botón (cliente) como `createMatch` (servidor, `db/queries.ts`) -una
+ * sola fuente de verdad, para que el cliente no sea la única barrera. */
+export function hasBlockingIssues(document: ShowdownReplayDocument | null | undefined): boolean {
+  return (document?.issues ?? []).some((issue) => issue.severity === "blocking");
 }
 
 export interface ScoutingReplayEvidence {
@@ -559,16 +573,6 @@ export function importShowdownReplay(
   if (opponentPicks.length !== 4) warnings.push("El log público no reveló los cuatro picks del rival; completa únicamente los que falten.");
   if (own.finalRating === null) warnings.push("Showdown no publicó el rating final para esta partida.");
 
-  // Segundo corte de Roku, 26 sep: incidencias needs_review que el
-  // backend ya detectó al cerrar la captura (review_capture) -visibles
-  // acá, antes de confirmar la partida, sin que nada las haya aplicado
-  // solas al replay.
-  for (const issue of document.issues ?? []) {
-    const frame = typeof issue.frame === "number" ? ` (frame ${issue.frame})` : "";
-    const proposal = issue.proposed_change ? ` Propuesta: ${issue.proposed_change}.` : "";
-    warnings.push(`${issue.message}${frame}${proposal}`);
-  }
-
   return {
     replayUrl: options.replayUrl,
     origin: options.origin ?? (options.replayUrl ? "showdown" : "champions"),
@@ -587,6 +591,7 @@ export function importShowdownReplay(
     playedAt: replayDate(document, parsed.timestamp),
     format: document.format?.trim() ?? "",
     warnings,
+    issues: document.issues ?? [],
   };
 }
 
