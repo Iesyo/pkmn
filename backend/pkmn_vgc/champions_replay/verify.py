@@ -40,6 +40,9 @@ _HP_LINE = re.compile(
     r"^\|-(?P<kind>damage|heal)\|(?P<slot>p[12][ab]): (?P<species>[^|]+)\|(?P<current>\d+)/(?P<max>\d+)"
 )
 _ENTRY_LINE = re.compile(r"^\|(?:switch|drag)\|(?P<slot>p[12][ab]): ")
+_SLOT_SPECIES_LINE = re.compile(r"^\|[A-Za-z-]+\|(?P<slot>p[12][ab]): (?P<species>[^|]+)")
+_STATUS_LINE = re.compile(r"^\|-status\|(?P<slot>p[12][ab]): [^|]+\|(?P<status>\w+)")
+_CURESTATUS_LINE = re.compile(r"^\|-curestatus\|(?P<slot>p[12][ab]): ")
 
 _GAP_FRAMES = 4
 _SIMILAR = 0.80
@@ -191,6 +194,84 @@ def _hp_zero_without_faint_problems(log: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def _slot_occupant_conflict_problems(log: Path) -> tuple[str, ...]:
+    """Un slot sólo puede tener un Pokémon a la vez entre un switch y el siguiente.
+
+    COL-102, reapertura estructural del 25 sep: invariante de identidad que
+    pedía el mandato original y que esta ficha nunca había construido. Si
+    una línea nombra a un Pokémon distinto en un slot sin que un
+    `switch`/`drag` lo haya reemplazado antes, el HUD perdió al ocupante
+    real y confundió a otro con su lugar -el mismo tipo de fallo que ya
+    causó el switch fantasma de Kingambit y la identidad huérfana de
+    Indeedee-F esta misma ronda, aquí visto desde el replay final en vez
+    de la traza. Compara por especie base: una Mega Evolución o
+    Terastalización cambia el nombre mostrado sin que el Pokémon haya
+    salido del campo, y eso no es un conflicto.
+    """
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    occupant: dict[str, str] = {}
+    problems: list[str] = []
+    for line in lines:
+        if line.startswith("|switch|") or line.startswith("|drag|"):
+            match = _SLOT_SPECIES_LINE.match(line)
+            if match:
+                occupant[match["slot"]] = match["species"].strip()
+            continue
+        if line.startswith("|faint|"):
+            match = _SLOT_SPECIES_LINE.match(line)
+            if match:
+                occupant.pop(match["slot"], None)
+            continue
+        match = _SLOT_SPECIES_LINE.match(line)
+        if not match:
+            continue
+        slot, species = match["slot"], match["species"].strip()
+        known = occupant.get(slot)
+        if known is None:
+            occupant[slot] = species
+            continue
+        if _base_species(species) != _base_species(known):
+            problems.append(f"{slot}: {species} aparece sin switch/drag -el slot tenía a {known}")
+            occupant[slot] = species
+    return tuple(problems)
+
+
+def _status_conflict_problems(log: Path) -> tuple[str, ...]:
+    """Un Pokémon sólo puede tener un estado no volátil a la vez.
+
+    COL-102, reapertura estructural del 25 sep: quemadura, veneno, parálisis,
+    sueño y congelación se excluyen entre sí -otro invariante del mandato
+    original sin construir todavía. Un `-status` que cambia el estado de un
+    slot sin que antes llegara su `-curestatus` (o el Pokémon saliera por
+    switch/drag/faint) es una lectura que se perdió o se duplicó, no un
+    segundo estado real.
+    """
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    active: dict[str, str] = {}
+    problems: list[str] = []
+    for line in lines:
+        if line.startswith("|switch|") or line.startswith("|drag|") or line.startswith("|faint|"):
+            match = _SLOT_SPECIES_LINE.match(line)
+            if match:
+                active.pop(match["slot"], None)
+            continue
+        cure = _CURESTATUS_LINE.match(line)
+        if cure:
+            active.pop(cure["slot"], None)
+            continue
+        status = _STATUS_LINE.match(line)
+        if not status:
+            continue
+        slot, new_status = status["slot"], status["status"]
+        existing = active.get(slot)
+        if existing and existing != new_status:
+            problems.append(f"{slot}: pasa de {existing} a {new_status} sin curarse de por medio")
+        active[slot] = new_status
+    return tuple(problems)
+
+
 def _replay_rosters(log: Path) -> dict[str, list[str]]:
     rosters: dict[str, list[str]] = {"p1": [], "p2": []}
     for line in log.read_text(encoding="utf-8").splitlines():
@@ -334,7 +415,12 @@ def verify_replay(
         _roster_problems(rosters, _named_on_screen(trace, battle_index, species_names))
         if species_names
         else ()
-    ) + _turn_problems(log) + _hp_zero_without_faint_problems(log)
+    ) + (
+        _turn_problems(log)
+        + _hp_zero_without_faint_problems(log)
+        + _slot_occupant_conflict_problems(log)
+        + _status_conflict_problems(log)
+    )
     return VerificationReport(
         rosters=problems,
         on_screen=sum(screen.values()),

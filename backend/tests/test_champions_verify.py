@@ -165,6 +165,110 @@ class VerifyReplayTests(unittest.TestCase):
             report.rosters,
         )
 
+    def test_a_second_species_in_a_slot_without_a_switch_is_reported(self) -> None:
+        # COL-102, reapertura estructural del 25 sep: invariante de
+        # identidad del mandato original, sin construir hasta ahora. El
+        # mismo tipo de fallo que ya causó el switch fantasma de Kingambit
+        # y la identidad huérfana de Indeedee-F, visto desde el replay
+        # final: dos especies distintas en un slot sin switch/drag de por
+        # medio.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|switch|p2a: Kingambit|Kingambit, L50|100/100",
+                    "|move|p2a: Kingambit|Kowtow Cleave|p1a: Blaziken",
+                    "|-damage|p2a: Archaludon|50/100",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertTrue(
+            any("Archaludon" in problem and "Kingambit" in problem for problem in report.rosters),
+            report.rosters,
+        )
+
+    def test_a_mega_evolution_does_not_look_like_a_slot_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|switch|p1a: Gardevoir|Gardevoir, L50|171/171",
+                    "|detailschange|p1a: Gardevoir|Gardevoir-Mega, L50",
+                    "|-mega|p1a: Gardevoir|Gardevoir|Gardevoirite",
+                    "|move|p1a: Gardevoir|Hyper Voice|",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertEqual(report.rosters, ())
+
+    def test_a_status_change_without_curing_the_previous_one_is_reported(self) -> None:
+        # COL-102, reapertura estructural del 25 sep: quemadura, veneno,
+        # parálisis, sueño y congelación se excluyen entre sí -otro
+        # invariante del mandato original sin construir hasta ahora.
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|switch|p2a: Salamence|Salamence, L50|100/100",
+                    "|-status|p2a: Salamence|brn",
+                    "|-status|p2a: Salamence|par",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertFalse(report.faithful)
+        self.assertTrue(
+            any("brn" in problem and "par" in problem for problem in report.rosters),
+            report.rosters,
+        )
+
+    def test_a_cured_status_followed_by_a_new_one_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|switch|p2a: Salamence|Salamence, L50|100/100",
+                    "|-status|p2a: Salamence|brn",
+                    "|-curestatus|p2a: Salamence|brn",
+                    "|-status|p2a: Salamence|par",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertEqual(report.rosters, ())
+
+    def test_the_same_status_read_twice_is_not_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            trace = _trace(directory, [_frame(1, ["The opposing Sensei used Psychic Fangs!"])])
+            log = _log(
+                directory,
+                [
+                    "|switch|p2a: Salamence|Salamence, L50|100/100",
+                    "|-status|p2a: Salamence|brn",
+                    "|-status|p2a: Salamence|brn",
+                ],
+            )
+
+            report = verify_replay(trace, log)
+
+        self.assertEqual(report.rosters, ())
+
     def test_an_event_the_screen_never_showed_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
