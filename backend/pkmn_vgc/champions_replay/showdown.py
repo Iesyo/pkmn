@@ -74,6 +74,20 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
     tope, para lo que basta el máximo que el propio log revela en cuanto
     recibe daño. Rellenar con 100/100 lo hacía reaparecer lleno y le cambiaba
     el máximo a mitad del log.
+
+    COL-102, reapertura estructural del 26 sep, job real `10a7fba6fda04585`,
+    partidas 1 y 5: esto conservaba sin más la última lectura de vida de la
+    clave (slot, especie base) aunque esa lectura fuera exactamente "0/max"
+    -el valor que dejó el propio debilitado. Un `switch`/`drag` nunca puede
+    introducir un Pokémon a 0 PS: si de verdad seguía en pie el HUD lo habría
+    dicho, y si de verdad se debilitó no puede volver a salir -en ningún
+    caso 0 es la vida real de quien entra. Esto ya no debería ver un evento
+    así (`_drop_ghost_reentries`/`_drop_redundant_reswitches` lo eliminan
+    antes de llegar aquí), pero esta función no depende de que la limpieza
+    previa sea perfecta: sin lectura propia, una vida conocida de 0 se trata
+    igual que ninguna lectura -se cae al máximo, como una entrada nueva-, en
+    vez de estampar un 0 que el propio formato de Showdown no permite
+    volver a leer como "en pie".
     """
 
     maximums = _health_maximums(events)
@@ -85,6 +99,8 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
             active[event.slot] = event.species
             key = _health_key(event.slot, event.species)
             current = event.health or health.get(key)
+            if current is not None and current.partition("/")[0] == "0":
+                current = None
             if not current:
                 maximum = maximums.get(key)
                 current = f"{maximum}/{maximum}" if maximum else None

@@ -21,6 +21,7 @@ from pkmn_vgc.champions_replay.detector import (
     OllamaVisionDetector,
     _extract_json,
 )
+from pkmn_vgc.champions_replay import reconcile
 from pkmn_vgc.champions_replay.models import BattleEvent, BattleSide, CapturedBattle, FrameDetections
 from pkmn_vgc.champions_replay.pipeline import (
     CaptureAccumulator,
@@ -302,6 +303,28 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
         self.assertEqual(_with_known_health(events)[0].health, "156/156")
+
+    def test_a_switch_never_inherits_a_fainted_zero_health(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partidas 1 y 5: si por lo que sea un `switch`
+        sin HP propio llega hasta aquí para la misma clave (slot, especie)
+        cuya última lectura conocida es "0/max" -el valor que dejó su
+        propio debilitado-, esto ya no debe estampar ese 0 como si fuera la
+        vida real de quien entra: un `switch`/`drag` nunca puede introducir
+        un Pokémon a 0 PS. Sin lectura propia se trata igual que ninguna
+        lectura -se cae al máximo, como una entrada nueva.
+        """
+
+        events = (
+            BattleEvent(kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="damage", timestamp_ms=2_000, slot="p1a", species="Rillaboom", health="0/207"),
+            BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Rillaboom", health=None),
+        )
+
+        completed = _with_known_health(events)
+
+        self.assertEqual(completed[0].health, "207/207")
+        self.assertEqual(completed[2].health, "207/207")
 
     def test_fills_the_target_when_only_one_rival_was_hit(self) -> None:
         # El detector sabe quién usó el movimiento y, por separado, a quién le
@@ -717,7 +740,24 @@ class ChampionsReplayTests(unittest.TestCase):
         switches = [event for event in accumulator.events if event.kind == "switch" and event.slot == "p2a"]
         self.assertEqual(len(switches), 2)
 
-    def test_a_reentry_after_a_faint_is_not_dropped(self) -> None:
+    def test_a_reentry_of_the_same_species_after_its_own_faint_is_dropped(self) -> None:
+        """Corrige la suposición de `test_a_reentry_after_a_faint_is_not_dropped`
+        (commit `cc74500`, mismo día): en ese momento se asumió que una
+        reentrada de la misma especie tras un `faint` en el mismo slot
+        tenía que dejarse pasar, para no invadir el terreno de
+        `_drop_ghost_reentries`.
+
+        COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partidas 1 y 5 (Ies, validación visual en ROG):
+        el vídeo mostró exactamente este patrón como bug real -Rillaboom
+        (Gori) y Rillaboom (Bonkers) "reingresan" a 0 PS 500 ms después de
+        su propio `faint`, con el aviso "fainted!" todavía en pantalla. Un
+        actor confirmado debilitado no puede volver a entrar a ese slot:
+        ninguna regla de Showdown/VGC permite repetir especie en un mismo
+        equipo, así que esta reentrada nunca es legítima y debe
+        descartarse, no conservarse.
+        """
+
         accumulator = CaptureAccumulator(CaptureSeed())
         accumulator.events = [
             BattleEvent(
@@ -734,7 +774,8 @@ class ChampionsReplayTests(unittest.TestCase):
         accumulator._drop_redundant_reswitches({})
 
         switches = [event for event in accumulator.events if event.kind == "switch" and event.slot == "p2a"]
-        self.assertEqual(len(switches), 2)
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0].timestamp_ms, 100_000)
 
     def test_accumulator_collapses_interleaved_hp_animation_frames(self) -> None:
         accumulator = CaptureAccumulator(CaptureSeed())
@@ -1063,6 +1104,50 @@ class ChampionsReplayTests(unittest.TestCase):
                 ("damage", "Indeedee-F", "0/177"),
                 ("faint", "Indeedee-F", None),
                 ("switch", "Kingambit", "177/177"),
+            ],
+        )
+
+    def test_a_confirmed_faint_reentering_as_its_own_resolved_species_is_dropped(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partidas 1 y 5 (Ies, validación visual en ROG,
+        confirmado además contra los frames del vídeo fuente): a
+        diferencia de `test_an_unresolved_identity_that_faints_instantly_is_the_same_death`
+        (identidad SIN resolver, ventana de 2 s desde la lectura de 0 PS),
+        aquí el HUD nunca perdió el ícono -el nombre y el aviso "X
+        fainted!" seguían perfectamente legibles un frame (500 ms) después
+        del `faint` real, y el detector lo leyó como un `switch` que
+        devolvía a esa misma especie YA RESUELTA ("Rillaboom") a su slot.
+        Ninguna de las dos condiciones de la identidad sin resolver se
+        cumplía, y la ventana de 2 s tampoco -el `faint` real llegó ~4 s
+        después de la última lectura de 0 PS en ambas partidas reales-, así
+        que se sigue además la última especie confirmada debilitada por
+        slot, sin límite de tiempo, hasta que una especie distinta lo
+        ocupe.
+
+        Reproduce el timing real de la partida 1 (turno 7): daño a 0/207 en
+        t=670500 ms, `faint` en t=674000 ms, reentrada fantasma de la misma
+        especie sin HP propio en t=674499 ms (~500 ms después, tal como en
+        la traza), y el reemplazo real (Blaziken) en t=689999 ms.
+        """
+
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=670_500, slot="p1a", species="Rillaboom", health="0/207"),
+            BattleEvent(kind="faint", timestamp_ms=674_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=674_499, slot="p1a", species="Rillaboom", health=None),
+            BattleEvent(kind="switch", timestamp_ms=689_999, slot="p1a", species="Blaziken", health="82/156"),
+        ]
+
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+        accumulator._drop_redundant_reswitches({})
+
+        self.assertEqual(
+            [(event.kind, event.species, event.health) for event in accumulator.events],
+            [
+                ("damage", "Rillaboom", "0/207"),
+                ("faint", "Rillaboom", None),
+                ("switch", "Blaziken", "82/156"),
             ],
         )
 
@@ -1769,6 +1854,54 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertTrue(received[0]["images"])
         self.assertIn("CORRECCIÓN", received[1]["prompt"])
         self.assertEqual(detections.events[0].timestamp_ms, 700)
+
+    def test_state_findings_flags_a_reentry_into_a_just_fainted_slot(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`: `col102-r5` devolvía `issues: []` para
+        replay-001.json y replay-005.json pese a que ambos tienen
+        exactamente este patrón -`|switch|...|0/max` de la misma especie
+        justo tras su propio `|faint|`. `_state_findings` vivía por slot y
+        se borraba en el propio `switch`/`faint`, y la rama de entrada
+        nunca miraba la vida codificada en su propia línea contra ese
+        estado; ahora sigue la última especie confirmada debilitada por
+        slot y compara contra ella en la siguiente entrada. Reproduce
+        líneas literales de replay-001.log, turno 7.
+        """
+
+        lines = [
+            "|move|p2a: Altaria|Ice Beam|p1a: Rillaboom",
+            "|-damage|p1a: Rillaboom|0/207",
+            "|-message|It's super effective on Rillaboom!",
+            "|faint|p1a: Rillaboom",
+            "|switch|p1a: Rillaboom|Rillaboom, L50|0/207",
+            "|switch|p1a: Blaziken|Blaziken-Mega, L50|82/156",
+            "|turn|8",
+        ]
+
+        findings = reconcile._state_findings(lines)
+
+        matching = [item for item in findings if item.category == "reentrada_debilitado"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].line, 4)
+        self.assertIn("p1a", matching[0].detail)
+        self.assertIn("Rillaboom", matching[0].detail)
+
+    def test_state_findings_does_not_flag_a_legitimate_replacement(self) -> None:
+        """Contraejemplo: un reemplazo legítimo (especie distinta) tras un
+        `faint` no debe generar `reentrada_debilitado` -sólo la reentrada
+        de la MISMA especie que se acaba de debilitar en ese slot.
+        """
+
+        lines = [
+            "|-damage|p1a: Rillaboom|0/207",
+            "|faint|p1a: Rillaboom",
+            "|switch|p1a: Blaziken|Blaziken-Mega, L50|82/156",
+            "|turn|8",
+        ]
+
+        findings = reconcile._state_findings(lines)
+
+        self.assertEqual([item for item in findings if item.category == "reentrada_debilitado"], [])
 
 
 if __name__ == "__main__":

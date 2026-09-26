@@ -35,7 +35,13 @@ from .pipeline import ReviewIssue
 # código actual; el servidor (`db/queries.ts`) exige que coincida antes
 # de confiar en `issues`. Subir este número cuando la lógica de análisis
 # cambie de forma que invalide una revisión anterior.
-RECONCILE_VERSION = "col102-r5"
+#
+# r6, reapertura estructural del 26 sep, job real `10a7fba6fda04585`:
+# `_state_findings` ahora detecta una reentrada al slot donde la misma
+# especie se acaba de debilitar (partidas 1 y 5 de ese job, exactamente lo
+# que `col102-r5` dejaba pasar con `issues: []`). Cualquier replay ya
+# marcado con `col102-r5` necesita pasar otra vez por esta versión.
+RECONCILE_VERSION = "col102-r6"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
@@ -251,15 +257,43 @@ def _phase_ghosts(records: list[dict[str, Any]], battle_index: int) -> set[tuple
 
 
 def _state_findings(lines: list[str]) -> list[Finding]:
+    """Roku, reapertura estructural del 26 sep, job real
+    `10a7fba6fda04585`, partidas 1 y 5: `dead_at` vivía por slot y se
+    borraba en el propio `switch`/`faint` -antes incluso de mirar si ese
+    `switch` reintroducía a la misma especie que se acababa de debilitar
+    ahí- y la rama de entrada (`_LOG_ENTRY`) nunca miraba la vida que trae
+    codificada su propia línea contra ese estado. Por eso `col102-r5`
+    devolvía `issues: []` en ambos replays pese a que "Gori"/"Rillaboom" y
+    "Bonkers"/"Rillaboom" volvían a entrar a 0 PS justo tras su propio
+    `faint`: no había ningún hallazgo que mirara esa combinación. Se seguía
+    además la última especie confirmada debilitada por slot (sin borrarla
+    en el propio `faint`, sólo cuando una especie de verdad distinta ocupa
+    el slot) para poder comparar contra ella en la entrada siguiente.
+    """
+
     result: list[Finding] = []
     occupants: dict[str, str] = {}
     dead_at: dict[str, int] = {}
+    fainted_species: dict[str, str] = {}
     for i, line in enumerate(lines):
         if match := _LOG_ENTRY.match(line):
-            occupants[match[2]] = match[3]
-            dead_at.pop(match[2], None)
+            slot, species = match[2], match[3]
+            fainted = fainted_species.get(slot)
+            if fainted and key(fainted.split("-")[0]) == key(species.split("-")[0]):
+                result.append(
+                    Finding(
+                        "reentrada_debilitado",
+                        f"{slot}: {species} reingresa al slot donde se debilitó, sin otro ocupante de por medio",
+                        line=i,
+                    )
+                )
+            else:
+                fainted_species.pop(slot, None)
+            occupants[slot] = species
+            dead_at.pop(slot, None)
             continue
         if match := _LOG_FAINT.match(line):
+            fainted_species[match[1]] = match[2]
             dead_at.pop(match[1], None)
             occupants.pop(match[1], None)
             continue

@@ -276,10 +276,30 @@ class CaptureAccumulator:
         que seguía siendo Indeedee-F. Sin esto, el replay final mostraba a
         Indeedee-F debilitarse, "volver a entrar" a 0 PS con otro nombre, y
         debilitarse otra vez.
+
+        COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partidas 1 y 5 (Ies, validación visual en ROG):
+        aquí pasó lo contrario. El HUD no perdió el ícono -al revés, el
+        nombre y el aviso "X fainted!" seguían perfectamente legibles un
+        frame (500 ms) después del debilitado real (confirmado por vídeo:
+        Gori/Rillaboom y Bonkers/Rillaboom siguen en cuadro, colapsando, con
+        el aviso todavía en pantalla), y el detector lo leyó como un
+        `switch` que devolvía a esa misma especie YA RESUELTA a su slot -no
+        una identidad interna sin resolver. Ninguna de las dos puertas de
+        arriba se abría: `is_actor_identity` exige justo lo contrario, y la
+        ventana de 2 s se mide desde la última lectura de 0 PS (no desde el
+        propio `faint`, que llegó ~4 s después de esa lectura en ambas
+        partidas). Un actor que la propia traza ya confirmó debilitado por
+        texto no puede volver a entrar a ese slot -sin límite de tiempo,
+        hasta que una especie genuinamente distinta lo ocupe- así que se
+        seguía además la pista de la última especie confirmada debilitada
+        en cada slot, y se descarta cualquier `switch`/`drag` que repita
+        esa misma especie mientras nada más lo haya reemplazado.
         """
 
         last_zero_at: dict[str, int] = {}
         pending_ghost: dict[str, str] = {}
+        fainted_species: dict[str, str] = {}
         drop: set[int] = set()
         for index, event in enumerate(self.events):
             slot = event.slot
@@ -294,21 +314,28 @@ class CaptureAccumulator:
                 continue
             if event.kind in {"switch", "drag"}:
                 zero_ts = last_zero_at.get(slot)
-                if (
+                ghost_by_unresolved_identity = (
                     zero_ts is not None
                     and is_actor_identity(event.species)
                     and event.timestamp_ms - zero_ts <= 2_000
-                ):
+                )
+                ghost_by_confirmed_faint = (
+                    event.species is not None and fainted_species.get(slot) == event.species
+                )
+                if ghost_by_unresolved_identity or ghost_by_confirmed_faint:
                     drop.add(index)
                     pending_ghost[slot] = event.species or ""
                 else:
                     last_zero_at.pop(slot, None)
                     pending_ghost.pop(slot, None)
+                    fainted_species.pop(slot, None)
                 continue
             if event.kind == "faint":
                 ghost_species = pending_ghost.pop(slot, None)
                 if ghost_species is not None and event.species == ghost_species:
                     drop.add(index)
+                else:
+                    fainted_species[slot] = event.species or ""
                 continue
 
         if drop:
@@ -329,6 +356,18 @@ class CaptureAccumulator:
         al cerrar la batalla, con las identidades ya resueltas a especie,
         se puede ver que las dos lecturas son la misma; antes de eso una
         decía "Basculegion" y la otra un identificador interno distinto.
+
+        COL-102, reapertura estructural del 26 sep, mismo job, partidas 1 y
+        5: esta función olvidaba al ocupante justo en el `faint` -lo que la
+        dejaba ciega frente al caso contrario de `_drop_ghost_reentries`,
+        un `switch` que repite la MISMA especie que acaba de debilitarse en
+        ese slot. Un Pokémon confirmado debilitado no libera su slot para
+        volver a ocuparlo él mismo -a diferencia de un `switch` en medio de
+        la batalla, aquí no hay "quién vuelve sano" que perder de vista- así
+        que el ocupante se conserva a través del `faint`: sigue sirviendo
+        como memoria de "quién fue el último aquí" para atrapar exactamente
+        esa reentrada, y sólo se libera cuando una especie de verdad
+        distinta ocupa el slot.
         """
 
         last_species: dict[str, str] = {}
@@ -344,8 +383,6 @@ class CaptureAccumulator:
                 else:
                     last_species[slot] = species
                 continue
-            if event.kind == "faint":
-                last_species.pop(slot, None)
 
         if drop:
             self.events = [event for index, event in enumerate(self.events) if index not in drop]

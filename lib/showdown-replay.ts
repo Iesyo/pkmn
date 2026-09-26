@@ -38,7 +38,11 @@ export interface ShowdownReplayDocument {
 // `RECONCILE_VERSION` en backend/pkmn_vgc/champions_replay/reconcile.py.
 // Subir los dos juntos cuando la lógica de análisis cambie de forma que
 // invalide una revisión anterior.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r5";
+//
+// r6, reapertura estructural del 26 sep: `_state_findings` (reconcile.py)
+// ahora detecta la reentrada al slot donde la misma especie se acaba de
+// debilitar (job real `10a7fba6fda04585`, partidas 1 y 5).
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r6";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;
