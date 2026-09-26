@@ -724,6 +724,104 @@ class ChampionsReplayTests(unittest.TestCase):
             ],
         )
 
+    def test_a_faint_animation_noise_is_dropped_around_the_real_faint(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`,
+        # partida 1: Close Combat deja a Archaludon en 0/100 -real, con
+        # faint real después-, pero entre medio el OCR lee un "9/100"
+        # fantasma -ruido de la animación del golpe final. `_close_last_hit`
+        # corrige la ÚLTIMA lectura de daño antes del faint, pero no tocaba
+        # esta curación fantasma de por medio: sobrevivía en el replay.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=1_000, slot="p2b", species="Archaludon", health="51/100"),
+            BattleEvent(kind="damage", timestamp_ms=1_500, slot="p2b", species="Archaludon", health="0/100"),
+            BattleEvent(kind="heal", timestamp_ms=3_500, slot="p2b", species="Archaludon", health="9/100"),
+            BattleEvent(kind="faint", timestamp_ms=6_000, slot="p2b", species="Archaludon"),
+        ]
+
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+
+        self.assertEqual(
+            [(event.kind, event.health) for event in accumulator.events],
+            [("damage", "51/100"), ("damage", "0/100"), ("faint", None)],
+        )
+
+    def test_a_zero_reading_with_no_faint_at_the_end_synthesizes_one(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `10a7fba6fda04585`,
+        # partida 4, turno 8: Wood Hammer deja a Milotic en 0/100 tras un
+        # golpe superefectivo confirmado, pero "fainted!" nunca se leyó -
+        # ningún otro evento vuelve a tocar ese slot en el resto de la
+        # batalla. Sin faint, el Pokémon quedaba "en pie" a 0 PS para
+        # siempre.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=1_000, slot="p2b", species="Milotic", health="45/100"),
+            BattleEvent(kind="damage", timestamp_ms=1_500, slot="p2b", species="Milotic", health="0/100"),
+        ]
+
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.species) for event in accumulator.events],
+            [
+                ("damage", "p2b", "Milotic"),
+                ("damage", "p2b", "Milotic"),
+                ("faint", "p2b", "Milotic"),
+            ],
+        )
+
+    def test_a_zero_reading_that_later_shows_real_life_was_never_a_faint(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `331e6e783c3e45a4`,
+        # partida 3: Sucker Punch deja a Salamence en "0/100" sin faint, y se
+        # cura a "65/100" un turno después sin ningún move/item que lo
+        # explique -un Pokémon vivo no puede estar en 0 PS. El "0" fue el
+        # que estaba mal, no la cura: nunca dejó de estar en pie.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=1_000, slot="p2a", species="Salamence", health="82/100"),
+            BattleEvent(kind="damage", timestamp_ms=41_000, slot="p2a", species="Salamence", health="0/100"),
+            BattleEvent(kind="heal", timestamp_ms=42_000, slot="p2a", species="Salamence", health="65/100"),
+        ]
+
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+
+        self.assertEqual(
+            [(event.kind, event.health) for event in accumulator.events],
+            [("damage", "82/100"), ("heal", "65/100")],
+        )
+
+    def test_an_unresolved_identity_that_faints_instantly_is_the_same_death(self) -> None:
+        # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`,
+        # partida 3: Indeedee-F llega a 0 PS; 1,5 s después una identidad sin
+        # resolver "entra" a su mismo slot y se debilita en el mismo
+        # instante -el HUD perdió el ícono un instante en plena animación de
+        # debilitado y lo leyó como una entrada nueva. Sin esto, el replay
+        # final mostraba a Indeedee-F debilitarse, "volver a entrar" a 0 PS
+        # con otro nombre, y debilitarse otra vez.
+        ghost = "__champions_actor_p1_0001__"
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=1_000, slot="p1a", species="Indeedee-F", health="0/177"),
+            BattleEvent(kind="switch", timestamp_ms=1_500, slot="p1a", species=ghost, health="0/177"),
+            BattleEvent(kind="faint", timestamp_ms=1_500, slot="p1a", species=ghost),
+            BattleEvent(kind="switch", timestamp_ms=10_000, slot="p1a", species="Kingambit", health="177/177"),
+        ]
+
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+
+        self.assertEqual(
+            [(event.kind, event.species, event.health) for event in accumulator.events],
+            [
+                ("damage", "Indeedee-F", "0/177"),
+                ("faint", "Indeedee-F", None),
+                ("switch", "Kingambit", "177/177"),
+            ],
+        )
+
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [
             FramePacket(index=0, timestamp_ms=0, image=b"first"),

@@ -263,7 +263,176 @@ class CaptureAccumulator:
                     self._last_event_at[self.events[index].signature()] = previous.timestamp_ms
                 return
 
+    def _drop_ghost_reentries(self) -> None:
+        """Una identidad sin resolver que entra y se debilita al instante
+        no es un Pokémon nuevo: es la propia animación de un debilitado ya
+        en curso.
+
+        COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`,
+        partida 3: Indeedee-F llega a 0 PS; 1,5 s después una identidad sin
+        resolver "entra" a su mismo slot y se debilita en el mismo frame
+        -el HUD perdió el ícono un instante en plena animación de
+        debilitado y lo leyó como una entrada nueva en vez de reconocer
+        que seguía siendo Indeedee-F. Sin esto, el replay final mostraba a
+        Indeedee-F debilitarse, "volver a entrar" a 0 PS con otro nombre, y
+        debilitarse otra vez.
+        """
+
+        last_zero_at: dict[str, int] = {}
+        pending_ghost: dict[str, str] = {}
+        drop: set[int] = set()
+        for index, event in enumerate(self.events):
+            slot = event.slot
+            if not slot:
+                continue
+            if event.kind in {"damage", "heal"} and event.health:
+                current, _, _ = event.health.partition("/")
+                if current == "0":
+                    last_zero_at[slot] = event.timestamp_ms
+                else:
+                    last_zero_at.pop(slot, None)
+                continue
+            if event.kind in {"switch", "drag"}:
+                zero_ts = last_zero_at.get(slot)
+                if (
+                    zero_ts is not None
+                    and is_actor_identity(event.species)
+                    and event.timestamp_ms - zero_ts <= 2_000
+                ):
+                    drop.add(index)
+                    pending_ghost[slot] = event.species or ""
+                else:
+                    last_zero_at.pop(slot, None)
+                    pending_ghost.pop(slot, None)
+                continue
+            if event.kind == "faint":
+                ghost_species = pending_ghost.pop(slot, None)
+                if ghost_species is not None and event.species == ghost_species:
+                    drop.add(index)
+                continue
+
+        if drop:
+            self.events = [event for index, event in enumerate(self.events) if index not in drop]
+
+    def _reconcile_zero_hp(self) -> None:
+        """0 PS o es un debilitado o fue ruido de OCR; nunca las dos cosas.
+
+        COL-102, reapertura estructural del 25 sep: tres jobs, tres formas
+        del mismo hueco -ninguna lectura de HP se contrastaba contra si el
+        Pokémon seguía con vida. Los parches puntuales que ya existen
+        (`_settle_late_reading`, `_close_last_hit`) corrigen un dígito fino
+        perdido en un extremo de la barra, anclados a un turno o a un
+        `faint` que ya llegó; ninguno cubre estos tres:
+
+        - Archaludon (90403f16712d4d41): `-damage|0/100` real, seguido de un
+          `-heal|9/100` fantasma -ruido de la animación del golpe final-
+          antes de su `faint` real. `_close_last_hit` corrige la ÚLTIMA
+          lectura de daño antes del faint, pero no toca la curación
+          fantasma que quedó de por medio: sobrevivía en el replay.
+        - Milotic (10a7fba6fda04585, partida 4, turno 8): `-damage|0/100`
+          real tras un golpe superefectivo confirmado por mensaje, pero
+          "fainted!" nunca se leyó -ningún otro evento vuelve a tocar ese
+          slot en el resto de la batalla. Sin faint, el Pokémon queda
+          "en pie" a 0 PS para siempre.
+        - Salamence (331e6e783c3e45a4, partida 3): `-damage|0/100` que en
+          realidad fue un dígito perdido -no hay faint, y más tarde el
+          mismo Pokémon se cura, prueba de que nunca dejó de estar en pie.
+
+        Con la batalla completa ya capturada, se puede distinguir de verdad
+        entre las tres: por cada slot, entre un `switch`/`drag` (o el
+        principio) y el siguiente, si su primera lectura en 0 PS tiene
+        después una lectura de vida real (>0) antes de cualquier `faint`,
+        todo lo leído desde ese 0 hasta la lectura real (sin incluirla) fue
+        ruido -el Pokémon nunca dejó de estar en pie, como Salamence. Si en
+        cambio nunca vuelve a mostrar vida real, el 0 fue real: se
+        descarta el ruido posterior y, si ningún `faint` lo confirmó por
+        texto, se sintetiza uno -como haría falta para Milotic- justo
+        detrás de esa primera lectura; si sí llegó (Archaludon), sólo se
+        limpia el ruido de por medio y el faint real queda igual.
+        """
+
+        segment_readings: dict[str, list[tuple[int, int]]] = {}
+        drop: set[int] = set()
+        insert_faint_after: dict[int, str] = {}
+
+        def close_segment(slot: str, *, faint: bool) -> None:
+            readings = segment_readings.get(slot) or []
+            zero_positions = [pos for pos, (_idx, health) in enumerate(readings) if health == 0]
+            if not zero_positions:
+                return
+            first_zero_pos = zero_positions[0]
+            first_zero_index, _ = readings[first_zero_pos]
+            if faint:
+                # El debilitado real es la verdad final, por encima de
+                # cualquier lectura intermedia que lo contradiga: todo lo
+                # leído entre la primera lectura en 0 (que se conserva) y
+                # el faint fue ruido de su propia animación (Archaludon).
+                for idx, _health in readings[first_zero_pos + 1 :]:
+                    drop.add(idx)
+                return
+            revival = next(
+                (
+                    (idx, health)
+                    for idx, health in readings[first_zero_pos + 1 :]
+                    if health > 0
+                ),
+                None,
+            )
+            if revival is not None:
+                for idx, _health in readings[first_zero_pos:]:
+                    if idx == revival[0]:
+                        break
+                    drop.add(idx)
+                return
+            for idx, _health in readings[first_zero_pos + 1 :]:
+                drop.add(idx)
+            insert_faint_after[first_zero_index] = self.events[first_zero_index].species or ""
+
+        for index, event in enumerate(self.events):
+            slot = event.slot
+            if not slot:
+                continue
+            if event.kind in {"switch", "drag"}:
+                close_segment(slot, faint=False)
+                segment_readings[slot] = []
+                continue
+            if event.kind == "faint":
+                close_segment(slot, faint=True)
+                segment_readings[slot] = []
+                continue
+            if event.kind in {"damage", "heal"} and event.health:
+                current, _, _ = event.health.partition("/")
+                if current.isdigit():
+                    segment_readings.setdefault(slot, []).append((index, int(current)))
+
+        for slot in list(segment_readings):
+            close_segment(slot, faint=False)
+
+        if not drop and not insert_faint_after:
+            return
+
+        reconciled: list[BattleEvent] = []
+        for index, event in enumerate(self.events):
+            if index in drop:
+                continue
+            reconciled.append(event)
+            species = insert_faint_after.get(index)
+            if species is not None:
+                reconciled.append(
+                    BattleEvent(
+                        kind="faint",
+                        timestamp_ms=event.timestamp_ms,
+                        confidence=event.confidence,
+                        slot=event.slot,
+                        species=species,
+                        source_frame=event.source_frame,
+                    )
+                )
+        self.events = reconciled
+
     def finalize(self, identities: Mapping[str, str] | None = None) -> CapturedBattle:
+        self._drop_ghost_reentries()
+        self._reconcile_zero_hp()
         if not self.winner:
             raise CaptureIncompleteError("No se pudo identificar el resultado de la batalla.")
         if not self.events:
