@@ -314,6 +314,42 @@ class CaptureAccumulator:
         if drop:
             self.events = [event for index, event in enumerate(self.events) if index not in drop]
 
+    def _drop_redundant_reswitches(self, identities: Mapping[str, str]) -> None:
+        """Un switch que confirma otra vez al mismo ocupante no es un relevo.
+
+        COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender): dos vías de lectura
+        distintas -coincidencia directa de especie por HUD, y una
+        identidad sin resolver que sólo se le liga después- narraron el
+        mismo regreso de Basculegion a p2a dos veces, diez segundos
+        aparte, sin ningún faint ni withdrew de por medio. `_drop_ghost_reentries`
+        no lo atrapa: exige que la segunda lectura sea una identidad sin
+        resolver Y una lectura de 0 PS reciente en el mismo slot, y aquí
+        ninguna de las dos se cumple -Basculegion vuelve sano, no a 0. Sólo
+        al cerrar la batalla, con las identidades ya resueltas a especie,
+        se puede ver que las dos lecturas son la misma; antes de eso una
+        decía "Basculegion" y la otra un identificador interno distinto.
+        """
+
+        last_species: dict[str, str] = {}
+        drop: set[int] = set()
+        for index, event in enumerate(self.events):
+            slot = event.slot
+            if not slot:
+                continue
+            if event.kind in {"switch", "drag"}:
+                species = identities.get(event.species or "", event.species or "")
+                if last_species.get(slot) == species:
+                    drop.add(index)
+                else:
+                    last_species[slot] = species
+                continue
+            if event.kind == "faint":
+                last_species.pop(slot, None)
+
+        if drop:
+            self.events = [event for index, event in enumerate(self.events) if index not in drop]
+
     def _reconcile_zero_hp(self) -> None:
         """0 PS o es un debilitado o fue ruido de OCR; nunca las dos cosas.
 
@@ -431,13 +467,14 @@ class CaptureAccumulator:
         self.events = reconciled
 
     def finalize(self, identities: Mapping[str, str] | None = None) -> CapturedBattle:
+        identity_map = dict(identities or {})
         self._drop_ghost_reentries()
         self._reconcile_zero_hp()
+        self._drop_redundant_reswitches(identity_map)
         if not self.winner:
             raise CaptureIncompleteError("No se pudo identificar el resultado de la batalla.")
         if not self.events:
             raise CaptureIncompleteError("No se detectaron eventos de batalla.")
-        identity_map = dict(identities or {})
 
         def resolved(values: Iterable[str]) -> tuple[str, ...]:
             return tuple(identity_map.get(value, value) for value in values)

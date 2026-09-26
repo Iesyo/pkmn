@@ -632,6 +632,76 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertEqual(len(accumulator.events), 1)
 
+    def test_finalize_drops_a_redundant_reswitch_of_the_same_occupant(self) -> None:
+        """COL-102, reapertura estructural del 26 sep, job real
+        `10a7fba6fda04585`, partida 5 (Ender): dos vías de lectura
+        narraron el mismo regreso de Basculegion a p2a dos veces, diez
+        segundos aparte y sin ningún faint/withdrew de por medio -una por
+        especie resuelta directamente, otra por una identidad que recién
+        se ata a esa misma especie después. `_drop_ghost_reentries` no lo
+        atrapa: exige una lectura de 0 PS reciente y una identidad sin
+        resolver a la vez, y aquí Basculegion vuelve sano y la segunda
+        lectura sólo se resuelve a esa especie al cerrar la batalla, no
+        antes -por eso hace falta un pase aparte, después de resolver
+        identidades.
+        """
+
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=356_000, slot="p2a",
+                species="Basculegion", health="100/100",
+            ),
+            BattleEvent(kind="move", timestamp_ms=360_000, slot="p1a", move="Psychic Terrain"),
+            BattleEvent(
+                kind="switch", timestamp_ms=366_000, slot="p2a",
+                species="__champions_actor_p2_0001__",
+            ),
+        ]
+
+        accumulator._drop_redundant_reswitches({"__champions_actor_p2_0001__": "Basculegion"})
+
+        switches = [event for event in accumulator.events if event.kind == "switch" and event.slot == "p2a"]
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0].timestamp_ms, 356_000)
+
+    def test_a_switch_to_a_different_species_is_not_dropped(self) -> None:
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=100_000, slot="p2a",
+                species="Basculegion", health="100/100",
+            ),
+            BattleEvent(
+                kind="switch", timestamp_ms=160_000, slot="p2a",
+                species="Pelipper", health="100/100",
+            ),
+        ]
+
+        accumulator._drop_redundant_reswitches({})
+
+        switches = [event for event in accumulator.events if event.kind == "switch" and event.slot == "p2a"]
+        self.assertEqual(len(switches), 2)
+
+    def test_a_reentry_after_a_faint_is_not_dropped(self) -> None:
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(
+                kind="switch", timestamp_ms=100_000, slot="p2a",
+                species="Basculegion", health="100/100",
+            ),
+            BattleEvent(kind="faint", timestamp_ms=150_000, slot="p2a", species="Basculegion"),
+            BattleEvent(
+                kind="switch", timestamp_ms=160_000, slot="p2a",
+                species="Basculegion", health="100/100",
+            ),
+        ]
+
+        accumulator._drop_redundant_reswitches({})
+
+        switches = [event for event in accumulator.events if event.kind == "switch" and event.slot == "p2a"]
+        self.assertEqual(len(switches), 2)
+
     def test_accumulator_collapses_interleaved_hp_animation_frames(self) -> None:
         accumulator = CaptureAccumulator(CaptureSeed())
         accumulator.apply(
