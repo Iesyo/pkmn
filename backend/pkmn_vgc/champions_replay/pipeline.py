@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, Sequence
 
 from .detector import DetectionError, FrameDetector
 from .models import (
@@ -533,7 +533,7 @@ def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75
 
 
 def risk_windows(
-    battles: Iterable[CapturedBattle],
+    event_groups: Iterable[Sequence[BattleEvent]],
     *,
     margin_ms: int = 3_000,
     low_health_ratio: float = 0.15,
@@ -553,13 +553,21 @@ def risk_windows(
     fase de Team Preview/menú (COL-102, commit `868ac09`) ya se corrigió de
     raíz y no depende de la densidad de muestreo.
 
+    Recibe secuencias de eventos, no necesariamente de un `CapturedBattle`
+    válido: una batalla que se descartó en la pasada barata (identidad sin
+    especie, por ejemplo) no deja de haber pasado, y sus eventos -aunque
+    nunca lleguen a un replay- son la única pista de en qué instante del
+    vídeo se perdió. Sin pasarle también esos eventos, la batalla se
+    descartaría igual en la relectura densa: nunca llegaría a beneficiarse
+    porque nada la habría marcado como zona de riesgo.
+
     Devuelve rangos (inicio_ms, fin_ms) ya fusionados y ordenados, listos
     para pasarle a una fuente de vídeo que sólo re-muestree esos tramos.
     """
 
     marks: list[int] = []
-    for battle in battles:
-        for event in battle.events:
+    for events in event_groups:
+        for event in events:
             if event.kind in {"faint", "switch", "drag"}:
                 marks.append(event.timestamp_ms)
                 continue
@@ -610,6 +618,7 @@ class ReplayCapturePipeline:
         total_frames: int | None = None,
         on_progress: Callable[[CaptureProgress], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
+        on_incomplete_battle: Callable[[tuple[BattleEvent, ...]], None] | None = None,
         max_consecutive_detection_errors: int = 3,
     ) -> tuple[CapturedBattle, ...]:
         if max_battles < 0:
@@ -706,6 +715,15 @@ class ReplayCapturePipeline:
                             f"Cierre de batalla descartado ({incomplete_battles}): {error} "
                             "El análisis continuará buscando la siguiente batalla."
                         )
+                    # COL-102: una batalla descartada no deja de haber pasado
+                    # -sus eventos, aunque no lleguen a un CapturedBattle
+                    # válido, son la única pista de en qué instante del
+                    # vídeo se perdió. Sin esto, `risk_windows` sólo ve lo
+                    # que sí se armó del todo y una batalla que se cae en la
+                    # pasada barata nunca llega a beneficiarse de la
+                    # relectura densa -se descarta igual la segunda vez.
+                    if on_incomplete_battle and accumulator.events:
+                        on_incomplete_battle(tuple(accumulator.events))
                     accumulator = CaptureAccumulator(self.seed)
                     awaiting_next_start = True
                     reset_detector_battle_state()

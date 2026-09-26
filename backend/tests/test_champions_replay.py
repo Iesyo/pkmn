@@ -125,7 +125,6 @@ class ChampionsReplayTests(unittest.TestCase):
         # nació en un faint, un switch/drag, o una lectura de HP cerca de 0
         # -no en cualquier turno. Sirve para decidir, sin releer todo el
         # vídeo, qué tramos merecen más fps la próxima vez.
-        battle = self.capture()
         events = (
             BattleEvent(kind="turn", timestamp_ms=0, turn=1),
             BattleEvent(kind="move", timestamp_ms=10_000, slot="p1a", move="Tackle"),
@@ -133,12 +132,8 @@ class ChampionsReplayTests(unittest.TestCase):
             BattleEvent(kind="faint", timestamp_ms=120_000, slot="p2b", species="Milotic"),
             BattleEvent(kind="switch", timestamp_ms=200_000, slot="p2b", species="Rillaboom"),
         )
-        battle = CapturedBattle(
-            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
-            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
-        )
 
-        windows = risk_windows((battle,), margin_ms=3_000)
+        windows = risk_windows((events,), margin_ms=3_000)
 
         self.assertEqual(
             windows,
@@ -146,33 +141,36 @@ class ChampionsReplayTests(unittest.TestCase):
         )
 
     def test_risk_windows_merge_overlapping_margins(self) -> None:
-        battle = self.capture()
         events = (
             BattleEvent(kind="damage", timestamp_ms=10_000, slot="p2a", species="Salamence", health="5/100"),
             BattleEvent(kind="faint", timestamp_ms=12_000, slot="p2a", species="Salamence"),
         )
-        battle = CapturedBattle(
-            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
-            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
-        )
 
-        windows = risk_windows((battle,), margin_ms=3_000)
+        windows = risk_windows((events,), margin_ms=3_000)
 
         self.assertEqual(windows, ((7_000, 15_000),))
 
     def test_risk_windows_ignore_a_stable_battle(self) -> None:
-        battle = self.capture()
         events = (
             BattleEvent(kind="turn", timestamp_ms=0, turn=1),
             BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Tackle"),
             BattleEvent(kind="damage", timestamp_ms=2_000, slot="p2a", species="Salamence", health="80/100"),
         )
-        battle = CapturedBattle(
-            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
-            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
+
+        self.assertEqual(risk_windows((events,)), ())
+
+    def test_risk_windows_include_a_battle_that_never_finished_capturing(self) -> None:
+        # COL-102: una batalla que se descarta en la pasada barata (por
+        # ejemplo, una identidad sin especie) no deja de haber pasado en el
+        # vídeo. Si sus eventos crudos no entran también, ese instante nunca
+        # queda marcado y la relectura densa nunca la rescata.
+        incomplete_battle_events = (
+            BattleEvent(kind="switch", timestamp_ms=90_000, slot="p1a", species="Rillaboom"),
         )
 
-        self.assertEqual(risk_windows((battle,)), ())
+        windows = risk_windows((incomplete_battle_events,), margin_ms=3_000)
+
+        self.assertEqual(windows, ((87_000, 93_000),))
 
     def test_keeps_a_mega_form_after_switching_out_and_back_in(self) -> None:
         battle = self.capture()
@@ -1164,6 +1162,46 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(len(captures), 1)
         self.assertEqual(captures[0].winner, "p2")
         self.assertTrue(any("descartado" in warning for warning in warnings))
+
+    def test_pipeline_reports_the_raw_events_of_a_discarded_battle(self) -> None:
+        # COL-102: una batalla descartada no deja de haber pasado -sus
+        # eventos son la única pista de en qué instante del vídeo se
+        # perdió, para que `risk_windows` pueda marcarlo y una relectura
+        # densa tenga una oportunidad real de rescatarla.
+        frames = [
+            FramePacket(index=index, timestamp_ms=index * 1_000, image=str(index).encode())
+            for index in range(4)
+        ]
+        detections = {
+            0: FrameDetections(
+                events=(BattleEvent(kind="message", timestamp_ms=0, value="WhatsApp notification."),),
+                battle_started=True,
+            ),
+            1: FrameDetections(winner="p1", battle_complete=True),
+            2: FrameDetections(
+                p2_team=("Miraidon",),
+                events=(BattleEvent(kind="turn", timestamp_ms=2_000, turn=1),),
+                battle_started=True,
+            ),
+            3: FrameDetections(winner="p2", battle_complete=True),
+        }
+
+        class ResettableSequenceDetector:
+            def detect(self, frame: FramePacket) -> FrameDetections:
+                return detections[frame.index]
+
+            def reset_battle_state(self) -> None:
+                return None
+
+        incomplete: list[tuple[BattleEvent, ...]] = []
+        ReplayCapturePipeline(
+            frames,
+            ResettableSequenceDetector(),
+            CaptureSeed(p1_team=("Kleavor",)),
+        ).capture(max_battles=0, on_incomplete_battle=incomplete.append)
+
+        self.assertEqual(len(incomplete), 1)
+        self.assertEqual([event.kind for event in incomplete[0]], ["message"])
 
     def test_pipeline_rejects_negative_battle_limit(self) -> None:
         with self.assertRaisesRegex(ValueError, "usa 0"):

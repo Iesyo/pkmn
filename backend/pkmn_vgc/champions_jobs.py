@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
-from .champions_replay.models import CapturedBattle, ReplayDocument
+from .champions_replay.models import BattleEvent, CapturedBattle, ReplayDocument
 from .champions_replay.ocr_detector import (
     ChampionsOcrDetector,
     OcrTraceDetector,
@@ -83,13 +83,20 @@ def _default_processor(
         )
 
     def replay_from_trace(
-        path: Path, *, on_warning: Callable[[str], None]
+        path: Path,
+        *,
+        on_warning: Callable[[str], None],
+        on_incomplete_battle: Callable[[tuple[BattleEvent, ...]], None] | None = None,
     ) -> tuple[CapturedBattle, ...]:
         return ReplayCapturePipeline(
             OcrTraceFrameSource(path=path),
             OcrTraceDetector.from_trace(path, context=detector_context),
             seed,
-        ).capture(max_battles=max_battles, on_warning=on_warning)
+        ).capture(
+            max_battles=max_battles,
+            on_warning=on_warning,
+            on_incomplete_battle=on_incomplete_battle,
+        )
 
     source = VideoFrameSource(path=video_path, sample_fps=sample_fps)
     ReplayCapturePipeline(source, build_detector(trace_path), seed).capture(
@@ -102,7 +109,12 @@ def _default_processor(
     # sabiendo desde el primer frame de cada batalla lo que el vídeo sólo
     # reveló más tarde (el roster rival, los motes finales). Tarda segundos
     # y no vuelve al vídeo.
-    draft_captures = replay_from_trace(trace_path, on_warning=lambda _message: None)
+    incomplete_battle_events: list[tuple[BattleEvent, ...]] = []
+    draft_captures = replay_from_trace(
+        trace_path,
+        on_warning=lambda _message: None,
+        on_incomplete_battle=incomplete_battle_events.append,
+    )
 
     # COL-102, reapertura estructural del 25 sep: casi toda una batalla es
     # estable; los bugs de esa ronda nacieron todos en el mismo puñado de
@@ -112,7 +124,15 @@ def _default_processor(
     # se releen sólo esos instantes a más fps, con el resto del vídeo al
     # ritmo de siempre. Si el borrador no tiene ningún instante de riesgo,
     # no hay segunda pasada: cuesta lo mismo que antes.
-    windows = risk_windows(draft_captures)
+    #
+    # Una batalla que el borrador descartó entera (identidad sin especie,
+    # por ejemplo) no deja de haber pasado en el vídeo: sus eventos crudos
+    # entran también, para que su instante de riesgo quede marcado y la
+    # relectura densa tenga una oportunidad real de rescatarla -sin esto,
+    # se descartaría igual la segunda vez, porque nada la habría señalado.
+    windows = risk_windows(
+        [capture.events for capture in draft_captures] + incomplete_battle_events
+    )
     if not windows:
         return tuple(build_replay_document(capture) for capture in draft_captures)
 
