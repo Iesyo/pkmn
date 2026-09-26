@@ -26,6 +26,7 @@ from pkmn_vgc.champions_replay.pipeline import (
     CaptureSeed,
     ReplayCapturePipeline,
     review_capture,
+    risk_windows,
 )
 from pkmn_vgc.champions_replay.showdown import (
     _with_known_crits,
@@ -36,7 +37,13 @@ from pkmn_vgc.champions_replay.showdown import (
     render_replay_html,
     write_replay_artifacts,
 )
-from pkmn_vgc.champions_replay.sources import FramePacket, LiveFrameSource, VideoFrameSource, iter_mjpeg
+from pkmn_vgc.champions_replay.sources import (
+    FramePacket,
+    LiveFrameSource,
+    SegmentedVideoFrameSource,
+    VideoFrameSource,
+    iter_mjpeg,
+)
 
 DATA = Path(__file__).with_name("data")
 
@@ -112,6 +119,60 @@ class ChampionsReplayTests(unittest.TestCase):
 
         self.assertIn("|detailschange|p1a: Kleavor|Kleavor-Mega, L50", document.log)
         self.assertIn("|-mega|p1a: Kleavor|Kleavor|Kleavorite", document.log)
+
+    def test_risk_windows_mark_faints_switches_and_low_health(self) -> None:
+        # COL-102, reapertura estructural del 25 sep: cada bug de esta ronda
+        # nació en un faint, un switch/drag, o una lectura de HP cerca de 0
+        # -no en cualquier turno. Sirve para decidir, sin releer todo el
+        # vídeo, qué tramos merecen más fps la próxima vez.
+        battle = self.capture()
+        events = (
+            BattleEvent(kind="turn", timestamp_ms=0, turn=1),
+            BattleEvent(kind="move", timestamp_ms=10_000, slot="p1a", move="Tackle"),
+            BattleEvent(kind="damage", timestamp_ms=50_000, slot="p2a", species="Salamence", health="5/100"),
+            BattleEvent(kind="faint", timestamp_ms=120_000, slot="p2b", species="Milotic"),
+            BattleEvent(kind="switch", timestamp_ms=200_000, slot="p2b", species="Rillaboom"),
+        )
+        battle = CapturedBattle(
+            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
+            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
+        )
+
+        windows = risk_windows((battle,), margin_ms=3_000)
+
+        self.assertEqual(
+            windows,
+            ((47_000, 53_000), (117_000, 123_000), (197_000, 203_000)),
+        )
+
+    def test_risk_windows_merge_overlapping_margins(self) -> None:
+        battle = self.capture()
+        events = (
+            BattleEvent(kind="damage", timestamp_ms=10_000, slot="p2a", species="Salamence", health="5/100"),
+            BattleEvent(kind="faint", timestamp_ms=12_000, slot="p2a", species="Salamence"),
+        )
+        battle = CapturedBattle(
+            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
+            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
+        )
+
+        windows = risk_windows((battle,), margin_ms=3_000)
+
+        self.assertEqual(windows, ((7_000, 15_000),))
+
+    def test_risk_windows_ignore_a_stable_battle(self) -> None:
+        battle = self.capture()
+        events = (
+            BattleEvent(kind="turn", timestamp_ms=0, turn=1),
+            BattleEvent(kind="move", timestamp_ms=1_000, slot="p1a", move="Tackle"),
+            BattleEvent(kind="damage", timestamp_ms=2_000, slot="p2a", species="Salamence", health="80/100"),
+        )
+        battle = CapturedBattle(
+            p1=battle.p1, p2=battle.p2, events=events, winner=battle.winner,
+            started_at=battle.started_at, format=battle.format, source_mode=battle.source_mode,
+        )
+
+        self.assertEqual(risk_windows((battle,)), ())
 
     def test_keeps_a_mega_form_after_switching_out_and_back_in(self) -> None:
         battle = self.capture()
@@ -1165,6 +1226,105 @@ class ChampionsReplayTests(unittest.TestCase):
             source = VideoFrameSource(path=video, sample_fps=2, max_frames=15)
 
             self.assertEqual(source.estimated_frame_count(), 15)
+
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.run")
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffprobe")
+    def test_segmented_source_covers_the_whole_video_around_a_dense_window(
+        self, _which: object, run: MagicMock,
+    ) -> None:
+        # COL-102, reapertura estructural del 25 sep: en vez de subir el fps
+        # de punta a punta, sólo se relee más denso alrededor de los
+        # instantes de riesgo (`risk_windows`); el resto del vídeo se queda
+        # al ritmo de siempre.
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="30.0\n", stderr="")
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "battle.mp4"
+            video.touch()
+            source = SegmentedVideoFrameSource(
+                path=video,
+                dense_windows=((10_000, 15_000),),
+                base_fps=2.0,
+                dense_fps=8.0,
+            )
+
+            self.assertEqual(
+                source._segments(),
+                [(0, 10_000, 2.0), (10_000, 15_000, 8.0), (15_000, 30_000, 2.0)],
+            )
+            self.assertEqual(source.estimated_frame_count(), 90)
+
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.run")
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffprobe")
+    def test_segmented_source_clips_a_window_past_the_end_of_the_video(
+        self, _which: object, run: MagicMock,
+    ) -> None:
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="30.0\n", stderr="")
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "battle.mp4"
+            video.touch()
+            source = SegmentedVideoFrameSource(
+                path=video, dense_windows=((27_000, 40_000),), base_fps=2.0, dense_fps=8.0,
+            )
+
+            self.assertEqual(
+                source._segments(),
+                [(0, 27_000, 2.0), (27_000, 30_000, 8.0)],
+            )
+
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.run")
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffprobe")
+    def test_segmented_source_with_no_windows_is_a_single_base_fps_pass(
+        self, _which: object, run: MagicMock,
+    ) -> None:
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="30.0\n", stderr="")
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "battle.mp4"
+            video.touch()
+            source = SegmentedVideoFrameSource(path=video, dense_windows=(), base_fps=2.0, dense_fps=8.0)
+
+            self.assertEqual(source._segments(), [(0, 30_000, 2.0)])
+
+    @patch("pkmn_vgc.champions_replay.sources.shutil.which", return_value="ffmpeg")
+    @patch("pkmn_vgc.champions_replay.sources.subprocess.Popen")
+    def test_segmented_source_yields_real_video_timestamps_per_segment(
+        self, popen: MagicMock, _which: object,
+    ) -> None:
+        """Cada tramo es su propio proceso de FFmpeg; los timestamps que
+        produce son los del vídeo real (no reiniciados por tramo)."""
+
+        jpeg = b"\xff\xd8x\xff\xd9"
+
+        def _process(frame_count: int) -> MagicMock:
+            process = MagicMock()
+            process.stdout = io.BytesIO(jpeg * frame_count)
+            process.poll.return_value = 0
+            process.wait.return_value = 0
+            process.returncode = 0
+            return process
+
+        # Segmentos [0,2000) a 2 fps (4 frames) y [2000,3000) a 8 fps (8 frames).
+        popen.side_effect = [_process(4), _process(8)]
+        source = SegmentedVideoFrameSource.__new__(SegmentedVideoFrameSource)
+        source.path = Path("battle.mp4")
+        source.dense_windows = ((2_000, 3_000),)
+        source.base_fps = 2.0
+        source.dense_fps = 8.0
+        source.ffmpeg_binary = "ffmpeg"
+        source.ffprobe_binary = "ffprobe"
+
+        with patch.object(SegmentedVideoFrameSource, "_duration_ms", return_value=3_000):
+            frames = list(source)
+
+        self.assertEqual(popen.call_count, 2)
+        self.assertEqual(
+            [frame.timestamp_ms for frame in frames],
+            [0, 500, 1_000, 1_500, 2_000, 2_125, 2_250, 2_375, 2_500, 2_625, 2_750, 2_875],
+        )
+        self.assertEqual([frame.index for frame in frames], list(range(12)))
+        first_command, second_command = popen.call_args_list[0].args[0], popen.call_args_list[1].args[0]
+        self.assertIn("fps=2", first_command)
+        self.assertIn("fps=8", second_command)
+        self.assertIn("2.000", second_command)  # -ss del segundo tramo
 
     def test_rejects_remote_ollama_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "localmente"):

@@ -168,6 +168,180 @@ class VideoFrameSource(_FfmpegMjpegSource):
         return min(estimate, self.max_frames) if self.max_frames is not None else estimate
 
 
+def _probe_duration_seconds(path: Path, *, ffprobe_binary: str = "ffprobe") -> float | None:
+    ffprobe = shutil.which(ffprobe_binary)
+    if not ffprobe:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        duration_seconds = float(result.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if result.returncode or duration_seconds <= 0:
+        return None
+    return duration_seconds
+
+
+@dataclass(slots=True)
+class SegmentedVideoFrameSource:
+    """Relee sólo ciertos tramos de un vídeo ya analizado, a más fps.
+
+    COL-102, reapertura estructural del 25 sep: casi toda una batalla es
+    estable -nada cambia- y los bugs de esta ronda nacieron todos en el
+    mismo puñado de instantes (un `faint`, un `switch`, una barra de HP
+    cerca de 0), no repartidos parejo por todo el vídeo. Subir el fps de
+    principio a fin gasta la mayor parte del tiempo extra en tramos que ya
+    salían bien. `risk_windows` (`pipeline.py`) marca esos instantes desde
+    una primera pasada barata; esta fuente vuelve a leer sólo esos tramos,
+    a `dense_fps`, y el resto del vídeo a `base_fps` -sin releerlo entero
+    dos veces al mismo ritmo.
+
+    Cada tramo es su propia invocación de FFmpeg con `-ss` (siembra rápida,
+    por keyframe: puede empezar un poco antes de lo pedido, nunca después
+    -no pierde nada, en el peor caso relee un poco de más). Los timestamps
+    que produce son los del vídeo real, no reiniciados por tramo, para que
+    encajen en la misma traza que la primera pasada.
+    """
+
+    path: Path = Path()
+    dense_windows: tuple[tuple[int, int], ...] = ()
+    base_fps: float = 2.0
+    dense_fps: float = 8.0
+    ffmpeg_binary: str = "ffmpeg"
+    ffprobe_binary: str = "ffprobe"
+
+    def __post_init__(self) -> None:
+        if self.base_fps <= 0 or self.base_fps > 30:
+            raise ValueError("base_fps debe estar entre 0 y 30.")
+        if self.dense_fps <= 0 or self.dense_fps > 30:
+            raise ValueError("dense_fps debe estar entre 0 y 30.")
+        if not self.path.is_file():
+            raise CaptureSourceError(f"No encontramos el vídeo: {self.path}")
+
+    def _duration_ms(self) -> int | None:
+        duration_seconds = _probe_duration_seconds(self.path, ffprobe_binary=self.ffprobe_binary)
+        return round(duration_seconds * 1000) if duration_seconds is not None else None
+
+    def _segments(self) -> list[tuple[int, int, float]]:
+        """(inicio_ms, fin_ms, fps) que cubren todo el vídeo, sin huecos."""
+
+        duration_ms = self._duration_ms()
+        windows = sorted(
+            (max(0, start), end)
+            for start, end in self.dense_windows
+            if end > start
+        )
+        merged: list[list[int]] = []
+        for start, end in windows:
+            if duration_ms is not None:
+                end = min(end, duration_ms)
+            if end <= start:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+
+        segments: list[tuple[int, int, float]] = []
+        cursor = 0
+        for start, end in merged:
+            if start > cursor:
+                segments.append((cursor, start, self.base_fps))
+            segments.append((start, end, self.dense_fps))
+            cursor = end
+        if duration_ms is None:
+            if not merged:
+                segments.append((cursor, cursor, self.base_fps))
+        elif cursor < duration_ms:
+            segments.append((cursor, duration_ms, self.base_fps))
+        return segments
+
+    def estimated_frame_count(self) -> int | None:
+        duration_ms = self._duration_ms()
+        if duration_ms is None:
+            return None
+        total = 0.0
+        for start, end, fps in self._segments():
+            total += (end - start) / 1000 * fps
+        return max(1, ceil(total))
+
+    def __iter__(self) -> Iterator[FramePacket]:
+        if not shutil.which(self.ffmpeg_binary):
+            raise CaptureSourceError(
+                "FFmpeg no está instalado o no aparece en PATH; es necesario para leer vídeo."
+            )
+        segments = self._segments()
+        if not segments:
+            return
+        index = 0
+        for start_ms, end_ms, fps in segments:
+            duration_s = (end_ms - start_ms) / 1000
+            if duration_s <= 0:
+                continue
+            command = [
+                self.ffmpeg_binary,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start_ms / 1000:.3f}",
+                "-i",
+                str(self.path),
+                "-t",
+                f"{duration_s:.3f}",
+                "-an",
+                "-vf",
+                f"fps={fps:g}",
+                "-q:v",
+                "4",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ]
+            with tempfile.TemporaryFile() as stderr_stream:
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr_stream)
+                assert process.stdout is not None
+                stopped_early = False
+                try:
+                    for offset, image in enumerate(iter_mjpeg(process.stdout)):
+                        timestamp_ms = start_ms + round(offset * 1000 / fps)
+                        if timestamp_ms >= end_ms and offset:
+                            break
+                        yield FramePacket(index=index, timestamp_ms=timestamp_ms, image=image)
+                        index += 1
+                except GeneratorExit:
+                    stopped_early = True
+                    raise
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
+                    process.stdout.close()
+                    stderr_stream.seek(0)
+                    stderr = stderr_stream.read()
+            if process.returncode and not stopped_early:
+                detail = stderr.decode("utf-8", errors="replace").strip()
+                raise CaptureSourceError(detail or "FFmpeg no pudo releer un tramo del vídeo.")
+
+
 @dataclass(slots=True)
 class OcrTraceFrameSource:
     path: Path = Path()

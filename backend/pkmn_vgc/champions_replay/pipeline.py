@@ -532,6 +532,56 @@ def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75
     return tuple(issues)
 
 
+def risk_windows(
+    battles: Iterable[CapturedBattle],
+    *,
+    margin_ms: int = 3_000,
+    low_health_ratio: float = 0.15,
+) -> tuple[tuple[int, int], ...]:
+    """Instantes de vídeo donde vale la pena volver a leer más denso.
+
+    COL-102, reapertura estructural del 25 sep: cada bug de esta ronda
+    (Kingambit, Salamence, Archaludon, Milotic, Rillaboom, Indeedee-F,
+    Zoroark) nació en el mismo tipo de instante -un `faint`, un
+    `switch`/`drag`, o una barra de HP cerca de 0- donde una sola lectura
+    de OCR mala, sin otra vecina con la que contrastarla a 2 fps, bastaba
+    para torcer el replay. La inmensa mayoría de una batalla es estable
+    -nada de eso pasa- así que releer todo el vídeo más denso desperdicia
+    la mayor parte del tiempo extra en tramos que ya salen bien. Esto marca
+    sólo los instantes de riesgo real, con un margen a cada lado para cubrir
+    la animación completa alrededor -no cada `turn`: el propio parpadeo de
+    fase de Team Preview/menú (COL-102, commit `868ac09`) ya se corrigió de
+    raíz y no depende de la densidad de muestreo.
+
+    Devuelve rangos (inicio_ms, fin_ms) ya fusionados y ordenados, listos
+    para pasarle a una fuente de vídeo que sólo re-muestree esos tramos.
+    """
+
+    marks: list[int] = []
+    for battle in battles:
+        for event in battle.events:
+            if event.kind in {"faint", "switch", "drag"}:
+                marks.append(event.timestamp_ms)
+                continue
+            if event.kind in {"damage", "heal"} and event.health:
+                current, _, maximum = event.health.partition("/")
+                if current.isdigit() and maximum.isdigit() and int(maximum) > 0:
+                    if int(current) / int(maximum) <= low_health_ratio:
+                        marks.append(event.timestamp_ms)
+    if not marks:
+        return ()
+
+    marks.sort()
+    windows: list[list[int]] = []
+    for mark in marks:
+        start, end = max(0, mark - margin_ms), mark + margin_ms
+        if windows and start <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], end)
+        else:
+            windows.append([start, end])
+    return tuple((start, end) for start, end in windows)
+
+
 class ReplayCapturePipeline:
     def __init__(self, source: FrameSource, detector: FrameDetector, seed: CaptureSeed) -> None:
         self.source = source

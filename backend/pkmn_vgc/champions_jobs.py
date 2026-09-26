@@ -14,15 +14,15 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from .champions_replay.cli import _seed_from_context
-from .champions_replay.models import ReplayDocument
+from .champions_replay.models import CapturedBattle, ReplayDocument
 from .champions_replay.ocr_detector import (
     ChampionsOcrDetector,
     OcrTraceDetector,
     load_champions_catalog,
 )
-from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline
+from .champions_replay.pipeline import CaptureProgress, ReplayCapturePipeline, risk_windows
 from .champions_replay.showdown import build_replay_document, write_replay_artifacts
-from .champions_replay.sources import OcrTraceFrameSource, VideoFrameSource
+from .champions_replay.sources import OcrTraceFrameSource, SegmentedVideoFrameSource, VideoFrameSource
 from .champions_replay.team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
 
 
@@ -54,19 +54,10 @@ def _default_processor(
     on_warning: Callable[[str], None],
 ) -> tuple[ReplayDocument, ...]:
     seed, detector_context = _seed_from_context(context, "video")
-    source = VideoFrameSource(path=video_path, sample_fps=sample_fps)
     trace_path = output_directory / "ocr.trace.jsonl"
     trace_path.unlink(missing_ok=True)
     catalog = load_champions_catalog()
     preview_resolver = ChampionsTeamPreviewResolver(catalog.species_types)
-    detector = ChampionsOcrDetector(
-        context=detector_context,
-        trace_path=trace_path,
-        team_preview_resolver=preview_resolver,
-        # El icono junto a cada mote rival es el mismo sprite del Team
-        # Preview: compararlo ata el mote a su especie sin deducir nada.
-        alias_resolver=ChampionsHudIconResolver(preview_resolver),
-    )
     # Fase 1, el único recorrido del vídeo: el OCR y todo lo que necesita la
     # imagen (sprites del Team Preview, motes del HUD, dónde empieza y acaba
     # cada batalla) quedan en la traza. Lo que esta fase decide sobre la
@@ -81,20 +72,69 @@ def _default_processor(
         if message not in reported:
             on_warning(message)
 
-    ReplayCapturePipeline(source, detector, seed).capture(
+    def build_detector(path: Path) -> ChampionsOcrDetector:
+        return ChampionsOcrDetector(
+            context=detector_context,
+            trace_path=path,
+            team_preview_resolver=preview_resolver,
+            # El icono junto a cada mote rival es el mismo sprite del Team
+            # Preview: compararlo ata el mote a su especie sin deducir nada.
+            alias_resolver=ChampionsHudIconResolver(preview_resolver),
+        )
+
+    def replay_from_trace(
+        path: Path, *, on_warning: Callable[[str], None]
+    ) -> tuple[CapturedBattle, ...]:
+        return ReplayCapturePipeline(
+            OcrTraceFrameSource(path=path),
+            OcrTraceDetector.from_trace(path, context=detector_context),
+            seed,
+        ).capture(max_battles=max_battles, on_warning=on_warning)
+
+    source = VideoFrameSource(path=video_path, sample_fps=sample_fps)
+    ReplayCapturePipeline(source, build_detector(trace_path), seed).capture(
         max_battles=max_battles,
         total_frames=source.estimated_frame_count(),
         on_progress=on_progress,
         on_warning=report_video_warning,
     )
-    # Fase 2: el replay se decide con la traza ya completa, sabiendo desde el
-    # primer frame de cada batalla lo que el vídeo sólo reveló más tarde (el
-    # roster rival, los motes finales). Tarda segundos y no vuelve al vídeo.
-    captures = ReplayCapturePipeline(
-        OcrTraceFrameSource(path=trace_path),
-        OcrTraceDetector.from_trace(trace_path, context=detector_context),
-        seed,
-    ).capture(max_battles=max_battles, on_warning=report_replay_warning)
+    # Fase 2, primer borrador: el replay se decide con la traza ya completa,
+    # sabiendo desde el primer frame de cada batalla lo que el vídeo sólo
+    # reveló más tarde (el roster rival, los motes finales). Tarda segundos
+    # y no vuelve al vídeo.
+    draft_captures = replay_from_trace(trace_path, on_warning=lambda _message: None)
+
+    # COL-102, reapertura estructural del 25 sep: casi toda una batalla es
+    # estable; los bugs de esa ronda nacieron todos en el mismo puñado de
+    # instantes (un faint, un switch, HP cerca de 0), no repartidos parejo
+    # por todo el vídeo. En vez de subir el fps de punta a punta -carísimo,
+    # y gasta la mayor parte del tiempo extra en tramos que ya salen bien-
+    # se releen sólo esos instantes a más fps, con el resto del vídeo al
+    # ritmo de siempre. Si el borrador no tiene ningún instante de riesgo,
+    # no hay segunda pasada: cuesta lo mismo que antes.
+    windows = risk_windows(draft_captures)
+    if not windows:
+        return tuple(build_replay_document(capture) for capture in draft_captures)
+
+    on_warning(
+        f"Releyendo {len(windows)} tramo(s) del vídeo a más fps para confirmar "
+        "instantes de riesgo (debilitados, cambios, HP cerca de 0)."
+    )
+    dense_trace_path = output_directory / "ocr.trace.dense.jsonl"
+    dense_trace_path.unlink(missing_ok=True)
+    dense_source = SegmentedVideoFrameSource(
+        path=video_path,
+        dense_windows=windows,
+        base_fps=sample_fps,
+        dense_fps=min(30.0, sample_fps * 4),
+    )
+    ReplayCapturePipeline(dense_source, build_detector(dense_trace_path), seed).capture(
+        max_battles=max_battles,
+        total_frames=dense_source.estimated_frame_count(),
+        on_progress=on_progress,
+        on_warning=report_video_warning,
+    )
+    captures = replay_from_trace(dense_trace_path, on_warning=report_replay_warning)
     return tuple(build_replay_document(capture) for capture in captures)
 
 

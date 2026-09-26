@@ -130,6 +130,62 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(trace_source.path, output / "ocr.trace.jsonl")
         self.assertIsInstance(trace_detector, OcrTraceDetector)
 
+    @patch("pkmn_vgc.champions_jobs.SegmentedVideoFrameSource")
+    @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
+    @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
+    @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
+    def test_a_risky_draft_triggers_a_denser_second_pass(
+        self,
+        source_type: MagicMock,
+        detector_type: MagicMock,
+        pipeline_type: MagicMock,
+        dense_source_type: MagicMock,
+    ) -> None:
+        # COL-102, reapertura estructural del 25 sep: un borrador con un
+        # faint/HP bajo dispara una segunda lectura, sólo de esos tramos,
+        # a más fps -no del vídeo entero de nuevo.
+        source_type.return_value.estimated_frame_count.return_value = 1
+        dense_source_type.return_value.estimated_frame_count.return_value = 1
+
+        def battle(rival: str, *, risky: bool) -> CapturedBattle:
+            events = (
+                (BattleEvent(kind="faint", timestamp_ms=10_000, slot="p2a", species="Salamence"),)
+                if risky
+                else (BattleEvent(kind="turn", timestamp_ms=1, turn=1),)
+            )
+            return CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide(rival, ("Metagross",), ("Metagross",)),
+                events=events,
+                winner="p1",
+            )
+
+        pipeline_type.return_value.capture.side_effect = [
+            (battle("primera lectura", risky=False),),
+            (battle("borrador riesgoso", risky=True),),
+            (battle("segunda lectura", risky=False),),
+            (battle("final confirmado", risky=False),),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            documents = _default_processor(
+                output / "video.mp4", {}, output, 2.0, 0, MagicMock(), MagicMock(),
+            )
+
+        self.assertEqual(documents[0].p2, "final confirmado")
+        self.assertEqual(source_type.call_count, 1)
+        self.assertEqual(dense_source_type.call_count, 1)
+        self.assertEqual(detector_type.call_count, 2)
+        self.assertEqual(pipeline_type.return_value.capture.call_count, 4)
+        _path, dense_windows_arg = (
+            dense_source_type.call_args.kwargs["path"],
+            dense_source_type.call_args.kwargs["dense_windows"],
+        )
+        self.assertEqual(dense_windows_arg, ((7_000, 13_000),))
+        final_trace_source, _detector, _seed = pipeline_type.call_args_list[3].args
+        self.assertEqual(final_trace_source.path, output / "ocr.trace.dense.jsonl")
+
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0
         real_replace = os.replace
