@@ -350,66 +350,6 @@ class CaptureAccumulator:
         if drop:
             self.events = [event for index, event in enumerate(self.events) if index not in drop]
 
-    def _settle_switch_in_hp(self) -> None:
-        """La primera lectura de HP de una entrada puede ser la barra a
-        mitad de animación, no el valor real de entrada.
-
-        Segundo corte de Roku, 26 sep, job real `10a7fba6fda04585`,
-        partida 5 (Ender): Pelipper ("MineMine") entra a p2a y el OCR lee
-        "74 %" en su primer frame. Confirmado contra el vídeo -no a
-        ciegas- sacando los fotogramas exactos (t≈2774.5 s a 2776.0 s): la
-        barra mostraba 100 % un instante antes de esa lectura y seguía
-        bajando, animando el golpe real que la dejó en 37 % un frame
-        después -el mismo valor que el evento de daño siguiente ya
-        registra bien; ese no se toca. El dígito de la entrada nunca se
-        leyó estable: no hay dos lecturas consecutivas iguales, así que no
-        hay forma de confiar en él sólo con esa lectura.
-
-        Acotado al patrón confirmado: sólo se corrige la PRIMERA aparición
-        de una identidad en la batalla (una reentrada legítima a media
-        vida no se toca), y sólo si un evento damage/heal del mismo slot
-        llega dentro de pocos frames -en `source_frame`, no en
-        `timestamp_ms`: un switch reconstruido desde un mensaje ("Ender
-        sent out MineMine") lleva su marca de tiempo retrasada a propósito
-        al primer movimiento pendiente (ver el comentario "Place the
-        reconstructed send-out immediately before that move" en
-        `ocr_detector.py`), así que puede diferir en segundos reales del
-        instante en que la pantalla realmente mostró esa lectura; el
-        frame de origen no miente- sin que un `move`/`turn` se interponga
-        antes: eso es lo que demuestra que la barra seguía en movimiento.
-        Sin esa corroboración no se toca nada -un switch aislado, sin nada
-        después que lo contradiga, puede ser un caso real de HP reducido
-        al entrar.
-        """
-
-        max_frame_gap = 6
-        seen_identities: set[str] = set()
-        for index, event in enumerate(self.events):
-            if event.kind not in {"switch", "drag"} or not event.slot or not event.species:
-                continue
-            first_appearance = event.species not in seen_identities
-            seen_identities.add(event.species)
-            if not first_appearance or not event.health or event.source_frame is None:
-                continue
-            current, _, maximum = event.health.partition("/")
-            if not current.isdigit() or not maximum.isdigit() or int(current) >= int(maximum):
-                continue
-            confirmed = False
-            for later in self.events[index + 1 :]:
-                if later.source_frame is None or later.source_frame - event.source_frame > max_frame_gap:
-                    break
-                if later.slot == event.slot and later.kind in {"damage", "heal"}:
-                    confirmed = True
-                    break
-                if later.kind in {"move", "turn"}:
-                    break
-            if not confirmed:
-                continue
-            settled = f"{maximum}/{maximum}"
-            self._last_event_at.pop(event.signature(), None)
-            self.events[index] = replace(event, health=settled)
-            self._last_event_at[self.events[index].signature()] = event.timestamp_ms
-
     def _reconcile_zero_hp(self) -> None:
         """0 PS o es un debilitado o fue ruido de OCR; nunca las dos cosas.
 
@@ -534,7 +474,6 @@ class CaptureAccumulator:
     ) -> CapturedBattle:
         identity_map = dict(identities or {})
         self._drop_ghost_reentries()
-        self._settle_switch_in_hp()
         self._reconcile_zero_hp()
         self._drop_redundant_reswitches(identity_map)
         if not self.winner:
@@ -620,8 +559,69 @@ class ReviewIssue:
     proposed_change: str | None = None
 
 
-def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75) -> tuple[ReviewIssue, ...]:
+def _switch_in_hp_issues(battle: CapturedBattle) -> tuple[ReviewIssue, ...]:
+    """Marca -no corrige- una lectura de entrada que puede ser la barra
+    a mitad de animación.
+
+    Roku, revisión del segundo corte, 26 sep: la versión anterior de esto
+    (`CaptureAccumulator._settle_switch_in_hp`) corregía la lectura a HP
+    completo sólo porque un evento damage/heal cercano probaba que la
+    barra seguía en movimiento -eso demuestra que la lectura de entrada
+    no es la final, pero NO demuestra que el valor final fuera el máximo.
+    El caso real que la motivó (Pelipper, job `10a7fba6fda04585`, partida
+    5) se confirmó mirando el vídeo directamente, no con nada que la
+    traza OCR pudiera probar por sí sola -el texto de esos frames nunca
+    dice "100 %" en ningún lado. Aplicar esa suposición en código sin esa
+    evidencia arriesgaba justamente lo contrario: una primera entrada
+    real a HP parcial (por un hazard, por ejemplo) con un golpe real poco
+    después habría quedado reescrita a 100 sin ninguna base.
+
+    Por eso esto ya no toca `battle.events`: reporta el mismo patrón
+    -primera aparición, HP bajo el máximo, un damage/heal del mismo slot
+    a pocos frames sin `move`/`turn` de por medio- como `ReviewIssue` con
+    el frame y la lectura vista, proponiendo el máximo como hipótesis a
+    confirmar, nunca como hecho.
+    """
+
+    max_frame_gap = 6
     issues: list[ReviewIssue] = []
+    seen_identities: set[str] = set()
+    for index, event in enumerate(battle.events):
+        if event.kind not in {"switch", "drag"} or not event.slot or not event.species:
+            continue
+        first_appearance = event.species not in seen_identities
+        seen_identities.add(event.species)
+        if not first_appearance or not event.health or event.source_frame is None:
+            continue
+        current, _, maximum = event.health.partition("/")
+        if not current.isdigit() or not maximum.isdigit() or int(current) >= int(maximum):
+            continue
+        confirmed = False
+        for later in battle.events[index + 1 :]:
+            if later.source_frame is None or later.source_frame - event.source_frame > max_frame_gap:
+                break
+            if later.slot == event.slot and later.kind in {"damage", "heal"}:
+                confirmed = True
+                break
+            if later.kind in {"move", "turn"}:
+                break
+        if not confirmed:
+            continue
+        issues.append(
+            ReviewIssue(
+                "warning",
+                f"{event.slot}: {event.species} entra con una lectura de HP ({event.health}) que puede "
+                "ser la barra a mitad de animación -sin confirmar contra el vídeo.",
+                frame=event.source_frame,
+                alternatives=(event.health,),
+                proposed_change=f"{maximum}/{maximum} (hipótesis, sin evidencia de traza)",
+            )
+        )
+    return tuple(issues)
+
+
+def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75) -> tuple[ReviewIssue, ...]:
+    issues: list[ReviewIssue] = [*_switch_in_hp_issues(battle)]
     for label, side in (("jugador", battle.p1), ("rival", battle.p2)):
         if len(side.team) != 6:
             issues.append(
