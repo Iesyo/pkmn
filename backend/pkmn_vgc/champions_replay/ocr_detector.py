@@ -251,6 +251,34 @@ def _accelerator_params(providers: Sequence[str]) -> dict[str, object]:
     return {"EngineConfig.onnxruntime.use_dml": True}
 
 
+# COL-102, reapertura estructural del 25 sep: un mensaje de batalla que
+# empieza en minúscula y contiene uno de los verbos que sólo aparecen en
+# mensajes del juego perdió su inicio -"The opposing", un mote- en la
+# detección de texto. Dos chequeos separados, no uno solo: si el verbo
+# tuviera que aparecer DESPUÉS de la letra minúscula inicial, un mensaje
+# que perdió el actor entero ("used Follow Me!", el verbo ya en la
+# posición 0) nunca calzaría -la propia letra iniziale "consumiría" la
+# que le hace falta al verbo. "to send into battle." (segunda línea del
+# banner de Team Preview) empieza en minúscula de verdad y no lleva
+# ninguno de estos verbos: no entra por error.
+_STARTS_LOWERCASE = re.compile(r"^[a-z]")
+_MESSAGE_VERB = re.compile(
+    r"\b("
+    r"used|fainted|protected itself|is ready to help|"
+    r"became the center|has Mega Evolved|hung on using|"
+    r"had its HP restored|had its energy drained|"
+    r"lost some of|rose sharply|rose|fell|harshly fell|"
+    r"hurt by its|damaged by the recoil|absorbed electricity|"
+    r"was hurt by|put in a substitute|protected by"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_a_truncated_message(text: str) -> bool:
+    return bool(_STARTS_LOWERCASE.match(text)) and bool(_MESSAGE_VERB.search(text))
+
+
 class RapidOcrEngine:
     """OCR local y rápido. Los imports pesados se mantienen opcionales."""
 
@@ -387,66 +415,123 @@ class RapidOcrEngine:
             return decoded
         return self._np.ascontiguousarray(self._np.rot90(decoded, k=-quarter_turns))
 
-    def _rescan_thin_digits(self, oriented: Any, lines: tuple[OcrLine, ...]) -> tuple[OcrLine, ...]:
-        """Recorta y amplía una lectura de HP sospechosa antes de aceptarla.
+    def _rescan_zone(
+        self,
+        oriented: Any,
+        line: OcrLine,
+        *,
+        pad_left: float,
+        pad_right: float,
+        pad_vertical: float,
+        upscale: float,
+        accept: Callable[[OcrLine], bool],
+    ) -> OcrLine | None:
+        """Recorta alrededor de `line`, amplía y relee sólo ese recorte.
 
-        COL-102, reapertura estructural del 25 sep: un dígito fino de la
-        barra de HP (el "1" de 100 %, el "0" de un debilitado) puede
-        perderse en la detección de texto sobre el frame completo, aunque
-        el resto de la lectura -el "%" suelto- sí se detecte. Confirmado
-        contra un caso real (job `90403f16712d4d41`): tres frames seguidos
-        donde la pantalla completa leía "%" solo; recortar esa misma región
-        y ampliarla 6x, en el mismo frame, sin releer nada, recuperó "0%"
-        con ~97 % de confianza en los tres. No hace falta esperar a que
-        otro frame corrija el dato -se lee bien desde el origen.
-
-        Acotado a propósito al patrón ya confirmado (un "%" solo, sin
-        dígitos): recortar cualquier número suelto sin corroborar que es
-        HP arriesgaría confundir otros contadores de la pantalla (el "3/4"
-        de Team Preview, un timer) con una barra de vida.
+        `pad_left`/`pad_right` son múltiplos del propio ancho de `line`: el
+        texto perdido casi siempre precede a lo que sí se detectó (un
+        dígito antes del "%", un nombre antes del verbo), así que el
+        margen a la izquierda suele ser mayor que a la derecha. `accept`
+        decide si una lectura del recorte es la corrección real -no basta
+        con que aparezca algo, tiene que dejar de faltar lo que faltaba.
         """
 
         height, width = oriented.shape[:2]
+        line_width = max(line.right - line.left, 1e-6)
+        line_height = max(line.bottom - line.top, 1e-6)
+        left = max(0.0, line.left - line_width * pad_left)
+        right = min(1.0, line.right + line_width * pad_right)
+        top = max(0.0, line.top - line_height * pad_vertical)
+        bottom = min(1.0, line.bottom + line_height * pad_vertical)
+        x0, x1 = round(left * width), round(right * width)
+        y0, y1 = round(top * height), round(bottom * height)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return None
+        crop = oriented[y0:y1, x0:x1]
+        upscaled = self._cv2.resize(
+            crop, None, fx=upscale, fy=upscale, interpolation=self._cv2.INTER_CUBIC
+        )
+        rescanned = self._read_decoded(upscaled)
+        best = max(
+            (candidate for candidate in rescanned if accept(candidate)),
+            key=lambda candidate: candidate.confidence,
+            default=None,
+        )
+        if best is None:
+            return None
+        crop_width = max(right - left, 1e-6)
+        crop_height = max(bottom - top, 1e-6)
+        return OcrLine(
+            text=best.text,
+            confidence=best.confidence,
+            left=left + best.left * crop_width,
+            top=top + best.top * crop_height,
+            right=left + best.right * crop_width,
+            bottom=top + best.bottom * crop_height,
+        )
+
+    def _rescan_thin_digits(self, oriented: Any, lines: tuple[OcrLine, ...]) -> tuple[OcrLine, ...]:
+        """Recorta y amplía una lectura sospechosa de una zona conocida antes
+        de aceptarla -sin releer nada del vídeo, en el mismo frame.
+
+        COL-102, reapertura estructural del 25 sep: dos formas confirmadas
+        de la misma causa. Un dígito fino de la barra de HP (el "1" de
+        100 %, el "0" de un debilitado) puede perderse en la detección de
+        texto sobre el frame completo, aunque el resto de la lectura -el
+        "%" suelto- sí se detecte (job `90403f16712d4d41`: tres frames
+        seguidos leían "%" solo; recortar esa región y ampliarla 6x
+        recuperó "0%" con ~97 % de confianza en los tres). Un mensaje de
+        batalla puede perder del mismo modo su palabra inicial -"The
+        opposing", un mote- y quedar como "e Dee used Follow Me!" o
+        "enant used Aqua Jet!"; mismo mecanismo, buscado y confirmado
+        contra las trazas de los tres jobs de hoy (13 casos reales).
+
+        Acotado a propósito a estos dos patrones confirmados -no a "toda
+        zona de interés"-: recortar un número suelto sin corroborar que es
+        HP arriesgaría confundir otro contador de pantalla (el "3/4" de
+        Team Preview que causó el bug de Kingambit esta misma ronda) con
+        una barra de vida, y recortar cualquier texto en minúscula
+        arriesgaría lo mismo con frases legítimas que el propio juego
+        empieza así ("to send into battle.", segunda línea del banner de
+        Team Preview).
+        """
+
         replacements: dict[int, OcrLine] = {}
         for index, line in enumerate(lines):
-            if line.text.strip() != "%":
+            text = line.text.strip()
+            if text == "%":
+                found = self._rescan_zone(
+                    oriented,
+                    line,
+                    pad_left=3.5,
+                    pad_right=0.5,
+                    pad_vertical=0.6,
+                    upscale=6.0,
+                    accept=lambda candidate: bool(
+                        re.fullmatch(r"\d{1,3}%", candidate.text.replace(" ", ""))
+                    ),
+                )
+                if found is not None:
+                    replacements[index] = replace(found, text=found.text.replace(" ", ""))
                 continue
-            line_width = max(line.right - line.left, 1e-6)
-            line_height = max(line.bottom - line.top, 1e-6)
-            left = max(0.0, line.left - line_width * 3.5)
-            right = min(1.0, line.right + line_width * 0.5)
-            top = max(0.0, line.top - line_height * 0.6)
-            bottom = min(1.0, line.bottom + line_height * 0.6)
-            x0, x1 = round(left * width), round(right * width)
-            y0, y1 = round(top * height), round(bottom * height)
-            if x1 - x0 < 4 or y1 - y0 < 4:
-                continue
-            crop = oriented[y0:y1, x0:x1]
-            upscaled = self._cv2.resize(
-                crop, None, fx=6.0, fy=6.0, interpolation=self._cv2.INTER_CUBIC
-            )
-            rescanned = self._read_decoded(upscaled)
-            best = max(
-                (
-                    candidate
-                    for candidate in rescanned
-                    if re.fullmatch(r"\d{1,3}%", candidate.text.replace(" ", ""))
-                ),
-                key=lambda candidate: candidate.confidence,
-                default=None,
-            )
-            if best is None:
-                continue
-            crop_width = max(right - left, 1e-6)
-            crop_height = max(bottom - top, 1e-6)
-            replacements[index] = OcrLine(
-                text=best.text.replace(" ", ""),
-                confidence=best.confidence,
-                left=left + best.left * crop_width,
-                top=top + best.top * crop_height,
-                right=left + best.right * crop_width,
-                bottom=top + best.bottom * crop_height,
-            )
+            if len(text) >= 8 and _looks_like_a_truncated_message(text):
+                found = self._rescan_zone(
+                    oriented,
+                    line,
+                    pad_left=0.6,
+                    pad_right=0.05,
+                    pad_vertical=0.5,
+                    upscale=3.0,
+                    # La corrección tiene que ser más larga y ya no empezar en
+                    # minúscula -si no, es la misma lectura incompleta de antes.
+                    accept=lambda candidate, original=text: (
+                        len(candidate.text) > len(original)
+                        and candidate.text[:1] != candidate.text[:1].lower()
+                        and candidate.text.casefold().endswith(original.casefold())
+                    ),
+                )
+                if found is not None:
+                    replacements[index] = found
         if not replacements:
             return lines
         return tuple(replacements.get(index, line) for index, line in enumerate(lines))

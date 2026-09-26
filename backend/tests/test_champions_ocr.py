@@ -20,6 +20,7 @@ from pkmn_vgc.champions_replay.ocr_detector import (
     RapidOcrEngine,
     _health_readings,
     _health_value,
+    _looks_like_a_truncated_message,
     _strip_pokemon_title,
     _with_japanese_second_opinion,
     load_champions_catalog,
@@ -3477,6 +3478,41 @@ class ChampionsOcrTests(unittest.TestCase):
             tuple(species for species, _label in rows),
             ("Indeedee-F", "Gardevoir", "Basculegion", "Blaziken", "Rillaboom", "Kingambit"),
         )
+
+    def test_recognizes_a_battle_message_that_lost_its_leading_actor(self) -> None:
+        # COL-102, reapertura estructural del 25 sep: la misma familia del
+        # dígito de HP perdido, pero en texto de mensaje. Encontrados en las
+        # trazas reales de los tres jobs de hoy: "e Dee used Follow Me!"
+        # (perdió "De" de "Dee Dee"), "enant used Aqua Jet!" (perdió "Rev"
+        # de "Revenant"), "used Follow Me!" (perdió el actor entero -el
+        # verbo ya en la posición 0, no puede exigirse que aparezca
+        # DESPUÉS de la letra minúscula inicial que lo delata).
+        truncated = (
+            "opposing Indeedee used Follow Me!",
+            "used Follow Me!",
+            "enant used Aqua Jet!",
+            "oposing Altaria used Ice Beam!",
+            "tiuh protected itself!",
+            "e Dee used Follow Me!",
+            "had its HP restored.",
+            "used Hyper Voice!",
+            "opposing Garchomp has Mega Evolved into Me",
+        )
+        for text in truncated:
+            self.assertTrue(_looks_like_a_truncated_message(text), text)
+
+    def test_a_complete_message_is_not_mistaken_for_a_truncated_one(self) -> None:
+        # "to send into battle." (segunda línea del banner de Team Preview)
+        # empieza en minúscula de verdad y no debe dispararlo.
+        complete = (
+            "to send into battle.",
+            "The opposing Indeedee used Follow Me!",
+            "Dee Dee used Follow Me!",
+            "Rillaboom's Defense rose!",
+            "Kingambit had its HP restored.",
+        )
+        for text in complete:
+            self.assertFalse(_looks_like_a_truncated_message(text), text)
 
     def test_a_thin_hp_digit_lost_on_the_full_frame_is_recovered_by_cropping(self) -> None:
         # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`:
