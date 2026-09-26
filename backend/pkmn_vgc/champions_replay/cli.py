@@ -15,6 +15,7 @@ from .ocr_detector import (
     load_champions_catalog,
 )
 from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
+from .reconcile import analyze
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
 from .team_preview import ChampionsHudIconResolver, ChampionsTeamPreviewResolver
@@ -217,6 +218,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Logs de Showdown; cada uno ubica su propia batalla en la traza por el jugador p2.",
     )
 
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help=(
+            "Propone un borrador reparado de un replay a partir de la traza OCR "
+            "-agrupando variantes OCR como evidencia- sin declararlo fiel."
+        ),
+    )
+    reconcile.add_argument("--trace", type=Path, required=True, help="JSONL de la traza OCR.")
+    reconcile.add_argument(
+        "--replay",
+        type=Path,
+        required=True,
+        nargs="+",
+        help="Logs de Showdown a reconciliar contra la traza.",
+    )
+    reconcile.add_argument(
+        "--out",
+        type=Path,
+        help=(
+            "Directorio de salida para <stem>.draft.log y <stem>.draft.review.json "
+            "por cada replay; sin esto, sólo imprime el resumen."
+        ),
+    )
+
     events = subparsers.add_parser("events", help="Genera un replay desde un JSON de eventos ya revisado.")
     events.add_argument("capture", type=Path)
     events.add_argument("--output", type=Path, required=True)
@@ -306,12 +331,56 @@ def _verify(trace: Path, logs: Sequence[Path]) -> int:
     return 0 if faithful else 1
 
 
+def _reconcile(trace: Path, logs: Sequence[Path], out: Path | None) -> int:
+    """Propone un borrador reparado por replay, sin declarar nada fiel.
+
+    COL-102, bloqueante de Roku del 26 sep: integración acotada del
+    reconciliador que compartió en la Mesa de colaboración -agrupa
+    variantes OCR como evidencia (`Episode.variants`) y alinea en orden
+    contra el `.log`; todo resultado queda `needs_review` (`analyze`,
+    `reconcile.py`). No implementa la máquina de fases/beam-search del
+    prototipo original, que queda fuera de este turno.
+    """
+
+    checks_passed = True
+    for log in logs:
+        battle_index = _persisted_battle_index(log)
+        result = analyze(trace, log, source_battle_index=battle_index)
+        print(f"{log.name} (batalla {result['source_battle_index']}):")
+        print(
+            f"  en pantalla {result['on_screen_episodes']} episodio(s) | "
+            f"replay {result['replay_events']} evento(s) | borrador {result['draft_events']} evento(s)"
+        )
+        for edit in result["edits"]:
+            print(f"  edición línea {edit['line']}: {edit['reason']}")
+        for finding in result["findings"]:
+            location = f"línea {finding['line']}" if finding["line"] is not None else f"frame {finding['frame']}"
+            print(f"  hallazgo [{finding['category']}] {location}: {finding['detail']}")
+        checks_passed = checks_passed and bool(result["checks_passed"])
+        if out is not None:
+            out.mkdir(parents=True, exist_ok=True)
+            stem = out / log.stem
+            stem.with_suffix(".draft.log").write_text(result["patched_log"], encoding="utf-8")
+            review = {key: value for key, value in result.items() if key != "patched_log"}
+            stem.with_suffix(".draft.review.json").write_text(
+                json.dumps(review, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+    print(
+        "Sin hallazgos en ningún replay -sigue pendiente de revisión visual."
+        if checks_passed
+        else "Hay hallazgos que revisar antes de declarar algún replay fiel."
+    )
+    return 0 if checks_passed else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     progress: _ProgressPrinter | None = None
     try:
         if args.command == "verify":
             return _verify(args.trace, args.replay)
+        if args.command == "reconcile":
+            return _reconcile(args.trace, args.replay, args.out)
         if args.command == "events":
             battle = CapturedBattle.from_mapping(_load_mapping(args.capture))
             return _write_captures((battle,), args.output, args.force)
