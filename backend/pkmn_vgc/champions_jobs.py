@@ -52,6 +52,8 @@ def _default_processor(
     max_battles: int,
     on_progress: Callable[[CaptureProgress], None],
     on_warning: Callable[[str], None],
+    *,
+    enable_dense_rescan: bool = False,
 ) -> tuple[ReplayDocument, ...]:
     seed, detector_context = _seed_from_context(context, "video")
     trace_path = output_directory / "ocr.trace.jsonl"
@@ -136,6 +138,20 @@ def _default_processor(
     if not windows:
         return tuple(build_replay_document(capture) for capture in draft_captures)
 
+    if not enable_dense_rescan:
+        # COL-102, bloqueante de Roku del 26 sep: esta segunda pasada
+        # reemplazaba el borrador sin comprobar que preservara sus
+        # batallas -una corrida real perdió una batalla entera en 47 min de
+        # relectura completa. Apagada por defecto: el borrador es la
+        # autoridad hasta demostrar la paridad de abajo con evidencia real,
+        # no sólo en teoría.
+        on_warning(
+            f"{len(windows)} tramo(s) de riesgo detectado(s) (debilitados, cambios, "
+            "HP cerca de 0); la relectura densa está disponible pero apagada por "
+            "defecto en el flujo normal. Se conserva el borrador."
+        )
+        return tuple(build_replay_document(capture) for capture in draft_captures)
+
     on_warning(
         f"Releyendo {len(windows)} tramo(s) del vídeo a más fps para confirmar "
         "instantes de riesgo (debilitados, cambios, HP cerca de 0)."
@@ -155,6 +171,21 @@ def _default_processor(
         on_warning=report_video_warning,
     )
     captures = replay_from_trace(dense_trace_path, on_warning=report_replay_warning)
+
+    # COL-102: aceptar la relectura densa sólo si preserva exactamente el
+    # mismo número e índice de batallas que el borrador -si perdió o ganó
+    # una, no es una corrección, es una regresión silenciosa.
+    draft_indices = {capture.source_battle_index for capture in draft_captures}
+    dense_indices = {capture.source_battle_index for capture in captures}
+    if None in draft_indices or None in dense_indices or draft_indices != dense_indices:
+        on_warning(
+            "La relectura densa no demostró paridad de batallas con el borrador "
+            f"(borrador: {sorted(index for index in draft_indices if index is not None)}, "
+            f"densa: {sorted(index for index in dense_indices if index is not None)}); "
+            "se conserva el borrador."
+        )
+        return tuple(build_replay_document(capture) for capture in draft_captures)
+
     return tuple(build_replay_document(capture) for capture in captures)
 
 

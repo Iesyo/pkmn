@@ -147,7 +147,7 @@ class ChampionsJobTests(unittest.TestCase):
         source_type.return_value.estimated_frame_count.return_value = 1
         dense_source_type.return_value.estimated_frame_count.return_value = 1
 
-        def battle(rival: str, *, risky: bool) -> CapturedBattle:
+        def battle(rival: str, *, risky: bool, index: int) -> CapturedBattle:
             events = (
                 (BattleEvent(kind="faint", timestamp_ms=10_000, slot="p2a", species="Salamence"),)
                 if risky
@@ -158,19 +158,21 @@ class ChampionsJobTests(unittest.TestCase):
                 p2=BattleSide(rival, ("Metagross",), ("Metagross",)),
                 events=events,
                 winner="p1",
+                source_battle_index=index,
             )
 
         pipeline_type.return_value.capture.side_effect = [
-            (battle("primera lectura", risky=False),),
-            (battle("borrador riesgoso", risky=True),),
-            (battle("segunda lectura", risky=False),),
-            (battle("final confirmado", risky=False),),
+            (battle("primera lectura", risky=False, index=0),),
+            (battle("borrador riesgoso", risky=True, index=0),),
+            (battle("segunda lectura", risky=False, index=0),),
+            (battle("final confirmado", risky=False, index=0),),
         ]
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             documents = _default_processor(
                 output / "video.mp4", {}, output, 2.0, 0, MagicMock(), MagicMock(),
+                enable_dense_rescan=True,
             )
 
         self.assertEqual(documents[0].p2, "final confirmado")
@@ -185,6 +187,110 @@ class ChampionsJobTests(unittest.TestCase):
         self.assertEqual(dense_windows_arg, ((7_000, 13_000),))
         final_trace_source, _detector, _seed = pipeline_type.call_args_list[3].args
         self.assertEqual(final_trace_source.path, output / "ocr.trace.dense.jsonl")
+
+    @patch("pkmn_vgc.champions_jobs.SegmentedVideoFrameSource")
+    @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
+    @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
+    @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
+    def test_dense_rescan_is_off_by_default_even_with_a_risky_draft(
+        self,
+        source_type: MagicMock,
+        detector_type: MagicMock,
+        pipeline_type: MagicMock,
+        dense_source_type: MagicMock,
+    ) -> None:
+        # COL-102, bloqueante de Roku del 26 sep: la segunda pasada
+        # reemplazaba el borrador sin verificar nada, activada con sólo
+        # detectar riesgo. Apagada por defecto: el flujo normal (sin pasar
+        # `enable_dense_rescan`) se queda con el borrador aunque haya
+        # tramos de riesgo, y ni siquiera toca el vídeo una segunda vez.
+        source_type.return_value.estimated_frame_count.return_value = 1
+
+        def battle(rival: str, *, risky: bool) -> CapturedBattle:
+            events = (
+                (BattleEvent(kind="faint", timestamp_ms=10_000, slot="p2a", species="Salamence"),)
+                if risky
+                else (BattleEvent(kind="turn", timestamp_ms=1, turn=1),)
+            )
+            return CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide(rival, ("Metagross",), ("Metagross",)),
+                events=events,
+                winner="p1",
+                source_battle_index=0,
+            )
+
+        pipeline_type.return_value.capture.side_effect = [
+            (battle("primera lectura", risky=False),),
+            (battle("borrador riesgoso", risky=True),),
+        ]
+
+        warnings: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            documents = _default_processor(
+                output / "video.mp4", {}, output, 2.0, 0, MagicMock(), warnings.append,
+            )
+
+        self.assertEqual(documents[0].p2, "borrador riesgoso")
+        self.assertEqual(pipeline_type.return_value.capture.call_count, 2)
+        dense_source_type.assert_not_called()
+        self.assertTrue(any("apagada por defecto" in warning for warning in warnings))
+
+    @patch("pkmn_vgc.champions_jobs.SegmentedVideoFrameSource")
+    @patch("pkmn_vgc.champions_jobs.ReplayCapturePipeline")
+    @patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector")
+    @patch("pkmn_vgc.champions_jobs.VideoFrameSource")
+    def test_dense_rescan_result_is_discarded_when_it_loses_a_battle(
+        self,
+        source_type: MagicMock,
+        detector_type: MagicMock,
+        pipeline_type: MagicMock,
+        dense_source_type: MagicMock,
+    ) -> None:
+        # COL-102, bloqueante de Roku del 26 sep: una relectura densa real
+        # perdió una batalla entera. Activada explícitamente, si el paso
+        # denso no reproduce el mismo conjunto de `source_battle_index` que
+        # el borrador, se descarta y se conserva el borrador -no se declara
+        # fiel un resultado que perdió (o ganó) una batalla.
+        source_type.return_value.estimated_frame_count.return_value = 1
+        dense_source_type.return_value.estimated_frame_count.return_value = 1
+
+        def battle(rival: str, *, risky: bool, index: int) -> CapturedBattle:
+            events = (
+                (BattleEvent(kind="faint", timestamp_ms=10_000, slot="p2a", species="Salamence"),)
+                if risky
+                else (BattleEvent(kind="turn", timestamp_ms=1, turn=1),)
+            )
+            return CapturedBattle(
+                p1=BattleSide("Player", ("Venusaur",), ("Venusaur",)),
+                p2=BattleSide(rival, ("Metagross",), ("Metagross",)),
+                events=events,
+                winner="p1",
+                source_battle_index=index,
+            )
+
+        pipeline_type.return_value.capture.side_effect = [
+            (battle("primera lectura", risky=False, index=0),),
+            (
+                battle("borrador batalla 0", risky=True, index=0),
+                battle("borrador batalla 1", risky=False, index=1),
+            ),
+            (battle("segunda lectura", risky=False, index=0),),
+            # La pasada densa sólo reprodujo la batalla 0: perdió la 1.
+            (battle("dense batalla 0", risky=False, index=0),),
+        ]
+
+        warnings: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            documents = _default_processor(
+                output / "video.mp4", {}, output, 2.0, 0, MagicMock(), warnings.append,
+                enable_dense_rescan=True,
+            )
+
+        self.assertEqual([document.p2 for document in documents], ["borrador batalla 0", "borrador batalla 1"])
+        self.assertTrue(any("paridad de batallas" in warning for warning in warnings))
 
     def test_retries_atomic_metadata_replace_when_windows_temporarily_denies_access(self) -> None:
         attempts = 0
