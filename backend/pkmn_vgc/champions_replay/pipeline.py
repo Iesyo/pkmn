@@ -610,6 +610,14 @@ class CaptureAccumulator:
 class ReviewIssue:
     severity: str
     message: str
+    # Segundo corte de Roku, 26 sep: para que una incidencia sea útil en
+    # Teams hace falta poder ubicarla (frame) y, cuando exista, ofrecer
+    # qué se leyó en pantalla y qué se propondría cambiar -sin aplicar
+    # ese cambio solo. Todos con default: no rompe a quien ya construye
+    # un `ReviewIssue` con sólo severity/message.
+    frame: int | None = None
+    alternatives: tuple[str, ...] = ()
+    proposed_change: str | None = None
 
 
 def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75) -> tuple[ReviewIssue, ...]:

@@ -376,6 +376,12 @@ class ReplayDocument:
     p2: str
     format: str
     source_battle_index: int | None = None
+    # Segundo corte de Roku, 26 sep: `review_capture` (pipeline.py) vivía
+    # sólo en el CLI -sus incidencias nunca llegaban al replay real que
+    # arma `ChampionsJobManager`. Guardar el resultado acá lo expone en el
+    # mismo JSON que ya sirve `GET /jobs/{id}/replays/{n}`, sin endpoint
+    # nuevo ni tocar el protocolo (`log`).
+    issues: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -71,7 +72,10 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(review_capture(self.capture()), ())
 
         expected = json.loads((DATA / "champions_replay.json").read_text(encoding="utf-8"))
-        self.assertEqual(document.to_dict(), expected)
+        # Comparado tras el mismo viaje por JSON que ya hace
+        # `write_replay_artifacts`: las tuplas (`issues`) se comparan como
+        # listas, igual que en el artefacto real en disco.
+        self.assertEqual(json.loads(json.dumps(document.to_dict())), expected)
 
     def test_captured_battle_round_trips_its_source_battle_index(self) -> None:
         # COL-102, bloqueante de Roku del 26 sep: persistido explícitamente
@@ -88,6 +92,20 @@ class ChampionsReplayTests(unittest.TestCase):
         document = build_replay_document(battle)
         self.assertEqual(document.source_battle_index, 3)
         self.assertEqual(document.to_dict()["source_battle_index"], 3)
+
+    def test_build_replay_document_exposes_review_capture_issues_without_touching_the_log(self) -> None:
+        # Segundo corte de Roku, 26 sep: `review_capture` vivía sólo en el
+        # CLI -sus incidencias nunca llegaban al replay real que arma
+        # `ChampionsJobManager`. Ahora `build_replay_document` las adjunta
+        # al documento (para que salgan en Teams), sin tocar el protocolo.
+        battle = self.capture()
+        incomplete = replace(battle, p1=replace(battle.p1, selected=battle.p1.selected[:1]))
+
+        document = build_replay_document(incomplete)
+
+        self.assertTrue(document.issues)
+        self.assertEqual(document.issues, tuple(asdict(issue) for issue in review_capture(incomplete)))
+        self.assertEqual(document.log, build_replay_document(battle).log)
 
     def test_sanitizes_protocol_fields_and_canonicalizes_selection_names(self) -> None:
         side = BattleSide(

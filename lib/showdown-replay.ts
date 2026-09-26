@@ -3,6 +3,14 @@ import { POKEMON_TYPES, type MatchResult, type MatchSource, type PokemonType, ty
 
 type PlayerSlot = "p1" | "p2";
 
+export interface ReplayCaptureIssue {
+  severity: string;
+  message: string;
+  frame?: number | null;
+  alternatives?: string[];
+  proposed_change?: string | null;
+}
+
 export interface ShowdownReplayDocument {
   log: string;
   inputlog?: string | null;
@@ -12,6 +20,11 @@ export interface ShowdownReplayDocument {
   p1rating?: unknown;
   p2rating?: unknown;
   format?: string;
+  // Segundo corte de Roku, 26 sep: `review_capture` (backend) ya adjunta
+  // sus incidencias needs_review al replay real -esto las trae hasta acá
+  // para que `importShowdownReplay` las sume a `warnings`, visibles antes
+  // de confirmar la partida.
+  issues?: ReplayCaptureIssue[];
 }
 
 interface ReplaySide {
@@ -97,6 +110,27 @@ function replayText(value: unknown, limit: number) {
   return normalized ? normalized.slice(0, limit) : undefined;
 }
 
+function normalizeReplayIssues(value: unknown): ReplayCaptureIssue[] {
+  if (!Array.isArray(value)) return [];
+  const issues: ReplayCaptureIssue[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    const message = replayText(raw.message, 400);
+    if (!message) continue;
+    issues.push({
+      severity: replayText(raw.severity, 40) ?? "warning",
+      message,
+      frame: typeof raw.frame === "number" ? raw.frame : null,
+      alternatives: Array.isArray(raw.alternatives)
+        ? raw.alternatives.filter((item): item is string => typeof item === "string").slice(0, 10)
+        : [],
+      proposed_change: replayText(raw.proposed_change, 200) ?? null,
+    });
+  }
+  return issues;
+}
+
 export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ReplayValidationError("El replay reconstruido debe ser un documento JSON válido.");
@@ -126,6 +160,7 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     p1rating: rawReplay.p1rating,
     p2rating: rawReplay.p2rating,
     format: replayText(rawReplay.format, 100),
+    issues: normalizeReplayIssues(rawReplay.issues),
   };
 }
 
@@ -523,6 +558,16 @@ export function importShowdownReplay(
   if (lead.length !== 2) warnings.push("El log público no reveló ambos leads; completa únicamente los que falten.");
   if (opponentPicks.length !== 4) warnings.push("El log público no reveló los cuatro picks del rival; completa únicamente los que falten.");
   if (own.finalRating === null) warnings.push("Showdown no publicó el rating final para esta partida.");
+
+  // Segundo corte de Roku, 26 sep: incidencias needs_review que el
+  // backend ya detectó al cerrar la captura (review_capture) -visibles
+  // acá, antes de confirmar la partida, sin que nada las haya aplicado
+  // solas al replay.
+  for (const issue of document.issues ?? []) {
+    const frame = typeof issue.frame === "number" ? ` (frame ${issue.frame})` : "";
+    const proposal = issue.proposed_change ? ` Propuesta: ${issue.proposed_change}.` : "";
+    warnings.push(`${issue.message}${frame}${proposal}`);
+  }
 
   return {
     replayUrl: options.replayUrl,

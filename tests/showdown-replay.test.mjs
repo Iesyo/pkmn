@@ -107,6 +107,36 @@ test("imports a replay reconstructed from Pokémon Champions video", async () =>
   assert.match(match.warnings.join(" "), /rating final/);
 });
 
+test("surfaces the backend's review_capture issues as import warnings", async () => {
+  // Segundo corte de Roku, 26 sep: `review_capture` ya viaja en el JSON
+  // del replay -esto confirma que llega hasta `match.warnings`, visible
+  // antes de confirmar la partida, sin que nada la haya aplicado sola.
+  const { importShowdownReplay, normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const rawReplay = JSON.parse(
+    await readFile(new URL("../backend/tests/data/champions_replay.json", import.meta.url), "utf8"),
+  );
+  rawReplay.issues = [
+    {
+      severity: "warning",
+      message: "p2a Pelipper entra con una lectura de HP sospechosa.",
+      frame: 5549,
+      alternatives: ["74/100"],
+      proposed_change: "100/100",
+    },
+  ];
+  const replay = normalizeShowdownReplayDocument(rawReplay);
+  const match = importShowdownReplay(replay, {
+    replayUrl: "",
+    showdownNames: ["iesyo"],
+    teamSpecies: p1Team,
+    origin: "champions",
+    replayArtifact: replay,
+  });
+
+  assert.deepEqual(replay.issues, rawReplay.issues);
+  assert.match(match.warnings.join(" "), /lectura de HP sospechosa.*frame 5549.*Propuesta: 100\/100/);
+});
+
 test("validates reconstructed replay documents before importing them", async () => {
   const { normalizeShowdownReplayDocument } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
 

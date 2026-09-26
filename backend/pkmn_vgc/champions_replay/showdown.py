@@ -4,10 +4,11 @@ import html
 import json
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, BattleSide, CapturedBattle, ReplayDocument
+from .pipeline import review_capture
 
 
 def _identifier(slot: str, species: str) -> str:
@@ -331,6 +332,7 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
         p2=battle.p2.name,
         format=battle.format,
         source_battle_index=battle.source_battle_index,
+        issues=tuple(asdict(issue) for issue in review_capture(battle)),
     )
 
 

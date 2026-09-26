@@ -14,7 +14,7 @@ from .ocr_detector import (
     OcrTraceDetector,
     load_champions_catalog,
 )
-from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline, review_capture
+from .pipeline import CaptureIncompleteError, CaptureProgress, CaptureSeed, ReplayCapturePipeline
 from .reconcile import analyze
 from .showdown import build_replay_document, write_replay_artifacts
 from .sources import CaptureSourceError, LiveFrameSource, OcrTraceFrameSource, VideoFrameSource
@@ -82,10 +82,9 @@ def _output_stem(base: Path, index: int, total: int) -> Path:
 
 def _write_captures(captures: Sequence[CapturedBattle], output: Path, force: bool) -> int:
     for index, battle in enumerate(captures, start=1):
-        issues = review_capture(battle)
-        for issue in issues:
-            print(f"[{issue.severity.upper()}] {issue.message}")
         document = build_replay_document(battle)
+        for issue in document.issues:
+            print(f"[{issue['severity'].upper()}] {issue['message']}")
         stem = _output_stem(output, index, len(captures))
         paths = write_replay_artifacts(document, stem, overwrite=force)
         print("Replay generado:")
