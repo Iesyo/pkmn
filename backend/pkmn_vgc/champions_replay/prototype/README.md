@@ -608,6 +608,49 @@ La segunda partida del nuevo lote permanece idéntica. La suite del traductor
 ejecuta 150 pruebas: **149 aprobadas y una omitida por falta de RapidOCR**,
 sin fallos. Las capturas y el primer corte del lote permanecen archivados.
 
+## Aparición identificada tarde con acciones y PS omitidos · Gori/Rillaboom
+
+La curación de campo ya estaba contemplada. En este caso no llegaba a esa
+regla porque el detector identificaba a Gori recién en el frame 899 y dejaba
+sin candidatos su daño y curación anteriores. Fake Out se entregaba en 882,
+con su reloj original de 703 pero atribuido a p1a; Grassy Glide también
+quedaba en p1a. La mejora amplía la corroboración de entradas tardías a una
+aparición con cambios de PS verificables, sin condiciones por especie o job.
+
+Se mantienen anuncio repetido, slot vaciado, primer HUD estable y continuidad
+de identidad. Cada cambio omitido exige PS completos y mote único del mismo
+HUD con confianza ≥0,95, denominador constante y ausencia de rebote desde
+cero. Las animaciones se agrupan en ≤1,5 s y deben terminar en una lectura
+repetida dentro de ≤5 s, sin cruzar otra acción. Si la entrada candidata
+llega durante un impacto, el extremo sólo puede confirmarse continuando por
+candidatos de PS reales del mismo slot y dirección. Los huecos, valores
+contradictorios o cambios sin confirmación conservan la incidencia.
+
+Los movimientos retenidos usan su reloj y frame originales más dos textos
+concordantes del mismo actor, lado y movimiento dentro de la aparición
+corroborada. `action_reconstruction` conserva íntegro el candidato original,
+el frame de entrega tardía y la narración. Las observaciones recuperadas llevan
+`hp_reconstruction` y pasan a la agrupación y asociación de curaciones
+existentes. La traza de entrada permanece intacta.
+
+Resultado en 9fd1, partida 1: entrada de Gori en **650**, HUD **207/207**
+confirmado en **672–673**, Fake Out en **703/p1b/turno 4**, daño
+**207→31**, curación **31→43** enlazada al mensaje de **776**, Grassy Glide
+en **882/p1b/turno 5** y daño final **43→0**. Las lecturas de animación se
+conservan, incluida **35/207 en 899**. La captura de **06:02.50** muestra
+**35/207** durante el movimiento de la barra; la traza estabiliza **31/207**
+en 726–739. Esa captura no se usa como confirmación visual del 31.
+
+**73/73 pruebas Ledger, sin omisiones, cinco ZIP y 16 partidas**. Los 15 JSON
+ajenos a esta partida son idénticos al corte anterior. Los avisos del lote
+bajan de **5 a 2 (0/2)**, con **29 episodios de PS confirmados** y los
+**7/7 mensajes de PS enlazados**. La partida corregida coincide en los
+**17/17 episodios de PS** del replay archivado; alinea **37/38 eventos
+principales** porque sigue sin un candidato de habilidad Grassy Surge.
+Ausencia de avisos no significa extracción completa de todas las habilidades.
+Siguen pendientes el faint duplicado de 1438 y el texto de interfaz de 1587
+en la segunda partida. El prototipo continúa fuera de producción.
+
 ## Pruebas
 
 ```bash
@@ -619,7 +662,7 @@ CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Sesenta y cuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Sesenta y ocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

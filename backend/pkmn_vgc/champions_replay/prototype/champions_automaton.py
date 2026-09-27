@@ -202,6 +202,98 @@ def complete_hud_health(row: dict[str, Any], slot: str) -> list[tuple[str, dict[
     return readings
 
 
+def reconstruct_entry_health(slot: str, name: str, initial: str, start: int, end: int,
+                             frames: dict[int, dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Recover omitted HUD changes only within an already verified appearance.
+
+    Every change needs a complete value and the unique nickname in that HUD.
+    Each animation must reach a repeated endpoint before another action. The
+    last animation may continue into the detector's first normal HP samples.
+    These are observations, not new HP rules: the usual episode machine still
+    consolidates them and associates restoration narration.
+    """
+    observations = []
+    previous = initial
+    left, right, top, bottom = NAME_HUD_AREAS[slot]
+
+    def named(row: dict[str, Any]) -> bool:
+        labels = [line for line in row.get("ocr", ()) if line.get("text", "").casefold() == name and
+                  line.get("confidence", 0) >= .95 and left <= line.get("left", -1) <= right and
+                  top <= line.get("top", -1) <= bottom]
+        return len(labels) == 1 and [s for s in SLOTS if s.startswith(slot[:2]) and
+                                   hud_nickname(row, s) == name] == [slot]
+
+    def boundary(row: dict[str, Any]) -> bool:
+        return bool(row.get("detections", {}).get("battle_complete") or any(
+            e["kind"] in {"move", "cant", "mega", "battle_end"} or
+            (e["kind"] in {"switch", "drag", "faint"} and e.get("slot") == slot)
+            for e in row.get("detections", {}).get("events", ())) or any(
+                line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                (RAW_ACTION.search(line.get("text", "")) or ANNOUNCED_ENTRY.search(line.get("text", "")))
+                for line in row.get("ocr", ())))
+
+    for number in range(start, end + 1):
+        row = frames[number]
+        readings = complete_hud_health(row, slot)
+        if not readings:
+            continue
+        if len(readings) != 1:
+            return None
+        health, line = readings[0]
+        if health == previous:
+            continue
+        if (not named(row) or line["confidence"] < .95 or health.split("/")[1] != initial.split("/")[1]
+            or health_ratio(previous) == 0):
+            return None
+        observations.append({"frame": number, "observed_ms": row["timestamp_ms"], "health": health,
+                             "previous": previous, "kind": "damage" if health_ratio(health) < health_ratio(previous)
+                             else "heal", "text": line["text"], "confidence": line["confidence"],
+                             "nickname": name})
+        previous = health
+    for index, observation in enumerate(observations):
+        following = observations[index + 1] if index + 1 < len(observations) else None
+        if following and following["kind"] == observation["kind"] and (
+            following["observed_ms"] - observation["observed_ms"] <= 1_500) and not any(
+                boundary(frames[n]) for n in range(observation["frame"] + 1, following["frame"] + 1)):
+            continue
+        # A repeated endpoint is necessary; a one-frame digit cannot create
+        # an omitted damage/heal pair. Do not confirm across another action.
+        value, last_ms = observation["health"], observation["observed_ms"]
+        confirmation = None
+        for number in range(observation["frame"] + 1, observation["frame"] + 11):
+            row = frames.get(number)
+            if row is None or not 0 <= row["timestamp_ms"] - last_ms <= 1_000 or (
+                row["timestamp_ms"] - observation["observed_ms"] > 5_000):
+                break
+            last_ms = row["timestamp_ms"]
+            events = row.get("detections", {}).get("events", ())
+            if boundary(row):
+                break
+            readings = complete_hud_health(row, slot)
+            if not readings:
+                continue
+            if len(readings) != 1 or not named(row) or readings[0][1]["confidence"] < .95:
+                break
+            health, line = readings[0]
+            if health == value:
+                confirmation = {"frame": number, "health": health, "text": line["text"],
+                                "confidence": line["confidence"]}
+                break
+            # The delayed entry itself may be in the middle of an impact.
+            # Continue only through real, matching detector HP candidates.
+            direction = "damage" if health_ratio(health) < health_ratio(value) else "heal"
+            if (number <= end or direction != observation["kind"] or
+                health.split("/")[1] != initial.split("/")[1] or
+                not any(e["kind"] in HP_KINDS and e.get("slot") == slot and e.get("health") == health
+                        for e in events)):
+                break
+            value = health
+        if not confirmation:
+            return None
+        observation["endpoint_confirmation"] = confirmation
+    return observations
+
+
 def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str, Any]],
                              candidates: list[dict[str, Any]], frames: dict[int, dict[str, Any]],
                              aliases: dict[str, str]) -> dict[str, Any] | None:
@@ -209,8 +301,8 @@ def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str
 
     This fallback requires a slot explicitly vacated by faint. The short
     announcement-to-HUD window stays bounded; the later detector candidate
-    is attached only within that same, uninterrupted appearance with unchanged
-    HP. Missing intervening HP episodes require separate reconstruction.
+    is attached only within that same, uninterrupted appearance. Changed HP
+    must be reconstructed independently from complete, named HUD observations.
     """
     event, end = item["event"], item["observed_frame"]
     slot = event["slot"]
@@ -285,8 +377,6 @@ def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str
         previous_hud = current_hud
     if not hud_evidence:
         return None
-    if event.get("health") and event["health"] != hud_evidence[0]["health"]:
-        return None
     if any(c["event"]["kind"] in HP_KINDS and c["event"].get("slot") == slot and
            start <= c["observed_frame"] <= end for c in candidates):
         return None
@@ -303,9 +393,6 @@ def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str
         if number >= hud_evidence[0]["frame"] and seen and seen != name and (
             identity_species(aliases.get(seen, seen)).casefold() != species.casefold()):
             return None
-        if number >= hud_evidence[0]["frame"] and any(
-            health != hud_evidence[0]["health"] for health, _ in complete_hud_health(row, slot)):
-            return None
         for line in row.get("ocr", ()):
             text = line.get("text", "").strip()
             if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
@@ -317,11 +404,64 @@ def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str
             if (name in text.casefold() and ("withdrew" in text.casefold() or "come back" in text.casefold())) or \
                "battle has ended" in text.casefold() or "forfeit" in text.casefold():
                 return None
+    health_observations = reconstruct_entry_health(slot, name, hud_evidence[0]["health"],
+                                                  hud_evidence[-1]["frame"], end, frames)
+    if health_observations is None:
+        return None
+    last_health = health_observations[-1]["health"] if health_observations else hud_evidence[0]["health"]
+    if event.get("health") and event["health"] != last_health:
+        return None
     return {"state": "confirmed", "anchor": anchor, "health": hud_evidence[0]["health"],
             "announcements": announcement_evidence, "evidence": hud_evidence,
             "confirmed_frame": hud_evidence[-1]["frame"], "vacated_frame": vacated["observed_frame"],
             "raw_event": dict(event), "observed_frame": end,
+            **({"hp_observations": health_observations} if health_observations else {}),
             "reason": "Entrada anunciada y HUD estable anteriores al candidato tardío"}
+
+
+def reconstruct_entry_actions(entry: dict[str, Any], candidates: list[dict[str, Any]],
+                              frames: dict[int, dict[str, Any]]) -> None:
+    """Place buffered moves using their original clock and repeated narration.
+
+    The confirmed appearance establishes the slot even when the HUD is hidden
+    during an attack. Never choose an earlier use merely by its move name.
+    """
+    proof = entry["entry_reconstruction"]
+    slot, species = entry["event"]["slot"], proof["anchor"]["species"]
+    name = proof["anchor"]["nickname"]
+    for item in candidates:
+        event = item["event"]
+        if (event["kind"] != "move" or not (event.get("slot") or "").startswith(slot[:2]) or
+            not event.get("move") or not isinstance(event.get("timestamp_ms"), (int, float)) or
+            identity_species(item.get("canonical_species") or event.get("species") or "") != identity_species(species)):
+            continue
+        origins = [row for row in frames.values() if proof["confirmed_frame"] <= row["frame"] <= proof["observed_frame"]
+                   and abs(row["timestamp_ms"] - event["timestamp_ms"]) <= 1 and
+                   event.get("source_frame") in {row["frame"], row["frame"] - 1}]
+        if len(origins) != 1:
+            continue
+        origin = origins[0]
+        if origin["frame"] == item["observed_frame"] and event["slot"] == slot:
+            continue
+        evidence = []
+        for number in range(origin["frame"], min(origin["frame"] + 4, proof["observed_frame"] + 1)):
+            for line in frames.get(number, {}).get("ocr", ()):
+                signature = narration_signature(line.get("text", "").strip())
+                if (signature and signature[0] == "move" and signature[1] == slot[:2] and
+                    signature[2].casefold() == name and signature[3].casefold() == event["move"].casefold() and
+                    line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95):
+                    evidence.append({"frame": number, "text": line["text"], "confidence": line["confidence"]})
+        if len({e["frame"] for e in evidence}) < 2:
+            continue
+        item["action_reconstruction"] = {"raw_event": dict(event), "detected_frame": item["observed_frame"],
+                                          "detected_ms": item["observed_ms"], "evidence": evidence,
+                                          "entry_frame": proof["anchor"]["frame"],
+                                          "reason": "Reloj original y narración repetida dentro de la aparición confirmada"}
+        if event["slot"] != slot:
+            item["slot_correction"] = event["slot"]
+            item["event"] = {**event, "slot": slot}
+        item["logical_frame"] = item["observed_frame"] = origin["frame"]
+        item["observed_ms"] = origin["timestamp_ms"]
 
 
 def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -440,6 +580,24 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["logical_frame"] = anchor["frame"]
         item["anchor"] = anchor
         anchors[(item["observed_frame"], slot)] = anchor["frame"]
+    recovered_hp = []
+    for entry in candidates:
+        proof = entry.get("entry_reconstruction")
+        if not proof:
+            continue
+        reconstruct_entry_actions(entry, candidates, frame_lookup)
+        for observation in proof.get("hp_observations", ()):
+            number = observation["frame"]
+            recovered_hp.append({
+                "event": {"kind": observation["kind"], "slot": entry["event"]["slot"],
+                          "species": proof["anchor"]["species"], "health": observation["health"],
+                          "timestamp_ms": observation["observed_ms"], "source_frame": number,
+                          "confidence": observation["confidence"]},
+                "observed_frame": number, "logical_frame": number, "observed_ms": observation["observed_ms"],
+                "ordinal": len(frame_lookup[number].get("detections", {}).get("events", ())),
+                "hp_reconstruction": {**observation, "entry_frame": proof["anchor"]["frame"],
+                                      "detected_entry_frame": proof["observed_frame"]}})
+    candidates.extend(recovered_hp)
     for item in candidates:
         event = item["event"]
         if event["kind"] == "ability" and event.get("slot"):
@@ -1108,6 +1266,9 @@ class BattleAutomaton:
             item["identity_support"] = candidate["identity_support"]
         if candidate.get("entry_reconstruction"):
             item["entry_reconstruction"] = candidate["entry_reconstruction"]
+        if candidate.get("action_reconstruction"):
+            item["action_reconstruction"] = candidate["action_reconstruction"]
+            item["evidence"] = candidate["action_reconstruction"]["evidence"] + item["evidence"]
         self.events.append(item)
         return item
 
@@ -1124,6 +1285,7 @@ class BattleAutomaton:
             after = raw.get("health")
             observations = [{"frame": c["observed_frame"], "health": c["event"].get("health"),
                              "parser_kind": c["event"]["kind"], "evidence": self._evidence(c, c["event"]["kind"]),
+                             **({"hp_reconstruction": c["hp_reconstruction"]} if c.get("hp_reconstruction") else {}),
                              **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
@@ -2248,6 +2410,13 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
             lines += [f"  - PS de entrada confirmados: {reconstruction['health']} "
                       f"(frames {proof[0]['frame']} y {proof[1]['frame']}); "
                       f"candidato tardío conservado del frame {reconstruction['observed_frame']}."]
+            if reconstruction.get("hp_observations"):
+                lines += [f"  - Recuperadas {len(reconstruction['hp_observations'])} lecturas de PS "
+                          "del HUD del mismo actor; consolidación y curación usan las reglas habituales."]
+        action = item.get("action_reconstruction")
+        if action:
+            lines += [f"  - Acción recuperada en frame {item['frame']} por reloj original y narración; "
+                      f"candidato conservado del frame {action['detected_frame']}."]
         identity = item.get("identity_support")
         if identity and identity["state"] == "confirmed":
             proof = identity["evidence"]

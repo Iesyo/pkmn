@@ -146,7 +146,126 @@ def delayed_entry_trace(side="p1", title="the Paldea Champion"):
     return trace
 
 
+def delayed_health_trace(side="p1", species="Pelipper"):
+    trace = delayed_entry_trace(side)
+    slot = side + "a"
+    for row in trace:
+        row["resolved_aliases"][side]["alpha"] = species
+        for e in row["detections"]["events"]:
+            if e.get("species") == "Pelipper":e["species"] = species
+    prefix = "The opposing " if side == "p2" else ""
+    for n in (25, 26):trace[n-1]["ocr"].append({"text": prefix + "Alpha used Fake Out!", "top": .75, "confidence": .99})
+    buffered = event("move", side + "b", species, move="Fake Out")
+    buffered.update(source_frame=25, timestamp_ms=12500)
+    trace[94]["detections"]["events"].append(buffered)
+    trace[94]["detections"]["events"][0]["health"] = "46/100"
+    trace[94]["ocr"] = []
+    trace[11]["detections"]["events"] = [event("fieldstart", value="Grassy Terrain")]
+    restored = prefix + "Alpha had its HP restored."
+    trace[75]["detections"]["events"] = [event("message", value=restored)]
+    trace[75]["ocr"].append({"text": restored, "top": .75, "confidence": .99})
+    for n, hp in ((54, 70), (55, 40), (56, 40), (74, 42), (75, 46), (76, 46), (95, 46)):
+        x, y, hp_x, hp_y = (.08, .86, .14, .92) if side == "p1" else (.62, .05, .70, .12)
+        trace[n-1]["ocr"].extend([
+            {"text": "Alpha", "left": x, "top": y, "confidence": .999},
+            {"text": f"{hp}/100" if side == "p1" else f"{hp}%", "left": hp_x, "top": hp_y, "confidence": .999}])
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_retrospective_appearance_recovers_hp_and_buffered_move_on_both_sides(self):
+        for side, species in (("p1", "Pelipper"), ("p2", "Kingambit")):
+            with self.subTest(side=side):
+                trace = delayed_health_trace(side, species)
+                original = json.dumps(trace, sort_keys=True)
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertEqual(json.dumps(trace, sort_keys=True), original)
+                self.assertEqual(ledger["issues"], [])
+                entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == species)
+                self.assertEqual((entry["logical_frame"], entry["health"]), (5, "100/100"))
+                hp = [e for e in ledger["events"] if e["kind"] in {"damage", "heal"} and e["actor_id"] == entry["actor_id"]]
+                self.assertEqual([(e["before"], e["after"], e["hp_state"]) for e in hp],
+                                 [("100/100", "40/100", "confirmed"), ("40/100", "46/100", "confirmed")])
+                self.assertEqual([[o["frame"] for o in e["observations"]] for e in hp], [[54, 55], [74, 75]])
+                link = ledger["narration_links"][0]
+                self.assertEqual((link["status"], link["event_seq"], link["actor_id"]),
+                                 ("linked", hp[1]["seq"], entry["actor_id"]))
+                self.assertIn("Grassy Terrain", hp[1]["cause"])
+                move = next(e for e in ledger["events"] if e["move"] == "Fake Out")
+                self.assertEqual((move["frame"], move["slot"], move["status"]), (25, side + "a", "consistent"))
+                self.assertEqual(move["action_reconstruction"]["detected_frame"], 95)
+                self.assertEqual(move["action_reconstruction"]["raw_event"]["slot"], side + "b")
+
+    def test_retrospective_hp_rejects_unconfirmed_changes_and_broken_continuity(self):
+        for missing in ("name", "partner_name", "confidence", "endpoint", "action", "raw_action", "denominator",
+                        "contradiction", "gap", "replacement", "zero_rebound"):
+            with self.subTest(missing=missing):
+                trace = delayed_health_trace()
+                if missing == "name":trace[54]["ocr"][0]["text"] = "Beta"
+                elif missing == "partner_name":
+                    trace[54]["ocr"].append({"text": "Alpha", "left": .29, "top": .86, "confidence": .999})
+                elif missing == "confidence":trace[54]["ocr"][1]["confidence"] = .92
+                elif missing == "endpoint":trace[55]["ocr"] = []
+                elif missing == "action":trace[55]["detections"]["events"] = [event("move", "p1a", "Pelipper", move="Protect")]
+                elif missing == "raw_action":trace[55]["ocr"].append({"text": "Alpha used Protect!", "top": .75, "confidence": .99})
+                elif missing == "denominator":trace[54]["ocr"][1]["text"] = "40/200"
+                elif missing == "contradiction":
+                    trace[54]["ocr"].append({"text": "60/100", "left": .14, "top": .92, "confidence": .999})
+                elif missing == "gap":trace.pop(60)
+                elif missing == "replacement":trace[60]["detections"]["events"] = [event("switch", "p1a", "Pikachu")]
+                elif missing == "zero_rebound":
+                    for i in (54, 55):trace[i]["ocr"][1]["text"] = "0/100"
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertFalse(any(e.get("entry_reconstruction") for e in ledger["events"]))
+                self.assertTrue(ledger["issues"])
+
+    def test_buffered_move_needs_its_own_clock_actor_and_repeated_text(self):
+        for missing in ("clock", "source", "one_text", "side", "actor", "move", "confidence"):
+            with self.subTest(missing=missing):
+                trace = delayed_health_trace()
+                buffered = trace[94]["detections"]["events"][1]
+                if missing == "clock":buffered["timestamp_ms"] = 13500
+                elif missing == "source":buffered["source_frame"] = 80
+                elif missing == "one_text":trace[25]["ocr"] = []
+                else:
+                    for i in (24, 25):
+                        line = trace[i]["ocr"][0]
+                        if missing == "side":line["text"] = "The opposing " + line["text"]
+                        elif missing == "actor":line["text"] = line["text"].replace("Alpha", "Beta")
+                        elif missing == "move":line["text"] = line["text"].replace("Fake Out", "Protect")
+                        elif missing == "confidence":line["confidence"] = .90
+                ledger = BattleAutomaton(0, trace).run()
+                move = next(e for e in ledger["events"] if e["move"] == "Fake Out")
+                self.assertNotIn("action_reconstruction", move)
+                self.assertEqual((move["frame"], move["slot"], move["status"]), (95, "p1b", "review"))
+
+    def test_delayed_entry_during_impact_requires_real_continuation_and_endpoint(self):
+        for missing in (None, "candidate", "endpoint", "name", "new_action", "reversal"):
+            with self.subTest(missing=missing):
+                trace = delayed_health_trace()
+                trace[94]["detections"]["events"][0]["health"] = "20/100"
+                trace[94]["ocr"][1]["text"] = "20/100"
+                trace[95] = frame(96, [event("damage", "p1a", "Pelipper", "10/100")])
+                trace.extend([frame(97, [event("damage", "p1a", "Pelipper", "0/100")]), frame(98)])
+                for row in trace[95:]:
+                    row["ocr"].append({"text": "Alpha", "left": .08, "top": .86, "confidence": .999})
+                trace[-1]["ocr"].append({"text": "0/100", "left": .14, "top": .92, "confidence": .999})
+                if missing == "candidate":trace[95]["detections"]["events"] = []
+                elif missing == "endpoint":trace[-1]["ocr"] = []
+                elif missing == "name":trace[95]["ocr"][-1]["text"] = "Beta"
+                elif missing == "new_action":trace[95]["ocr"].append({"text": "Alpha used Protect!", "top": .75, "confidence": .99})
+                elif missing == "reversal":
+                    trace[95]["detections"]["events"][0].update(kind="heal", health="30/100")
+                    trace[95]["ocr"][0]["text"] = "30/100"
+                ledger = BattleAutomaton(0, trace).run()
+                entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Pelipper")
+                if missing:
+                    self.assertNotIn("entry_reconstruction", entry)
+                else:
+                    self.assertEqual(ledger["issues"], [])
+                    damage = [e for e in ledger["events"] if e["kind"] == "damage"][-1]
+                    self.assertEqual((damage["before"], damage["after"]), ("46/100", "0/100"))
+                    self.assertEqual([o["frame"] for o in damage["observations"]], [95, 96, 97])
     def test_shared_title_rules_preserve_real_nicknames_and_double_announcements(self):
         self.assertEqual(strip_pokemon_title("Revenant the Paldea Champion"), "Revenant")
         self.assertEqual(strip_pokemon_title("Rex the Tried and True"), "Rex")
@@ -1435,8 +1554,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         recoil = next(n for n in first["narration_links"] if n["effect"] == "recoil")
         self.assertEqual((recoil["status"], recoil["actor_id"], recoil["event_seq"]),
                          ("linked", leads[0]["actor_id"], damage[1]["seq"]))
-        self.assertEqual([(i["code"], i["frame"]) for i in first["issues"]],
-                         [("actor_mismatch", 882), ("actor_mismatch", 882), ("hp_narration_unmatched", 776)])
+        self.assertEqual(first["issues"], [])
         entry = next(e for e in first["events"] if e["kind"] == "switch" and e["species"] == "Basculegion")
         self.assertEqual((entry["frame"], entry["logical_frame"], entry["health"], entry["hp_state"]),
                          (672, 479, "219/219", "confirmed"))
@@ -1444,7 +1562,20 @@ class TemporalAutomatonTests(unittest.TestCase):
         aqua_jet = next(e for e in first["events"] if e["kind"] == "move" and e["frame"] == 609)
         self.assertEqual((aqua_jet["actor_id"], aqua_jet["status"]), (entry["actor_id"], "consistent"))
         gori = next(e for e in first["events"] if e["kind"] == "switch" and e["species"] == "Rillaboom")
-        self.assertNotIn("entry_reconstruction", gori)
+        self.assertEqual((gori["frame"], gori["logical_frame"], gori["health"]), (899, 650, "207/207"))
+        hp = [e for e in first["events"] if e["kind"] in {"damage", "heal"} and e["actor_id"] == gori["actor_id"]]
+        self.assertEqual([(e["before"], e["after"], e["status"], e["hp_state"]) for e in hp],
+                         [("207/207", "31/207", "consistent", "confirmed"),
+                          ("31/207", "43/207", "consistent", "confirmed"),
+                          ("43/207", "0/207", "consistent", "confirmed")])
+        restored = next(n for n in first["narration_links"] if n["frame"] == 776)
+        self.assertEqual((restored["status"], restored["actor_id"], restored["event_seq"]),
+                         ("linked", gori["actor_id"], hp[1]["seq"]))
+        moves = [e for e in first["events"] if e["kind"] == "move" and e["actor_id"] == gori["actor_id"] and e["status"] != "suppressed"]
+        self.assertEqual([(e["move"], e["frame"], e["slot"], e["turn"]) for e in moves],
+                         [("Fake Out", 703, "p1b", 4), ("Grassy Glide", 882, "p1b", 5)])
+        self.assertEqual(moves[0]["action_reconstruction"]["detected_frame"], 882)
+        self.assertEqual(compare_baseline(first, baselines[0])["aligned_hp_episodes"], 17)
         self.assertEqual([(i["code"], i["frame"]) for i in ledgers[1]["issues"]],
                          [("faint_without_actor", 1438), ("unclassified_text", 1587)])
         self.assertIn("Identidad corroborada tras estabilizarse el HUD", render_markdown(first, None))
