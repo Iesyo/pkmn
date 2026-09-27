@@ -318,6 +318,21 @@ class BattleAutomaton:
         self.terrain: str | None = None
         self.hp_pending: dict[str, HpEpisode] = {}
         self.hp_order: list[str] = []
+        self.hp_messages: dict[str, list[tuple[int, str]]] = collections.defaultdict(list)
+
+    def _hp_message_actor(self, value: str) -> str | None:
+        match = re.fullmatch(
+            r"(The opposing )?(.+?) (?:was hurt by its burn!|was damaged by the recoil!|"
+            r"had its HP restored\.)", value, re.I)
+        if not match:
+            return None
+        side = "p2" if match.group(1) else "p1"
+        named = match.group(2).casefold()
+        matches = [actor_id for slot, actor_id in self.active.items()
+                   if slot.startswith(side) and
+                   named in {self.actors[actor_id]["species"].casefold(),
+                             self.actors[actor_id]["species"].casefold().split("-", 1)[0]}]
+        return matches[0] if len(matches) == 1 else None
 
     def _resolve(self, species: str | None) -> str | None:
         return self.id_resolution.get(species, species) if species else None
@@ -756,7 +771,10 @@ class BattleAutomaton:
                 notes.append("PS previo no observable; conservar como observación.")
                 result = "review"
             cause: int | str | None = None
-            if episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
+            if episode.kind == "damage" and any("was hurt by its burn!" in text.casefold()
+                                                for text in episode.narration):
+                cause = "quemadura observada"
+            elif episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
                 cause = "posible efecto de Grassy Terrain; comprobar suelo y cuantía"
             elif self.last_action and last["observed_ms"] - self.last_action["observed_ms"] <= 20_000:
                 cause = self.last_action["seq"]
@@ -828,6 +846,22 @@ class BattleAutomaton:
             item["hp_state"] = "rejected"
             self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])
             return
+        # El detector puede llamar "heal" a un valor intermedio de una barra
+        # que sigue bajando (o viceversa). La dirección de una animación se
+        # decide por los PS estables, no por la etiqueta de cada fotograma.
+        if pending and pending.kind != event["kind"] and stable and (
+            candidate["observed_ms"] - pending.last_ms <= 1_500 and
+            not any(x.get("competing_ocr") for x in pending.candidates + [candidate])
+        ):
+            old = health_ratio(stable)
+            middle = health_ratio(pending.candidates[-1]["event"].get("health"))
+            new = health_ratio(event.get("health"))
+            if old is not None and middle is not None and new is not None and (
+                old > middle > new or old < middle < new
+            ):
+                pending.kind = "damage" if old > new else "heal"
+                pending.candidates.append(candidate)
+                return
         if pending and (pending.kind != event["kind"] or
                         candidate["observed_ms"] - pending.last_ms > 1_500):
             self._flush_hp()
@@ -849,6 +883,8 @@ class BattleAutomaton:
             pending = HpEpisode(actor_id, slot, event.get("species"), event["kind"])
             self.hp_pending[key] = pending
             self.hp_order.append(key)
+            pending.narration.extend(text for ms, text in self.hp_messages.pop(actor_id, [])
+                                     if 0 <= candidate["observed_ms"] - ms <= 3_000)
         pending.candidates.append(candidate)
 
     def _handle(self, candidate: dict[str, Any]) -> None:
@@ -861,9 +897,27 @@ class BattleAutomaton:
         actor_id = self.active.get(slot)
         if kind == "message":
             value = str(event.get("value") or "")
+            row = self.frame_lookup.get(candidate["observed_frame"], {})
+            menu_labels = {line.get("text", "").casefold() for line in row.get("ocr", ())}
+            if ("move time" in menu_labels or "battle info" in menu_labels) and (
+                "has no energy left to battle!" in value.casefold() or
+                "can't use its sealed" in value.casefold()
+            ):
+                self._append(candidate, kind="ui_text", status="suppressed",
+                             note="Aviso del menú de selección; no ocurrió como acción de batalla.")
+                return
             if "battle has ended" in value.casefold() or "forfeit" in value.casefold():
                 self._flush_hp()
                 self._append(candidate, kind="battle_end", note="Fin de la batalla observado en la pantalla.")
+                return
+            hp_actor = self._hp_message_actor(value)
+            if hp_actor:
+                pending = next((episode for episode in self.hp_pending.values()
+                                if episode.actor_id == hp_actor), None)
+                if pending:
+                    pending.narration.append(value)
+                else:
+                    self.hp_messages[hp_actor].append((candidate["observed_ms"], value))
                 return
             if self.hp_pending:
                 newest = max(self.hp_pending.values(), key=lambda e: e.last_ms)
