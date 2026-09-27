@@ -29,6 +29,8 @@ HP_EFFECTS = {"was hurt by its burn!": "burn", "was damaged by the recoil!": "re
               "had its hp restored.": "restoration"}
 HP_NARRATION_WINDOW_MS = 3_000
 HP_NARRATION_AMBIGUITY_MS = 500
+MEGA_NARRATION = re.compile(
+    r"(The opposing )?(.+?)[’']s (\S+) is reacting to .+?[’']s Omni Ring!", re.I)
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
 ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECASE)
@@ -315,6 +317,7 @@ class BattleAutomaton:
                     self.nickname_species[side].setdefault(nickname.casefold(), species)
         self.events: list[dict[str, Any]] = []
         self.issues: list[dict[str, Any]] = []
+        self.resolved_issues: list[dict[str, Any]] = []
         self.active: dict[str, str] = {}
         self.actors: dict[str, dict[str, Any]] = {}
         self.actor_ids_by_species: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
@@ -1297,6 +1300,8 @@ class BattleAutomaton:
                 identity_species(observed) != identity_species(occupant)):
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
                                     note="Megaevolución atribuida a un slot con otra especie o sin ocupante.")
+                item["mega_candidate"] = {"species": observed, "forme": event.get("forme"),
+                                           "stone": event.get("value")}
                 self._issue("mega_wrong_occupant", item["note"], item["frame"], item["seq"])
                 return
             if event.get("forme"):
@@ -1416,11 +1421,74 @@ class BattleAutomaton:
             elif not (isinstance(item["cause"], str) and "Grassy Terrain" in item["cause"]):
                 item["cause"] = "recuperación observada; origen sin confirmar"
 
+    def _reconcile_mega_candidates(self) -> None:
+        """Resolve a wrong-slot duplicate only with a supported accepted Mega.
+
+        The rejected candidate remains in the event stream. Two distinct
+        sampled frames must repeat the subject, side and stone of the accepted
+        announcement; a nearby detector candidate alone is insufficient.
+        """
+        accepted = [item for item in self.events if item["kind"] == "mega" and
+                    item["status"] == "consistent"]
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "mega_wrong_occupant":
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            original = rejected["mega_candidate"]
+            matches = []
+            for item in accepted:
+                if (not original["species"] or not original["forme"] or not original["stone"] or
+                    item["species"] != original["forme"] or item["value"] != original["stone"] or
+                    identity_species(item["species"]) != identity_species(original["species"]) or
+                    item["slot"] == rejected["slot"] or item["turn"] != rejected["turn"] or
+                    abs(item["observed_ms"] - rejected["observed_ms"]) > 3_000):
+                    continue
+                first, last = sorted((item["seq"], rejected["seq"]))
+                if any(e["status"] != "suppressed" and e["kind"] in ACTIVITY | {"turn", "faint"}
+                       for e in self.events[first:last - 1]):
+                    continue
+                evidence = []
+                for row in self.frames:
+                    if (abs(row["timestamp_ms"] - item["observed_ms"]) > 3_000 or
+                        abs(row["timestamp_ms"] - rejected["observed_ms"]) > 3_000):
+                        continue
+                    for line in row.get("ocr", ()):
+                        if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                            continue
+                        match = MEGA_NARRATION.fullmatch(line.get("text", "").strip())
+                        if not match:
+                            continue
+                        side = "p2" if match.group(1) else "p1"
+                        named = match.group(2).casefold()
+                        species = self.nickname_species[side].get(named, named)
+                        if (item["slot"].startswith(side) and
+                            identity_species(species).casefold() == identity_species(item["species"]).casefold() and
+                            match.group(3).casefold() == item["value"].casefold()):
+                            evidence.append({"frame": row["frame"], "text": line["text"],
+                                             "confidence": line["confidence"]})
+                            break
+                if len({e["frame"] for e in evidence}) >= 2:
+                    matches.append((item, evidence))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            item, evidence = matches[0]
+            resolution = {"state": "resolved", "event_seq": item["seq"],
+                          "actor_id": item["actor_id"], "slot": item["slot"],
+                          "reason": "Candidato de Mega duplicado en otro slot; anuncio correcto repetido y evento aceptado.",
+                          "evidence": evidence}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
+        self._reconcile_mega_candidates()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)
@@ -1437,7 +1505,8 @@ class BattleAutomaton:
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
                     len(row["detections"]["events"]) for row in self.frames),
-                "events": self.events, "issues": self.issues, "narration_links": self.narration_links,
+                "events": self.events, "issues": self.issues, "resolved_issues": self.resolved_issues,
+                "narration_links": self.narration_links,
                 "counts": dict(counts), "actors": self.actors}
 
 
@@ -1591,6 +1660,14 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         if link["status"] != "linked":
             lines += [f"- Mensaje conservado, frame {link['frame']}: «{link['text']}»; "
                       f"{link['reason']}"]
+    if ledger.get("resolved_issues"):
+        lines += ["", "## Incidencias resueltas con evidencia", ""]
+        for issue in ledger["resolved_issues"]:
+            resolution = issue["resolution"]
+            frames = ", ".join(str(e["frame"]) for e in resolution["evidence"])
+            lines += [f"- Frame {issue['frame']} · {issue['code']}: {resolution['reason']} "
+                      f"Evento {resolution['event_seq']} en {resolution['slot']}; "
+                      f"texto corroborado en frames {frames}. El candidato original sigue suprimido en JSON."]
     lines += [""]
     return "\n".join(lines)
 
@@ -1646,6 +1723,8 @@ def main() -> None:
                                       link["status"] for link in ledger["narration_links"])),
                                   "statuses": dict(collections.Counter(x["status"] for x in ledger["events"])),
                                   "issue_codes": dict(collections.Counter(x["code"] for x in ledger["issues"])),
+                                  "resolved_issue_codes": dict(collections.Counter(
+                                      x["code"] for x in ledger["resolved_issues"])),
                                   "comparison": comparison})
     (args.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     for row in report["battles"]:

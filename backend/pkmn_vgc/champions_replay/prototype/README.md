@@ -91,6 +91,13 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    `illusion_reveal`: conserva actor, PS, objeto y movimientos previos, y
    registra la especie mostrada por separado de la identidad real. La entrada
    posterior del Pokémon imitado crea o recupera **otro actor**.
+   Un candidato Mega suprimido por slot incorrecto puede resolverse después
+   si existe una única Mega aceptada de la misma especie, forma y piedra en
+   otro slot, en el mismo turno y a ≤3 s. Exige texto de especie/mote, bando
+   y piedra concordantes en dos fotogramas distintos, con confianza OCR
+   ≥0,95, y ninguna acción, entrada, turno o faint intermedio. Guarda el
+   candidato original, `resolution` y la incidencia en `resolved_issues`;
+   el informe separa `resolved_issue_codes` de las incidencias pendientes.
 7. Ejecuta una **pasada retrospectiva** para los mensajes de quemadura,
    retroceso y recuperación. Busca episodios confirmados del mismo actor,
    slot, turno y sentido del cambio, a ambos lados del texto, hasta 3 s desde
@@ -353,6 +360,30 @@ muestreado y una después. La asociación admite ambos órdenes.
   nuevos y validación visual independiente. Sigue siendo un prototipo fuera
   del pipeline de producción.
 
+## Mega de Delphox · confirmación visual · 27 de septiembre
+
+- Job `90403f16712d4d41`, partida 2. Las capturas de Ies muestran una escena
+  previa a las **12:11.50** y el anuncio «The opposing Delphox's Delphoxite
+  is reacting to SirRoso's Omni Ring!» a **12:12.50 y 12:13.00**. En el lado
+  propio están Dee Dee/Indeedee-F y Suzuko/Gardevoir. Las capturas confirman
+  el bando y sujeto del anuncio; todavía muestran la forma normal durante
+  el comienzo de la animación.
+- El candidato del frame **1465 (12:12.00)** atribuyó esa Mega a `p1a`,
+  ocupado por Indeedee-F. El OCR de ese frame escribió `The oppPsing`.
+  La Mega válida de Delphox está en **1466 (12:12.50), p2a**. Los frames
+  **1466 y 1467** repiten correctamente bando, especie y Delphoxite, con
+  confianza .977 y .98175.
+- Ledger resuelve `mega_wrong_occupant` como duplicado corroborado. La
+  detección original permanece suprimida, con su especie/forma/piedra en
+  `mega_candidate`, enlazada al evento aceptado mediante `resolution`.
+  Sin un evento aceptado y texto repetido suficiente, el aviso permanece.
+- Suite completa: **48/48 pruebas**, con los tres ZIP. Pendientes **6 → 5**
+  (jobs: **3/2/0**); una incidencia Mega resuelta y auditable. Los cinco
+  pendientes son tres reentradas fantasma tras faint y dos entradas
+  duplicadas. Se conservan exactamente los eventos aceptados, actores,
+  **328 episodios de PS**, **113 enlaces narrativos** y alineaciones con los
+  replays archivados. La integración en producción sigue pendiente.
+
 ## Pruebas
 
 ```bash
@@ -362,7 +393,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cuarenta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Cuarenta y cinco casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

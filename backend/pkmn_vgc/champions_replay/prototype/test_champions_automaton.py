@@ -35,6 +35,16 @@ def frame(n, events=(), texts=()):
             "detections": {"events": list(events)}}
 
 
+def mega_duplicate_trace(correct_frame=3):
+    text = "The opposing Delphox's Delphoxite is reacting to Rival's Omni Ring!"
+    wrong = {**event("mega", "p1a", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
+    correct = {**event("mega", "p2a", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
+    return [frame(1, [event("switch", "p1a", "Indeedee-F", "100/100"),
+                      event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
+            frame(2, [wrong]), frame(correct_frame, [correct], texts=[text]),
+            frame(correct_frame + 1, texts=[text])]
+
+
 class TemporalAutomatonTests(unittest.TestCase):
     def test_hp_ratio_parses_fractions_and_rejects_invalid_values(self):
         self.assertEqual(health_ratio("50/200"), .25)
@@ -703,6 +713,59 @@ class TemporalAutomatonTests(unittest.TestCase):
                                if a["species"] == "Indeedee-F"))
         self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
 
+    def test_wrong_slot_mega_resolves_only_to_corroborated_accepted_event(self):
+        ledger = BattleAutomaton(0, mega_duplicate_trace()).run()
+        rejected = next(e for e in ledger["events"] if e["kind"] == "mega" and e["status"] == "suppressed")
+        accepted = next(e for e in ledger["events"] if e["kind"] == "mega" and e["status"] == "consistent")
+        self.assertEqual((accepted["slot"], accepted["species"]), ("p2a", "Delphox-Mega"))
+        self.assertEqual(rejected["resolution"]["event_seq"], accepted["seq"])
+        self.assertEqual([e["frame"] for e in rejected["resolution"]["evidence"]], [3, 4])
+        self.assertEqual(rejected["mega_candidate"]["species"], "Delphox")
+        self.assertEqual(len(ledger["resolved_issues"]), 1)
+        self.assertNotIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
+        self.assertIsNone(next(a["forme"] for a in ledger["actors"].values() if a["species"] == "Indeedee-F"))
+
+    def test_wrong_slot_mega_keeps_warning_without_complete_corroboration(self):
+        for missing in ("one_frame", "side", "stone", "forme", "confidence", "time", "action", "turn",
+                        "accepted_event", "distinct_frames"):
+            with self.subTest(missing=missing):
+                trace = mega_duplicate_trace(20 if missing == "time" else 5)
+                if missing == "one_frame":
+                    trace[-1]["ocr"] = []
+                elif missing == "side":
+                    for row in trace[-2:]:
+                        row["ocr"][0]["text"] = row["ocr"][0]["text"].removeprefix("The opposing ")
+                elif missing in {"stone", "forme"}:
+                    trace[1]["detections"]["events"][0]["value" if missing == "stone" else "forme"] = "other"
+                elif missing == "confidence":
+                    for row in trace[-2:]:
+                        row["ocr"][0]["confidence"] = .8
+                elif missing == "action":
+                    trace.insert(2, frame(3, [event("move", "p1a", "Indeedee-F", move="Protect")]))
+                elif missing == "turn":
+                    trace.insert(2, frame(3, [event("turn", turn=2)]))
+                elif missing == "accepted_event":
+                    trace[-2]["detections"]["events"] = []
+                elif missing == "distinct_frames":
+                    trace[-1]["frame"] = trace[-2]["frame"]
+                    trace[-1]["timestamp_ms"] = trace[-2]["timestamp_ms"]
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
+                self.assertEqual(ledger["resolved_issues"], [])
+
+    def test_two_supported_megas_do_not_resolve_an_ambiguous_wrong_slot(self):
+        trace = mega_duplicate_trace()
+        trace[0]["detections"]["events"].insert(1, event("switch", "p1b", "Delphox", "100/100"))
+        own = {**event("mega", "p1b", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
+        trace[2]["detections"]["events"].append(own)
+        for row in trace[-2:]:
+            row["ocr"].append({"text": "Delphox's Delphoxite is reacting to Player's Omni Ring!",
+                               "top": .75, "confidence": 1})
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(sum(e["kind"] == "mega" and e["status"] == "consistent" for e in ledger["events"]), 2)
+        self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
+        self.assertEqual(ledger["resolved_issues"], [])
+
     def test_unresolved_actor_is_reported_before_replay_export(self):
         trace = [frame(1, [event("switch", "p2a", "__champions_actor_p2_0002__", "100/100"),
                            event("turn", turn=1)]),
@@ -790,6 +853,12 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ("41/100", "47/100", "Grassy Terrain corroborado por HUD y mensaje"))
         self.assertEqual(sum(e["kind"] == "mega" and e["slot"] == "p1a" and
                              e["status"] == "consistent" for e in battle["events"]), 0)
+        rejected_mega = next(e for e in battle["events"] if e["kind"] == "mega" and e["frame"] == 1465)
+        accepted_mega = battle["events"][rejected_mega["resolution"]["event_seq"] - 1]
+        self.assertEqual((accepted_mega["frame"], accepted_mega["slot"], accepted_mega["species"]),
+                         (1466, "p2a", "Delphox-Mega"))
+        self.assertEqual([e["frame"] for e in rejected_mega["resolution"]["evidence"]], [1466, 1467])
+        self.assertNotIn("mega_wrong_occupant", [x["code"] for x in battle["issues"]])
         self.assertFalse(any(e["kind"] == "damage" and e["status"] == "consistent" and
                              e["after"] in {"3/100", "1/100"} and e["slot"] == "p2a"
                              for e in battle["events"]))
