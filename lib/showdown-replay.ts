@@ -49,9 +49,16 @@ export interface ShowdownReplayDocument {
 // detecta cualquier switch/drag serializado con 0 PS reales que no venga
 // justo tras el `faint` confirmado de esa misma especie en ese slot
 // (`entrada_a_cero`), no sólo la reentrada de identidad ya cubierta por
-// `reentrada_debilitado`. Cualquier replay marcado con `col102-r6` -o
-// antes- necesita pasar otra vez por esta versión.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r7";
+// `reentrada_debilitado`.
+//
+// r8, corte de Roku sobre el commit `ff9e53f` (mismo día): un switch/drag
+// sin lectura propia ni previa que cae al máximo -o a "100/100"- sostenido
+// sólo por una lectura FUTURA o por ninguna lectura en absoluto ahora
+// también trae su propia incidencia `blocking` (backend,
+// `showdown._unsupported_health_issues`); antes quedaba "verificado" sin
+// marca. Cualquier replay marcado con `col102-r7` -o antes- necesita
+// pasar otra vez por esta versión.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r8";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;

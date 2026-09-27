@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .pipeline import ReviewIssue
 
@@ -54,7 +54,20 @@ from .pipeline import ReviewIssue
 # que la limpieza previa del pipeline sea perfecta. Cualquier replay ya
 # marcado con `col102-r6` -o antes- necesita pasar otra vez por esta
 # versión.
-RECONCILE_VERSION = "col102-r7"
+#
+# r8, corte de Roku sobre el commit `ff9e53f` (mismo turno): tres cambios.
+# (1) `showdown._resolve_health`/`_unsupported_health_issues` ahora
+# adjuntan una incidencia `blocking` a `ReplayDocument.issues` cuando un
+# switch/drag sin lectura propia ni previa cae al máximo -o a "100/100"-
+# sostenido sólo por una lectura FUTURA o por ninguna lectura en absoluto;
+# antes esto quedaba "verificado" sin marca (el defecto que motivó este
+# corte). (2) `_state_findings` acepta `line_frames`/`source_battle_index`
+# y enlaza `entrada_a_cero`/`reentrada_debilitado` al frame de traza real
+# cuando `analyze()` puede correlacionarlo (`_entry_frame_index`); cuando
+# no puede, el propio detalle lo dice en vez de dejar `frame=None` sin
+# explicación. Ningún replay marcado `col102-r7` -o antes- trae ninguna de
+# las dos protecciones; hay que pasarlo otra vez por esta versión.
+RECONCILE_VERSION = "col102-r8"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
@@ -270,7 +283,37 @@ def _phase_ghosts(records: list[dict[str, Any]], battle_index: int) -> set[tuple
     return ghosts
 
 
-def _state_findings(lines: list[str]) -> list[Finding]:
+def _entry_frame_index(records: list[dict[str, Any]], battle_index: int) -> dict[tuple[str, str], list[int]]:
+    """Frames, en orden de traza, donde se detectó cada entrada (`switch`/
+    `drag`) por (slot, especie base) -sólo para `battle_index`.
+
+    Roku, corte sobre `ff9e53f`, defecto #3 de la revisión: `_state_findings`
+    corre sobre el `.log` ya escrito, que no trae ningún frame consigo -sólo
+    la traza original lo tiene. `analyze()` consume esto en el mismo orden
+    en que aparecen las líneas de entrada para esa combinación, igual que
+    `_phase_ghosts`/`_false_zero_candidates` ya correlacionan trazas contra
+    el log por posición, no por buscar una coincidencia exacta de HP -un
+    `switch` fantasma ya descartado antes de serializar no debe correrle el
+    turno a las entradas reales que sí sobrevivieron.
+    """
+
+    index: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for record in records:
+        if record["battle_index"] != battle_index:
+            continue
+        for event in (record.get("detections") or {}).get("events") or []:
+            if event.get("kind") not in {"switch", "drag"} or not event.get("slot") or not event.get("species"):
+                continue
+            index[(str(event["slot"]), key(str(event["species"]).split("-")[0]))].append(record["frame"])
+    return index
+
+
+def _state_findings(
+    lines: list[str],
+    *,
+    line_frames: Mapping[int, int] | None = None,
+    source_battle_index: int | None = None,
+) -> list[Finding]:
     """Roku, reapertura estructural del 26 sep, job real
     `10a7fba6fda04585`, partidas 1 y 5: `dead_at` vivía por slot y se
     borraba en el propio `switch`/`faint` -antes incluso de mirar si ese
@@ -297,7 +340,30 @@ def _state_findings(lines: list[str]) -> list[Finding]:
     MISMA especie en ese slot es imposible -Showdown nunca hace entrar a
     un Pokémon a 0 PS- y se marca aparte (`entrada_a_cero`) para no
     depender de que la identidad además coincida.
+
+    Roku, corte sobre `ff9e53f`, defecto #3 de la revisión: un `Finding`
+    sólo con `line` no le dice a Teams a qué fotograma volver -el detalle
+    conserva slot/especie, pero no dirige a nadie al vídeo. `line_frames`
+    (construido por `analyze()` con `_entry_frame_index`, correlacionando
+    la traza contra estas mismas líneas de entrada en orden) lo resuelve
+    cuando hay traza de por medio; si no la hay -esta función corriendo
+    sola sobre un `.log`, como en las pruebas unitarias, o sin evidencia
+    para esta línea en particular- el propio detalle lo dice, y el
+    hallazgo bloquea igual: la ausencia de frame nunca se lee como "sin
+    problema", sólo como "revisar a mano".
     """
+
+    def _evidence(i: int) -> tuple[int | None, str]:
+        frame = (line_frames or {}).get(i)
+        if frame is not None:
+            origin = f"battle_index={source_battle_index}" if source_battle_index is not None else "traza"
+            return frame, f" Evidencia de traza: frame {frame} ({origin})."
+        if line_frames is not None:
+            return None, " Sin frame de traza para esta línea; revisar manualmente contra el vídeo."
+        return None, (
+            " Sin traza de origen disponible en este análisis (corrió sólo sobre el .log); "
+            "no hay frame que citar, revisar manualmente contra el vídeo."
+        )
 
     result: list[Finding] = []
     occupants: dict[str, str] = {}
@@ -311,10 +377,12 @@ def _state_findings(lines: list[str]) -> list[Finding]:
                 fainted and key(fainted.split("-")[0]) == key(species.split("-")[0])
             )
             if same_species_as_fainted:
+                frame, note = _evidence(i)
                 result.append(
                     Finding(
                         "reentrada_debilitado",
-                        f"{slot}: {species} reingresa al slot donde se debilitó, sin otro ocupante de por medio",
+                        f"{slot}: {species} reingresa al slot donde se debilitó, sin otro ocupante de por medio.{note}",
+                        frame=frame,
                         line=i,
                     )
                 )
@@ -327,11 +395,13 @@ def _state_findings(lines: list[str]) -> list[Finding]:
                 and int(entry_hp[2]) > 0
                 and not same_species_as_fainted
             ):
+                frame, note = _evidence(i)
                 result.append(
                     Finding(
                         "entrada_a_cero",
                         f"{slot}: {species} entra con 0/{entry_hp[2]} PS sin faint confirmado de esa misma especie "
-                        "en ese slot inmediatamente antes; ningún switch/drag puede resolver con 0 PS reales",
+                        f"en ese slot inmediatamente antes; ningún switch/drag puede resolver con 0 PS reales.{note}",
+                        frame=frame,
                         line=i,
                     )
                 )
@@ -591,7 +661,27 @@ def analyze(
                     edits.append(Edit(i, line, None, f"Lectura positiva tras 0 PS y antes de faint ({slot})"))
                     drop_lines.add(i)
     patched = "\n".join(replacements.get(i, line) for i, line in enumerate(lines) if i not in drop_lines).splitlines()
-    findings.extend(_state_findings(patched))
+    # Roku, corte sobre `ff9e53f`, defecto #3: correlacionar cada línea de
+    # entrada del log ya parcheado contra los frames de la traza en que la
+    # detección original vio esa misma combinación (slot, especie base),
+    # consumidos en orden -mismo criterio posicional que `_phase_ghosts`/
+    # `_false_zero_candidates`, nunca por igualdad exacta de HP, para no
+    # perder la cuenta si una entrada anterior ya se descartó como edit.
+    line_frames: dict[int, int] = {}
+    if source_index is not None:
+        entry_frames = _entry_frame_index(records, source_index)
+        consumed: dict[tuple[str, str], int] = defaultdict(int)
+        for i, line in enumerate(patched):
+            if match := _LOG_ENTRY.match(line):
+                slot_key = (match[2], key(match[3].split("-")[0]))
+                frames = entry_frames.get(slot_key, ())
+                position = consumed[slot_key]
+                if position < len(frames):
+                    line_frames[i] = frames[position]
+                consumed[slot_key] += 1
+    findings.extend(
+        _state_findings(patched, line_frames=line_frames or None, source_battle_index=source_index)
+    )
     return {
         "source_battle_index": source_index,
         "on_screen_episodes": len(episodes),

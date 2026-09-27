@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from .models import ACTOR_IDENTITY_PREFIX, BattleEvent, BattleSide, CapturedBattle, ReplayDocument
-from .pipeline import review_capture
+from .pipeline import ReviewIssue, review_capture
 
 
 def _identifier(slot: str, species: str) -> str:
@@ -66,8 +66,59 @@ def _health_maximums(events: Sequence[BattleEvent]) -> dict[tuple[str, str], str
     return {key: counts.most_common(1)[0][0] for key, counts in readings.items()}
 
 
-def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
-    """Completa la vida de los cambios que el HUD no acompañó.
+def _unsupported_health_issue(event: BattleEvent, maximum: str | None) -> ReviewIssue:
+    """Roku, corte sobre el commit `ff9e53f` (26 sep, mismo turno, COL-102,
+    defecto #2 de la revisión): quitar la fabricación de HP en
+    `_resolve_health` no basta si el valor que queda -el máximo- se sirve
+    sin que nada distinga "lo vimos entrar así" de "lo dedujimos". Dos
+    procedencias, ninguna nueva (existían antes de `ff9e53f`, sólo que
+    antes el 0 real las tapaba a veces):
+
+    - Máximo conocido SÓLO por una lectura FUTURA de este mismo combate
+      (ninguna lectura previa de esta clave, pero un daño/curación
+      posterior revela el máximo): Showdown exige un número y "max/max"
+      sigue siendo la hipótesis menos mala, pero es una DEDUCCIÓN -nunca
+      una observación en el instante de la entrada.
+    - Ninguna lectura en absoluto, ni antes ni después, en todo el
+      combate: `maximum` es `None` y el serializador (`_health`, más
+      abajo) cae a "100/100" sin ninguna base, el relleno de siempre.
+
+    Ninguno de los dos se declara fiel: se reporta como `ReviewIssue`
+    `"blocking"` -la misma vía que ya usan `entrada_a_cero`/
+    `reentrada_debilitado` (`reconcile.as_review_issues`) para llegar a
+    `ReplayDocument.issues` y de ahí a `hasBlockingIssues`
+    (`lib/showdown-replay.ts`), que es lo que `db/queries.ts::createMatch`
+    exige limpio antes de guardar una partida de Champions con replay
+    reconstruido. La vía manual explícita (`ChampionsQuickMatchDialog`,
+    sin `championsJobId`/`championsReplayNumber`) no reclama ningún
+    replay y por lo tanto no pasa por esta compuerta -sigue intacta,
+    exactamente donde Roku pidió dejarla para que Ies corrija a mano.
+    """
+
+    if maximum:
+        return ReviewIssue(
+            "blocking",
+            f"{event.slot}: {event.species} entra sin ninguna lectura de HP propia ni previa; el máximo "
+            f"({maximum}) sólo se conoce por una lectura POSTERIOR de este combate. \"{maximum}/{maximum}\" "
+            "es una deducción, no una observación en el instante de la entrada -no declarar fiel sin "
+            "confirmarlo contra el vídeo.",
+            frame=event.source_frame,
+            proposed_change=f"{maximum}/{maximum} (deducido de una lectura posterior; sin confirmar)",
+        )
+    return ReviewIssue(
+        "blocking",
+        f"{event.slot}: {event.species} entra sin ninguna lectura de HP en todo el combate; Showdown exige "
+        "un número y el serializador cae a \"100/100\" sin ninguna evidencia que lo sostenga -no declarar "
+        "fiel sin confirmarlo contra el vídeo.",
+        frame=event.source_frame,
+        proposed_change="100/100 (relleno sin ninguna lectura; sin confirmar)",
+    )
+
+
+def _resolve_health(events: Sequence[BattleEvent]) -> tuple[tuple[BattleEvent, ...], tuple[ReviewIssue, ...]]:
+    """Completa la vida de los cambios que el HUD no acompañó, y aparte,
+    señala -sin fabricar nada- cuándo ese completado no tiene detrás una
+    lectura contemporánea o previa que lo sostenga.
 
     Un Pokémon conserva su vida al salir del campo, así que quien vuelve entra
     con la última que se le vio. Y quien pisa el campo por primera vez entra a
@@ -79,23 +130,32 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
     `10a7fba6fda04585`, partidas 1 y 5): la versión anterior de esta función
     convertía un `current` resuelto en "0/algo" -explícito en el propio
     evento o heredado de `health.get(key)`- en `None` y lo dejaba caer al
-    máximo, exactamente la fabricación de HP que Ies prohibió. Bastaba con
-    que la limpieza previa (`_drop_ghost_reentries`/`_drop_redundant_reswitches`)
-    dejara escapar cualquier entrada fantasma, o que el OCR leyera un 0 de
-    otra especie en el mismo slot, para que el log pasara de "0 PS
-    imposible" a un "HP completo" que ninguna lectura sostenía. Esta
-    función ya no fabrica nada: conserva la procedencia real del HP -sea
-    0, sea positivo, sea ausente- y sólo cae al máximo cuando no hay
-    ninguna lectura previa que citar (una entrada nueva de verdad). Que un
-    `switch`/`drag` serializado quede con "0/max" es ahora una señal, no un
+    máximo, exactamente la fabricación de HP que Ies prohibió. Esta función
+    ya no fabrica nada: conserva la procedencia real del HP -sea 0, sea
+    positivo, sea ausente- y sólo cae al máximo cuando no hay ninguna
+    lectura previa que citar (una entrada nueva de verdad). Que un
+    `switch`/`drag` serializado quede con "0/max" es una señal, no un
     problema que esta función deba disimular: `reconcile._state_findings`
     la detecta sobre el `.log` ya escrito y la marca `blocking`.
+
+    COL-102, corte de Roku sobre el commit `ff9e53f` (mismo turno,
+    defecto #2): caer al máximo sigue siendo necesario -Showdown exige un
+    número-, pero un máximo que sólo una lectura FUTURA sostiene (o que
+    ninguna lectura sostiene en absoluto) es una deducción, no una
+    observación, y nunca debe leerse como "revisado, sin hallazgos". Por
+    eso esta función devuelve, aparte de los eventos completados, las
+    incidencias `blocking` de procedencia (`_unsupported_health_issue`)
+    para cada entrada así resuelta -`_with_known_health` conserva su firma
+    de siempre (sólo eventos, para no romper a quien ya la llama o la
+    prueba); `_unsupported_health_issues` expone la otra mitad, y
+    `build_replay_document` suma ambas a `document.issues`.
     """
 
     maximums = _health_maximums(events)
     active: dict[str, str] = {}
     health: dict[tuple[str, str], str] = {}
     completed: list[BattleEvent] = []
+    issues: list[ReviewIssue] = []
     for event in events:
         if event.kind in {"switch", "drag"} and event.slot and event.species:
             active[event.slot] = event.species
@@ -103,6 +163,7 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
             current = event.health or health.get(key)
             if not current:
                 maximum = maximums.get(key)
+                issues.append(_unsupported_health_issue(event, maximum))
                 current = f"{maximum}/{maximum}" if maximum else None
             if current:
                 health[key] = current
@@ -112,7 +173,23 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
             if species:
                 health[_health_key(event.slot, species)] = event.health
         completed.append(event)
-    return tuple(completed)
+    return tuple(completed), tuple(issues)
+
+
+def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
+    """Ver `_resolve_health`: esta conserva la firma de siempre (sólo
+    eventos completados) para no romper a quien ya la llama o la prueba
+    directamente."""
+
+    return _resolve_health(events)[0]
+
+
+def _unsupported_health_issues(events: Sequence[BattleEvent]) -> tuple[ReviewIssue, ...]:
+    """Ver `_resolve_health`: la mitad que `_with_known_health` no expone
+    -las incidencias `blocking` de procedencia, una por cada entrada
+    resuelta sin lectura contemporánea ni previa que la sostenga."""
+
+    return _resolve_health(events)[1]
 
 
 def _with_known_target(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]:
@@ -321,9 +398,10 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
     active: dict[str, str] = {}
     mega_formes: dict[tuple[str, str], str] = {}
     side_names = {"p1": battle.p1.name, "p2": battle.p2.name}
-    for event in _with_known_health(
+    resolved_events, health_issues = _resolve_health(
         _with_known_target(_with_known_miss(_with_known_crits(battle.events)))
-    ):
+    )
+    for event in resolved_events:
         lines.extend(_event_lines(event, active, side_names, mega_formes))
     winner_name = battle.p1.name if battle.winner == "p1" else battle.p2.name
     lines.append(f"|win|{winner_name}")
@@ -348,7 +426,12 @@ def build_replay_document(battle: CapturedBattle) -> ReplayDocument:
         p2=battle.p2.name,
         format=battle.format,
         source_battle_index=battle.source_battle_index,
-        issues=tuple(asdict(issue) for issue in review_capture(battle)),
+        # Roku, corte sobre `ff9e53f` (defecto #2): además de lo que ya
+        # reporta `review_capture` (nivel captura: roster, confianza),
+        # `health_issues` cubre la procedencia del HP que `_resolve_health`
+        # acaba de resolver -sólo lectura futura, o ninguna lectura- que
+        # `review_capture` no puede ver porque nunca mira el HP resuelto.
+        issues=tuple(asdict(issue) for issue in (*review_capture(battle), *health_issues)),
     )
 
 

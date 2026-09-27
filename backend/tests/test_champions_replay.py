@@ -281,12 +281,25 @@ class ChampionsReplayTests(unittest.TestCase):
             )
         )
 
-        # Vuelve al campo: conserva la última vida que se le vio.
+        # Vuelve al campo: conserva la última vida que se le vio -lectura
+        # previa del mismo actor, verificada, sin incidencia de procedencia.
         self.assertIn("|switch|p1a: Basculegion|Basculegion, L50|13/195", document.log)
-        # Primera entrada: a tope, con el máximo que el log revela más adelante.
+        # Primera entrada: a tope, con el máximo que el log revela más
+        # adelante -deducción de una lectura FUTURA (ver
+        # test_a_replacement_with_only_a_future_health_reading_is_flagged_not_verified):
+        # el borrador se conserva igual, pero desde `ff9e53f`/este corte
+        # también carga su propia incidencia `blocking` en `document.issues`.
         self.assertIn("|switch|p1a: Venusaur|Venusaur, L50|156/156", document.log)
-        # Del rival sólo se conoce el porcentaje, y nunca se leyó: queda el relleno.
+        # Del rival sólo se conoce el porcentaje, y nunca se leyó: queda el
+        # relleno -ninguna lectura en absoluto (ver
+        # test_a_replacement_with_no_health_reading_at_all_is_flagged_not_verified),
+        # con su propia incidencia `blocking` aparte.
         self.assertIn("|switch|p2a: Sableye|Sableye, L50|100/100", document.log)
+        blocking = [
+            issue for issue in document.issues
+            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
+        ]
+        self.assertEqual(len(blocking), 2)
 
     def test_a_bad_health_reading_does_not_decide_the_maximum(self) -> None:
         events = (
@@ -399,16 +412,84 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(len(matching), 1)
         self.assertIn("Blaziken", matching[0].detail)
 
-    def test_a_legitimate_replacement_with_health_observed_later_raises_no_finding(self) -> None:
-        """(c) Contraejemplo de (a)/(b): un reemplazo legítimo (especie
-        distinta) tras un `faint`, sin HP propio en el propio `switch`
-        pero con una lectura positiva del HUD momentos después, debe
-        entrar limpio -sin `entrada_a_cero` ni `reentrada_debilitado`- y
-        sin ningún "max/max" inventado en el log servido.
+    def test_a_legitimate_replacement_with_contemporaneous_health_raises_no_finding(self) -> None:
+        """(c-positivo) COL-102, corte de Roku sobre `ff9e53f` (defecto #2
+        de la revisión): la prueba vieja de "reemplazo legítimo" afirmaba
+        como correcto un "156/156" fabricado a partir de sólo una lectura
+        FUTURA -eso es exactamente el defecto, no un contraejemplo suyo.
+        Este es el contraejemplo POSITIVO real: un reemplazo (especie
+        distinta) tras un `faint`, con una lectura de HP REALMENTE
+        observada en el propio `switch` -contemporánea, nada deducido-,
+        debe entrar limpio: sin `entrada_a_cero`/`reentrada_debilitado` en
+        el log servido, y sin ninguna incidencia `blocking` de procedencia
+        de HP. (El otro caso "verificado" -última lectura del mismo actor,
+        HP positivo heredado de un switch-out anterior- ya lo cubre
+        `test_completes_the_health_of_switches_the_hud_did_not_accompany`
+        más arriba; no se repite aquí. La entrada de Rillaboom lleva su
+        propia lectura contemporánea para que la única variable bajo
+        prueba sea la procedencia del HP de Blaziken.)
         """
 
         events = (
-            BattleEvent(kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom", health="207/207"
+            ),
+            BattleEvent(kind="faint", timestamp_ms=2_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(
+                kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health="156/156"
+            ),
+        )
+
+        completed = _with_known_health(events)
+        self.assertEqual(completed[2].health, "156/156")
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|156/156", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        self.assertEqual(
+            [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
+        )
+        # Filtra por el marcador de las incidencias de procedencia de HP
+        # (`_unsupported_health_issue`, showdown.py) -no por severidad a
+        # secas: este fixture también dispara `blocking` por selección
+        # incompleta (sólo 1-2/4 Pokémon), ajeno a lo que se prueba aquí.
+        self.assertEqual(
+            [i for i in document.issues if i["severity"] == "blocking" and "entra sin ninguna lectura de HP" in i["message"]],
+            [],
+        )
+
+    def test_a_replacement_with_only_a_future_health_reading_is_flagged_not_verified(self) -> None:
+        """(c-negativo #1) COL-102, corte de Roku sobre `ff9e53f`, defecto
+        #2: exactamente el fixture que la prueba vieja usaba como
+        "reemplazo legítimo" -sin HP propio en el `switch`, sin ninguna
+        lectura previa de esa clave, y el único indicio del máximo es un
+        daño observado DESPUÉS (82/156)- pero ahora como lo que en
+        realidad es: una deducción, no una observación. `_with_known_health`
+        sigue sirviendo "156/156" -Showdown exige un número, y es la
+        hipótesis menos mala-, pero `build_replay_document` debe adjuntar
+        una incidencia `blocking` señalando que ese máximo sólo lo sostiene
+        una lectura futura. Nunca debe leerse como "revisado, sin
+        hallazgos": ni `entrada_a_cero` la cubre (no hay 0 de por medio) ni
+        `reentrada_debilitado` (especie distinta), así que sin esta
+        incidencia aparte el defecto pasaría en silencio.
+        """
+
+        events = (
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom", health="207/207"
+            ),
             BattleEvent(kind="faint", timestamp_ms=2_000, slot="p1a", species="Rillaboom"),
             BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health=None),
             BattleEvent(
@@ -432,11 +513,69 @@ class ChampionsReplayTests(unittest.TestCase):
             )
         )
 
-        self.assertNotIn("0/156", document.log)
+        # El borrador se conserva -Showdown recibe un número-, pero nunca
+        # sin marca: "conservar el borrador" es justo lo que pidió Roku.
+        self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|156/156", document.log)
         findings = reconcile._state_findings(document.log.splitlines())
         self.assertEqual(
             [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
         )
+        # Filtra por el marcador de la incidencia de procedencia de HP -no
+        # por severidad a secas: este fixture también dispara `blocking`
+        # por selección incompleta, ajeno a lo que se prueba aquí.
+        blocking = [
+            issue for issue in document.issues
+            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
+        ]
+        self.assertEqual(len(blocking), 1)
+        self.assertIn("Blaziken", blocking[0]["message"])
+        self.assertIn("POSTERIOR", blocking[0]["message"])
+
+    def test_a_replacement_with_no_health_reading_at_all_is_flagged_not_verified(self) -> None:
+        """(c-negativo #2) COL-102, corte de Roku sobre `ff9e53f`, defecto
+        #2: igual que el anterior, pero sin ninguna lectura en absoluto -ni
+        antes ni después- de esta clave en todo el combate.
+        `showdown._health(None)` cae a "100/100" por relleno puro -ni
+        siquiera hay una lectura futura que lo sostenga. Debe quedar
+        igualmente marcado `blocking`, nunca leído como fiel.
+        """
+
+        events = (
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom", health="207/207"
+            ),
+            BattleEvent(kind="faint", timestamp_ms=2_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health=None),
+        )
+
+        completed = _with_known_health(events)
+        self.assertIsNone(completed[2].health)
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|100/100", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        self.assertEqual(
+            [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
+        )
+        blocking = [
+            issue for issue in document.issues
+            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
+        ]
+        self.assertEqual(len(blocking), 1)
+        self.assertIn("Blaziken", blocking[0]["message"])
+        self.assertIn("ninguna lectura de HP en todo el combate", blocking[0]["message"])
 
     def test_fills_the_target_when_only_one_rival_was_hit(self) -> None:
         # El detector sabe quién usó el movimiento y, por separado, a quién le
@@ -1250,6 +1389,19 @@ class ChampionsReplayTests(unittest.TestCase):
         partida 5 (turno 5, Bonkers/Rillaboom): daño a 0/207 en
         t=3048000 ms, `faint` en t=3052000 ms, reentrada fantasma 500 ms
         después en t=3052500 ms y el reemplazo real en t=3075500 ms.
+
+        Roku, corte sobre `ff9e53f` (defecto #1 de la revisión): la
+        versión anterior de este bloque de partida 5 usaba `p2a`, "0/207"
+        y "Farigiraf" -ninguno de los tres coincide con la traza/vídeo
+        reales de esa partida (`p2b`, Rillaboom/"Bonkers" a "0/100", y el
+        reemplazo real es **Golisopod**, no Farigiraf). Esa diferencia no
+        probaba que el fix fallara en el vídeo; probaba que la cobertura
+        afirmada no existía. Corregido a la secuencia real, con
+        `source_battle_index=4` (el ordinal real de `replay-005.json` en
+        el job `10a7fba6fda04585`; la partida 1 de arriba usa
+        `source_battle_index=0`, el de `replay-001.json`) y comprobando el
+        `.log` ya serializado -no sólo `second.events` en memoria- igual
+        que se hace arriba para la partida 1.
         """
 
         accumulator = CaptureAccumulator(CaptureSeed())
@@ -1283,6 +1435,7 @@ class ChampionsReplayTests(unittest.TestCase):
                 started_at=battle.started_at,
                 format=battle.format,
                 source_mode=battle.source_mode,
+                source_battle_index=0,
             )
         )
 
@@ -1292,18 +1445,33 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertNotIn("|switch|p1a: Rillaboom", document.log)
         self.assertNotIn("207/207", document.log)
         self.assertIn("|-damage|p1a: Rillaboom|0/207", document.log)
+        # El reemplazo real (Blaziken) sobrevive intacto, sin incidencia.
+        self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|82/156", document.log)
         findings = reconcile._state_findings(document.log.splitlines())
         self.assertEqual(
             [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
         )
+        self.assertEqual(
+            [
+                i for i in document.issues
+                if i["severity"] == "blocking" and "entra sin ninguna lectura de HP" in i["message"]
+            ],
+            [],
+        )
 
-        # Partida 5 (turno 5, Bonkers/Rillaboom): mismo patrón, mismo resultado.
+        # Partida 5 (turno 5, Bonkers/Rillaboom): secuencia real -p2b,
+        # Rillaboom a 0/100 (no 0/207), reemplazo real Golisopod (no
+        # Farigiraf)- con el mismo patrón y mismo resultado.
         second = CaptureAccumulator(CaptureSeed())
         second.events = [
-            BattleEvent(kind="damage", timestamp_ms=3_048_000, slot="p2a", species="Rillaboom", health="0/207"),
-            BattleEvent(kind="faint", timestamp_ms=3_052_000, slot="p2a", species="Rillaboom"),
-            BattleEvent(kind="switch", timestamp_ms=3_052_500, slot="p2a", species="Rillaboom", health=None),
-            BattleEvent(kind="switch", timestamp_ms=3_075_500, slot="p2a", species="Farigiraf", health="90/165"),
+            BattleEvent(kind="damage", timestamp_ms=3_048_000, slot="p2b", species="Rillaboom", health="0/100"),
+            BattleEvent(kind="faint", timestamp_ms=3_052_000, slot="p2b", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=3_052_500, slot="p2b", species="Rillaboom", health=None),
+            # HP del reemplazo sin confirmar contra el vídeo -sólo la
+            # especie, el slot y el timing son los hechos reales de esta
+            # ronda; el número es un valor de prueba para ejercitar el
+            # pipeline, no una afirmación sobre la lectura real del HUD.
+            BattleEvent(kind="switch", timestamp_ms=3_075_500, slot="p2b", species="Golisopod", health="100/182"),
         ]
 
         second._drop_ghost_reentries()
@@ -1313,10 +1481,42 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(
             [(event.kind, event.species, event.health) for event in second.events],
             [
-                ("damage", "Rillaboom", "0/207"),
+                ("damage", "Rillaboom", "0/100"),
                 ("faint", "Rillaboom", None),
-                ("switch", "Farigiraf", "90/165"),
+                ("switch", "Golisopod", "100/182"),
             ],
+        )
+
+        second_document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Sableye",), ("Sableye",)),
+                p2=BattleSide("Rival", ("Rillaboom", "Golisopod"), ("Rillaboom", "Golisopod")),
+                events=tuple(second.events),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+                source_battle_index=4,
+            )
+        )
+
+        self.assertEqual(second_document.source_battle_index, 4)
+        # Mismas comprobaciones que arriba, ahora sobre el .log serializado
+        # de la partida 5 -no sólo sobre `second.events` en memoria.
+        self.assertNotIn("|switch|p2b: Rillaboom", second_document.log)
+        self.assertNotIn("100/100", second_document.log)
+        self.assertIn("|-damage|p2b: Rillaboom|0/100", second_document.log)
+        self.assertIn("|switch|p2b: Golisopod|Golisopod, L50|100/182", second_document.log)
+        second_findings = reconcile._state_findings(second_document.log.splitlines())
+        self.assertEqual(
+            [item for item in second_findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
+        )
+        self.assertEqual(
+            [
+                i for i in second_document.issues
+                if i["severity"] == "blocking" and "entra sin ninguna lectura de HP" in i["message"]
+            ],
+            [],
         )
 
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
