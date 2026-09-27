@@ -80,7 +80,23 @@ export interface ShowdownReplayDocument {
 // cualquier ocupante intermedio hasta el final del combate. Cualquier
 // replay marcado `col102-r9` -o antes- necesita pasar otra vez por esta
 // versión.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r10";
+//
+// r11, sexta vuelta (26 sep), job real `10a7fba6fda04585`, partida 3
+// (Buss): `pipeline.review_capture` (backend) marcaba `blocking` cualquier
+// lado con `selected` incompleto por igual. Confirmado con Ies (conocimiento
+// directo del cliente) y verificado sobre los frames reales del job: el
+// panel rival del selector nunca numera, resalta ni atenúa sus seis
+// tarjetas en ningún frame, desde el "0/4" propio hasta la pantalla "VS" -la
+// pantalla "Select 4 Pokémon to send into battle" sólo existe para quien
+// graba. `p2.selected` sólo se completa observando switches reales durante
+// el combate, así que bloquear por su ausencia exige un dato que este
+// formato de vídeo nunca puede dar. Ahora sólo la selección propia
+// (`p1.selected`, leída de una pantalla real con marcador 1-4) sigue
+// bloqueando si queda incompleta; la del rival incompleta queda como aviso.
+// Cualquier replay marcado `col102-r10` -o antes- puede llevar una
+// incidencia `blocking` por selección rival incompleta que ya no aplica;
+// hay que pasarlo otra vez por esta versión.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r11";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;

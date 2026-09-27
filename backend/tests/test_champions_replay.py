@@ -109,6 +109,43 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(document.issues, tuple(asdict(issue) for issue in review_capture(incomplete)))
         self.assertEqual(document.log, build_replay_document(battle).log)
 
+    def test_an_incomplete_player_selection_still_blocks(self) -> None:
+        # La pantalla "Select 4 Pokémon to send into battle" numera del 1
+        # al 4 las filas propias con un marcador real en pantalla -si
+        # `p1.selected` no llega a 4, es una lectura fallida de esa
+        # pantalla, no una ausencia de evidencia. Sigue bloqueando.
+        battle = self.capture()
+        incomplete = replace(battle, p1=replace(battle.p1, selected=battle.p1.selected[:2]))
+
+        issues = review_capture(incomplete)
+
+        matching = [issue for issue in issues if "selección del jugador" in issue.message]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].severity, "blocking")
+
+    def test_an_incomplete_rival_selection_is_only_a_warning(self) -> None:
+        # COL-102, sexta vuelta, job real `10a7fba6fda04585`, partida 3
+        # (Buss, confirmado por Ies con conocimiento directo del cliente y
+        # verificado en los frames 2942/2960/3040/3095 de ese job): la
+        # pantalla de selección previa al combate nunca muestra cuáles 4
+        # eligió el rival -ni numeración, ni resaltado, ni atenuado en su
+        # panel de seis tarjetas, en ningún frame desde el "0/4" propio
+        # hasta la pantalla "VS". `p2.selected` sólo se completa observando
+        # switches reales durante el combate, así que un combate corto
+        # donde el rival nunca usó sus 4 elegidos dejará esa lista
+        # incompleta sin que haya ningún fallo de lectura detrás. Ya no
+        # bloquea el guardado -sigue como aviso, visible en Teams- porque
+        # el resto del replay es fiel a lo que sí se vio en combate.
+        battle = self.capture()
+        incomplete = replace(battle, p2=replace(battle.p2, selected=battle.p2.selected[:2]))
+
+        issues = review_capture(incomplete)
+
+        matching = [issue for issue in issues if "selección del rival" in issue.message]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0].severity, "warning")
+        self.assertFalse(any(issue.severity == "blocking" for issue in matching))
+
     def test_sanitizes_protocol_fields_and_canonicalizes_selection_names(self) -> None:
         side = BattleSide(
             "Ies|Yo\nlocal",

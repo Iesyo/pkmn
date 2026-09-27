@@ -787,7 +787,28 @@ def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75
                 )
             )
         if len(side.selected) != 4:
-            issues.append(ReviewIssue("blocking", f"La selección del {label} contiene {len(side.selected)}/4 Pokémon."))
+            # COL-102, sexta vuelta, job real `10a7fba6fda04585`, partida 3
+            # (Buss): la pantalla "Select 4 Pokémon to send into battle" sólo
+            # existe para quien graba. Confirmado sobre el vídeo real (frames
+            # 2942/2960/3040 del job, 0/4 -> 2/4 -> 4/4): el panel propio
+            # numera del 1 al 4 los elegidos; el panel rival, en esos mismos
+            # frames y en los de "Preparing for Battle"/"VS" que siguen,
+            # muestra sus seis tarjetas sin ninguna marca de selección -ni
+            # numeración, ni resaltado, ni atenuado. Esa pantalla no existe
+            # para el lado rival en este cliente: no es que el detector falle
+            # en leerla. `p2.selected` sólo puede completarse observando
+            # switches reales durante el combate (`CaptureAccumulator.apply`),
+            # así que un combate corto donde el rival nunca usó sus 4
+            # elegidos deja esa lista incompleta sin que haya nada mal leído.
+            # Bloquear el guardado por un dato que este formato de vídeo
+            # nunca puede dar exige lo imposible; se deja como aviso en vez
+            # de bloqueo, y el resto del replay -fiel a lo que sí se vio en
+            # combate- no queda en duda por esto. La selección propia, en
+            # cambio, sí se lee de una pantalla real con marcador 1-4 en
+            # pantalla: ahí una lectura incompleta sigue siendo un fallo de
+            # detección y sigue bloqueando.
+            severity = "blocking" if label == "jugador" else "warning"
+            issues.append(ReviewIssue(severity, f"La selección del {label} contiene {len(side.selected)}/4 Pokémon."))
     critical_kinds = {"switch", "move", "faint", "turn"}
     uncertain = [event for event in battle.events if event.kind in critical_kinds and event.confidence < confidence_threshold]
     if uncertain:

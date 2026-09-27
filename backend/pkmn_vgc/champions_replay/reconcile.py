@@ -99,7 +99,24 @@ from .pipeline import ReviewIssue
 # `entrada_a_cero` pudiera anclar- ahora queda `blocking`. Ningún replay
 # marcado `col102-r9` -o antes- trae esta protección; hay que pasarlo
 # otra vez por esta versión.
-RECONCILE_VERSION = "col102-r10"
+#
+# r11, sexta vuelta (26 sep), job real `10a7fba6fda04585`, partida 3
+# (Buss): `pipeline.review_capture` marcaba `blocking` cualquier lado con
+# `selected` incompleto por igual. Confirmado con Ies (conocimiento
+# directo del cliente) y verificado sobre los frames reales del job (el
+# panel rival del selector nunca numera, resalta ni atenúa sus seis
+# tarjetas en ningún frame, desde el "0/4" propio hasta la pantalla "VS"):
+# la pantalla "Select 4 Pokémon to send into battle" sólo existe para
+# quien graba -el lado rival no tiene ninguna pantalla de selección que
+# leer, sólo se completa observando switches reales durante el combate.
+# Bloquear por eso exige un dato que este formato de vídeo nunca puede
+# dar. Ahora sólo `p1.selected` (la selección propia, leída de una
+# pantalla real con marcador 1-4) sigue bloqueando si queda incompleta;
+# `p2.selected` incompleto queda como aviso. Cualquier replay marcado
+# `col102-r10` -o antes- puede llevar una incidencia `blocking` por
+# selección rival incompleta que ya no aplica; hay que pasarlo otra vez
+# por esta versión.
+RECONCILE_VERSION = "col102-r11"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
