@@ -1438,6 +1438,10 @@ class ChampionsTextParser:
         self._turn = 0
         self._command_visible = False
         self._turn_has_activity = False
+        # Sólo un evento narrado (move, status, switch, cant...) cuenta como
+        # evidencia de que el turno ya pasó por una acción real; ver el
+        # comentario junto a `_turn_has_activity = True` de la lectura de HP.
+        self._turn_has_narrated_event = False
         self._battle_open = False
         self._pending_end = False
         self._mega_seen: set[str] = set()
@@ -4139,6 +4143,7 @@ class ChampionsTextParser:
             events.extend(parsed)
             if any(event.kind not in {"message", "turn"} for event in parsed):
                 self._turn_has_activity = True
+                self._turn_has_narrated_event = True
             if self._unplaced_entries and (
                 not hold_marks or hold_marks[-1][1] is not self._unplaced_entries[-1]
             ):
@@ -4182,7 +4187,22 @@ class ChampionsTextParser:
                     source_frame=source_frame,
                 )
             )
-            self._turn_has_activity = True
+            # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida
+            # 2: un solo dígito de Delphox se leyó mal a media pantalla
+            # (28 % -> 3 %) y, cuando el HUD se corrigió solo un instante
+            # después de que el turno 3 ya hubiera abierto, esa corrección
+            # -sin ningún movimiento todavía elegido- bastó para que el
+            # siguiente parpadeo del menú FIGHT lo diera por cerrado. El
+            # turno 3 quedaba vacío y sus dos movimientos reales (Protect,
+            # Sucker Punch) se corrían al turno 4. Un turno real siempre
+            # tiene al menos un movimiento -y por lo tanto un evento narrado
+            # (`move`, `status`, `switch`, `cant`...), nunca sólo una barra de
+            # HP que cambia sola-, así que una lectura de HP nunca cierra un
+            # turno por sí sola: sólo lo hace cuando ya hay un evento narrado
+            # detrás. Sin eso, la corrección de una lectura mala en el peor
+            # momento se lee igual que el propio golpe que la causó.
+            if self._turn_has_narrated_event:
+                self._turn_has_activity = True
 
         # Mismo riesgo que Team Preview/selection_visible/move_menu_visible:
         # este gate decide cuándo avanza el turno (más abajo), así que una
@@ -4202,6 +4222,7 @@ class ChampionsTextParser:
                 # cada Pokémon en dobles- se lee como el cierre del turno 1,
                 # dejándolo vacío y corriendo sus eventos reales al turno 2.
                 self._turn_has_activity = False
+                self._turn_has_narrated_event = False
                 events.append(
                     BattleEvent(
                         kind="turn",
@@ -4214,6 +4235,7 @@ class ChampionsTextParser:
             elif self._turn_has_activity:
                 self._turn += 1
                 self._turn_has_activity = False
+                self._turn_has_narrated_event = False
                 events.append(
                     BattleEvent(
                         kind="turn",

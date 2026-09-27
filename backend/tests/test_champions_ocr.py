@@ -1245,6 +1245,50 @@ class ChampionsOcrTests(unittest.TestCase):
         )
         self.assertEqual([event.turn for event in next_turn.events if event.kind == "turn"], [2])
 
+    def test_a_lone_hp_reading_cannot_close_a_turn_before_its_first_move(self) -> None:
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida 2:
+        # un solo dígito de Delphox se leyó mal a media pantalla y, cuando el
+        # HUD se corrigió justo después de que el turno hubiera abierto -sin
+        # que nadie hubiera elegido un movimiento todavía-, esa corrección
+        # bastó para que el segundo regreso al menú FIGHT (uno por cada
+        # Pokémon activo en dobles) lo diera por cerrado. El turno quedaba
+        # vacío y sus dos movimientos reales se corrían al turno siguiente.
+        parser = self.parser()
+        parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
+        action_frame = tuple(
+            item
+            for item in self.command_frame(p1_health="120/152")
+            if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+        ) + (line("The opposing Steelix used Rock Slide!", x=0.12, y=0.7, width=0.42),)
+        parser.parse(action_frame, timestamp_ms=1_000, source_frame=1)
+        parser.parse(self.command_frame(p1_health="120/152"), timestamp_ms=2_000, source_frame=2)
+
+        # Nadie ha movido todavía en este turno; sólo una lectura de HP
+        # -sin ningún evento narrado- entre el primer y el segundo regreso al
+        # menú FIGHT de los dos Pokémon activos.
+        stray_hp_reading = (
+            line("Delphox", x=0.08, y=0.86),
+            line("115/152", x=0.13, y=0.93),
+        )
+        parser.parse(stray_hp_reading, timestamp_ms=2_500, source_frame=3)
+        premature = parser.parse(
+            self.command_frame(p1_health="115/152"), timestamp_ms=3_000, source_frame=4
+        )
+        self.assertEqual([event.turn for event in premature.events if event.kind == "turn"], [])
+
+        # Recién cuando de verdad se narra un movimiento este turno se puede
+        # cerrar.
+        real_action = tuple(
+            item
+            for item in self.command_frame(p1_health="115/152")
+            if item.text not in {"MOVE TIME", "FIGHT", "POKÉMON"}
+        ) + (line("The opposing Steelix used Rock Slide!", x=0.12, y=0.7, width=0.42),)
+        parser.parse(real_action, timestamp_ms=3_500, source_frame=5)
+        closes_turn = parser.parse(
+            self.command_frame(p1_health="115/152"), timestamp_ms=4_000, source_frame=6
+        )
+        self.assertEqual([event.turn for event in closes_turn.events if event.kind == "turn"], [3])
+
     def test_move_menu_timer_cannot_create_hp_changes_or_empty_turns(self) -> None:
         parser = self.parser()
         parser.parse(self.command_frame(), timestamp_ms=0, source_frame=0)
