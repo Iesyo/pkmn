@@ -73,12 +73,13 @@ export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
 
 export function calculateOpponentPokemonStats(
   matches: MatchRecord[],
+  source: "opponentSelected" | "opponentPicks" = "opponentSelected",
 ): OpponentPokemonStat[] {
   const grouped = new Map<string, { species: string; games: number; wins: number }>();
 
   for (const match of matches) {
     const seen = new Set(
-      match.opponentSelected.map((species) => species.trim()).filter(Boolean),
+      (match[source] ?? []).map((species) => species.trim()).filter(Boolean),
     );
 
     for (const species of seen) {
