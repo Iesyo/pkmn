@@ -254,7 +254,7 @@ class BattleAutomaton:
                         score = 10
                     elif kind == "faint" and "fainted" in low:
                         score = 9
-                    elif kind in HP_KINDS | {"hp_oscillation"} and HP_TEXT.search(text):
+                    elif kind in HP_KINDS | {"hp_oscillation", "hp_ocr_conflict", "hp_zero_rebound"} and HP_TEXT.search(text):
                         slot = event.get("slot") or ""
                         if slot.startswith("p1") and line.get("top", 0) < .65:
                             continue
@@ -298,7 +298,7 @@ class BattleAutomaton:
             if value != expected or "%" not in suspect["text"]:
                 continue
             for other_value, stronger in readings:
-                if other_value == expected or stronger["confidence"] <= suspect["confidence"] + .1:
+                if other_value == expected or stronger["confidence"] <= suspect["confidence"] + .04:
                     continue
                 # Overlap or touch within the same HP label; Kingambit's distant
                 # 0% and Rillaboom's 88% must never be paired as one reading.
@@ -362,6 +362,19 @@ class BattleAutomaton:
                              "parser_kind": c["event"]["kind"], "evidence": self._evidence(c, c["event"]["kind"]),
                              **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
+            # Un porcentaje aislado y contradicho por una lectura más fuerte
+            # del mismo HUD no establece daño/curación ni modifica el estado.
+            # Si se confirma en frames posteriores, llegará como otro episodio.
+            if len(episode.candidates) == 1 and last.get("competing_ocr"):
+                conflict = last["competing_ocr"]
+                note = (f"OCR {conflict['suspect']['text']} contradicho en el mismo HUD por "
+                        f"{conflict['stronger']['text']} de mayor confianza; PS sin confirmar.")
+                item = self._append(last, kind="hp_ocr_conflict", actor_id=episode.actor_id,
+                                    status="review", before=before, after=before,
+                                    note=note, observations=observations)
+                item["narration"].extend(episode.narration)
+                self._issue("hp_ocr_conflict", note, item["frame"], item["seq"])
+                continue
             result = "consistent"
             notes: list[str] = []
             old, new = health_ratio(before), health_ratio(after)
@@ -439,6 +452,17 @@ class BattleAutomaton:
                         candidate["observed_ms"] - pending.last_ms > 1_500):
             self._flush_hp()
             pending = None
+        if (event["kind"] == "heal" and actor_id and
+            health_ratio(self.actors[actor_id]["health"]) == 0):
+            before = self.actors[actor_id]["health"]
+            note = "PS en cero antes del debilitamiento; una lectura aislada no confirma reanimación."
+            item = self._append(candidate, kind="hp_zero_rebound", actor_id=actor_id,
+                                status="review", before=before, after=before, note=note,
+                                observations=[{"frame": candidate["observed_frame"],
+                                               "health": event.get("health"),
+                                               "evidence": self._evidence(candidate, "heal")}])
+            self._issue("hp_zero_rebound", note, item["frame"], item["seq"])
+            return
         if pending is None:
             pending = HpEpisode(actor_id, slot, event.get("species"), event["kind"])
             self.hp_pending[key] = pending
@@ -466,8 +490,9 @@ class BattleAutomaton:
             if self.events and self.events[-1]["kind"] != "turn":
                 self.events[-1]["narration"].append(value)
             else:
-                self._append(candidate, kind="unclassified_text", status="review",
-                             note="Mensaje sin evento causal identificable.")
+                item = self._append(candidate, kind="unclassified_text", status="review",
+                                    note="Mensaje sin evento causal identificable.")
+                self._issue("unclassified_text", item["note"], item["frame"], item["seq"])
             return
         self._flush_hp()
         if kind in {"switch", "drag"} and slot in SLOTS:
@@ -580,8 +605,17 @@ class BattleAutomaton:
                              note="El objeto ya se había consumido/perdido.")
                 return
             self.actors[actor_id]["item_lost"] = True
-        if kind == "mega" and actor_id and event.get("forme"):
-            self.actors[actor_id]["forme"] = event["forme"]
+        if kind == "mega":
+            observed = self._resolve(event.get("species"))
+            occupant = self.actors[actor_id]["species"] if actor_id else None
+            if (not occupant or not observed or
+                identity_species(observed) != identity_species(occupant)):
+                item = self._append(candidate, actor_id=actor_id, status="suppressed",
+                                    note="Megaevolución atribuida a un slot con otra especie o sin ocupante.")
+                self._issue("mega_wrong_occupant", item["note"], item["frame"], item["seq"])
+                return
+            if event.get("forme"):
+                self.actors[actor_id]["forme"] = event["forme"]
         if kind == "fieldstart" and "Terrain" in str(event.get("value")):
             self.terrain = str(event.get("value"))
         if kind == "fieldend" and "Terrain" in str(event.get("value")):
@@ -617,6 +651,12 @@ class BattleAutomaton:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
         self._flush_hp()
+        for actor_id, actor in self.actors.items():
+            if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
+                first = next((item for item in self.events if item["actor_id"] == actor_id), None)
+                self._issue("unresolved_identity", f"Identidad observada sin especie resuelta: {actor_id}.",
+                            first["frame"] if first else self.frames[0]["frame"],
+                            first["seq"] if first else None)
         if self.turn and self.turn_activity == 0 and not any(
             item["kind"] == "battle_end" and item["turn"] == self.turn for item in self.events
         ):
@@ -699,6 +739,8 @@ def event_description(item: dict[str, Any]) -> str:
         return f"{actor} usa {item['move']} → {item['target_slot'] or 'objetivo desconocido'}"
     if kind in HP_KINDS:
         return f"{actor}: PS {item['before'] or '?'} → {item['after'] or '?'} ({kind})"
+    if kind in {"hp_ocr_conflict", "hp_zero_rebound"}:
+        return f"{actor}: lecturas de PS en conflicto; se conserva {item['before'] or '?'}"
     if kind == "faint":
         return f"Se debilita {actor}"
     if kind == "status":
@@ -777,7 +819,9 @@ def main() -> None:
         report["battles"].append({"battle_index": battle_index,
                                   "candidate_events": ledger["candidate_events"],
                                   "ledger_events": len(ledger["events"]),
-                                  "hp_episodes": sum(x["kind"] in HP_KINDS for x in ledger["events"]),
+                                  "hp_episodes": sum(x["kind"] in HP_KINDS and x["status"] != "suppressed"
+                                                     for x in ledger["events"]),
+                                  "hp_conflicts": sum(x["kind"] == "hp_ocr_conflict" for x in ledger["events"]),
                                   "statuses": dict(collections.Counter(x["status"] for x in ledger["events"])),
                                   "issue_codes": dict(collections.Counter(x["code"] for x in ledger["issues"])),
                                   "comparison": comparison})
