@@ -34,6 +34,20 @@ HP_HUD_AREAS = {
     "p1a": (.10, .27, .87, .98), "p1b": (.30, .48, .87, .98),
     "p2a": (.66, .82, .08, .20), "p2b": (.89, .99, .08, .20),
 }
+NAME_HUD_AREAS = {
+    "p1a": (.05, .27, .82, .91), "p1b": (.27, .49, .82, .91),
+    "p2a": (.57, .81, .02, .10), "p2b": (.81, .99, .02, .10),
+}
+
+
+def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
+    left, right, top, bottom = NAME_HUD_AREAS[slot]
+    matches = [line for line in row.get("ocr", ())
+               if left <= line.get("left", -1) <= right and
+               top <= line.get("top", -1) <= bottom and
+               line.get("confidence", 0) >= .9 and
+               re.search(r"[A-Za-z]{3}", line.get("text", ""))]
+    return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
 
 
 def health_ratio(health: str | None) -> float | None:
@@ -71,12 +85,59 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for index, event in enumerate(row.get("detections", {}).get("events", ())):
             candidates.append({"event": event, "observed_frame": row["frame"],
                                "observed_ms": row["timestamp_ms"], "ordinal": index})
+    # A provisional detector ID can be reused when another slot appears.
+    # Keep the first established nickname association, and resolve the ID
+    # against the nickname actually displayed for this *appearance*.
     aliases: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
-    resolutions: dict[str, str] = {}
+    resolutions: dict[str, set[str]] = collections.defaultdict(set)
+    frame_lookup = {row["frame"]: row for row in frames}
     for row in frames:
         for side in aliases:
-            aliases[side].update(row.get("resolved_aliases", {}).get(side) or {})
-        resolutions.update(row.get("resolved_identities") or {})
+            for name, species in (row.get("resolved_aliases", {}).get(side) or {}).items():
+                aliases[side].setdefault(name.casefold(), species)
+        for raw, species in (row.get("resolved_identities") or {}).items():
+            resolutions[raw].add(species)
+    unambiguous = {raw: next(iter(species)) for raw, species in resolutions.items()
+                   if len(species) == 1}
+    for item in candidates:
+        event = item["event"]
+        slot = event.get("slot")
+        frame = item["observed_frame"]
+        if event["kind"] == "move" and slot in SLOTS and event.get("move"):
+            # Narration names the actor; a repeated provisional ID sometimes
+            # points the move at its partner instead. Correct only when one
+            # nearby HUD displays that exact nickname on the same side.
+            for row_frame in range(frame - 3, frame + 2):
+                for line in frame_lookup.get(row_frame, {}).get("ocr", ()):
+                    match = re.search(r"(?:The opposing )?(.+?) used\s+" +
+                                      re.escape(event["move"]) + r"!$", line.get("text", ""), re.I)
+                    if not match or line.get("top", 0) < .55:
+                        continue
+                    nickname = match.group(1).casefold()
+                    named_species = aliases[slot[:2]].get(nickname)
+                    if named_species and PLACEHOLDER.match(str(event.get("species"))):
+                        item["canonical_species"] = named_species
+                    peers = [s for s in SLOTS if s.startswith(slot[:2]) and
+                             any(hud_nickname(frame_lookup.get(f, {}), s) == nickname
+                                 for f in range(frame - 4, frame + 2))]
+                    if len(peers) == 1 and peers[0] != slot:
+                        item["event"] = event = {**event, "slot": peers[0]}
+                        item["slot_correction"] = slot
+                    break
+                else:
+                    continue
+                break
+        slot = event.get("slot")
+        raw = event.get("species")
+        if slot in SLOTS and raw and PLACEHOLDER.match(raw):
+            names = [hud_nickname(frame_lookup.get(f, {}), slot)
+                     for f in range(frame - 2, frame + 3)]
+            named_species = next((aliases[slot[:2]][name] for name in names
+                                  if name in aliases[slot[:2]]), None)
+            local = frame_lookup.get(frame, {}).get("resolved_identities", {}).get(raw)
+            clean = item.get("canonical_species") or named_species or local or unambiguous.get(raw)
+            if clean:
+                item["canonical_species"] = clean
     announcements: list[dict[str, Any]] = []
     for row in frames:
         for line in row.get("ocr", ()):
@@ -105,7 +166,7 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         slot = event.get("slot")
         if not slot:
             continue
-        clean = resolutions.get(event.get("species"), event.get("species"))
+        clean = item.get("canonical_species") or unambiguous.get(event.get("species"), event.get("species"))
         matches = [a for a in announcements
                    if a["side"] == slot[:2] and identity_species(a["species"]) == identity_species(clean or "")
                    and 0 <= item["observed_frame"] - a["frame"] <= 80
@@ -172,7 +233,6 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # The detector describes that reveal as a switch, although the occupant
     # did not leave the slot. Link the visible disguise back to its real actor
     # before replaying candidates, so HP, items and earlier moves stay together.
-    frame_lookup = {row["frame"]: row for row in frames}
     for index, item in enumerate(candidates):
         event = item["event"]
         if event["kind"] != "switch" or "Zoroark" not in str(event.get("species")):
@@ -184,7 +244,7 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if previous_index is None:
             continue
         apparent = candidates[previous_index]["event"].get("species")
-        real = resolutions.get(event.get("species"), event.get("species"))
+        real = item.get("canonical_species") or unambiguous.get(event.get("species"), event.get("species"))
         if not apparent or identity_species(apparent) == identity_species(real or ""):
             continue
         observations = [(f, line["text"]) for f in range(item["observed_frame"], item["observed_frame"] + 9)
@@ -204,7 +264,7 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if disguised["event"].get("slot") == slot:
                 disguised["canonical_species"] = real
                 if disguised["event"].get("species"):
-                    disguised["display_species"] = resolutions.get(
+                    disguised["display_species"] = unambiguous.get(
                         disguised["event"]["species"], disguised["event"]["species"])
         item["canonical_species"] = real
         item["illusion_reveal"] = {"apparent": apparent, "actual": real,
@@ -235,9 +295,17 @@ class BattleAutomaton:
         self.battle_index = battle_index
         self.frames = frames
         self.frame_lookup = {row["frame"]: row for row in frames}
-        self.id_resolution: dict[str, str] = {}
+        observed_resolutions: dict[str, set[str]] = collections.defaultdict(set)
         for row in frames:
-            self.id_resolution.update(row.get("resolved_identities") or {})
+            for raw, species in (row.get("resolved_identities") or {}).items():
+                observed_resolutions[raw].add(species)
+        self.id_resolution = {raw: next(iter(values)) for raw, values in observed_resolutions.items()
+                              if len(values) == 1}
+        self.nickname_species: dict[str, dict[str, str]] = {"p1": {}, "p2": {}}
+        for row in frames:
+            for side in self.nickname_species:
+                for nickname, species in (row.get("resolved_aliases", {}).get(side) or {}).items():
+                    self.nickname_species[side].setdefault(nickname.casefold(), species)
         self.events: list[dict[str, Any]] = []
         self.issues: list[dict[str, Any]] = []
         self.active: dict[str, str] = {}
@@ -258,7 +326,7 @@ class BattleAutomaton:
         side = slot[:2]
         raw = species or "unknown"
         clean = self._resolve(raw) or raw
-        if PLACEHOLDER.match(raw):
+        if PLACEHOLDER.match(raw) and raw not in self.actors and raw not in self.active.values():
             actor_id = raw
         else:
             previous = self.actor_ids_by_species.get((side, identity_species(clean)), [])
@@ -431,6 +499,58 @@ class BattleAutomaton:
         return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
                 "evidence": full + repaired + split + bare}
 
+    def _entry_baseline(self, candidate: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        """Find a complete, stable HUD value after entry and before any action.
+
+        The entry detector often knows the species but omits HP. No inferred
+        full health is allowed: the value must actually appear in that slot's
+        HUD before the next move or HP transition.
+        """
+        slot = candidate["event"].get("slot")
+        if slot not in SLOTS:
+            return None
+        start = candidate.get("logical_frame", candidate["observed_frame"])
+        species = candidate.get("canonical_species") or self._resolve(candidate["event"].get("species"))
+        observations: list[tuple[int, str]] = []
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        for frame in range(start, min(start + 121, self.frames[-1]["frame"] + 1)):
+            row = self.frame_lookup.get(frame)
+            if not row:
+                continue
+            if frame > start and any(e["kind"] in {"move", "damage", "heal"} or
+                                     (e["kind"] in {"switch", "drag"} and e.get("slot") == slot)
+                                     for e in row.get("detections", {}).get("events", ())):
+                break
+            nickname = hud_nickname(row, slot)
+            identified = self.nickname_species[slot[:2]].get(nickname or "", nickname or "")
+            if not species or not nickname or (identity_species(identified).casefold() !=
+                                               identity_species(species).casefold() and
+                                               nickname != species.casefold().split("-", 1)[0]):
+                continue
+            for line in row.get("ocr", ()):
+                if not (left <= line.get("left", -1) <= right and
+                        top <= line.get("top", -1) <= bottom and
+                        line.get("confidence", 0) >= .9):
+                    continue
+                value = line.get("text", "").replace(" ", "")
+                if slot.startswith("p2") and re.fullmatch(r"\d{1,3}%", value):
+                    health = value[:-1] + "/100"
+                elif slot.startswith("p1") and re.fullmatch(r"\d{1,4}/\d{1,4}", value):
+                    health = value
+                else:
+                    continue
+                numerator, denominator = map(int, health.split("/"))
+                if 0 <= numerator <= denominator and denominator:
+                    observations.append((frame, health))
+        if not observations or len({value for _, value in observations}) != 1:
+            return None
+        frame, health = observations[0]
+        support = self._hp_support(slot, health, frame)
+        if support["state"] != "confirmed":
+            return None
+        support = {**support, "reason": "OCR del HUD anterior a la primera acción"}
+        return health, support
+
     def _append(self, candidate: dict[str, Any], *, kind: str | None = None,
                 actor_id: str | None = None, status: str = "consistent",
                 note: str | None = None, before: str | None = None,
@@ -452,7 +572,11 @@ class BattleAutomaton:
             "seq": len(self.events) + 1, "battle_index": self.battle_index,
             "turn": self.turn, "kind": kind, "status": status,
             "actor_id": actor_id, "slot": event.get("slot"),
-            "species": (candidate.get("canonical_species") or
+            "species": ((self.actors[actor_id].get("forme")
+                         if actor_id in self.actors and self.actors[actor_id].get("forme") and
+                         identity_species(self.actors[actor_id]["forme"]) == identity_species(
+                             candidate.get("canonical_species") or self.actors[actor_id]["species"])
+                         else candidate.get("canonical_species")) or
                         (self.actors[actor_id].get("forme") or self._resolve(event.get("species"))
                          if actor_id in self.actors else self._resolve(event.get("species")))),
             "display_species": candidate.get("display_species"),
@@ -469,6 +593,10 @@ class BattleAutomaton:
             "evidence": evidence,
             "narration": [], "observations": observations or [],
         }
+        if candidate.get("slot_correction"):
+            item["original_slot"] = candidate["slot_correction"]
+            item["note"] = ((item["note"] + " ") if item["note"] else "") + (
+                f"Slot corregido desde {candidate['slot_correction']} por mote visible en el HUD.")
         self.events.append(item)
         return item
 
@@ -487,6 +615,28 @@ class BattleAutomaton:
                              "parser_kind": c["event"]["kind"], "evidence": self._evidence(c, c["event"]["kind"]),
                              **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
+            support = self._hp_support(episode.slot, after, last["observed_frame"])
+            previous = (self._hp_support(episode.slot, before, last["observed_frame"] - 2)
+                        if actor and before and before != after and support["state"] != "confirmed"
+                        else {"state": "unconfirmed", "evidence": []})
+            hud_box = HP_HUD_AREAS.get(episode.slot)
+            before_label = (before.split("/", 1)[0] + "%" if episode.slot and
+                            episode.slot.startswith("p2") and before else before)
+            previous_still_visible = bool(
+                previous["state"] == "confirmed" and hud_box and before_label and
+                any(line.get("text", "").replace(" ", "") == before_label and
+                    line.get("confidence", 0) >= .9 and
+                    hud_box[0] <= line.get("left", -1) <= hud_box[1] and
+                    hud_box[2] <= line.get("top", -1) <= hud_box[3]
+                    for line in self.frame_lookup.get(last["observed_frame"], {}).get("ocr", ())))
+            if previous_still_visible:
+                item = self._append(last, kind="hp_rejected_reading", actor_id=episode.actor_id,
+                                    status="suppressed", before=before, after=before,
+                                    note="El HUD conserva los PS previos; lectura candidata descartada.",
+                                    observations=observations)
+                item["narration"].extend(episode.narration)
+                item["hp_state"], item["hp_support"] = "rejected", previous
+                continue
             # Un porcentaje aislado y contradicho por una lectura más fuerte
             # del mismo HUD no establece daño/curación ni modifica el estado.
             # Si se confirma en frames posteriores, llegará como otro episodio.
@@ -501,7 +651,6 @@ class BattleAutomaton:
                 item["hp_state"] = "rejected"
                 self._issue("hp_ocr_conflict", note, item["frame"], item["seq"])
                 continue
-            support = self._hp_support(episode.slot, after, last["observed_frame"])
             if support["state"] != "confirmed" and before != after:
                 note = (f"PS propuestos {after or '?'} sin respaldo suficiente del HUD {episode.slot}; "
                         "la transición queda pendiente de revisión.")
@@ -678,7 +827,26 @@ class BattleAutomaton:
             if actor_id and identity_species(self.actors[actor_id]["species"]) == identity_species(species or ""):
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
                                     note="Entrada de la especie que ya ocupaba el slot.")
-                self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
+                original = next((e for e in reversed(self.events[:-1])
+                                 if e["kind"] in {"switch", "drag"} and e["slot"] == slot and
+                                 e["status"] != "suppressed"), None)
+                since = self.events[original["seq"]:-1] if original else []
+                if (original and candidate["observed_frame"] - original["frame"] <= 80 and
+                    not any(e["kind"] in HP_KINDS | {"move"} for e in since)):
+                    if original["health"] is None and event.get("health") and (
+                        self.actors[actor_id]["health"] is None or
+                        self.actors[actor_id]["health"] == event["health"]):
+                        support = self._hp_support(slot, event["health"], candidate["observed_frame"])
+                        if support["state"] == "confirmed":
+                            self.actors[actor_id]["health"] = event["health"]
+                            self.actors[actor_id]["health_state"] = "confirmed"
+                            original["health"] = event["health"]
+                            original["hp_state"], original["hp_support"] = "confirmed", support
+                            original["observations"].append({"frame": item["frame"], "health": event["health"],
+                                                             "reason": "Confirmación posterior antes de la acción"})
+                    item["note"] = "Segunda lectura de la misma entrada antes de actuar."
+                else:
+                    self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
                 return
             actor_id = self._actor_for_entry(slot, candidate.get("canonical_species") or event.get("species"))
             if self.actors[actor_id]["fainted"]:
@@ -691,31 +859,38 @@ class BattleAutomaton:
             late_health = bool(candidate.get("late_health") and event.get("health"))
             support = (self._hp_support(slot, event["health"], candidate["observed_frame"])
                        if event.get("health") else None)
+            baseline = (self._entry_baseline(candidate) if self.actors[actor_id]["health"] is None and
+                        (not support or late_health or support["state"] != "confirmed") else None)
             entry_conflict = self._competing_hp_ocr(candidate) if support else None
             if entry_conflict:
                 support = {"state": "unconfirmed", "reason": "OCR numérico contradictorio en el mismo HUD",
                            "evidence": [entry_conflict]}
-            initial_health = (event.get("health") if not late_health and support and
+            initial_health = (baseline[0] if baseline else event.get("health") if not late_health and support and
                               support["state"] == "confirmed" else None)
-            if event.get("health"):
+            if event.get("health") or baseline:
                 self.actors[actor_id]["health"] = initial_health
                 self.actors[actor_id]["health_state"] = (
                     "confirmed" if initial_health else "unknown" if late_health else "unconfirmed")
             item = self._append(candidate, actor_id=actor_id,
-                                status="review" if late_health or (support and support["state"] != "confirmed")
+                                status="review" if not baseline and (late_health or (support and support["state"] != "confirmed"))
                                 else "consistent")
+            if baseline:
+                item["health"] = baseline[0]
+                item["hp_state"], item["hp_support"] = "confirmed", baseline[1]
+                item["observations"].append({"frame": baseline[1]["evidence"][0]["frame"],
+                                             "health": baseline[0], "reason": baseline[1]["reason"]})
             if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
                 item["last_confirmed_health"] = self.actors[actor_id]["health"]
             if support:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
-            if late_health:
+            if late_health and not baseline:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
                                               "reason": "HUD confirmado después de comenzar una acción"})
                 item["health"] = None
                 self._issue("late_switch_health", "El PS leído al confirmar la entrada ya estaba en animación; PS de entrada desconocido.",
                             item["frame"], item["seq"])
-            elif support and support["state"] != "confirmed":
+            elif support and support["state"] != "confirmed" and not baseline:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
                                               "reason": support["reason"]})
                 item["health"] = None
@@ -723,9 +898,9 @@ class BattleAutomaton:
                             item["frame"], item["seq"])
             if candidate.get("anchor") and candidate["anchor"]["frame"] < candidate["observed_frame"]:
                 item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {item['frame']}."
-            if late_health:
+            if late_health and not baseline:
                 item["note"] = (item["note"] or "") + " PS de entrada desconocido: la barra ya cambiaba."
-            elif support and support["state"] != "confirmed":
+            elif support and support["state"] != "confirmed" and not baseline:
                 item["note"] = (item["note"] or "") + " PS de entrada pendiente de revisión."
             if self.turn:
                 self.turn_activity += 1

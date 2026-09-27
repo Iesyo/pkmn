@@ -244,6 +244,90 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ["Kingambit", "Zoroark-Hisui"])
         self.assertFalse(any(x["kind"] == "illusion_reveal" for x in ledger["events"]))
 
+    def test_pre_action_hud_seeds_hp_omitted_from_switch(self):
+        trace = [frame(1, [event("switch", "p1a", "Kingambit"), event("turn", turn=1)]),
+                 frame(2), frame(3, [event("move", "p2a", "Salamence", move="Hyper Voice")]),
+                 frame(4, [event("damage", "p1a", "Kingambit", "86/177")])]
+        trace[1]["ocr"] = [
+            {"text": "Tomoe", "left": .08, "top": .86, "confidence": 1},
+            {"text": "177/177", "left": .13, "top": .92, "confidence": .99},
+        ]
+        for row in trace:
+            row["resolved_aliases"]["p1"]["tomoe"] = "Kingambit"
+        ledger = BattleAutomaton(0, trace).run()
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch")
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual((entry["health"], entry["hp_support"]["reason"]),
+                         ("177/177", "OCR del HUD anterior a la primera acción"))
+        self.assertEqual((damage["before"], damage["after"], damage["status"]),
+                         ("177/177", "86/177", "consistent"))
+
+    def test_provisional_id_reused_in_two_slots_uses_nickname_and_appearance(self):
+        anon = "__champions_actor_p2_0003__"
+        trace = [frame(1, [event("switch", "p2b", "Salamence", "100/100"),
+                           event("switch", "p2a", "Kingambit", "100/100"),
+                           event("turn", turn=1)]),
+                 frame(2, [event("switch", "p2b", anon, "100/100")]),
+                 frame(3, [event("switch", "p2a", "Salamence")]),
+                 frame(4, [event("switch", "p2a", anon, "100/100")]),
+                 frame(5, [event("move", "p2b", anon, move="Hyper Voice")],
+                       texts=["The opposing Farmingdale used Hyper Voice!"]),
+                 frame(6, [event("damage", "p2a", anon, "65/100")])]
+        for row in trace:
+            row["resolved_aliases"]["p2"].update(
+                {"farmingdale": "Salamence", "inwood": "Indeedee-F"})
+            row["resolved_identities"][anon] = (
+                "Salamence" if row["frame"] == 4 else "Indeedee-F")
+        for index in (1, 3):
+            trace[index]["ocr"].extend([
+                {"text": "Inwood", "left": .83, "top": .05, "confidence": 1},
+                {"text": "Farmingdale", "left": .62, "top": .05, "confidence": 1},
+            ])
+        trace[5]["ocr"].append({"text": "Farmingdale", "left": .62, "top": .05,
+                                 "confidence": 1})
+        for row in trace[4:]:
+            row["resolved_aliases"]["p2"]["farmingdale"] = "Indeedee-F"
+        ledger = BattleAutomaton(0, trace).run()
+        entries = [e for e in ledger["events"] if e["kind"] == "switch" and
+                   e["status"] != "suppressed"]
+        self.assertEqual([(e["slot"], e["species"]) for e in entries],
+                         [("p2a", "Kingambit"), ("p2b", "Salamence"),
+                          ("p2b", "Indeedee-F"), ("p2a", "Salamence")])
+        self.assertEqual(next(e for e in entries if e["slot"] == "p2a" and
+                              e["species"] == "Salamence")["health"], "100/100")
+        move = next(e for e in ledger["events"] if e["kind"] == "move")
+        self.assertEqual((move["slot"], move["species"], move["original_slot"]),
+                         ("p2a", "Salamence", "p2b"))
+        self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "damage")["before"],
+                         "100/100")
+        self.assertNotIn("actor_mismatch", [e["code"] for e in ledger["issues"]])
+
+    def test_persistent_hp_on_correct_hud_rejects_partner_noise_without_losing_baseline(self):
+        trace = [frame(1, [event("switch", "p2b", "Indeedee-F", "6/100"),
+                           event("switch", "p1a", "Basculegion", "219/219"),
+                           event("turn", turn=1)]),
+                 frame(2),
+                 frame(3, [event("heal", "p2b", "Indeedee-F", "65/100")]),
+                 frame(4, [event("damage", "p2b", "Indeedee-F", "0/100")]),
+                 frame(5, [event("heal", "p2b", "Indeedee-F", "5/20")]),
+                 frame(6, [event("move", "p1a", "Basculegion", move="Aqua Jet")]),
+                 frame(7, [event("damage", "p2b", "Indeedee-F", "0/100")])]
+        for row in trace[1:5]:
+            row["ocr"] = [
+                {"text": "6%", "left": .92, "top": .12, "confidence": .96},
+                {"text": "65", "left": .70, "top": .12, "confidence": 1},
+            ]
+        ledger = BattleAutomaton(0, trace).run()
+        rejected = [e for e in ledger["events"] if e["kind"] == "hp_rejected_reading"]
+        self.assertEqual(len(rejected), 3)
+        self.assertTrue(all(e["status"] == "suppressed" and e["before"] == "6/100"
+                            for e in rejected))
+        real = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual((real["before"], real["after"], real["status"]),
+                         ("6/100", "0/100", "consistent"))
+        self.assertFalse(any(e["code"] in {"hp_transition", "hp_unconfirmed", "hp_ocr_conflict"}
+                             for e in ledger["issues"]))
+
     def test_mega_from_other_slot_does_not_change_occupant(self):
         trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "100/100"),
                            event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
@@ -362,6 +446,26 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] == "9/100" and e["status"] == "consistent"
                              for e in archaludon["events"]))
         self.assertIn("hp_zero_rebound", [x["code"] for x in archaludon["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_THIRD"), "Requiere el tercer ZIP del usuario")
+    def test_third_job_keeps_distinct_salamence_and_indeedee_states(self):
+        frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_THIRD"]))
+        self.assertEqual(set(baselines), {0, 1, 2})
+        ledgers = [BattleAutomaton(i, [row for row in frames if row["battle_index"] == i]).run()
+                   for i in range(3)]
+        self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [1, 0, 3])
+        self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
+                            for i in (0, 1)))
+        battle = ledgers[2]
+        self.assertFalse(any(e["frame"] == 2999 and e["kind"] == "switch" and
+                             e["status"] != "suppressed" for e in battle["events"]))
+        move = next(e for e in battle["events"] if e["kind"] == "move" and e["frame"] == 3057)
+        self.assertEqual((move["slot"], move["species"]), ("p2a", "Salamence-Mega"))
+        faint_damage = next(e for e in battle["events"] if e["kind"] == "damage" and
+                            e["frame"] == 3161)
+        self.assertEqual((faint_damage["before"], faint_damage["after"], faint_damage["species"]),
+                         ("6/100", "0/100", "Indeedee-F"))
+        self.assertEqual({issue["frame"] for issue in battle["issues"]}, {2527, 2735, 2736})
 
 
 if __name__ == "__main__":

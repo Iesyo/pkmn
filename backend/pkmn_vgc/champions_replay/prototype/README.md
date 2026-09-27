@@ -23,8 +23,11 @@ para una persona). `battle_index` siempre es el índice de la traza y del
 1. Toma los eventos **candidatos** que ya están en la traza y conserva el OCR
    crudo cercano como evidencia. Un candidato previo no se trata como verdad.
 2. Mantiene turno, cuatro slots, identidad persistente de cada actor, PS,
-   estado, objeto perdido, terreno activo y última acción. Resuelve la especie
-   de los actores anónimos con la asociación final de la propia traza.
+   estado, objeto perdido, terreno activo y última acción. Resuelve cada
+   identificador provisional por el mote mostrado en el HUD durante **esa
+   aparición**. Un ID reutilizado después no cambia a un actor anterior.
+   El mote de un movimiento también corrige su slot si aparece en un único
+   HUD del mismo bando.
 3. Un anuncio `sent out`/`Go!` fija el momento lógico de una entrada que el
    HUD confirma más tarde. La entrada queda antes de sus habilidades y de los
    movimientos posteriores; se conservan ambos tiempos. Los cuatro leads se
@@ -39,10 +42,14 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    dos muestreados siguientes. Se aceptan números y `%` separados pero
    contiguos, y separadores `/` mal reconocidos cuando hay corroboración
    suficiente. Un número solo, aunque se repita, no confirma un porcentaje.
-   Una lectura sin apoyo queda en `hp_unconfirmed`: no cambia los PS del
-   actor y obliga a revisar la transición siguiente. Las entradas sin PS
-   confirmados también conservan el candidato en `observations`, con PS de
-   entrada desconocidos.
+   Una lectura sin apoyo queda en `hp_unconfirmed`: no confirma esos PS y
+   obliga a revisar la transición siguiente. Si el PS anterior todavía se
+   ve confirmado en **ese mismo HUD**, el valor candidato queda como
+   `hp_rejected_reading` suprimido y no invalida el valor estable. Las
+   entradas sin PS confirmados conservan el candidato en `observations`, con
+   PS de entrada desconocidos. El autómata recupera los PS omitidos por el
+   detector sólo si aparecen completos junto al mote correcto **antes de
+   cualquier acción**.
 5. Si dos números OCR se contradicen en el mismo HUD, conserva ambos como
    evidencia. La lectura aislada contradicha queda en `hp_ocr_conflict`, sin
    modificar los PS ni generar daño/cura. No mezcla números de HUD separados.
@@ -64,8 +71,9 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    registra la especie mostrada por separado de la identidad real. La entrada
    posterior del Pokémon imitado crea o recupera **otro actor**.
 7. Compara la secuencia de eventos principales y episodios de PS con los
-   replays archivados de ambos jobs. Los desacuerdos se informan; un replay
-   archivado puede contener una entrada espuria por Ilusión.
+   replays archivados de los tres jobs. Los desacuerdos se informan; un replay
+   archivado puede contener una entrada espuria por Ilusión o por un ID
+   provisional reutilizado.
 
 `consistent` significa **sin contradicción estructural detectada**. No
 significa que el evento esté confirmado visualmente. `review` requiere mirar
@@ -149,7 +157,7 @@ de PS y una revisión visual de las discrepancias restantes.
 Este corte establece la frontera entre observación, evento consolidado y
 emisión de Showdown para continuar sin reprocesar el vídeo.
 
-En las **nueve partidas actuales**, los 259 episodios de PS propuestos y no
+En las **nueve partidas de los primeros dos ZIP**, los 259 episodios de PS propuestos y no
 suprimidos conservan evidencia OCR verificable en su HUD. Ocho secuencias
 principales coinciden exactamente con sus replays archivados; en la novena,
 el autómata corrige las dos atribuciones causadas por Ilusión. Ninguno de esos 259
@@ -159,20 +167,55 @@ que la puerta no descartó esas lecturas válidas, **no** que pueda evitar toda
 lectura parcial en futuros vídeos: un OCR erróneo, completo y persistente puede
 requerir una observación adicional o revisión visual.
 
+## Tercer ZIP · 331e6e783c3e45a4
+
+El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 4**:
+varias entradas tienen PS completos en pantalla antes de la primera acción,
+aunque el detector no los añadió al candidato. No se infieren PS máximos si
+el HUD sólo aparece después de un movimiento.
+
+| Partida | Candidatos → sucesos | Avisos antes → ahora | Orden frente al replay | Episodios de PS |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 154 → 83 | 2 → 1 | 50/50 | 30/30 |
+| 2 | 102 → 58 | 2 → 0 | 37/37 | 18/18 |
+| 3 | 139 → 91 | 9 → 3 | 55/57 | 22/22 |
+
+En la tercera partida, el identificador provisional `...p2_0003` designó
+primero a **Indeedee-F (Inwood) en p2b** y después a **Salamence (Farmingdale)
+en p2a**. Ambos aparecen a la vez en el frame 2999: Farmingdale a 100 % en
+el HUD izquierdo e Inwood a 6 % en el derecho. La segunda detección de la
+entrada de Salamence confirma los PS de su entrada anunciada en 2991. El
+Hyper Voice de Farmingdale en 3057 pertenece a `p2a`; el daño que derrota a
+Inwood en 3161 parte de **6 %**, no de los 65 % del HUD vecino. Cinco
+lecturas candidatas confundidas entre ambos HUD siguen auditables en JSON
+como `hp_rejected_reading`, junto con los PS persistentes de Inwood. El
+replay archivado nombró Indeedee-F a la primera entrada de Salamence y luego
+duplicó su entrada; de ahí las dos diferencias de eventos principales.
+
+Quedan tres avisos en esa batalla: frame 2527 (PS previos de Gardevoir no
+visibles), frame 2735 (PS de entrada de Indeedee leídos después de una
+acción), y frame 2736 (cambio de PS sin valor previo confirmado). La primera
+partida conserva un aviso similar en 586. En las **doce partidas**, los
+avisos bajan de **61 a 37** (primer ZIP: 28 → 20; segundo: 20 → 13;
+tercero: 13 → 4). Los **329 episodios de PS propuestos** tienen respaldo OCR
+en su HUD. Los avisos pendientes siguen visibles; estos datos aún no prueban
+que el replay final reproduzca fielmente el vídeo.
+
 ## Pruebas
 
 ```bash
 CHAMPIONS_DIAGNOSTIC=/ruta/champions-diagnostics-10a7fba6fda04585.zip \
 CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
+CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Diecisiete casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Veinte casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
-Dos pruebas de integración usan los cinco y cuatro replays actuales,
+Tres pruebas de integración usan los cinco, cuatro y tres replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.
