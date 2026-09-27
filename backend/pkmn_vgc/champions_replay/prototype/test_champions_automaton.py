@@ -204,6 +204,46 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(sum(e["kind"] == "hp_ocr_conflict" for e in ledger["events"]), 1)
         self.assertEqual(next(iter(ledger["actors"].values()))["health"], "28/100")
 
+    def test_illusion_reveals_one_actor_then_real_disguised_species_gets_its_own_state(self):
+        trace = [frame(1, [event("switch", "p2a", "Kingambit", "100/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p2a", "Kingambit", move="Bitter Malice")]),
+                 frame(3, [event("damage", "p2a", "Kingambit", "1/100")]),
+                 frame(4, [event("enditem", "p2a", "Kingambit", value="Focus Sash")]),
+                 frame(5, [event("switch", "p2a", "Zoroark-Hisui", "1/100")],
+                       texts=["The opposing Zoroark's illusion wore off!"]),
+                 frame(6, [event("switch", "p2a", "Kingambit")],
+                       texts=["Trainer sent out Kingambit!"]),
+                 frame(7, [event("damage", "p2a", "Kingambit", "85/100")]),
+                 frame(8, [event("faint", "p2a", "Kingambit")]),
+                 frame(9, [event("switch", "p2a", "Zoroark-Hisui")])]
+        ledger = BattleAutomaton(0, trace).run()
+        entries = [x for x in ledger["events"] if x["kind"] == "switch" and x["slot"] == "p2a"]
+        self.assertEqual([x["species"] for x in entries],
+                         ["Zoroark-Hisui", "Kingambit", "Zoroark-Hisui"])
+        self.assertEqual(entries[0]["display_species"], "Kingambit")
+        self.assertEqual(entries[0]["actor_id"], entries[2]["actor_id"])
+        self.assertNotEqual(entries[0]["actor_id"], entries[1]["actor_id"])
+        self.assertEqual(entries[2]["last_confirmed_health"], "1/100")
+        reveal = next(x for x in ledger["events"] if x["kind"] == "illusion_reveal")
+        self.assertEqual((reveal["actor_id"], reveal["before"], reveal["after"]),
+                         (entries[0]["actor_id"], "1/100", "1/100"))
+        self.assertEqual(next(x for x in ledger["events"] if x["kind"] == "move")["species"],
+                         "Zoroark-Hisui")
+        self.assertTrue(ledger["actors"][entries[0]["actor_id"]]["item_lost"])
+        self.assertFalse(ledger["actors"][entries[1]["actor_id"]]["item_lost"])
+        damage = next(x for x in ledger["events"] if x["kind"] == "damage" and x["frame"] == 7)
+        self.assertIsNone(damage["before"])
+        self.assertEqual(damage["after"], "85/100")
+        self.assertNotIn("illusion_reveal_mismatch", [x["code"] for x in ledger["issues"]])
+
+    def test_species_change_without_illusion_message_remains_a_switch(self):
+        trace = [frame(1, [event("switch", "p2a", "Kingambit", "100/100")]),
+                 frame(2, [event("switch", "p2a", "Zoroark-Hisui", "1/100")])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([x["species"] for x in ledger["events"] if x["kind"] == "switch"],
+                         ["Kingambit", "Zoroark-Hisui"])
+        self.assertFalse(any(x["kind"] == "illusion_reveal" for x in ledger["events"]))
+
     def test_mega_from_other_slot_does_not_change_occupant(self):
         trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "100/100"),
                            event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
@@ -256,7 +296,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         ledgers = {i: BattleAutomaton(i, [x for x in frames if x["battle_index"] == i]).run()
                    for i in baselines}
         self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
-                            for i in baselines))
+                            for i in (0, 1, 3)))
         self.assertTrue(any(a["species"] == "Golisopod" and a["status"] == "par"
                             for a in ledgers[0]["actors"].values()))
         self.assertTrue(any(a["species"] == "Indeedee-F" and a["status"] == "par"
@@ -270,11 +310,29 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] in {"3/100", "1/100"} and e["slot"] == "p2a"
                              for e in battle["events"]))
         kingambit = ledgers[2]
+        comparison = compare_baseline(kingambit, baselines[2])
+        self.assertFalse(comparison["exact_core_sequence"])
+        self.assertEqual(comparison["first_differences"], [
+            {"operation": "replace", "baseline": [("switch", "p2a", "Kingambit")],
+             "automaton": [("switch", "p2a", "Zoroark-Hisui")]},
+            {"operation": "delete", "baseline": [("switch", "p2a", "Zoroark-Hisui")],
+             "automaton": []}])
+        disguised = next(e for e in kingambit["events"] if e["frame"] == 2568 and e["slot"] == "p2a")
+        revealed = next(e for e in kingambit["events"] if e["kind"] == "illusion_reveal")
+        real = next(e for e in kingambit["events"] if e["frame"] == 2988 and e["kind"] == "switch")
+        self.assertEqual((disguised["species"], disguised["display_species"]),
+                         ("Zoroark-Hisui", "Kingambit"))
+        self.assertEqual(revealed["actor_id"], disguised["actor_id"])
+        self.assertNotEqual(real["actor_id"], disguised["actor_id"])
+        self.assertEqual(next(e for e in kingambit["events"] if e["frame"] == 3193 and
+                              e["kind"] == "switch")["last_confirmed_health"], "1/100")
+        self.assertTrue(kingambit["actors"][disguised["actor_id"]]["item_lost"])
+        self.assertFalse(kingambit["actors"][real["actor_id"]]["item_lost"])
         suspicious = next(e for e in kingambit["events"] if e["frame"] == 3001 and e["kind"] == "damage")
         self.assertEqual((suspicious["status"], suspicious["before"], suspicious["after"]),
-                         ("review", "1/100", "85/100"))
+                         ("review", None, "85/100"))
         following = next(e for e in kingambit["events"] if e["frame"] == 3025 and e["kind"] == "damage")
-        self.assertIsNone(following["before"])
+        self.assertEqual(following["before"], "85/100")
         # Retirar la prueba OCR de una observación de una batalla real simula
         # un nuevo vídeo con lectura incompleta, sin retocar eventos candidatos.
         altered = []

@@ -58,10 +58,14 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    PS de otro ocupante y megaevoluciones atribuidas a otra especie. Las
    identidades aún anónimas se señalan al terminar la batalla. Cuando la
    primera confirmación del HUD sucede después de que comenzó un movimiento,
-   el PS de entrada queda **desconocido**.
+   el PS de entrada queda **desconocido**. Si la pantalla anuncia que se rompió
+   la Ilusión de Zoroark, el supuesto cambio de su apariencia es
+   `illusion_reveal`: conserva actor, PS, objeto y movimientos previos, y
+   registra la especie mostrada por separado de la identidad real. La entrada
+   posterior del Pokémon imitado crea o recupera **otro actor**.
 7. Compara la secuencia de eventos principales y episodios de PS con los
-   replays archivados de ambos jobs. Los desacuerdos se informan; no se
-   arreglan copiando la salida anterior.
+   replays archivados de ambos jobs. Los desacuerdos se informan; un replay
+   archivado puede contener una entrada espuria por Ilusión.
 
 `consistent` significa **sin contradicción estructural detectada**. No
 significa que el evento esté confirmado visualmente. `review` requiere mirar
@@ -116,7 +120,7 @@ lista para exportar. En esa misma versión, Archaludon osciló `0 → 9 → 0 �
 | --- | ---: | ---: | ---: | --- |
 | 1 | 169 → 91 | 55/55 | 32/32 | Golisopod conserva la parálisis observada; no hay cura de estado. |
 | 2 | 164 → 92 | 47/47 | 32/34 | Un falso Mega de Delphox apuntaba al slot de Indeedee; `3%` dos veces y `1%` una vez compiten con `28`, `28` y `44` en sus respectivos HUD. El autómata marca los tres sin cambiar PS. |
-| 3 | 150 → 84 | 46/46 | 31/31 | Una lectura de daño subiría los PS de Kingambit de 1 % a 85 % tras un cambio con Zoroark-Hisui; queda en revisión. |
+| 3 | 150 → 84 | 44/46, diferencia intencional por Ilusión | 31/31 | El Kingambit inicial es Zoroark-Hisui disfrazado; rompe la Ilusión a 1 %, y después entra un Kingambit real. Su lectura posterior de 85 % queda con PS previos desconocidos. |
 | 4 | 114 → 67 | 42/42 | 17/17 | Indeedee-F mantiene la parálisis. Un texto `can't use` sin acción identificable queda en revisión. |
 
 Los PS `1%` de Sneasler y `3%` de Delphox parecen recortes OCR de menor confianza,
@@ -124,6 +128,19 @@ no evidencia suficiente para crear daño y posterior curación. El `44` leído
 junto al `1%` de Sneasler tampoco prueba por sí solo cuál fue su PS exacto en
 ese instante. El replay archivado de la partida 2 contiene dos episodios de
 PS más que el registro propuesto; no se toman como verdad visual.
+
+En la **partida 3**, el rival aparece como Kingambit al principio, pero usa
+Hyper Voice y Bitter Malice. Su HUD baja a **1 %** (frame 2875), consume la
+Banda Focus (2882) y la pantalla dice que la Ilusión de Zoroark terminó
+(2893–2896). No salió un Pokémon nuevo en ese momento: todos esos sucesos
+pertenecen al **mismo Zoroark-Hisui**. Después se retira Zoroark (texto en
+2982) y se anuncia al **Kingambit real** (2988). Su primer PS observado es
+85 % después de Grassy Glide (3001); no hay lectura de sus PS al entrar, así
+que el daño queda en `review` por PS previos desconocidos, sin el falso salto
+de 1 % a 85 %. Kingambit cae en 3152; Zoroark vuelve en 3193 con su último
+PS confirmado de 1 % y cae en 3282. Las dos diferencias de eventos con el
+replay archivado corresponden a la entrada inicial bajo la identidad falsa y
+al falso cambio que el replay inventó al romperse la Ilusión.
 
 La coincidencia de eventos principales **no prueba fidelidad**: el autómata
 parte de candidatos del mismo detector que creó los replays archivados. Faltan
@@ -133,8 +150,9 @@ Este corte establece la frontera entre observación, evento consolidado y
 emisión de Showdown para continuar sin reprocesar el vídeo.
 
 En las **nueve partidas actuales**, los 259 episodios de PS propuestos y no
-suprimidos conservan evidencia OCR verificable en su HUD; los 465 eventos
-principales mantienen el orden de sus replays archivados. Ninguno de esos 259
+suprimidos conservan evidencia OCR verificable en su HUD. Ocho secuencias
+principales coinciden exactamente con sus replays archivados; en la novena,
+el autómata corrige las dos atribuciones causadas por Ilusión. Ninguno de esos 259
 episodios necesitó pasar por `hp_unconfirmed`; se detectaron y conservaron en revisión
 los conflictos y transiciones dudosas descritos arriba. Este conjunto prueba
 que la puerta no descartó esas lecturas válidas, **no** que pueda evitar toda
@@ -149,10 +167,11 @@ CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Quince casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Diecisiete casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
-corroborada del separador y el aislamiento del 0 % del HUD de un compañero.
+corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
+el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
 Dos pruebas de integración usan los cinco y cuatro replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.

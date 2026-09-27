@@ -168,6 +168,47 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                            slot_order.get(c["event"].get("slot"), 4)
                            if c["event"]["kind"] in {"switch", "drag"} else c["logical_frame"]),
         )
+    # Champions shows the apparent species until Zoroark's Ilusión breaks.
+    # The detector describes that reveal as a switch, although the occupant
+    # did not leave the slot. Link the visible disguise back to its real actor
+    # before replaying candidates, so HP, items and earlier moves stay together.
+    frame_lookup = {row["frame"]: row for row in frames}
+    for index, item in enumerate(candidates):
+        event = item["event"]
+        if event["kind"] != "switch" or "Zoroark" not in str(event.get("species")):
+            continue
+        slot = event.get("slot")
+        previous_index = next((i for i in range(index - 1, -1, -1)
+                               if candidates[i]["event"]["kind"] in {"switch", "drag"} and
+                               candidates[i]["event"].get("slot") == slot), None)
+        if previous_index is None:
+            continue
+        apparent = candidates[previous_index]["event"].get("species")
+        real = resolutions.get(event.get("species"), event.get("species"))
+        if not apparent or identity_species(apparent) == identity_species(real or ""):
+            continue
+        observations = [(f, line["text"]) for f in range(item["observed_frame"], item["observed_frame"] + 9)
+                        for line in frame_lookup.get(f, {}).get("ocr", ())
+                        if "illusion wore off" in line.get("text", "").casefold()]
+        if not observations:
+            continue
+        recent_health = next((c["event"].get("health") for c in reversed(candidates[previous_index:index])
+                              if c["event"].get("slot") == slot and c["event"].get("health")), None)
+        if recent_health and event.get("health") and recent_health != event["health"]:
+            continue
+        if any("sent out" in line.get("text", "").casefold() or "withdrew" in line.get("text", "").casefold()
+               for f in range(item["observed_frame"] - 6, item["observed_frame"] + 1)
+               for line in frame_lookup.get(f, {}).get("ocr", ())):
+            continue
+        for disguised in candidates[previous_index:index]:
+            if disguised["event"].get("slot") == slot:
+                disguised["canonical_species"] = real
+                if disguised["event"].get("species"):
+                    disguised["display_species"] = resolutions.get(
+                        disguised["event"]["species"], disguised["event"]["species"])
+        item["canonical_species"] = real
+        item["illusion_reveal"] = {"apparent": apparent, "actual": real,
+                                   "frame": observations[0][0], "text": observations[0][1]}
     return candidates
 
 
@@ -404,11 +445,17 @@ class BattleAutomaton:
         if candidate.get("field_evidence"):
             a = candidate["field_evidence"]
             evidence.insert(0, {"frame": a["frame"], "text": a["text"], "confidence": None})
+        if candidate.get("illusion_reveal"):
+            a = candidate["illusion_reveal"]
+            evidence.insert(0, {"frame": a["frame"], "text": a["text"], "confidence": None})
         item = {
             "seq": len(self.events) + 1, "battle_index": self.battle_index,
             "turn": self.turn, "kind": kind, "status": status,
             "actor_id": actor_id, "slot": event.get("slot"),
-            "species": self.actors[actor_id].get("forme") or self._resolve(event.get("species")) if actor_id in self.actors else self._resolve(event.get("species")),
+            "species": (candidate.get("canonical_species") or
+                        (self.actors[actor_id].get("forme") or self._resolve(event.get("species"))
+                         if actor_id in self.actors else self._resolve(event.get("species")))),
+            "display_species": candidate.get("display_species"),
             "target_slot": event.get("target_slot"), "move": event.get("move"),
             "value": event.get("value"), "health": event.get("health"),
             "before": before, "after": after, "cause": cause,
@@ -515,7 +562,8 @@ class BattleAutomaton:
         actor_id = self.active.get(slot)
         # Una lectura tardía de un ocupante distinto no cambia el estado del
         # Pokémon que está ahora en el slot.
-        if actor_id and event.get("species") and self._resolve(event["species"]) != self.actors[actor_id]["species"]:
+        if (actor_id and event.get("species") and
+            (candidate.get("canonical_species") or self._resolve(event["species"])) != self.actors[actor_id]["species"]):
             self._flush_hp()
             item = self._append(candidate, actor_id=actor_id, status="review",
                                 note="HUD atribuido a otra especie que la ocupante del slot.")
@@ -600,13 +648,39 @@ class BattleAutomaton:
             return
         self._flush_hp()
         if kind in {"switch", "drag"} and slot in SLOTS:
-            species = self._resolve(event.get("species"))
+            species = candidate.get("canonical_species") or self._resolve(event.get("species"))
+            if candidate.get("illusion_reveal"):
+                old_health = self.actors[actor_id]["health"] if actor_id else None
+                support = (self._hp_support(slot, event["health"], candidate["observed_frame"])
+                           if event.get("health") else None)
+                confirmed = (bool(actor_id) and self.actors[actor_id]["species"] == species and
+                             (not support or support["state"] == "confirmed") and
+                             (not old_health or not event.get("health") or old_health == event["health"]))
+                reveal = candidate["illusion_reveal"]
+                note = (f"La Ilusión de {reveal['apparent']} terminó; el mismo actor es {species}."
+                        if confirmed else "Revelación de Ilusión sin continuidad de identidad/PS confirmada.")
+                item = self._append(candidate, kind="illusion_reveal", actor_id=actor_id,
+                                    status="consistent" if confirmed else "review",
+                                    note=note, before=old_health,
+                                    after=(event.get("health") or old_health) if confirmed else
+                                    old_health if not event.get("health") or old_health == event["health"] else None)
+                item["hp_state"] = support["state"] if support else "unknown"
+                item["hp_support"] = support
+                if actor_id and confirmed and support and not old_health:
+                    self.actors[actor_id]["health"] = event["health"]
+                    self.actors[actor_id]["health_state"] = "confirmed"
+                elif actor_id and not confirmed and old_health and event.get("health") != old_health:
+                    self.actors[actor_id]["health"] = None
+                    self.actors[actor_id]["health_state"] = "unconfirmed"
+                if not confirmed:
+                    self._issue("illusion_reveal_mismatch", note, item["frame"], item["seq"])
+                return
             if actor_id and identity_species(self.actors[actor_id]["species"]) == identity_species(species or ""):
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
                                     note="Entrada de la especie que ya ocupaba el slot.")
                 self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
                 return
-            actor_id = self._actor_for_entry(slot, event.get("species"))
+            actor_id = self._actor_for_entry(slot, candidate.get("canonical_species") or event.get("species"))
             if self.actors[actor_id]["fainted"]:
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
                                     note="El HUD conserva la especie debilitada; no hubo reanimación observada.")
@@ -630,6 +704,8 @@ class BattleAutomaton:
             item = self._append(candidate, actor_id=actor_id,
                                 status="review" if late_health or (support and support["state"] != "confirmed")
                                 else "consistent")
+            if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
+                item["last_confirmed_health"] = self.actors[actor_id]["health"]
             if support:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
@@ -684,7 +760,8 @@ class BattleAutomaton:
                 return
             result = "consistent" if actor_id else "review"
             note = None if actor_id else "Movimiento sin actor activo en el slot."
-            if actor_id and event.get("species") and self._resolve(event["species"]) != self.actors[actor_id]["species"]:
+            if (actor_id and event.get("species") and
+                (candidate.get("canonical_species") or self._resolve(event["species"])) != self.actors[actor_id]["species"]):
                 result, note = "review", "El movimiento nombra otra especie que el ocupante del slot."
             item = self._append(candidate, actor_id=actor_id, status=result, note=note)
             self.last_action = item
@@ -860,11 +937,18 @@ def compare_baseline(ledger: dict[str, Any], log: str) -> dict[str, Any]:
 
 def event_description(item: dict[str, Any]) -> str:
     kind, species, slot = item["kind"], item["species"] or item["actor_id"] or "?", item["slot"] or ""
+    display = item.get("display_species")
+    if display and identity_species(display) != identity_species(species):
+        species = f"{species} (apariencia: {display})"
     actor = f"{species} ({slot})" if slot else species
     if kind == "turn":
         return f"Inicio del turno {item['turn']}"
     if kind in {"switch", "drag"}:
-        return f"Entra {actor}, PS {item['health'] or '?'}"
+        previous = (f" (último confirmado: {item['last_confirmed_health']})"
+                    if not item['health'] and item.get('last_confirmed_health') else "")
+        return f"Entra {actor}, PS {item['health'] or '?'}{previous}"
+    if kind == "illusion_reveal":
+        return f"Se rompe la Ilusión: {item['species']} aparece en {slot}; PS {item['after'] or '?'}"
     if kind == "move":
         return f"{actor} usa {item['move']} → {item['target_slot'] or 'objetivo desconocido'}"
     if kind in HP_KINDS:
@@ -888,10 +972,13 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
              "", "**Consistente** significa que no se detectó contradicción estructural; no equivale a validación visual. "
              "Las lecturas de PS tienen confirmación OCR separada de la causalidad del cambio.", ""]
     if comparison:
-        lines += [f"Referencia aceptada: {comparison['aligned_events']}/{comparison['baseline_core_events']} "
+        lines += [f"Replay archivado: {comparison['aligned_events']}/{comparison['baseline_core_events']} "
                   f"eventos principales alineados; PS {comparison['aligned_hp_episodes']}/"
                   f"{comparison['baseline_hp_events']}; secuencia principal exacta: "
                   f"{comparison['exact_core_sequence']}.", ""]
+        if any(item["kind"] == "illusion_reveal" for item in ledger["events"]):
+            lines += ["El replay archivado contó la ruptura de Ilusión como un cambio de Pokémon "
+                      "y llamó Kingambit al Zoroark inicial; esas diferencias son intencionales.", ""]
     section = None
     for item in ledger["events"]:
         if item["turn"] != section:
