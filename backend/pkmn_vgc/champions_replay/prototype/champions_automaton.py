@@ -11,11 +11,13 @@ from __future__ import annotations
 import argparse
 import collections
 import difflib
+import gzip
 import json
 import re
 import sys
 import zipfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -213,6 +215,33 @@ def read_diagnostic(path: Path) -> tuple[list[dict[str, Any]], dict[int, str]]:
 
 def read_trace(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def read_diagnostic_context(path: Path) -> dict[str, Any]:
+    with zipfile.ZipFile(path) as archive:
+        return json.loads(archive.read("job.json")).get("context", {}) if "job.json" in archive.namelist() else {}
+
+
+@lru_cache(maxsize=1)
+def species_abilities() -> dict[str, set[str]]:
+    """Use the repository's pinned dex, without importing the production OCR."""
+    path = Path(__file__).resolve().parents[4] / "public/data/showdown-dex.json.gz"
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            dex = json.load(stream)
+        return {entry["name"]: set(entry.get("abilities", ())) for entry in dex["species"].values()}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def merge_recovered_candidates(candidates: list[dict[str, Any]], recovered: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Preserve the established lead ordering; only insert new observations.
+    result = list(candidates)
+    for item in sorted(recovered, key=lambda c: (c["logical_frame"], c["ordinal"])):
+        index = next((i for i, existing in enumerate(result) if existing["logical_frame"] > item["logical_frame"] or
+                      (existing["logical_frame"] == item["logical_frame"] and existing["ordinal"] > item["ordinal"])), len(result))
+        result.insert(index, item)
+    return result
 
 
 def complete_hud_health(row: dict[str, Any], slot: str) -> list[tuple[str, dict[str, Any]]]:
@@ -744,8 +773,9 @@ class HpEpisode:
 
 
 class BattleAutomaton:
-    def __init__(self, battle_index: int, frames: list[dict[str, Any]]):
+    def __init__(self, battle_index: int, frames: list[dict[str, Any]], context: dict[str, Any] | None = None):
         self.battle_index = battle_index
+        self.context = context or {}
         self.raw_frames = frames
         self.ignored_ui_frames = [proof for row in frames if (proof := status_panel_evidence(row))]
         ignored = {proof["frame"] for proof in self.ignored_ui_frames}
@@ -1104,8 +1134,6 @@ class BattleAutomaton:
         full: list[dict[str, Any]] = []
         split: list[dict[str, Any]] = []
         bare: list[dict[str, Any]] = []
-        repaired: list[dict[str, Any]] = []
-        missing: list[dict[str, Any]] = []
         frames = list(range(frame, frame + 3)) if confirmation_frames is None else confirmation_frames
         for offset, observed_frame in enumerate(frames):
             row = self.frame_lookup.get(observed_frame)
@@ -1127,26 +1155,6 @@ class BattleAutomaton:
                     full.append(entry)
                 elif not percent_hud and value == health:
                     full.append(entry)
-                elif (not percent_hud and value == f"{current}1{maximum}" and
-                      entry["confidence"] >= .9):
-                    entry["separator_repaired"] = True
-                    full.append(entry)
-                elif (not percent_hud and re.fullmatch(
-                        rf"{current}\d{maximum}", value) and entry["confidence"] >= .9):
-                    # A second digit may replace the slash; require a second
-                    # observation before repairing any separator except '1'.
-                    entry["separator_repaired"] = True
-                    repaired.append(entry)
-                elif (not percent_hud and value == f"{current}{maximum}" and
-                      entry["confidence"] >= .9 and current == maximum and maximum >= 10):
-                    # Missing slash: require adjacent stationary observations,
-                    # the same unique HUD name, and no intervening action.
-                    name = hud_nickname(row, slot)
-                    if name and sum(hud_nickname(row, s) == name for s in SLOTS
-                                    if s.startswith(slot[:2])) == 1:
-                        entry.update(separator_repaired=True, repair="missing_slash", nickname=name,
-                                     left=line["left"], top=line["top"], observed_ms=row["timestamp_ms"])
-                        missing.append(entry)
                 elif percent_hud and value == str(current):
                     bare.append(entry)
                     percent = next((other for other in lines
@@ -1164,24 +1172,36 @@ class BattleAutomaton:
                     "evidence": [max(strong, key=lambda x: x["confidence"])]}
         if len({x["frame"] for x in full if x["confidence"] >= .9}) >= 2:
             return {"state": "confirmed", "reason": "OCR repetido del HUD", "evidence": full}
-        if len({x["frame"] for x in repaired}) >= 2:
-            return {"state": "confirmed", "reason": "separador OCR reparado en dos frames",
-                    "evidence": repaired}
-        safe_frames = {r["frame"] for r in self._confirmation_rows(frame)} if len(missing) >= 2 else set()
-        for previous, following in zip(missing, missing[1:]):
-            if (previous["frame"] in safe_frames and following["frame"] in safe_frames and
-                following["frame"] == previous["frame"] + 1 and
-                0 < following["observed_ms"] - previous["observed_ms"] <= 1_000 and
-                previous["nickname"] == following["nickname"] and
-                abs(previous["left"] - following["left"]) <= .01 and
-                abs(previous["top"] - following["top"]) <= .01):
-                return {"state": "confirmed", "reason": "separador OCR omitido, corroborado en dos frames",
-                        "evidence": [previous, following]}
         if any(x["confidence"] >= .9 for x in split):
             return {"state": "confirmed", "reason": "número y porcentaje separados",
                     "evidence": [max(split, key=lambda x: x["confidence"])]}
         return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
-                "evidence": full + repaired + missing + split + bare}
+                "evidence": full + split + bare}
+
+    def _invalid_own_hp_source(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Own HP requires a literal current/maximum reading, never repaired digits.
+
+        Keep confidence validation separate: a weak but complete fraction is
+        provisional evidence; a malformed string is no evidence of a change.
+        """
+        event = candidate["event"]
+        slot, health = event.get("slot"), event.get("health")
+        if slot not in {"p1a", "p1b"} or not health:
+            return None
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        readings = [line for line in self.frame_lookup[candidate["observed_frame"]].get("ocr", ())
+                    if left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom
+                    and line.get("right", right) <= right + .02
+                    and line.get("bottom", bottom) <= bottom + .02]
+        for line in readings:
+            value = re.sub(r"\s+", "", line.get("text", ""))
+            if re.fullmatch(r"\d{1,4}/\d{1,4}", value) and value == health:
+                current, maximum = map(int, value.split("/"))
+                if 0 <= current <= maximum and maximum > 0:
+                    return None
+        return {"state": "rejected", "reason": "PS propios sin lectura literal actual/máximo en su HUD",
+                "raw_event": dict(event), "evidence": [dict(line, frame=candidate["observed_frame"])
+                                                         for line in readings]}
 
     def _clock_hp_source(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
         """Identify an archived HP candidate whose number comes from a clock.
@@ -1354,6 +1374,12 @@ class BattleAutomaton:
             return None
         start = candidate.get("logical_frame", candidate["observed_frame"])
         species = candidate.get("canonical_species") or self._resolve(candidate["event"].get("species"))
+        observed_name = hud_nickname(self.frame_lookup[candidate["observed_frame"]], slot)
+        # The entry already establishes this occupant. A previously unknown
+        # nickname can corroborate later HP without becoming a global alias.
+        if observed_name in self.nickname_species[slot[:2]] and identity_species(
+            self.nickname_species[slot[:2]][observed_name]) != identity_species(species or ""):
+            observed_name = None
         observations: list[tuple[int, str]] = []
         left, right, top, bottom = HP_HUD_AREAS[slot]
         for frame in range(start, min(start + 121, self.frames[-1]["frame"] + 1)):
@@ -1361,14 +1387,26 @@ class BattleAutomaton:
             if not row:
                 continue
             if frame > start and any(e["kind"] in {"move", "damage", "heal"} or
-                                     (e["kind"] in {"switch", "drag"} and e.get("slot") == slot)
+                                     (frame != candidate["observed_frame"] and
+                                      e["kind"] in {"switch", "drag"} and e.get("slot") == slot)
                                      for e in row.get("detections", {}).get("events", ())):
+                break
+            if frame > start and (row.get("detections", {}).get("battle_complete") or any(
+                line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55 and
+                (RAW_ACTION.search(line.get("text", "")) or MEGA_NARRATION.fullmatch(line.get("text", "")) or
+                 re.search(r"\b(come back|went back|withdrew|forfeit)\b", line.get("text", ""), re.I))
+                for line in row.get("ocr", ()))):
                 break
             nickname = hud_nickname(row, slot)
             identified = self.nickname_species[slot[:2]].get(nickname or "", nickname or "")
+            if (observed_name and frame > candidate["observed_frame"] and nickname and
+                nickname != observed_name and identity_species(identified).casefold() != identity_species(species or "").casefold()):
+                break
+            same_name = (frame >= candidate["observed_frame"] and nickname == observed_name and
+                         sum(hud_nickname(row, s) == nickname for s in SLOTS if s[:2] == slot[:2]) == 1)
             if not species or not nickname or (identity_species(identified).casefold() !=
                                                identity_species(species).casefold() and
-                                               nickname != species.casefold().split("-", 1)[0]):
+                                               nickname != species.casefold().split("-", 1)[0] and not same_name):
                 continue
             for line in row.get("ocr", ()):
                 if not (left <= line.get("left", -1) <= right and
@@ -1500,8 +1538,12 @@ class BattleAutomaton:
             item["move_narration_support"] = candidate["move_narration_support"]
         if candidate.get("identity_support"):
             item["identity_support"] = candidate["identity_support"]
+        if candidate.get("ignored_hp_reading"):
+            item["ignored_hp_reading"] = candidate["ignored_hp_reading"]
         if candidate.get("entry_reconstruction"):
             item["entry_reconstruction"] = candidate["entry_reconstruction"]
+        if candidate.get("withdrawal_reconstruction"):
+            item["withdrawal_reconstruction"] = candidate["withdrawal_reconstruction"]
         if candidate.get("action_reconstruction"):
             item["action_reconstruction"] = candidate["action_reconstruction"]
             item["evidence"] = candidate["action_reconstruction"]["evidence"] + item["evidence"]
@@ -1667,7 +1709,7 @@ class BattleAutomaton:
 
     def _hp(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
-        clock = self._clock_hp_source(candidate)
+        clock = self._clock_hp_source(candidate) or self._invalid_own_hp_source(candidate)
         if clock:
             actor_id = self.active.get(event.get("slot"))
             before = self.actors.get(actor_id or "", {}).get("health")
@@ -1788,6 +1830,11 @@ class BattleAutomaton:
         if kind in HP_KINDS:
             self._hp(candidate)
             return
+        if kind in {"switch", "drag"} and (invalid := self._invalid_own_hp_source(candidate)):
+            support = self._hp_support(event.get("slot"), event.get("health"), candidate["observed_frame"])
+            candidate = {**candidate, "ignored_hp_reading": invalid,
+                         "event": {**event, "health": event["health"] if support["state"] == "confirmed" else None}}
+            event = candidate["event"]
         if kind == "move" and (support := self._move_side_support(candidate)):
             candidate = {**candidate, "move_narration_support": support}
             if support["state"] != "confirmed":
@@ -1954,7 +2001,7 @@ class BattleAutomaton:
                                              "health": baseline[0], "reason": baseline[1]["reason"]})
             if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
                 item["last_confirmed_health"] = self.actors[actor_id]["health"]
-            if support and not assume_full and not reconstruction:
+            if support and not assume_full and not reconstruction and not baseline:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
             if late_health and not baseline:
@@ -2543,8 +2590,186 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _recover_withdrawn_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Recover a missed voluntary replacement from independent evidence.
+
+        Require repeated withdrawal + single entry announcement, the outgoing
+        HUD's unique slot, a repeated incoming HUD, and a known alias or a
+        repeated ability panel unique within the archived team. No nickname,
+        species or ability is hardcoded. Missing/ambiguous evidence stays open.
+        """
+        recovered = []
+        for candidate in candidates:
+            event, start = candidate["event"], candidate["observed_frame"]
+            match = re.fullmatch(r"Go! (.+?)!", str(event.get("value", ""))) if event["kind"] == "message" else None
+            if not match or " and " in match[1]:
+                continue
+            name = strip_pokemon_title(match[1]).casefold()
+            announcements = [{"frame": n, **line} for n in range(start, start + 5)
+                             for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                             if line.get("text", "").strip() == event["value"] and
+                             line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95]
+            if len({e["frame"] for e in announcements}) < 2:
+                continue
+            withdrawals = [(n, m[1].casefold(), line) for n in range(start - 20, start)
+                           for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                           if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95
+                           and (m := re.fullmatch(r"(.+?), come back!", line.get("text", ""), re.I))]
+            if not withdrawals or len({x[1] for x in withdrawals}) != 1:
+                continue
+            withdrawal_frame, old_name, _ = withdrawals[0]
+            if len({n for n, _, _ in withdrawals}) < 2:
+                continue
+            slot_reads = [(n, s) for n in range(withdrawal_frame - 3, withdrawal_frame)
+                          for s in ("p1a", "p1b") if hud_nickname(self.frame_lookup.get(n, {}), s) == old_name]
+            if len({n for n, _ in slot_reads}) < 2 or len({s for _, s in slot_reads}) != 1:
+                continue
+            slot = slot_reads[0][1]
+            previous = [c for c in candidates if c["logical_frame"] < withdrawal_frame and
+                        c["event"].get("slot") == slot and c["event"]["kind"] in {"switch", "drag", "faint"}]
+            if not previous or previous[-1]["event"]["kind"] == "faint":
+                continue
+            # Search only this appearance, with continuous sampled time and
+            # no other entry/withdrawal in this slot or another Go! episode.
+            appearance = []
+            last_ms = self.frame_lookup[withdrawal_frame]["timestamp_ms"]
+            blocked = False
+            for n in range(withdrawal_frame, min(start + 121, self.frames[-1]["frame"] + 1)):
+                row = self.frame_lookup.get(n)
+                if row is None or not 0 <= row["timestamp_ms"] - last_ms <= 1_000:
+                    break
+                last_ms = row["timestamp_ms"]
+                events = row.get("detections", {}).get("events", ())
+                if row.get("detections", {}).get("battle_complete") or any(
+                    e["kind"] in {"switch", "drag", "faint"} and e.get("slot") == slot for e in events):
+                    break
+                text_lines = [l["text"] for l in row.get("ocr", ()) if l.get("top", 0) >= .55 and l.get("confidence", 0) >= .95]
+                if any((ANNOUNCED_ENTRY.search(t) and t != event["value"]) or
+                       (n >= start and re.search(r"\b(come back|went back|withdrew)\b", t, re.I)) for t in text_lines):
+                    break
+                if n < start and (any(e["kind"] in ACTIVITY | HP_KINDS | {"mega", "faint"} for e in events) or
+                                  any(RAW_ACTION.search(t) for t in text_lines)):
+                    blocked = True
+                    break
+                if n >= start:
+                    appearance.append(row)
+            if blocked or len(appearance) < 2:
+                continue
+            species = self.nickname_species["p1"].get(name)
+            ability_evidence = []
+            roster = self.context.get("teams", {}).get("p1", [])
+            catalog = species_abilities() if not species and roster else {}
+            for row in appearance:
+                if row["timestamp_ms"] - candidate["observed_ms"] > 10_000 or any(
+                    e["kind"] in {"move", "cant", "mega", "damage", "heal"} for e in row["detections"]["events"]) or any(
+                    RAW_ACTION.search(l.get("text", "")) for l in row.get("ocr", ()) if l.get("top", 0) >= .55):
+                    break
+                panel = [l for l in row.get("ocr", ()) if .02 <= l.get("left", -1) <= .30 and
+                         .30 <= l.get("top", -1) <= .55 and l.get("confidence", 0) >= .95]
+                owners = [l for l in panel if re.sub(r"[’']s$", "", l.get("text", "").casefold()) == name]
+                if any(l["text"] in {"Trace", "Imposter", "Illusion"} for l in panel):
+                    ability_evidence = []
+                    break
+                if len(owners) == 1:
+                    for line in panel:
+                        matches = [s for s in roster if line["text"] in catalog.get(s, set())]
+                        if len(matches) == 1:
+                            ability_evidence.append({"frame": row["frame"], "species": matches[0],
+                                                     "ability": line["text"], "owner": owners[0], "reading": line})
+            if not species:
+                if (len({e["frame"] for e in ability_evidence}) < 2 or
+                    not any(b["frame"] == a["frame"] + 1 for a, b in zip(ability_evidence, ability_evidence[1:])) or
+                    len({(e["species"], e["ability"]) for e in ability_evidence}) != 1 or
+                    any("Illusion" in catalog.get(s, set()) for s in roster)):
+                    continue
+                species = ability_evidence[0]["species"]
+            if any(sum(hud_nickname(row, s) == name for s in ("p1a", "p1b")) > 1 for row in appearance):
+                continue
+            hud = [row for row in appearance if hud_nickname(row, slot) == name and
+                   sum(hud_nickname(row, s) == name for s in ("p1a", "p1b")) == 1 and
+                   len(complete_hud_health(row, slot)) == 1]
+            pair = next(((a, b) for a, b in zip(hud, hud[1:]) if b["frame"] == a["frame"] + 1), None)
+            if not pair or pair[0] is not hud[0]:
+                continue
+            if any(hud_nickname(row, slot) not in {None, name} for row in appearance
+                   if row["frame"] >= pair[0]["frame"]):
+                continue
+            initial = complete_hud_health(pair[0], slot)[0][0]
+            maximum = initial.split("/")[1]
+            # First appearance may start with an impact already animating.
+            # The standard machine labels that starting maximum as inferred.
+            if any(c["event"]["kind"] in {"switch", "drag"} and c["event"].get("slot", "") and c["event"]["slot"].startswith("p1") and
+                   identity_species(c.get("canonical_species") or c["event"].get("species") or "") == identity_species(species)
+                   for c in candidates if c["logical_frame"] < start):
+                continue
+            observations = reconstruct_entry_health(slot, name, f"{maximum}/{maximum}", pair[0]["frame"],
+                                                    appearance[-1]["frame"], self.frame_lookup)
+            if observations is None:
+                continue
+            proof = {"state": "confirmed", "nickname": name, "species": species, "slot": slot,
+                     "withdrawals": [{"frame": n, **line} for n, _, line in withdrawals],
+                     "outgoing_hud": [{"frame": n, "slot": s, "nickname": old_name} for n, s in slot_reads],
+                     "announcements": announcements, "team": roster, "ability_evidence": ability_evidence,
+                     "hud_frames": [r["frame"] for r in pair], "reason": "Retirada y entrada corroboradas por HUD e identidad"}
+            self.nickname_species["p1"][name] = species
+            candidate["withdrawal_reconstruction"] = proof
+            candidate["event"] = {**event, "kind": "switch", "slot": slot, "species": species, "health": None, "value": None}
+            if ability_evidence:
+                a = ability_evidence[0]
+                recovered.append({"event": {"kind": "ability", "slot": slot, "species": species, "value": a["ability"],
+                                             "source_frame": a["frame"], "confidence": a["reading"]["confidence"]},
+                                  "observed_frame": a["frame"], "observed_ms": self.frame_lookup[a["frame"]]["timestamp_ms"],
+                                  "logical_frame": a["frame"], "ordinal": -1})
+            for observation in observations:
+                n = observation["frame"]
+                recovered.append({"event": {"kind": observation["kind"], "slot": slot, "species": species,
+                                             "health": observation["health"], "source_frame": n,
+                                             "confidence": observation["confidence"]},
+                                  "observed_frame": n, "observed_ms": observation["observed_ms"],
+                                  "logical_frame": n, "ordinal": -1,
+                                  "hp_reconstruction": {**observation, "entry_frame": start}})
+        return merge_recovered_candidates(candidates, recovered)
+
+    def _complete_hp_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Recover a later literal reading omitted by the detector's deduplication.
+
+        The malformed observation stays rejected. Only the independent, valid
+        reading becomes a candidate, at its own time and before any new action.
+        """
+        recovered = []
+        for candidate in candidates:
+            event = candidate["event"]
+            if event["kind"] not in HP_KINDS or not self._invalid_own_hp_source(candidate):
+                continue
+            slot, health = event["slot"], event["health"]
+            rows = self._confirmation_rows(candidate["observed_frame"],
+                                           faint_slot=slot if health_ratio(health) == 0 else None)
+            first_name = hud_nickname(self.frame_lookup[candidate["observed_frame"]], slot)
+            for row in rows[1:]:
+                name = hud_nickname(row, slot)
+                if first_name and name and name != first_name:
+                    break
+                readings = complete_hud_health(row, slot)
+                if readings and (len(readings) != 1 or readings[0][0] != health):
+                    break
+                if len(readings) != 1:
+                    continue
+                if not any(c["observed_frame"] == row["frame"] and c["event"].get("slot") == slot and
+                           c["event"].get("health") == health for c in candidates + recovered):
+                    recovered.append({**candidate, "observed_frame": row["frame"],
+                                      "logical_frame": row["frame"], "observed_ms": row["timestamp_ms"],
+                                      "event": {**event, "source_frame": row["frame"],
+                                                "timestamp_ms": row["timestamp_ms"],
+                                                "confidence": readings[0][1]["confidence"]},
+                                      "hp_reconstruction": {"rejected_frame": candidate["observed_frame"],
+                                                            "frame": row["frame"], "text": readings[0][1]["text"],
+                                                            "reason": "lectura literal posterior, sin reparar el separador"}})
+                break
+        return merge_recovered_candidates(candidates, recovered)
+
     def run(self) -> dict[str, Any]:
-        for candidate in ordered_candidates(self.frames):
+        candidates = self._recover_withdrawn_entries(ordered_candidates(self.frames))
+        for candidate in self._complete_hp_candidates(candidates):
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
@@ -2769,8 +2994,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.diagnostic:
         frames, baselines = read_diagnostic(args.diagnostic)
+        context = read_diagnostic_context(args.diagnostic)
     else:
         frames, baselines = read_trace(args.trace), {}
+        context = {}
     args.out.mkdir(parents=True, exist_ok=True)
     grouped: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
     for frame in frames:
@@ -2780,7 +3007,7 @@ def main() -> None:
     for battle_index, group in sorted(grouped.items()):
         if not any(row["detections"].get("events") for row in group):
             continue
-        ledger = BattleAutomaton(battle_index, group).run()
+        ledger = BattleAutomaton(battle_index, group, context).run()
         comparison = compare_baseline(ledger, baselines[battle_index]) if battle_index in baselines else None
         (args.out / f"battle-{battle_index + 1:02d}.json").write_text(
             json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

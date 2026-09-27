@@ -1,8 +1,10 @@
 # Champions Ledger · Autómata temporal de batalla
 
 **Champions Ledger** es un proyecto independiente nacido de los diagnósticos
-de COL-102. Su primera versión lee **sólo** `ocr.trace.jsonl` y produce un
-registro intermedio por batalla. No requiere el vídeo, OCR adicional, Qwen ni
+de COL-102. Lee `ocr.trace.jsonl` y produce un registro intermedio por batalla.
+Con `--diagnostic` también lee el equipo de `job.json`; para corroborar una
+identidad mediante habilidad usa el catálogo versionado `public/data/showdown-dex.json.gz`.
+Si falta ese contexto o catálogo, no aplica esa recuperación. No requiere el vídeo, OCR adicional, Qwen ni
 instalar dependencias de Python. No altera el ZIP ni los replays existentes;
 se ejecuta fuera del pipeline de producción.
 
@@ -42,8 +44,11 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    La lectura candidata pasa por un estado **provisional**: se buscan el
    valor completo y su posición en el HUD del slot durante el fotograma y los
    dos muestreados siguientes. Se aceptan números y `%` separados pero
-   contiguos, y separadores `/` mal reconocidos cuando hay corroboración
-   suficiente. Un número solo, aunque se repita, no confirma un porcentaje.
+   contiguos. Los PS propios exigen una fracción literal `actual/máximo`,
+   con máximo positivo y numerador entre cero y ese máximo. No se repara
+   un `/` omitido o sustituido: esa lectura se descarta sin cambiar el estado
+   confirmado ni cortar una animación. Un número solo, aunque se repita,
+   no confirma un porcentaje.
    Una lectura sin apoyo queda en `hp_unconfirmed`: no confirma esos PS y
    obliga a revisar la transición siguiente. Si el PS anterior todavía se
    ve confirmado en **ese mismo HUD**, el valor candidato queda como
@@ -746,7 +751,8 @@ validación normal o queda pendiente. No se descarta por denominador
 inusual, presencia de Communicating ni mera proximidad a un reloj.
 El HUD rival porcentual sólo puede confirmar valores con denominador 100.
 
-Para PS propios completos como `177177`, se amplía la reparación del
+**Histórico, sustituido por la validación literal descrita abajo.**
+En este corte, para PS propios como `177177`, se amplió la reparación del
 separador: numerador igual al máximo, máximo de al menos dos cifras,
 dos lecturas consecutivas ≥0,90, posición estable, mote único e idéntico
 y sin cruzar acciones, cambios, turnos o huecos. No se adivinan fracciones
@@ -798,6 +804,60 @@ mensajes enlazados y uno pendiente. La partida corregida mantiene PS 14/14;
 sus eventos principales pasan de 40 a 38, con 37/38 alineados porque permanece
 la diferencia de orden de Defiant. Sólo cambia el prototipo, no producción.
 
+## PS literales y entradas omitidas tras retirada voluntaria
+
+La regla solicitada por Ies sustituye todas las reparaciones del separador de
+PS propios. `177177`, `1771177`, `1777177`, `0./207` y cifras sin fracción no
+son evidencia de PS, aunque su confianza OCR sea alta. Se conserva el valor
+confirmado anterior; en una primera aparición sin lectura válida, se mantiene
+la política explícita de máximo **inferido**, nunca confirmado. El candidato
+original queda en `ignored_hp_reading` o `hp_rejected_reading` para auditoría.
+
+Una fracción posterior válida puede confirmar la entrada antes de actuar,
+incluso cuando el mote todavía no está en los alias globales. La búsqueda
+se interrumpe ante acciones, retirada, fin de batalla o reemplazo. Si el
+detector omite por deduplicación una fracción válida posterior a una lectura
+rechazada, se recupera a su hora real, dentro de tres segundos y sin cruzar
+acciones, entradas, turnos ni cambio de mote. No se completa la cifra defectuosa.
+En b121, Dee Dee se confirma mediante `177/177` en **1206**; las variantes
+1199–1205 no confirman sus PS. En f7af partida 1 se usa **198**, ya con `/`.
+
+Las seis capturas de este corte confirman retirada de Dee Dee y anuncio
+`Go! Gori!`. En 06:44.50 aún no hay anuncio visible en la captura; las de
+06:45.30 y 06:46 sí lo muestran. No se modifica por ello el reloj de la traza.
+Estas capturas no muestran PS: las cifras siguientes provienen del OCR archivado.
+
+La recuperación general de una entrada voluntaria omitida exige retirada y
+anuncio repetidos, slot único del mote saliente, HUD entrante corroborado y
+alias conocido o habilidad repetida que identifique una única especie del
+equipo archivado. Se exige continuidad, dos HUD consecutivos y extremos de PS
+repetidos. Se conservan retirada, anuncio, equipo, habilidad y HUD en
+`withdrawal_reconstruction`. No usa nombres de otros jobs ni tablas de motes.
+El caso cubierto es una primera aparición propia tras retirada, con un único
+entrante; evidencia ambigua o incompleta no crea la entrada. Las apariciones
+con Ilusión o evidencia de habilidad copiada no se resuelven mediante habilidad.
+
+En b121 partida 1: retirada **804–806**, entrada **810–813**, panel
+`Gori’s Grassy Surge` **818–821**, único Rillaboom compatible del equipo;
+HUD propio **852–855** y **873–875**. Se recuperan entrada, habilidad,
+daño **207/207 inferidos →147/207 observados** y cura **147/207→159/207**,
+con mensaje **876** enlazado por la regla de terreno existente. No se afirma
+que se observaron 207/207 antes del golpe.
+
+**101/101 pruebas sin omisiones, siete ZIP/20 partidas, cero avisos pendientes**
+(frente a tres en a6011e6). Se conservan los 432 episodios anteriores y se añaden
+dos de Gori: **434 con valor final confirmado; 138 mensajes enlazados**.
+La validación estricta tiene dos efectos intencionales: f7af partida 2, entrada
+885, pasa de máximo confirmado a inferido; en 904 partida 1, la cura 614–615
+conserva **206/207** del último OCR válido y descarta `2071207`, antes reparado
+como 207/207. El daño posterior parte de ese último valor confirmado.
+Los demás valores de las transiciones anteriores se conservan. La lectura
+`0./207` de 10 partida 2 se descarta en 2855 y el cero se confirma en **2856**,
+a partir de `0/207` literal. No se pierde el debilitamiento.
+
+Cero avisos es un resultado estructural, no validación visual completa del
+vídeo. El prototipo sigue fuera de producción y sin exportación automática.
+
 ## Pruebas
 
 ```bash
@@ -811,10 +871,10 @@ CHAMPIONS_DIAGNOSTIC_SEVENTH=/ruta/champions-diagnostics-b121903688ad47a5.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Noventa casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Noventa y cuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
-fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
-corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
+fantasma. Incluyen PS sin confirmar, porcentajes divididos, descarte de separadores
+malformados y recuperación de una lectura literal posterior, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
 Siete pruebas de integración usan los cinco, cuatro, tres, dos, dos, dos y dos replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
