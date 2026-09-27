@@ -514,6 +514,46 @@ class BattleAutomaton:
         return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
                 "evidence": full + repaired + split + bare}
 
+    def _stable_hp_before_conflict(self, slot: str | None, health: str | None,
+                                   frame: int, stronger: dict[str, Any]) -> dict[str, Any] | None:
+        """Find repeated complete HP just before a weaker overlapping OCR fragment."""
+        if not slot or not slot.startswith("p2") or slot not in HP_HUD_AREAS or not health:
+            return None
+        target = health.split("/", 1)[0]
+        if stronger["text"].strip() != target or stronger["confidence"] < .97:
+            return None
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+
+        def in_hud(line: dict[str, Any]) -> bool:
+            return (left <= line.get("left", -1) <= right and
+                    top <= line.get("top", -1) <= bottom and
+                    line.get("right", right) <= right + .02 and
+                    line.get("bottom", bottom) <= bottom + .02)
+
+        current = self.frame_lookup.get(frame, {})
+        if not any(in_hud(line) and line.get("text", "").strip() == target and
+                   line.get("confidence", 0) >= stronger["confidence"]
+                   for line in current.get("ocr", ())):
+            return None
+        evidence = []
+        for number in range(frame - 1, frame - 4, -1):
+            row = self.frame_lookup.get(number)
+            if not row:
+                continue
+            if any(event["kind"] in {"switch", "drag"} and event.get("slot") == slot
+                   for event in row.get("detections", {}).get("events", ())):
+                break
+            for line in row.get("ocr", ()):
+                if in_hud(line) and line.get("text", "").replace(" ", "") == target + "%" and \
+                        line.get("confidence", 0) >= .9:
+                    evidence.append({"frame": number, "text": line["text"],
+                                     "confidence": line["confidence"]})
+                    break
+        if len(evidence) < 2:
+            return None
+        return {"state": "confirmed", "reason": "PS completos repetidos antes del fragmento OCR",
+                "evidence": list(reversed(evidence))}
+
     def _entry_baseline(self, candidate: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         """Find a complete, stable HUD value after entry and before any action.
 
@@ -733,6 +773,18 @@ class BattleAutomaton:
             # Si se confirma en frames posteriores, llegará como otro episodio.
             if len(episode.candidates) == 1 and last.get("competing_ocr"):
                 conflict = last["competing_ocr"]
+                stable = self._stable_hp_before_conflict(
+                    episode.slot, before, last["observed_frame"], conflict["stronger"])
+                if stable:
+                    note = (f"OCR {conflict['suspect']['text']} recortado: "
+                            f"{conflict['stronger']['text']} coincide con los PS completos "
+                            "repetidos en este HUD antes del conflicto.")
+                    item = self._append(last, kind="hp_rejected_reading", actor_id=episode.actor_id,
+                                        status="suppressed", before=before, after=before,
+                                        note=note, observations=observations)
+                    item["narration"].extend(episode.narration)
+                    item["hp_state"], item["hp_support"] = "rejected", stable
+                    continue
                 note = (f"OCR {conflict['suspect']['text']} contradicho en el mismo HUD por "
                         f"{conflict['stronger']['text']} de mayor confianza; PS sin confirmar.")
                 item = self._append(last, kind="hp_ocr_conflict", actor_id=episode.actor_id,
