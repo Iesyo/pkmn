@@ -913,6 +913,25 @@ _UI_TEXT = {
 
 _MOVE_INFO_HEADERS = {"category", "power", "accuracy", "range"}
 
+# COL-102, reapertura del 26/27 sep, job 90403f16712d4d41: el HUD muestra una
+# etiqueta de estado junto a la barra de HP mientras dura ("Paralyzed",
+# "Burned", confirmadas en traza), no una línea de diálogo. Como su sola
+# palabra contiene una de las claves de `keywords` de abajo (para reconocer
+# la frase narrada real, "was burned!"), pasaba como mensaje de batalla; cada
+# vez que el HUD la perdía un frame (una animación, un aviso real encima) y
+# volvía a mostrarla, `_visible_messages` ya no la recordaba como vista y se
+# leía como un aviso nuevo -"-message|Paralyzed"/"-message|Burned" sueltos,
+# sin Pokémon ni causa. Una etiqueta de estado real nunca narra sola: siempre
+# es una de estas seis palabras exactas, nunca una oración.
+_STATUS_BADGE_TEXT = {
+    "poisoned",
+    "badlypoisoned",
+    "burned",
+    "paralyzed",
+    "asleep",
+    "frozen",
+}
+
 # COL-102, reapertura estructural del 26 sep, job real `10a7fba6fda04585`,
 # partida 5 (Ender): "Ender sent out MineMine the Peckish!" no es una entrada
 # doble ni un mote raro -"the Peckish" es un Título real de Pokémon Champions
@@ -1366,6 +1385,13 @@ class ChampionsTextParser:
         )
         self._active: dict[str, str] = {}
         self._health: dict[str, str] = {}
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41: sin una
+        # memoria de qué estado ya tiene cada slot, cualquier narración que
+        # repite un estado ya aplicado (una parálisis que le impide moverse
+        # en un turno posterior, no una nueva) se leía como una aplicación
+        # nueva -status- en vez de un "no puede actuar". Se limpia en
+        # `_mark_slot_open`, igual que `_active`/`_health`.
+        self._status: dict[str, str] = {}
         self._player_names = {
             "p1": self.context.p1_name,
             "p2": self.context.p2_name,
@@ -2082,6 +2108,7 @@ class ChampionsTextParser:
             self._open_slots[side].append(slot)
         self._active.pop(slot, None)
         self._health.pop(slot, None)
+        self._status.pop(slot, None)
 
     def _announced_species(self, value: str, side: str) -> str | None:
         # Champions sometimes appends a battle-only form in parentheses, e.g.
@@ -3286,7 +3313,7 @@ class ChampionsTextParser:
                 continue
             key = _text_key(line.text)
             lowered = f" {line.text.casefold()} "
-            if key in _UI_TEXT or _health_value(line.text):
+            if key in _UI_TEXT or key in _STATUS_BADGE_TEXT or _health_value(line.text):
                 continue
             if line.center_y >= 0.82 and self._resolve_species(line.text):
                 continue
@@ -3774,21 +3801,42 @@ class ChampionsTextParser:
                     ),
                 )
 
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41: Champions
+        # vuelve a narrar un estado ya aplicado cada vez que le impide actuar
+        # ("is paralyzed, so it may be unable to move!", "couldn't move
+        # because it's paralyzed!"), sin que eso sea una segunda aplicación.
+        # Antes, las dos frases de parálisis compartían un único patrón que
+        # siempre devolvía "status", así que cada repetición -en cualquier
+        # turno posterior, no sólo el de la aplicación real- se leía como un
+        # -status nuevo (job 5748b289aa5b445b necesitaba precisamente que
+        # "is paralyzed" pudiera ser la aplicación cuando era la única
+        # evidencia; por eso la distinción no puede ser léxica). La memoria
+        # de qué estado tiene cada slot (`self._status`) es lo único que
+        # distingue "aplicación nueva" de "no puede actuar, ya lo tenía": se
+        # aplica una sola vez por slot, y una repetición de la misma frase
+        # -por reintento de OCR o porque el aviso vuelve a ser visible- ya no
+        # encuentra un cambio de estado que narrar.
         status_patterns = (
             (r"^(The opposing )?(.+?) was badly poisoned[!.]?$", "tox"),
             (r"^(The opposing )?(.+?) was poisoned[!.]?$", "psn"),
             (r"^(The opposing )?(.+?) was burned[!.]?$", "brn"),
-            # Champions lo anuncia como "…is paralyzed, so it may be unable to
-            # move!" (COL-102, job 5748b289aa5b445b: Dragonite en el turno 3 y
-            # Sableye en el 5 quedaban sin -status, sólo con el mensaje).
+            (r"^(The opposing )?(.+?) was paralyzed[!.]?$", "par"),
             (
-                r"^(The opposing )?(.+?) (?:was paralyzed|is paralyzed)"
-                r"(?:,? so it may be unable to move)?[!.]?$",
+                r"^(The opposing )?(.+?) is paralyzed,? so it may be unable to move[!.]?$",
+                "par",
+            ),
+            (
+                r"^(The opposing )?(.+?) couldn['’]t move because it['’]s paralyzed[!.]?$",
                 "par",
             ),
             (r"^(The opposing )?(.+?) fell asleep[!.]?$", "slp"),
             (r"^(The opposing )?(.+?) was frozen solid[!.]?$", "frz"),
         )
+        # Estados que bloquean la acción del turno cuando Champions vuelve a
+        # narrarlos sobre un Pokémon que ya los tenía; el resto (quemadura,
+        # veneno) nunca impide moverse, así que una repetición sólo puede ser
+        # ruido y se descarta sin generar ningún evento.
+        _BLOCKS_ACTION = {"par", "slp", "frz"}
         for pattern, status in status_patterns:
             status_match = re.match(pattern, cleaned, re.IGNORECASE)
             if not status_match:
@@ -3796,18 +3844,35 @@ class ChampionsTextParser:
             opposing = bool(status_match.group(1))
             side = "p2" if opposing else "p1"
             actor = self._actor_for_value(side, status_match.group(2))
-            if actor:
-                return (
-                    BattleEvent(
-                        kind="status",
-                        timestamp_ms=timestamp_ms,
-                        confidence=confidence,
-                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
-                        species=actor,
-                        value=status,
-                        source_frame=source_frame,
-                    ),
-                )
+            if not actor:
+                continue
+            slot = self._slot_for_species(actor, side)
+            if self._status.get(slot) == status:
+                if status in _BLOCKS_ACTION:
+                    return (
+                        BattleEvent(
+                            kind="cant",
+                            timestamp_ms=timestamp_ms,
+                            confidence=confidence,
+                            slot=slot,  # type: ignore[arg-type]
+                            species=actor,
+                            value=status,
+                            source_frame=source_frame,
+                        ),
+                    )
+                return ()
+            self._status[slot] = status
+            return (
+                BattleEvent(
+                    kind="status",
+                    timestamp_ms=timestamp_ms,
+                    confidence=confidence,
+                    slot=slot,  # type: ignore[arg-type]
+                    species=actor,
+                    value=status,
+                    source_frame=source_frame,
+                ),
+            )
 
         cure_patterns = (
             r"^(The opposing )?(.+?) woke up[!.]?$",
@@ -3822,12 +3887,14 @@ class ChampionsTextParser:
             side = "p2" if opposing else "p1"
             actor = self._actor_for_value(side, cure_match.group(2))
             if actor:
+                slot = self._slot_for_species(actor, side)
+                self._status.pop(slot, None)
                 return (
                     BattleEvent(
                         kind="curestatus",
                         timestamp_ms=timestamp_ms,
                         confidence=confidence,
-                        slot=self._slot_for_species(actor, side),  # type: ignore[arg-type]
+                        slot=slot,  # type: ignore[arg-type]
                         species=actor,
                         value="status",
                         source_frame=source_frame,

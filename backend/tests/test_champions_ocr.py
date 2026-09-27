@@ -2119,6 +2119,117 @@ class ChampionsOcrTests(unittest.TestCase):
             [("status", "p2b", "par")],
         )
 
+    def test_paralysis_wording_seen_again_is_cant_not_a_second_status(self) -> None:
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida 4:
+        # "is paralyzed, so it may be unable to move!" es la misma frase que
+        # confirma la parálisis (arriba) y la que Champions repite cada vez
+        # que le impide actuar en un turno posterior; sin memoria de qué
+        # estado ya tiene el slot, la repetición se leía como otra
+        # aplicación (-status duplicado). La distinción no puede ser léxica
+        # -job 5748b289aa5b445b necesitaba que la misma frase SÍ aplicara la
+        # primera vez-, así que depende de si el slot ya la tenía.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p2_team=("Sableye", "Sinistcha")),
+            catalog=ChampionsCatalog(species=("Sableye", "Sinistcha")),
+        )
+        parser._battle_open = True
+        parser._active["p2b"] = "Sableye"
+        parser._status["p2b"] = "par"
+
+        detections = parser.parse(
+            (
+                line(
+                    "The opposing Sableye is paralyzed, so it may be unable to move!",
+                    x=0.15,
+                    y=0.72,
+                    width=0.5,
+                ),
+            ),
+            timestamp_ms=412_000,
+            source_frame=824,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("cant", "p2b", "par")],
+        )
+
+    def test_couldnt_move_because_paralyzed_wording_is_recognized(self) -> None:
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida 4:
+        # traza confirmada, frame con "Dee Dee couldn't move because it's
+        # paralyzed!" -una tercera forma de narrar la misma incapacidad, sin
+        # patrón propio, que caía en el "-message" genérico.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Indeedee-F",)),
+            catalog=ChampionsCatalog(species=("Indeedee-F",)),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Indeedee-F"
+        parser._status["p1a"] = "par"
+
+        detections = parser.parse(
+            (line("Dee Dee couldn't move because it's paralyzed!", x=0.15, y=0.73, width=0.5),),
+            timestamp_ms=500_000,
+            source_frame=1000,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("cant", "p1a", "par")],
+        )
+
+    def test_status_badge_alone_is_not_a_message(self) -> None:
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partidas 3
+        # y 4: el HUD muestra "Paralyzed"/"Burned" junto a la barra de HP
+        # mientras dura el estado -no es diálogo. Como la sola palabra
+        # contiene una de las claves que reconocen la frase narrada real
+        # ("was burned!"), pasaba como mensaje de batalla; cada vez que el
+        # HUD la perdía un frame y volvía a mostrarla, se leía como un aviso
+        # nuevo sin Pokémon ni causa ("-message|Paralyzed" suelto).
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Gardevoir",)),
+            catalog=ChampionsCatalog(species=("Gardevoir",)),
+        )
+        parser._battle_open = True
+        parser._active["p1b"] = "Gardevoir"
+        parser._status["p1b"] = "brn"
+
+        detections = parser.parse(
+            (line("Burned", x=0.398, y=0.725, width=0.066, height=0.045),),
+            timestamp_ms=90_000,
+            source_frame=180,
+        )
+
+        self.assertEqual(detections.events, ())
+
+    def test_status_ledger_forgets_a_slot_that_left(self) -> None:
+        # Sin esto, un Pokémon nuevo en el mismo slot heredaría el estado
+        # del que ya se fue y una parálisis genuina en el recién llegado se
+        # leería como "cant" en vez de como la aplicación real que es -el
+        # mismo bug de memoria por slot que ya corrige `_mark_slot_open`
+        # para `_active`/`_health`.
+        parser = ChampionsTextParser(
+            context=DetectorContext(p1_team=("Sableye", "Golisopod")),
+            catalog=ChampionsCatalog(species=("Sableye", "Golisopod")),
+        )
+        parser._battle_open = True
+        parser._active["p1a"] = "Sableye"
+        parser._status["p1a"] = "par"
+
+        parser._mark_slot_open("p1a")
+        parser._active["p1a"] = "Golisopod"
+
+        detections = parser.parse(
+            (line("Golisopod was paralyzed!", x=0.15, y=0.72, width=0.5),),
+            timestamp_ms=1_000,
+            source_frame=2,
+        )
+
+        self.assertEqual(
+            [(event.kind, event.slot, event.value) for event in detections.events],
+            [("status", "p1a", "par")],
+        )
+
     def test_uses_known_gendered_form_when_hud_omits_the_suffix(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_team=("Indeedee-F",)),
