@@ -111,7 +111,89 @@ def transient_mega_text_trace():
             frame(2, [event("message", value=bad)], texts=[bad]), frame(3), frame(4, [mega], texts=[clean])]
 
 
+def sliding_hud_trace(side="p1", species="Blaziken", partner="Kingambit"):
+    raw = f"__champions_actor_{side}_0001__"
+    trace = [frame(1, [event("switch", side + "a", raw, "100/100"),
+                       event("switch", side + "b", partner, "100/100")]),
+             frame(2, [event("turn", turn=1)]), frame(3), frame(4)]
+    x, y = (.08, .86) if side == "p1" else (.62, .05)
+    for i, row in enumerate(trace):
+        row["resolved_aliases"][side].update({"alpha": species, "beta": partner})
+        row["ocr"].append({"text": "Beta" if i == 0 else "Alpha", "left": x + .16 if i == 0 else x,
+                           "top": y, "confidence": .999})
+        if i:
+            row["ocr"].append({"text": "Beta", "left": x + .21, "top": y, "confidence": .999})
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_sliding_hud_assigns_identity_after_stable_names_on_either_side(self):
+        for side, species, partner in (("p1", "Blaziken", "Kingambit"), ("p2", "Delphox", "Indeedee-F")):
+            with self.subTest(side=side):
+                trace = sliding_hud_trace(side, species, partner)
+                mega = {**event("mega", side + "a", species, value="test stone"), "forme": species + "-Mega"}
+                trace.append(frame(8, [mega]))
+                trace.append(frame(9, [event("move", side + "a", species, move="Protect")]))
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertEqual(ledger["issues"], [])
+                entries = [e for e in ledger["events"] if e["kind"] == "switch"]
+                self.assertEqual([(e["slot"], e["species"]) for e in entries],
+                                 [(side + "a", species), (side + "b", partner)])
+                proof = entries[0]["identity_support"]
+                self.assertEqual((proof["from"], proof["state"], proof["confirmed_frame"]),
+                                 ("provisional", "confirmed", 3))
+                self.assertEqual([e["frame"] for e in proof["evidence"]], [2, 3])
+                self.assertEqual((entries[0]["frame"], entries[0]["health"]), (1, "100/100"))
+                self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "mega")["status"], "consistent")
+
+    def test_conflicting_entry_stays_pending_without_safe_identity_evidence(self):
+        for barrier in ("move", "faint", "mega", "switch", "raw_action", "raw_entry", "withdraw",
+                        "time", "gap", "confidence", "moving", "one_frame", "partner_name", "late_conflict",
+                        "battle_complete", "battle_message", "raw_mega"):
+            with self.subTest(barrier=barrier):
+                trace = sliding_hud_trace()
+                # An unambiguous global detector resolution must not override
+                # an unresolved local conflict between two HUD names.
+                raw = trace[0]["detections"]["events"][0]["species"]
+                for row in trace:
+                    row["resolved_identities"][raw] = "Kingambit"
+                if barrier in {"move", "faint", "mega", "switch"}:
+                    trace[1]["detections"]["events"].append(event(barrier, "p1a", "Blaziken", move="Detect"))
+                elif barrier in {"raw_action", "raw_entry", "withdraw"}:
+                    text = {"raw_action": "Alpha used Detect!", "raw_entry": "Go! Alpha!",
+                            "withdraw": "Rival withdrew Beta!"}[barrier]
+                    trace[1]["ocr"].append({"text": text, "top": .75, "confidence": .99})
+                elif barrier == "time":
+                    for i, row in enumerate(trace[1:], 1):row["timestamp_ms"] += i * 800
+                elif barrier == "gap":trace.pop(1)
+                elif barrier == "confidence":
+                    for row in trace[1:]:row["ocr"][0]["confidence"] = .92
+                elif barrier == "moving":
+                    for i, row in enumerate(trace[1:], 1):row["ocr"][0]["left"] += i * .02
+                elif barrier == "one_frame":trace = trace[:2]
+                elif barrier == "partner_name":
+                    for row in trace[1:]:row["ocr"][1]["text"] = "Alpha"
+                elif barrier == "late_conflict":trace[-1]["ocr"][0]["text"] = "Beta"
+                elif barrier == "battle_complete":trace[1]["detections"]["battle_complete"] = True
+                elif barrier == "battle_message":
+                    trace[1]["detections"]["events"].append(event("message", value="The battle has ended."))
+                elif barrier == "raw_mega":
+                    trace[1]["ocr"].append({"text": "Alpha's Blazikenite is reacting to Roku's Omni Ring!",
+                                            "top": .75, "confidence": .99})
+                ledger = BattleAutomaton(0, trace).run()
+                entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["frame"] == 1 and e["slot"] == "p1a")
+                self.assertEqual((entry["status"], entry["identity_support"]["state"]), ("suppressed", "unconfirmed"))
+                self.assertIsNone(entry["actor_id"])
+                self.assertIn("entry_identity_unconfirmed", [i["code"] for i in ledger["issues"]])
+
+    def test_confirmed_hud_identity_survives_a_later_action_boundary(self):
+        trace = sliding_hud_trace()
+        trace[3]["detections"]["events"] = [event("move", "p1a", "Blaziken", move="Detect")]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        move = next(e for e in ledger["events"] if e["kind"] == "move")
+        self.assertEqual((move["species"], move["status"]), ("Blaziken", "consistent"))
+
     def test_pending_hp_confirms_later_split_percent_and_preserves_next_baseline(self):
         trace = pending_hp_trace()
         trace.append(frame(9, [event("damage", "p2a", "Delphox", "0/100")]))
@@ -1251,6 +1333,32 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] == "9/100" and e["status"] == "consistent"
                              for e in archaludon["events"]))
         self.assertIn("hp_zero_rebound", [x["code"] for x in archaludon["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FIFTH"), "Requiere el quinto ZIP del usuario")
+    def test_fifth_job_stabilizes_lead_identity_and_keeps_unrelated_issues(self):
+        frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_FIFTH"]))
+        self.assertEqual(len(baselines), 2)
+        ledgers = [BattleAutomaton(i, [r for r in frames if r["battle_index"] == i]).run() for i in range(2)]
+        first = ledgers[0]
+        leads = [e for e in first["events"] if e["kind"] == "switch" and e["frame"] == 164]
+        self.assertEqual([(e["slot"], e["species"], e["health"]) for e in leads],
+                         [("p1a", "Blaziken", "156/156"), ("p1b", "Kingambit", "177/177"),
+                          ("p2a", "Toxtricity", "100/100"), ("p2b", "Chandelure", "100/100")])
+        self.assertEqual([e["frame"] for e in leads[0]["identity_support"]["evidence"]], [165, 166])
+        mega = next(e for e in first["events"] if e["kind"] == "mega")
+        self.assertEqual((mega["frame"], mega["species"], mega["status"]), (239, "Blaziken-Mega", "consistent"))
+        damage = [e for e in first["events"] if e["kind"] == "damage" and e["actor_id"] == leads[0]["actor_id"]]
+        self.assertEqual([(e["before"], e["after"], e["status"]) for e in damage],
+                         [("156/156", "35/156", "consistent"), ("35/156", "0/156", "consistent")])
+        recoil = next(n for n in first["narration_links"] if n["effect"] == "recoil")
+        self.assertEqual((recoil["status"], recoil["actor_id"], recoil["event_seq"]),
+                         ("linked", leads[0]["actor_id"], damage[1]["seq"]))
+        self.assertEqual([(i["code"], i["frame"]) for i in first["issues"]],
+                         [("actor_mismatch", 609), ("actor_mismatch", 882),
+                          ("actor_mismatch", 882), ("hp_narration_unmatched", 776)])
+        self.assertEqual([(i["code"], i["frame"]) for i in ledgers[1]["issues"]],
+                         [("faint_without_actor", 1438), ("unclassified_text", 1587)])
+        self.assertIn("Identidad corroborada tras estabilizarse el HUD", render_markdown(first, None))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FOURTH"), "Requiere el cuarto ZIP del usuario")
     def test_fourth_job_confirms_pending_observations_without_duplicate_events(self):

@@ -60,6 +60,73 @@ def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
     return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
 
 
+def corroborate_entry_identity(candidate: dict[str, Any], frames: dict[int, dict[str, Any]],
+                               aliases: dict[str, str]) -> dict[str, Any]:
+    """Resolve conflicting HUD names only after the entry's HUD stops moving.
+
+    A sliding partner name can briefly occupy this slot's rectangle. Require
+    two consecutive, stationary readings after the candidate; never borrow a
+    name from beyond an action or a replacement. A menu turn is not a barrier.
+    """
+    slot = candidate["event"]["slot"]
+    start = candidate["observed_frame"]
+    start_ms = candidate["observed_ms"]
+    result: dict[str, Any] = {"state": "unconfirmed", "from": "provisional",
+                              "raw_identity": candidate["event"]["species"],
+                              "evidence": []}
+    previous = None
+    previous_ms = start_ms
+    for number in range(start, start + 4):
+        row = frames.get(number)
+        if row is None:
+            break
+        observed_ms = row["timestamp_ms"]
+        if not 0 <= observed_ms - start_ms <= 1_500 or not 0 <= observed_ms - previous_ms <= 1_000:
+            break
+        events = row.get("detections", {}).get("events", ())
+        if row.get("detections", {}).get("battle_complete") or any(
+               e["kind"] in {"move", "cant", "mega", "faint", "battle_end"} or
+               (e["kind"] == "message" and any(word in str(e.get("value", "")).casefold()
+                                                for word in ("battle has ended", "forfeit"))) or
+               (number > start and e["kind"] in {"switch", "drag"} and e.get("slot") == slot)
+               for e in events):
+            break
+        if any(line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+               (RAW_ACTION.search(line.get("text", "")) or MEGA_NARRATION.fullmatch(line.get("text", "")) or
+                (number > start and (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                                     "withdrew" in line.get("text", "").casefold())))
+               for line in row.get("ocr", ())):
+            break
+        name = hud_nickname(row, slot)
+        left, right, top, bottom = NAME_HUD_AREAS[slot]
+        lines = [line for line in row.get("ocr", ())
+                 if line.get("text", "").casefold() == name and line.get("confidence", 0) >= .95 and
+                 left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom]
+        peers = [s for s in SLOTS if s.startswith(slot[:2]) and hud_nickname(row, s) == name]
+        current = None
+        if name in aliases and len(lines) == 1 and peers == [slot]:
+            line = lines[0]
+            current = {"frame": number, "observed_ms": observed_ms, "nickname": name,
+                       "species": aliases[name], "left": line["left"], "top": line["top"],
+                       "confidence": line["confidence"]}
+            if result["state"] == "confirmed" and (
+                result["evidence"][-1]["nickname"] != name or
+                abs(result["evidence"][-1]["left"] - current["left"]) > .01 or
+                abs(result["evidence"][-1]["top"] - current["top"]) > .01):
+                result = {k: v for k, v in result.items() if k not in {"species", "confirmed_frame"}}
+                result.update(state="unconfirmed", evidence=[])
+            if (previous and previous["nickname"] == name and
+                abs(previous["left"] - current["left"]) <= .01 and
+                abs(previous["top"] - current["top"]) <= .01 and result["state"] != "confirmed"):
+                result.update(state="confirmed", species=aliases[name], confirmed_frame=number,
+                              evidence=[previous, current])
+        elif name in aliases and result["state"] == "confirmed":
+            result = {k: v for k, v in result.items() if k not in {"species", "confirmed_frame"}}
+            result.update(state="unconfirmed", evidence=[])
+        previous, previous_ms = current, observed_ms
+    return result
+
+
 def health_ratio(health: str | None) -> float | None:
     if not health or "/" not in health:
         return None
@@ -161,6 +228,18 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                      for f in range(frame - 2, frame + 3)]
             named_species = next((aliases[slot[:2]][name] for name in names
                                   if name in aliases[slot[:2]]), None)
+            if event["kind"] in {"switch", "drag"} and len({
+                identity_species(aliases[slot[:2]][name]) for name in names
+                if name in aliases[slot[:2]]}) > 1:
+                support = corroborate_entry_identity(item, frame_lookup, aliases[slot[:2]])
+                support["observed_names"] = names
+                item["identity_support"] = support
+                if support["state"] == "confirmed":
+                    named_species = support["species"]
+                else:
+                    # No global ID/alias fallback may silently settle a local
+                    # conflict; retain the candidate for review without entry.
+                    continue
             local = frame_lookup.get(frame, {}).get("resolved_identities", {}).get(raw)
             clean = item.get("canonical_species") or named_species or local or unambiguous.get(raw)
             if clean:
@@ -869,6 +948,8 @@ class BattleAutomaton:
             item["original_slot"] = candidate["slot_correction"]
             item["note"] = ((item["note"] + " ") if item["note"] else "") + (
                 f"Slot corregido desde {candidate['slot_correction']} por mote visible en el HUD.")
+        if candidate.get("identity_support"):
+            item["identity_support"] = candidate["identity_support"]
         self.events.append(item)
         return item
 
@@ -1189,6 +1270,11 @@ class BattleAutomaton:
             return
         self._flush_hp()
         if kind in {"switch", "drag"} and slot in SLOTS:
+            if candidate.get("identity_support", {}).get("state") == "unconfirmed":
+                item = self._append(candidate, status="suppressed",
+                                    note="Motes contradictorios durante la entrada del HUD; identidad pendiente.")
+                self._issue("entry_identity_unconfirmed", item["note"], item["frame"], item["seq"])
+                return
             species = candidate.get("canonical_species") or self._resolve(event.get("species"))
             if candidate.get("illusion_reveal"):
                 old_health = self.actors[actor_id]["health"] if actor_id else None
@@ -1993,6 +2079,11 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         lines += ["- " + detail]
         if item["note"]:
             lines += ["  - " + item["note"]]
+        identity = item.get("identity_support")
+        if identity and identity["state"] == "confirmed":
+            proof = identity["evidence"]
+            lines += [f"  - Identidad corroborada tras estabilizarse el HUD: {proof[0]['nickname']} "
+                      f"→ {identity['species']} (frames {proof[0]['frame']} y {proof[1]['frame']})."]
         if item["kind"] in HP_KINDS and len(item["observations"]) > 1:
             seen = " → ".join(str(x["health"]) for x in item["observations"])
             lines += ["  - Lecturas durante la animación: " + seen]

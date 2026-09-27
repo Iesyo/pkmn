@@ -533,6 +533,41 @@ El lote 508 ya forma parte del corpus de regresión: se necesitan otros vídeos
 sin ajustes para seguir evaluando generalización. Sigue pendiente integrar
 la salida en Showdown y en producción.
 
+## Quinto ZIP · 9fd1afffbf8340df · identidad durante la entrada del HUD
+
+El primer corte sin ajustes produjo **14 avisos (12/2)**. Las capturas de Ies
+muestran el HUD aún ausente a 01:21.50 y claramente visible a 01:22.50:
+Tonatiuh/Blaziken con 156/156 PS y Tomoe/Kingambit con 177/177. La captura
+temprana no permite inspeccionar los nombres en movimiento; en la traza,
+el frame 164 contiene Tomoe temporalmente dentro de la zona de p1a y Tonatiuh
+fuera de ella. Elegir el primer alias cercano fijaba dos Kingambit propios.
+
+Cuando una entrada provisional tiene nombres de especies diferentes en su
+ventana local, la identidad espera corroboración: dos frames consecutivos,
+nombre único en ese slot del bando, confianza ≥0,95 y posición estable
+(variación ≤0,01 de ancho/alto normalizados). Se mira desde la entrada hasta
+tres frames más, con límite de 1,5 s y sin huecos de más de 1 s. Acciones,
+Mega, faint, fin de batalla, reemplazo en el slot y anuncios nuevos de
+acción/entrada/salida detienen la búsqueda. El paso al menú de turno puede
+corroborar el HUD. Una contradicción posterior invalida la prueba anterior.
+Sin prueba suficiente, la entrada queda suprimida con
+`entry_identity_unconfirmed`; una resolución global del ID no fuerza el
+ocupante. `identity_support` conserva ID original, nombres candidatos,
+coordenadas, confianza y frames de confirmación, sin desplazar la entrada.
+
+Los frames **165–166** confirman a Blaziken. Su Mega en **239**, daños
+**156 → 35 → 0 PS** y retroceso quedan vinculados al actor correcto.
+El lote baja de **14 a 6 avisos (4/2)** con este único cambio; los cuatro
+restantes de la primera partida corresponden a entradas tardías/atribución
+de acciones. En la segunda siguen el faint duplicado y el panel informativo.
+No se consideran resueltos por corregir el HUD inicial. El lote conserva
+27 episodios de PS confirmados y seis de siete mensajes de PS enlazados.
+
+**66/66 pruebas aprobadas con cinco ZIP (16 partidas)**. Los JSON completos
+de las 14 partidas previas y de la segunda del lote nuevo son idénticos a
+los del corte previo. El primer corte del ZIP nuevo queda archivado separado.
+El prototipo sigue fuera de producción y no emite replays Showdown.
+
 ## Pruebas
 
 ```bash
@@ -540,15 +575,16 @@ CHAMPIONS_DIAGNOSTIC=/ruta/champions-diagnostics-10a7fba6fda04585.zip \
 CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
 CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 CHAMPIONS_DIAGNOSTIC_FOURTH=/ruta/champions-diagnostics-50808fa9e45e4ccc.zip \
+CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cincuenta y ocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Sesenta y un casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
-Cuatro pruebas de integración usan los cinco, cuatro, tres y dos replays actuales,
+Cinco pruebas de integración usan los cinco, cuatro, tres, dos y dos replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.
