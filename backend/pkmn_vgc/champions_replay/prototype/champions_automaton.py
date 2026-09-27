@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Primer autómata temporal para trazas OCR de Pokémon Champions.
+"""Champions Ledger: autómata temporal para trazas OCR de Pokémon Champions.
 
 Lee una traza archivada, agrupa las lecturas de PS de cada animación y produce
 un registro de sucesos con evidencia. Nunca vuelve a abrir el vídeo ni produce

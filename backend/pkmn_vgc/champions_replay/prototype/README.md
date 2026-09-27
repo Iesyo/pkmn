@@ -1,6 +1,7 @@
-# COL-102 · Autómata temporal de batalla
+# Champions Ledger · Autómata temporal de batalla
 
-Este prototipo lee **sólo** `ocr.trace.jsonl` del diagnóstico y produce un
+**Champions Ledger** es un proyecto independiente nacido de los diagnósticos
+de COL-102. Su primera versión lee **sólo** `ocr.trace.jsonl` y produce un
 registro intermedio por batalla. No requiere el vídeo, OCR adicional, Qwen ni
 instalar dependencias de Python. No altera el ZIP ni los replays existentes;
 se ejecuta fuera del pipeline de producción.
