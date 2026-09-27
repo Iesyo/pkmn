@@ -74,6 +74,23 @@ def identity_species(species: str) -> str:
     return re.sub(r"-Mega(?:-[XY])?$", "", species)
 
 
+def narration_signature(text: str) -> tuple[str, str, str, str | None] | None:
+    """Strict semantics for a legible action/entry announcement."""
+    match = MEGA_NARRATION.fullmatch(text)
+    if match:
+        return "mega", "p2" if match[1] else "p1", match[2], match[3]
+    match = FAINT_NARRATION.fullmatch(text)
+    if match:
+        return "faint", "p2" if match[1] else "p1", match[2], None
+    match = re.fullmatch(r"(The opposing )?(.+?) used (.+?)!", text, re.I)
+    if match:
+        return "move", "p2" if match[1] else "p1", match[2], match[3]
+    match = ANNOUNCED_ENTRY.search(text)
+    if match:
+        return "switch", "p2" if match[1] else "p1", match[1] or match[2], None
+    return None
+
+
 def read_diagnostic(path: Path) -> tuple[list[dict[str, Any]], dict[int, str]]:
     with zipfile.ZipFile(path) as archive:
         frames = [json.loads(raw) for raw in archive.read("output/ocr.trace.jsonl").splitlines() if raw.strip()]
@@ -463,7 +480,37 @@ class BattleAutomaton:
                         "stronger": {"text": stronger["text"], "confidence": stronger["confidence"]}}
         return None
 
-    def _hp_support(self, slot: str | None, health: str | None, frame: int) -> dict[str, Any]:
+    def _confirmation_rows(self, frame: int, *, include_boundary: bool = False,
+                           faint_slot: str | None = None) -> list[dict[str, Any]]:
+        """Bound pending evidence by elapsed time and the next battle action."""
+        start = self.frame_lookup[frame]["timestamp_ms"]
+        rows = []
+        previous_ms = start
+        for row in self.frames:
+            elapsed = row["timestamp_ms"] - start
+            if elapsed < 0:
+                continue
+            if elapsed > 3_000 or row["timestamp_ms"] - previous_ms > 1_000:
+                break
+            previous_ms = row["timestamp_ms"]
+            boundary = elapsed > 0 and any(
+                e["kind"] in ACTIVITY | {"turn", "mega", "battle_end", "faint"} and
+                not (e["kind"] == "faint" and faint_slot and e.get("slot") == faint_slot)
+                for e in row.get("detections", {}).get("events", ()))
+            boundary = boundary or (elapsed > 0 and any(
+                line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                 re.search(r"\bused .+!$|\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                for line in row.get("ocr", ())))
+            if boundary:
+                if include_boundary:
+                    rows.append(row)
+                break
+            rows.append(row)
+        return rows
+
+    def _hp_support(self, slot: str | None, health: str | None, frame: int,
+                    confirmation_frames: list[int] | None = None) -> dict[str, Any]:
         """Confirm a proposed HP value using complete OCR in the correct HUD.
 
         The trace is archived, so the next two sampled frames may corroborate
@@ -478,8 +525,9 @@ class BattleAutomaton:
         split: list[dict[str, Any]] = []
         bare: list[dict[str, Any]] = []
         repaired: list[dict[str, Any]] = []
-        for offset in range(3):
-            row = self.frame_lookup.get(frame + offset)
+        frames = list(range(frame, frame + 3)) if confirmation_frames is None else confirmation_frames
+        for offset, observed_frame in enumerate(frames):
+            row = self.frame_lookup.get(observed_frame)
             if not row:
                 continue
             if offset and any(e["kind"] in {"switch", "drag"} and e.get("slot") == slot
@@ -492,7 +540,7 @@ class BattleAutomaton:
                          line.get("bottom", bottom) <= bottom + .02)]
             for line in lines:
                 value = re.sub(r"\s+", "", line.get("text", ""))
-                entry = {"frame": frame + offset, "text": line["text"],
+                entry = {"frame": observed_frame, "text": line["text"],
                          "confidence": float(line.get("confidence", 0))}
                 if percent_hud and value == f"{current}%":
                     full.append(entry)
@@ -533,6 +581,63 @@ class BattleAutomaton:
                     "evidence": [max(split, key=lambda x: x["confidence"])]}
         return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
                 "evidence": full + repaired + split + bare}
+
+    def _confirm_pending_hp(self, episode: HpEpisode, support: dict[str, Any]) -> dict[str, Any]:
+        """Keep weak final readings provisional until stable evidence arrives."""
+        actor = self.actors.get(episode.actor_id or "")
+        slot, last = episode.slot, episode.candidates[-1]
+        health = last["event"].get("health")
+        if (support["state"] == "confirmed" or not actor or slot not in SLOTS or not health or
+            any(c.get("competing_ocr") for c in episode.candidates)):
+            return support
+        zero = health_ratio(health) == 0 and episode.kind == "damage"
+        rows = self._confirmation_rows(last["observed_frame"], faint_slot=slot if zero else None)
+        expected = identity_species(actor["species"]).casefold()
+        label = health.split("/", 1)[0] + "%" if slot.startswith("p2") else health
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        safe_rows, zeros, faint_texts = [], [], []
+        for row in rows:
+            name = hud_nickname(row, slot)
+            named = self.nickname_species[slot[:2]].get(name, name) if name else None
+            if named and identity_species(named).casefold() != expected:
+                break
+            if row["frame"] != last["observed_frame"] and any(
+                e["kind"] in HP_KINDS and e.get("slot") == slot and e.get("health") != health
+                for e in row.get("detections", {}).get("events", ())):
+                break
+            hud = [line for line in row.get("ocr", ())
+                   if left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom and
+                   line.get("right", right) <= right + .02 and line.get("bottom", bottom) <= bottom + .02]
+            if any(line.get("confidence", 0) >= .9 and HP_TEXT.fullmatch(line.get("text", "").strip()) and
+                   re.sub(r"\s+", "", line["text"]) != label for line in hud):
+                break
+            safe_rows.append(row)
+            if named:
+                zeros.extend({"frame": row["frame"], "text": line["text"], "confidence": line["confidence"],
+                              "kind": "zero_hp", "nickname": name}
+                             for line in hud if zero and line.get("confidence", 0) >= .9 and
+                             re.sub(r"\s+", "", line.get("text", "")) == label)
+            for line in row.get("ocr", ()):
+                match = FAINT_NARRATION.fullmatch(line.get("text", "").strip())
+                if not match or line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                    continue
+                side = "p2" if match.group(1) else "p1"
+                faint_name = match.group(2).casefold()
+                species = self.nickname_species[side].get(faint_name, faint_name)
+                if side == slot[:2] and identity_species(species).casefold() == expected:
+                    faint_texts.append({"frame": row["frame"], "text": line["text"],
+                                        "confidence": line["confidence"], "kind": "faint_narration"})
+        proof = self._hp_support(slot, health, last["observed_frame"], [r["frame"] for r in safe_rows])
+        if proof["state"] != "confirmed" and zero and zeros and len({e["frame"] for e in faint_texts}) >= 2:
+            proof = {"state": "confirmed", "reason": "cero visible corroborado por faint repetido del mismo actor",
+                     "evidence": zeros + faint_texts}
+        if proof["state"] == "confirmed":
+            proof["confirmation"] = {"from": "provisional", "to": "confirmed",
+                                     "candidate_frame": last["observed_frame"],
+                                     "confirmed_frame": max(e["frame"] for e in proof["evidence"]),
+                                     "reason": "corroboración temporal sin cruzar otra acción"}
+            return proof
+        return support
 
     def _stable_hp_before_conflict(self, slot: str | None, health: str | None,
                                    frame: int, stronger: dict[str, Any]) -> dict[str, Any] | None:
@@ -783,6 +888,7 @@ class BattleAutomaton:
                              **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
+            support = self._confirm_pending_hp(episode, support)
             baseline = (self._pre_impact_baseline(episode, actor)
                         if actor and (before is None or actor["health_state"] == "inferred")
                         and support["state"] == "confirmed" else None)
@@ -1666,6 +1772,73 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_transient_text(self) -> None:
+        """Discard a malformed reading only when its legible event is known."""
+        normalized = lambda text: re.sub(r"\W+", "", text.casefold())
+        names = {identity_species(a["species"]).casefold() for a in self.actors.values()}
+        names.update(name for aliases in self.nickname_species.values() for name in aliases)
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "unclassified_text":
+                unresolved.append(issue)
+                continue
+            transient = self.events[issue["event_seq"] - 1]
+            text = transient["value"] or ""
+            # An already meaningful but unhandled sentence may describe a
+            # distinct event, even when it resembles a later announcement.
+            if narration_signature(text):
+                unresolved.append(issue)
+                continue
+            matches: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
+            for row in self._confirmation_rows(transient["frame"], include_boundary=True):
+                if row["frame"] == transient["frame"]:
+                    continue
+                for line in row.get("ocr", ()):
+                    clean = line.get("text", "").strip()
+                    signature = narration_signature(clean)
+                    if not signature or line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                        continue
+                    kind, side, named, detail = signature
+                    if difflib.SequenceMatcher(a=normalized(text), b=normalized(clean)).ratio() < .78:
+                        continue
+                    if "the opposing" in text.casefold() and side != "p2":
+                        continue
+                    if any(len(name) >= 4 and name in text.casefold() and name not in clean.casefold()
+                           for name in names):
+                        continue
+                    if kind == "mega":
+                        stone = re.search(r"[’']s (\S+) is\b", text, re.I)
+                        if stone and stone[1].casefold() != detail.casefold():
+                            continue
+                    species = self.nickname_species[side].get(named.casefold(), named).casefold()
+                    for accepted in self.events:
+                        if (accepted["status"] != "consistent" or accepted["turn"] != transient["turn"] or
+                            accepted["kind"] != kind or not (accepted["slot"] or "").startswith(side) or
+                            row["frame"] not in {accepted["frame"], accepted["logical_frame"]}):
+                            continue
+                        expected = identity_species(accepted["species"] or "").casefold()
+                        if species != expected and not (kind == "switch" and species.startswith(expected + " ")):
+                            continue
+                        value = accepted["move"] if kind == "move" else accepted["value"]
+                        if detail and detail.casefold() != (value or "").casefold():
+                            continue
+                        matches[accepted["seq"]].append({"frame": row["frame"], "text": clean,
+                                                         "confidence": line["confidence"]})
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            seq, evidence = next(iter(matches.items()))
+            accepted = self.events[seq - 1]
+            resolution = {"state": "resolved", "event_seq": seq,
+                          "slot": accepted["slot"], "actor_id": accepted["actor_id"],
+                          "from": "provisional", "to": "discarded",
+                          "reason": "Texto transitorio sustituido por una lectura legible del mismo anuncio y un evento aceptado.",
+                          "evidence": evidence}
+            transient["status"] = "suppressed"
+            transient["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
@@ -1674,6 +1847,7 @@ class BattleAutomaton:
         self._reconcile_mega_candidates()
         self._reconcile_faint_hud_entries()
         self._reconcile_hud_identity_entries()
+        self._reconcile_transient_text()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)

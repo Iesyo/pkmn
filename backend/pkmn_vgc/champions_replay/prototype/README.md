@@ -467,21 +467,88 @@ Cero avisos se refiere a este corpus revisado. El siguiente paso es una
 prueba ciega con partidas nuevas y anotación manual, seguida de validación
 Showdown e integración con COL-102. El prototipo sigue fuera de producción.
 
+## Corroboración temporal general · 27 de septiembre
+
+La primera corrida del job nuevo `50808fa9e45e4ccc` produjo cinco avisos.
+El corte inicial se conserva sin modificar. Ies confirmó visualmente que a
+**01:29.00** el anuncio de Golisopite estaba entrando en pantalla, con poco
+contraste, y que a **01:30.00** ya era legible. El OCR del primer frame daba
+confianza .97762 pese a escribir `racting`: confianza alta no garantiza que
+el texto esté completo.
+
+Se generaliza el ciclo de la observación, sin condiciones por job o especie:
+
+1. **Provisional:** una lectura incompleta conserva su texto/valor original.
+2. **Confirmada:** evidencia posterior del mismo contexto confirma los PS.
+3. **Descartada:** una lectura textual defectuosa se enlaza al anuncio
+   legible y al evento aceptado que ya representa esa acción.
+4. **Revisión:** si falta corroboración o existe una contradicción, el aviso
+   permanece; la semejanza textual o una confianza baja no bastan para borrarlo.
+
+Ambas rutas usan una ventana temporal compartida de hasta **3 s**, que se
+cierra ante otra acción, entrada, retirada, Mega, cambio de turno, fin de
+batalla o huecos de muestreo mayores de un segundo. El texto puede usar el
+frame de la acción que lo confirma; los PS no toman valores posteriores a
+otra acción. Un faint del propio slot puede corroborar su cero.
+
+- **PS pendientes:** la comprobación habitual del frame y los dos siguientes
+  se mantiene. Si falla, se espera dentro del contexto temporal, con los
+  mismos criterios para números completos o porcentaje separado. Se detiene
+  ante otro nombre, otra lectura de PS o un valor completo contradictorio
+  en ese HUD. El cero también puede confirmarse con un cero visible de
+  confianza ≥0,90 junto al nombre correcto y dos anuncios de faint del mismo
+  bando/actor de confianza ≥0,95. El faint por sí solo no inventa PS.
+  `hp_support.confirmation` conserva los frames propuesto y confirmatorio.
+- **Texto transitorio:** se exige una lectura posterior de confianza ≥0,95,
+  gramática reconocida, semejanza de texto ≥0,78 y un único evento aceptado
+  con actor, bando, acción y detalle compatibles. Se conservan frases ya
+  significativas, especies/piedras contradictorias y asociaciones ambiguas.
+  La lectura original queda suprimida con `resolution` y evidencia, en vez
+  de tratarla como otra acción. La misma regla sirve para anuncios de Mega,
+  entradas, movimientos y faint; no depende de las palabras OCR defectuosas
+  concretas de este lote.
+
+| Caso nuevo | Resultado |
+| --- | --- |
+| Golisopod, frame 179 | Texto transitorio descartado y enlazado a la Mega aceptada de 181. |
+| Golisopod, frame 261 | Curación 38 → 87 % confirmada por número y porcentaje separados en 264. |
+| Golisopod, frame 493 | Daño 87 → 0 % con PS previos recuperados; desaparece el aviso derivado. |
+| Garchomp, frame 709 | Daño 100 → 0 % corroborado por HUD y anuncios de faint en 711–713. |
+| Sneasler, frame 1298 | Texto defectuoso descartado y enlazado a la entrada aceptada de 1299. |
+
+**62/62 pruebas aprobadas con los cuatro ZIP (14 partidas).** Los cinco
+avisos nuevos bajan a cero. Los dos episodios antes no confirmados pasan
+a curación/daño confirmados: el job nuevo conserva 27 episodios de PS, tres
+mensajes tipificados enlazados y dos incidencias textuales resueltas.
+Los registros completos de las 12 partidas anteriores son **idénticos** al
+corte previo, incluidos actores, PS, eventos, orden, avisos y narración.
+Totales: **355 episodios de PS, 116 enlaces, cero avisos pendientes y ocho
+incidencias resueltas auditables**. Garchomp ahora conserva cero PS confirmado
+al debilitarse; antes su salud final quedaba desconocida.
+
+La coincidencia de secuencias principales y PS con los dos replays archivados
+del job nuevo es completa, pero éstos comparten el mismo origen OCR. Sólo
+el anuncio de Golisopite recibió confirmación visual nueva en este corte.
+El lote 508 ya forma parte del corpus de regresión: se necesitan otros vídeos
+sin ajustes para seguir evaluando generalización. Sigue pendiente integrar
+la salida en Showdown y en producción.
+
 ## Pruebas
 
 ```bash
 CHAMPIONS_DIAGNOSTIC=/ruta/champions-diagnostics-10a7fba6fda04585.zip \
 CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
 CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
+CHAMPIONS_DIAGNOSTIC_FOURTH=/ruta/champions-diagnostics-50808fa9e45e4ccc.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cincuenta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Cincuenta y ocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
-Tres pruebas de integración usan los cinco, cuatro y tres replays actuales,
+Cuatro pruebas de integración usan los cinco, cuatro, tres y dos replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.

@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from champions_automaton import BattleAutomaton, compare_baseline, health_ratio, read_diagnostic
+from champions_automaton import BattleAutomaton, compare_baseline, health_ratio, read_diagnostic, render_markdown
 
 
 def event(kind, slot=None, species=None, health=None, move=None, value=None, turn=None):
@@ -81,7 +81,143 @@ def returning_hud_trace(species="Kingambit", name="Kingambit"):
     return trace
 
 
+def pending_hp_trace(zero=False):
+    trace = [frame(1, [event("switch", "p2a", "Delphox", "64/100"), event("turn", turn=1),
+                      event("move", "p2a", "Delphox", move="Protect")]),
+             frame(2, [event("damage" if zero else "heal", "p2a", "Delphox", "0/100" if zero else "82/100")]),
+             frame(3), frame(4), frame(5), frame(6)]
+    trace[1]["ocr"][0]["confidence"] = .82
+    for row in trace[1:]:
+        row["ocr"].append({"text": "Delphox", "left": .62, "right": .69,
+                           "top": .04, "bottom": .08, "confidence": .999})
+    if zero:
+        trace[3]["ocr"].append({"text": "0%", "left": .70, "right": .75,
+                                  "top": .12, "bottom": .16, "confidence": .95})
+        trace[3]["detections"]["events"] = [event("faint", "p2a", "Delphox")]
+        for row in trace[3:5]:
+            row["ocr"].append({"text": "The opposing Delphox fainted!", "top": .75, "confidence": .99})
+    else:
+        trace[4]["ocr"].extend([
+            {"text": "82", "left": .70, "right": .735, "top": .12, "bottom": .16, "confidence": .999},
+            {"text": "%", "left": .736, "right": .75, "top": .13, "bottom": .16, "confidence": .999}])
+    return trace
+
+
+def transient_mega_text_trace():
+    bad = "The opposing Delphox's Delphoxite is racting to Rival's Omni Ring!"
+    clean = "The opposing Delphox's Delphoxite is reacting to Rival's Omni Ring!"
+    mega = {**event("mega", "p2a", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
+    return [frame(1, [event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
+            frame(2, [event("message", value=bad)], texts=[bad]), frame(3), frame(4, [mega], texts=[clean])]
+
+
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_pending_hp_confirms_later_split_percent_and_preserves_next_baseline(self):
+        trace = pending_hp_trace()
+        trace.append(frame(9, [event("damage", "p2a", "Delphox", "0/100")]))
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        hp = [e for e in ledger["events"] if e["kind"] in {"damage", "heal"}]
+        self.assertEqual([(e["before"], e["after"]) for e in hp], [("64/100", "82/100"), ("82/100", "0/100")])
+        self.assertEqual(hp[0]["hp_support"]["confirmation"]["confirmed_frame"], 5)
+
+    def test_pending_hp_never_borrows_across_boundaries_or_conflicts(self):
+        for boundary in ("move", "turn", "switch", "raw_action", "raw_entry", "time", "gap", "other_name",
+                         "contradiction", "new_hp", "partner_hp", "no_percent"):
+            with self.subTest(boundary=boundary):
+                trace = pending_hp_trace()
+                if boundary in {"move", "turn", "switch"}:
+                    trace[2]["detections"]["events"] = [event(boundary, "p2a", "Delphox", move="Protect", turn=2)]
+                elif boundary in {"raw_action", "raw_entry"}:
+                    text = "The opposing Delphox used Protect!" if boundary == "raw_action" else "Rival sent out Delphox!"
+                    trace[2]["ocr"].append({"text": text, "top": .75, "confidence": .99})
+                elif boundary == "time":
+                    trace = trace[:4] + [frame(n) for n in range(5, 9)] + [trace[4]]
+                    trace[-1].update(frame=9, timestamp_ms=4500)
+                elif boundary == "gap":
+                    trace = trace[:2] + trace[4:]
+                elif boundary == "other_name":
+                    trace[2]["ocr"][0]["text"] = "Garchomp"
+                elif boundary == "contradiction":
+                    trace[2]["ocr"].append({"text": "75%", "left": .70, "top": .12, "confidence": .99})
+                elif boundary == "new_hp":
+                    trace[2]["detections"]["events"] = [event("damage", "p2a", "Delphox", "75/100")]
+                elif boundary == "partner_hp":
+                    for line in trace[4]["ocr"][-2:]:
+                        line["left"] += .21
+                        line["right"] += .21
+                elif boundary == "no_percent":
+                    trace[4]["ocr"].pop()
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertFalse(any(e["kind"] == "heal" and e["status"] == "consistent" and e["after"] == "82/100"
+                                     for e in ledger["events"]))
+                self.assertTrue(ledger["issues"])
+
+    def test_pending_zero_uses_visible_zero_and_repeated_matching_faint(self):
+        ledger = BattleAutomaton(0, pending_hp_trace(zero=True)).run()
+        self.assertEqual(ledger["issues"], [])
+        hp = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual((hp["before"], hp["after"], hp["hp_state"]), ("64/100", "0/100", "confirmed"))
+        self.assertEqual({e["kind"] for e in hp["hp_support"]["evidence"]}, {"zero_hp", "faint_narration"})
+        self.assertTrue(next(iter(ledger["actors"].values()))["fainted"])
+
+    def test_pending_zero_requires_hud_identity_zero_and_matching_narration(self):
+        for missing in ("zero", "name", "partner", "one_text", "confidence", "side", "species", "action", "positive"):
+            with self.subTest(missing=missing):
+                trace = pending_hp_trace(zero=True)
+                if missing == "zero":trace[3]["ocr"].pop(1)
+                elif missing == "name":trace[3]["ocr"].pop(0)
+                elif missing == "partner":trace[3]["ocr"][1].update(left=.92, right=.97)
+                elif missing == "one_text":trace[4]["ocr"].pop()
+                elif missing in {"confidence", "side", "species"}:
+                    for row in trace[3:5]:
+                        line = row["ocr"][-1]
+                        if missing == "confidence":line["confidence"] = .7
+                        elif missing == "side":line["text"] = "Delphox fainted!"
+                        else:line["text"] = "The opposing Garchomp fainted!"
+                elif missing == "action":trace[2]["detections"]["events"] = [event("move", "p2a", "Delphox", move="Protect")]
+                elif missing == "positive":trace[3]["ocr"][1]["text"] = "1%"
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertTrue(any(e["kind"] == "hp_unconfirmed" for e in ledger["events"]))
+
+    def test_transient_text_is_discarded_only_after_legible_accepted_event(self):
+        ledger = BattleAutomaton(0, transient_mega_text_trace()).run()
+        self.assertFalse(any(i["code"] == "unclassified_text" for i in ledger["issues"]))
+        text = next(e for e in ledger["events"] if e["kind"] == "unclassified_text")
+        self.assertEqual(text["status"], "suppressed")
+        self.assertEqual(text["resolution"]["to"], "discarded")
+        self.assertEqual(text["resolution"]["evidence"][0]["frame"], 4)
+        self.assertIn("racting", text["value"])
+        self.assertEqual(sum(e["kind"] == "mega" and e["status"] == "consistent" for e in ledger["events"]), 1)
+        self.assertIn("Incidencias resueltas", render_markdown(ledger, None))
+
+    def test_transient_text_preserves_unexplained_or_different_events(self):
+        for missing in ("event", "legible", "confidence", "time", "action", "turn", "species", "stone", "side", "meaningful", "unrelated"):
+            with self.subTest(missing=missing):
+                trace = transient_mega_text_trace()
+                if missing == "event":trace[-1]["detections"]["events"] = []
+                elif missing == "legible":trace[-1]["ocr"] = []
+                elif missing == "confidence":trace[-1]["ocr"][0]["confidence"] = .8
+                elif missing == "time":trace[-1].update(frame=12, timestamp_ms=6000)
+                elif missing in {"action", "turn"}:
+                    trace[2]["detections"]["events"] = [event("move" if missing == "action" else "turn", "p2a", "Delphox", move="Protect", turn=2)]
+                else:
+                    value = trace[1]["detections"]["events"][0]["value"]
+                    if missing == "species":
+                        trace[0]["detections"]["events"].insert(0, event("switch", "p2b", "Garchomp", "100/100"))
+                        value = value.replace("Delphox's", "Garchomp's")
+                    elif missing == "stone":value = value.replace("Delphoxite", "Garchompite")
+                    elif missing == "side":
+                        trace[0]["detections"]["events"][0]["slot"] = "p1a"
+                        trace[-1]["detections"]["events"][0]["slot"] = "p1a"
+                        trace[-1]["ocr"][0]["text"] = trace[-1]["ocr"][0]["text"].replace("The opposing ", "")
+                    elif missing == "meaningful":value = value.replace("racting", "reacting")
+                    else:value = "An unrelated and incomplete observation"
+                    trace[1]["detections"]["events"][0]["value"] = value
+                    trace[1]["ocr"][0]["text"] = value
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertTrue(any(i["code"] == "unclassified_text" for i in ledger["issues"]))
+
     def test_hp_ratio_parses_fractions_and_rejects_invalid_values(self):
         self.assertEqual(health_ratio("50/200"), .25)
         self.assertEqual(health_ratio("0/100"), 0)
@@ -1115,6 +1251,32 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] == "9/100" and e["status"] == "consistent"
                              for e in archaludon["events"]))
         self.assertIn("hp_zero_rebound", [x["code"] for x in archaludon["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FOURTH"), "Requiere el cuarto ZIP del usuario")
+    def test_fourth_job_confirms_pending_observations_without_duplicate_events(self):
+        frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_FOURTH"]))
+        self.assertEqual(len(baselines), 2)
+        for index, baseline in baselines.items():
+            ledger = BattleAutomaton(index, [r for r in frames if r["battle_index"] == index]).run()
+            self.assertEqual(ledger["issues"], [])
+            comparison = compare_baseline(ledger, baseline)
+            self.assertTrue(comparison["exact_core_sequence"])
+            self.assertTrue(comparison["exact_hp_sequence"])
+            self.assertTrue(all(link["status"] == "linked" for link in ledger["narration_links"]))
+            transient = next(e for e in ledger["events"] if e["kind"] == "unclassified_text")
+            self.assertEqual(transient["status"], "suppressed")
+            accepted = ledger["events"][transient["resolution"]["event_seq"] - 1]
+            self.assertEqual((transient["frame"], accepted["frame"]), (179, 181) if index == 0 else (1298, 1299))
+            self.assertIn("Incidencias resueltas", render_markdown(ledger, comparison))
+            if index == 0:
+                heal = next(e for e in ledger["events"] if e["frame"] == 261)
+                self.assertEqual((heal["kind"], heal["before"], heal["after"]), ("heal", "38/100", "87/100"))
+                self.assertEqual(heal["hp_support"]["confirmation"]["confirmed_frame"], 264)
+                damage = next(e for e in ledger["events"] if e["frame"] == 493)
+                self.assertEqual((damage["before"], damage["after"], damage["status"]), ("87/100", "0/100", "consistent"))
+                zero = next(e for e in ledger["events"] if e["frame"] == 709)
+                self.assertEqual((zero["kind"], zero["after"], zero["status"]), ("damage", "0/100", "consistent"))
+                self.assertTrue(any(e.get("kind") == "faint_narration" for e in zero["hp_support"]["evidence"]))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_THIRD"), "Requiere el tercer ZIP del usuario")
     def test_third_job_keeps_distinct_salamence_and_indeedee_states(self):
