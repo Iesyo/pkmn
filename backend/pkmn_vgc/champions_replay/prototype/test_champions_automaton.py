@@ -136,6 +136,138 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ["ui_text", "ui_text"])
         self.assertFalse(any(x["code"] == "unclassified_text" for x in ledger["issues"]))
 
+    def test_retrospective_burn_does_not_attach_to_previous_heal(self):
+        trace = [frame(1, [event("switch", "p1a", "Gardevoir", "20/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p1a", "Gardevoir", move="Protect")]),
+                 frame(3, [event("heal", "p1a", "Gardevoir", "26/100")]),
+                 frame(5, [event("message", value="Gardevoir had its HP restored.")]),
+                 frame(7, [event("message", value="Gardevoir was hurt by its burn!")]),
+                 frame(8, [event("damage", "p1a", "Gardevoir", "16/100")])]
+        ledger = BattleAutomaton(0, trace).run()
+        heal = next(e for e in ledger["events"] if e["kind"] == "heal")
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual(heal["narration"], ["Gardevoir had its HP restored."])
+        self.assertEqual(damage["narration"], ["Gardevoir was hurt by its burn!"])
+        self.assertEqual((damage["before"], damage["after"], damage["cause"]),
+                         ("26/100", "16/100", "quemadura observada"))
+        self.assertEqual(damage["causal_evidence"][0]["frame"], 7)
+        self.assertEqual([x["delta_ms"] for x in ledger["narration_links"]], [1000, -500])
+
+    def test_retrospective_message_can_link_to_a_closed_episode(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p1a", "Blaziken", move="Flare Blitz")]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "82/100")]),
+                 frame(4, [event("ability", "p1a", "Blaziken", value="Speed Boost")]),
+                 frame(5, [event("message", value="Blaziken was damaged by the recoil!")])]
+        ledger = BattleAutomaton(0, trace).run()
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual(damage["cause"], "retroceso observado")
+        self.assertEqual(damage["causal_evidence"][0]["frame"], 5)
+        self.assertEqual(ledger["narration_links"][0]["event_seq"], damage["seq"])
+
+    def test_retrospective_keeps_opposing_actor_and_nickname_separate(self):
+        trace = [frame(1, [event("switch", "p1a", "Gardevoir", "50/100"),
+                           event("switch", "p2b", "Gardevoir", "50/100"), event("turn", turn=1)]),
+                 frame(2, [event("heal", "p1a", "Gardevoir", "56/100"),
+                           event("heal", "p2b", "Gardevoir", "56/100")]),
+                 frame(4, [event("message", value="The opposing Moon had its HP restored.")])]
+        trace[0]["resolved_aliases"]["p2"]["moon"] = "Gardevoir"
+        ledger = BattleAutomaton(0, trace).run()
+        heals = {e["slot"]: e for e in ledger["events"] if e["kind"] == "heal"}
+        self.assertEqual(heals["p1a"]["narration"], [])
+        self.assertEqual(heals["p2b"]["narration"], ["The opposing Moon had its HP restored."])
+        self.assertEqual(ledger["narration_links"][0]["actor_id"], heals["p2b"]["actor_id"])
+
+    def test_retrospective_keeps_equally_plausible_episodes_ambiguous(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "80/100")]),
+                 frame(4, [event("ability", "p1a", "Blaziken", value="Speed Boost"),
+                           event("message", value="Blaziken was hurt by its burn!")]),
+                 frame(5, [event("damage", "p1a", "Blaziken", "60/100")])]
+        ledger = BattleAutomaton(0, trace).run()
+        link = ledger["narration_links"][0]
+        self.assertEqual((link["status"], link["event_seq"]), ("ambiguous", None))
+        self.assertEqual(len(link["candidate_event_seqs"]), 2)
+        self.assertIn("hp_narration_ambiguous", [x["code"] for x in ledger["issues"]])
+        self.assertFalse(any(e.get("causal_evidence") for e in ledger["events"]))
+
+    def test_retrospective_respects_time_turn_action_and_entry_boundaries(self):
+        for boundary in ("time", "turn", "move", "reentry"):
+            with self.subTest(boundary=boundary):
+                trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                         frame(3, [event("damage", "p1a", "Blaziken", "80/100")])]
+                if boundary == "turn":
+                    trace.append(frame(4, [event("turn", turn=2)]))
+                elif boundary == "move":
+                    trace.append(frame(4, [event("move", "p1a", "Blaziken", move="Protect")]))
+                elif boundary == "reentry":
+                    trace.extend([frame(4, [event("switch", "p1a", "Rillaboom", "100/100")]),
+                                  frame(5, [event("switch", "p1a", "Blaziken", "80/100")])])
+                trace.append(frame(20 if boundary == "time" else 6,
+                                   [event("message", value="Blaziken was hurt by its burn!")]))
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertEqual(ledger["narration_links"][0]["status"], "unmatched")
+                self.assertFalse(any(e.get("causal_evidence") for e in ledger["events"]))
+
+    def test_retrospective_preserves_unknown_actor_and_unconfirmed_hp_messages(self):
+        for unknown_actor in (False, True):
+            with self.subTest(unknown_actor=unknown_actor):
+                trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                         frame(3, [event("damage", "p1a", "Blaziken", "80/100")]),
+                         frame(4, [event("message", value=("Rillaboom" if unknown_actor else "Blaziken") +
+                                         " was hurt by its burn!")])]
+                if not unknown_actor:
+                    trace[1]["ocr"] = []
+                ledger = BattleAutomaton(0, trace).run()
+                link = ledger["narration_links"][0]
+                self.assertEqual((link["status"], link["frame"]), ("unmatched", 4))
+                self.assertIn("was hurt by its burn!", link["text"])
+                self.assertFalse(any(e.get("causal_evidence") for e in ledger["events"]))
+
+    def test_retrospective_keeps_conflicting_effects_for_review(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "80/100")]),
+                 frame(4, [event("message", value="Blaziken was hurt by its burn!"),
+                           event("message", value="Blaziken was damaged by the recoil!")])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([x["status"] for x in ledger["narration_links"]], ["ambiguous", "ambiguous"])
+        self.assertFalse(any(e.get("causal_evidence") for e in ledger["events"]))
+
+    def test_retrospective_repeated_ocr_does_not_duplicate_hp_event_or_narration(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "80/100")]),
+                 frame(4, [event("message", value="Blaziken was damaged by the recoil!")]),
+                 frame(5, [event("message", value="Blaziken was damaged by the recoil!")])]
+        ledger = BattleAutomaton(0, trace).run()
+        damage = [e for e in ledger["events"] if e["kind"] == "damage"]
+        self.assertEqual(len(damage), 1)
+        self.assertEqual(len(damage[0]["narration"]), 1)
+        self.assertEqual(len(damage[0]["causal_evidence"]), 2)
+
+    def test_retrospective_links_delayed_recoil_after_faint(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "10/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p1a", "Blaziken", move="Flare Blitz")]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "0/100")]),
+                 frame(4, [event("faint", "p1a", "Blaziken")]),
+                 frame(5, [event("message", value="Blaziken was damaged by the recoil!")])]
+        ledger = BattleAutomaton(0, trace).run()
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual(damage["cause"], "retroceso observado")
+        self.assertEqual(ledger["narration_links"][0]["event_seq"], damage["seq"])
+        self.assertTrue(ledger["actors"][damage["actor_id"]]["fainted"])
+
+    def test_retrospective_prefers_the_clearly_closest_compatible_episode(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p1a", "Blaziken", "80/100")]),
+                 frame(3, [event("ability", "p1a", "Blaziken", value="Speed Boost")]),
+                 frame(6, [event("message", value="Blaziken was hurt by its burn!")]),
+                 frame(7, [event("damage", "p1a", "Blaziken", "74/100")])]
+        ledger = BattleAutomaton(0, trace).run()
+        damage = [e for e in ledger["events"] if e["kind"] == "damage"]
+        self.assertEqual(damage[0]["narration"], [])
+        self.assertEqual(damage[1]["cause"], "quemadura observada")
+        self.assertEqual(ledger["narration_links"][0]["event_seq"], damage[1]["seq"])
+
     def test_opposite_hp_readings_before_action_are_flagged_without_heal(self):
         trace = [frame(1, [event("switch", "p1a", "Rillaboom", "88/100"), event("turn", turn=1)]),
                  frame(2, [event("move", "p1a", "Rillaboom", move="Protect")]),
@@ -596,10 +728,13 @@ class TemporalAutomatonTests(unittest.TestCase):
     def test_five_approved_battles_retain_their_core_event_order(self):
         frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC"]))
         self.assertEqual(len(baselines), 5)
+        message_count = 0
         for index, baseline in baselines.items():
             with self.subTest(battle_index=index):
                 ledger = BattleAutomaton(index, [x for x in frames if x["battle_index"] == index]).run()
                 self.assertTrue(compare_baseline(ledger, baseline)["exact_core_sequence"])
+                self.assertTrue(all(link["status"] == "linked" for link in ledger["narration_links"]))
+                message_count += len(ledger["narration_links"])
                 if index == 0:
                     rejected = next(e for e in ledger["events"] if e["frame"] == 358 and
                                     e["kind"] == "hp_rejected_reading")
@@ -607,6 +742,10 @@ class TemporalAutomatonTests(unittest.TestCase):
                                      ("suppressed", "18/100", "18/100"))
                     self.assertFalse(any(x["code"] == "hp_ocr_conflict" and x["frame"] == 358
                                          for x in ledger["issues"]))
+                    burn = next(e for e in ledger["events"] if e["frame"] == 371 and e["kind"] == "damage")
+                    self.assertEqual(burn["cause"], "quemadura observada")
+                    self.assertEqual(burn["causal_evidence"][0]["frame"], 369)
+                    self.assertEqual(rejected["narration"], [])
                 if index == 1:
                     rejected = next(e for e in ledger["events"] if e["frame"] == 2797 and
                                     e["kind"] == "hp_rejected_reading")
@@ -614,6 +753,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                                      ("suppressed", "88/100", "88/100"))
                     self.assertFalse(any(x["code"] == "hp_oscillation" and x["frame"] == 2797
                                          for x in ledger["issues"]))
+        self.assertEqual(message_count, 57)
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SECOND"), "Requiere el segundo ZIP del usuario")
     def test_second_job_keeps_status_and_exposes_misreadings(self):
@@ -622,6 +762,15 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(set(baselines), {0, 1, 2, 3})
         ledgers = {i: BattleAutomaton(i, [x for x in frames if x["battle_index"] == i]).run()
                    for i in baselines}
+        links = [link for ledger in ledgers.values() for link in ledger["narration_links"]]
+        self.assertEqual(len(links), 39)
+        self.assertTrue(all(link["status"] == "linked" for link in links))
+        for damage_frame, message_frame in ((3067, 3064), (3183, 3181)):
+            burn = next(e for e in ledgers[2]["events"] if e["frame"] == damage_frame)
+            self.assertEqual(burn["cause"], "quemadura observada")
+            self.assertEqual(burn["causal_evidence"][0]["frame"], message_frame)
+        self.assertFalse(any("hurt by its burn" in text for e in ledgers[2]["events"]
+                             if e["kind"] == "heal" for text in e["narration"]))
         self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
                             for i in (0, 1, 3)))
         self.assertTrue(any(a["species"] == "Golisopod" and a["status"] == "par"
@@ -705,6 +854,9 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(set(baselines), {0, 1, 2})
         ledgers = [BattleAutomaton(i, [row for row in frames if row["battle_index"] == i]).run()
                    for i in range(3)]
+        links = [link for ledger in ledgers for link in ledger["narration_links"]]
+        self.assertEqual(len(links), 17)
+        self.assertTrue(all(link["status"] == "linked" for link in links))
         self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [0, 0, 0])
         self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
                             for i in (0, 1)))

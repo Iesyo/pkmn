@@ -22,6 +22,13 @@ from typing import Any, Iterable
 SLOTS = {"p1a", "p1b", "p2a", "p2b"}
 ACTIVITY = {"move", "cant", "switch", "drag"}
 HP_KINDS = {"damage", "heal"}
+HP_NARRATION = re.compile(
+    r"(The opposing )?(.+?) (was hurt by its burn!|was damaged by the recoil!|"
+    r"had its HP restored\.)", re.I)
+HP_EFFECTS = {"was hurt by its burn!": "burn", "was damaged by the recoil!": "recoil",
+              "had its hp restored.": "restoration"}
+HP_NARRATION_WINDOW_MS = 3_000
+HP_NARRATION_AMBIGUITY_MS = 500
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
 ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECASE)
@@ -318,20 +325,29 @@ class BattleAutomaton:
         self.terrain: str | None = None
         self.hp_pending: dict[str, HpEpisode] = {}
         self.hp_order: list[str] = []
-        self.hp_messages: dict[str, list[tuple[int, str]]] = collections.defaultdict(list)
+        self.hp_messages: list[dict[str, Any]] = []
+        self.narration_links: list[dict[str, Any]] = []
 
-    def _hp_message_actor(self, value: str) -> str | None:
-        match = re.fullmatch(
-            r"(The opposing )?(.+?) (?:was hurt by its burn!|was damaged by the recoil!|"
-            r"had its HP restored\.)", value, re.I)
+    def _hp_message_actor(self, value: str, observed_ms: int | None = None) -> str | None:
+        match = HP_NARRATION.fullmatch(value)
         if not match:
             return None
         side = "p2" if match.group(1) else "p1"
         named = match.group(2).casefold()
+        named = self.nickname_species[side].get(named, named).casefold()
         matches = [actor_id for slot, actor_id in self.active.items()
                    if slot.startswith(side) and
                    named in {self.actors[actor_id]["species"].casefold(),
                              self.actors[actor_id]["species"].casefold().split("-", 1)[0]}]
+        if not matches and observed_ms is not None:
+            # Recoil narration may follow the faint announcement. The last
+            # occupant remains identifiable until another actor enters.
+            matches = list({item["actor_id"] for item in self.events
+                            if item["kind"] == "faint" and item["status"] == "consistent" and
+                            item["slot"].startswith(side) and item["slot"] not in self.active and
+                            0 <= observed_ms - item["observed_ms"] <= HP_NARRATION_WINDOW_MS and
+                            named in {self.actors[item["actor_id"]]["species"].casefold(),
+                                      self.actors[item["actor_id"]]["species"].casefold().split("-", 1)[0]}})
         return matches[0] if len(matches) == 1 else None
 
     def _resolve(self, species: str | None) -> str | None:
@@ -873,13 +889,7 @@ class BattleAutomaton:
                 notes.append("PS previo no observable; conservar como observación.")
                 result = "review"
             cause: int | str | None = None
-            if episode.kind == "damage" and any("was hurt by its burn!" in text.casefold()
-                                                for text in episode.narration):
-                cause = "quemadura observada"
-            elif (episode.kind == "heal" and last.get("terrain_heal_confirmed") and
-                  any("had its HP restored." in text for text in episode.narration)):
-                cause = "Grassy Terrain corroborado por HUD y mensaje"
-            elif episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
+            if episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
                 cause = "posible efecto de Grassy Terrain; comprobar suelo y cuantía"
             elif self.last_action and last["observed_ms"] - self.last_action["observed_ms"] <= 20_000:
                 cause = self.last_action["seq"]
@@ -890,6 +900,8 @@ class BattleAutomaton:
                                 after=after, cause=cause, observations=observations)
             item["narration"].extend(episode.narration)
             item["hp_state"], item["hp_support"] = support["state"], support
+            if last.get("terrain_heal_confirmed"):
+                item["terrain_restoration_support"] = last["terrain_heal_confirmed"]
             if baseline:
                 item["hp_baseline"] = baseline[1]
             elif inferred_baseline:
@@ -1013,8 +1025,6 @@ class BattleAutomaton:
             pending = HpEpisode(actor_id, slot, event.get("species"), event["kind"])
             self.hp_pending[key] = pending
             self.hp_order.append(key)
-            pending.narration.extend(text for ms, text in self.hp_messages.pop(actor_id, [])
-                                     if 0 <= candidate["observed_ms"] - ms <= 3_000)
         pending.candidates.append(candidate)
 
     def _handle(self, candidate: dict[str, Any]) -> None:
@@ -1040,14 +1050,21 @@ class BattleAutomaton:
                 self._flush_hp()
                 self._append(candidate, kind="battle_end", note="Fin de la batalla observado en la pantalla.")
                 return
-            hp_actor = self._hp_message_actor(value)
-            if hp_actor:
-                pending = next((episode for episode in self.hp_pending.values()
-                                if episode.actor_id == hp_actor), None)
-                if pending:
-                    pending.narration.append(value)
-                else:
-                    self.hp_messages[hp_actor].append((candidate["observed_ms"], value))
+            hp_message = HP_NARRATION.fullmatch(value)
+            if hp_message:
+                hp_actor = self._hp_message_actor(value, candidate["observed_ms"])
+                hp_slot = next((s for s, a in self.active.items() if a == hp_actor), None)
+                if hp_actor and not hp_slot:
+                    hp_slot = next(item["slot"] for item in reversed(self.events)
+                                   if item["kind"] == "faint" and item["actor_id"] == hp_actor)
+                self.hp_messages.append({
+                    "frame": candidate["observed_frame"], "source_frame": event.get("source_frame"),
+                    "observed_ms": candidate["observed_ms"], "text": value,
+                    "effect": HP_EFFECTS[hp_message.group(3).casefold()],
+                    "actor_id": hp_actor,
+                    "slot": hp_slot,
+                    "turn": self.turn, "confidence": event.get("confidence"),
+                })
                 return
             if self.hp_pending:
                 newest = max(self.hp_pending.values(), key=lambda e: e.last_ms)
@@ -1315,10 +1332,95 @@ class BattleAutomaton:
                     continue
                 self._issue("unparsed_action_text", f"Texto OCR sin evento candidato: {text}", frame)
 
+    def _reconcile_hp_narration(self) -> None:
+        """Link typed messages after all HP episodes have been consolidated.
+
+        Display order varies by effect. Search both sides of the message in
+        a bounded window, using the actor captured during the forward pass.
+        No HP value, event order or rejected observation changes in this pass.
+        """
+        episodes = []
+        for item in self.events:
+            if (item["kind"] not in HP_KINDS or item["status"] != "consistent" or
+                item.get("hp_state") != "confirmed"):
+                continue
+            times = [self.frame_lookup[obs["frame"]]["timestamp_ms"]
+                     for obs in item["observations"] if obs["frame"] in self.frame_lookup]
+            episodes.append((item, min(times, default=item["observed_ms"]),
+                             max(times, default=item["observed_ms"])))
+        barriers = [item for item in self.events if item["status"] != "suppressed" and
+                    item["kind"] in {"turn", "move", "cant", "switch", "drag", "battle_end"}]
+        proposals = []
+        for message in reversed(self.hp_messages):
+            kind = "heal" if message["effect"] == "restoration" else "damage"
+            matches = []
+            for item, start_ms, end_ms in reversed(episodes):
+                if (not message["actor_id"] or item["actor_id"] != message["actor_id"] or
+                    item["slot"] != message["slot"] or item["turn"] != message["turn"] or
+                    item["kind"] != kind):
+                    continue
+                ms = message["observed_ms"]
+                nearest_ms = min(max(ms, start_ms), end_ms)
+                distance = abs(ms - nearest_ms)
+                if distance > HP_NARRATION_WINDOW_MS:
+                    continue
+                low, high = sorted((ms, nearest_ms))
+                if any(low < barrier["logical_ms"] <= high and
+                       (barrier["kind"] not in {"switch", "drag"} or
+                        barrier["slot"] == item["slot"])
+                       for barrier in barriers):
+                    continue
+                matches.append((distance, item["seq"], ms - start_ms))
+            matches.sort()
+            link = {**message, "status": "unmatched", "event_seq": None,
+                    "candidate_event_seqs": [seq for _, seq, _ in matches]}
+            if not matches:
+                link["reason"] = ("Actor del mensaje sin identidad unívoca en ese instante."
+                                  if not message["actor_id"] else
+                                  "Sin episodio de PS confirmado y compatible en la ventana de 3 s.")
+            elif len(matches) > 1 and matches[1][0] - matches[0][0] <= HP_NARRATION_AMBIGUITY_MS:
+                link["status"] = "ambiguous"
+                link["reason"] = "Varios episodios compatibles a distancias similares (margen ≤ 0,5 s)."
+            else:
+                distance, seq, delta = matches[0]
+                link.update(status="linked", event_seq=seq, delta_ms=delta, distance_ms=distance)
+            proposals.append(link)
+        # A single consolidated episode cannot explain two different effects.
+        # Keep both messages auditable instead of overwriting one cause.
+        effects: dict[int, set[str]] = collections.defaultdict(set)
+        for link in proposals:
+            if link["status"] == "linked":
+                effects[link["event_seq"]].add(link["effect"])
+        for link in reversed(proposals):
+            if link["status"] == "linked" and len(effects[link["event_seq"]]) > 1:
+                link.update(status="ambiguous", event_seq=None,
+                            reason="Mensajes de efectos distintos compiten por el mismo episodio.")
+                link.pop("delta_ms", None)
+                link.pop("distance_ms", None)
+            self.narration_links.append(link)
+            if link["status"] != "linked":
+                self._issue("hp_narration_" + link["status"], link["reason"], link["frame"])
+                continue
+            item = self.events[link["event_seq"] - 1]
+            if link["text"] not in item["narration"]:
+                item["narration"].append(link["text"])
+            item.setdefault("causal_evidence", []).append({
+                key: link[key] for key in ("frame", "source_frame", "observed_ms", "text",
+                                          "effect", "delta_ms", "confidence")})
+            if link["effect"] == "burn":
+                item["cause"] = "quemadura observada"
+            elif link["effect"] == "recoil":
+                item["cause"] = "retroceso observado"
+            elif item.get("terrain_restoration_support"):
+                item["cause"] = "Grassy Terrain corroborado por HUD y mensaje"
+            elif not (isinstance(item["cause"], str) and "Grassy Terrain" in item["cause"]):
+                item["cause"] = "recuperación observada; origen sin confirmar"
+
     def run(self) -> dict[str, Any]:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
         self._flush_hp()
+        self._reconcile_hp_narration()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)
@@ -1335,7 +1437,7 @@ class BattleAutomaton:
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
                     len(row["detections"]["events"]) for row in self.frames),
-                "events": self.events, "issues": self.issues,
+                "events": self.events, "issues": self.issues, "narration_links": self.narration_links,
                 "counts": dict(counts), "actors": self.actors}
 
 
@@ -1441,6 +1543,11 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         if any(item["kind"] == "illusion_reveal" for item in ledger["events"]):
             lines += ["El replay archivado contó la ruptura de Ilusión como un cambio de Pokémon "
                       "y llamó Kingambit al Zoroark inicial; esas diferencias son intencionales.", ""]
+    links = ledger.get("narration_links", [])
+    if links:
+        linked = sum(link["status"] == "linked" for link in links)
+        lines += [f"Pasada retrospectiva: {linked}/{len(links)} mensajes de PS asociados; "
+                  f"{len(links) - linked} pendientes de revisión.", ""]
     section = None
     for item in ledger["events"]:
         if item["turn"] != section:
@@ -1470,12 +1577,20 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
                           f"{prior['text']} (frame {prior['frame']}, antes del cambio)."]
         if item["evidence"]:
             lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» (frame {item['evidence'][0]['frame']})."]
+        for evidence in item.get("causal_evidence", []):
+            delta = evidence["delta_ms"] / 1000
+            lines += [f"  - Narración asociada: «{evidence['text']}» (frame {evidence['frame']}; "
+                      f"{delta:+g} s respecto al inicio del cambio de PS)."]
     lines += ["", "## Incidencias para revisión", ""]
     if ledger["issues"]:
         for issue in ledger["issues"]:
             lines += [f"- Frame {issue['frame']} · {issue['code']}: {issue['message']}"]
     else:
         lines += ["- Sin contradicciones estructurales detectadas en este primer corte."]
+    for link in links:
+        if link["status"] != "linked":
+            lines += [f"- Mensaje conservado, frame {link['frame']}: «{link['text']}»; "
+                      f"{link['reason']}"]
     lines += [""]
     return "\n".join(lines)
 
@@ -1527,6 +1642,8 @@ def main() -> None:
                                                                 x["status"] == "review"
                                                                 for x in ledger["events"]),
                                   "hp_conflicts": sum(x["kind"] == "hp_ocr_conflict" for x in ledger["events"]),
+                                  "hp_narration": dict(collections.Counter(
+                                      link["status"] for link in ledger["narration_links"])),
                                   "statuses": dict(collections.Counter(x["status"] for x in ledger["events"])),
                                   "issue_codes": dict(collections.Counter(x["code"] for x in ledger["issues"])),
                                   "comparison": comparison})

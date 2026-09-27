@@ -35,8 +35,9 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    representan en orden estable `p1a,p1b,p2a,p2b`.
 4. Consolida lecturas sucesivas de PS durante una animación en **un episodio**
    y deja todos los valores intermedios en `observations`. Agrupa el mismo
-   aviso de movimiento leído en varios frames; los mensajes narrativos se
-   adjuntan al evento próximo. Una oscilación de PS que vuelve al valor previo
+   aviso de movimiento leído en varios frames. Los mensajes de quemadura,
+   retroceso y recuperación se conservan con actor y tiempo para asociarlos
+   después de consolidar los episodios. Una oscilación de PS que vuelve al valor previo
    antes de actuar queda en `review`, sin producir daño y cura inventados.
    La lectura candidata pasa por un estado **provisional**: se buscan el
    valor completo y su posición en el HUD del slot durante el fotograma y los
@@ -90,7 +91,23 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    `illusion_reveal`: conserva actor, PS, objeto y movimientos previos, y
    registra la especie mostrada por separado de la identidad real. La entrada
    posterior del Pokémon imitado crea o recupera **otro actor**.
-7. Compara la secuencia de eventos principales y episodios de PS con los
+7. Ejecuta una **pasada retrospectiva** para los mensajes de quemadura,
+   retroceso y recuperación. Busca episodios confirmados del mismo actor,
+   slot, turno y sentido del cambio, a ambos lados del texto, hasta 3 s desde
+   el intervalo observado de la animación. No atraviesa otra acción, fin de
+   batalla o una entrada en ese slot. Si dos episodios quedan a distancias
+   similares (margen de 0,5 s), o efectos distintos compiten por el mismo
+   episodio, conserva el mensaje pendiente y genera una incidencia.
+   Resuelve motes por bando y permite narración tardía tras un debilitamiento
+   cuando el último ocupante sigue identificado y su slot no fue reemplazado.
+   `narration_links` guarda todos los mensajes, candidatos y estados
+   `linked`, `ambiguous` o `unmatched`. Los enlaces aceptados agregan
+   `causal_evidence` al episodio: texto, frame, tiempo, efecto, confianza OCR
+   y desfase respecto al comienzo del cambio. El paso no modifica valores de
+   PS ni el orden de los eventos. Una frase genérica de recuperación no
+   demuestra por sí sola su origen; Grassy Terrain conserva su grado de
+   corroboración previo. El informe cuenta los enlaces en `hp_narration`.
+8. Compara la secuencia de eventos principales y episodios de PS con los
    replays archivados de los tres jobs. Los desacuerdos se informan; un replay
    archivado puede contener una entrada espuria por Ilusión o por un ID
    provisional reutilizado.
@@ -300,6 +317,42 @@ que el replay final reproduzca fielmente el vídeo.
   alineaciones principales con los replays archivados. La prueba ciega y la
   validación del replay generado siguen pendientes.
 
+## Pasada retrospectiva · 27 de septiembre
+
+La propuesta de Ies de mirar hacia atrás se aplica después de la primera
+reconstrucción cronológica. En estas trazas, las 89 narraciones de cura llegan
+1–2 s después del primer cambio detectado; las cinco de quemadura, 0,5–1 s
+antes. De las 19 de retroceso, cinco llegan antes, 13 en el mismo fotograma
+muestreado y una después. La asociación admite ambos órdenes.
+
+| Job | Partidas | Mensajes asociados | Episodios de PS | Avisos auditables |
+| --- | ---: | ---: | ---: | ---: |
+| `10a7fba6fda04585` | 5 | 57/57 | 146 | 3 |
+| `90403f16712d4d41` | 4 | 39/39 | 112 | 3 |
+| `331e6e783c3e45a4` | 3 | 17/17 | 70 | 0 |
+| **Total** | **12** | **113/113** | **328** | **6** |
+
+- Corrige tres asociaciones: quemadura de Indeedee-F, mensaje 369 → daño
+  371 en job `10a7`, partida 1; quemaduras de Gardevoir, mensajes 3064 y
+  3181 → daños 3067 y 3183 en job `90403`, partida 3. El primer mensaje
+  estaba en una lectura descartada y los otros dos en curaciones anteriores.
+  Los tres daños ya existían; ahora conservan la narración y causa correctas.
+- Los 19 episodios de retroceso quedan identificados explícitamente por su
+  mensaje, en lugar de depender de la última acción cercana.
+- Comparación completa con el corte anterior: idénticos actores, PS, orden,
+  estados de los eventos y seis incidencias por candidatos suprimidos. Los
+  tres enlaces corregidos eran errores de atribución que ese recuento de
+  incidencias no mostraba. Se conservan las alineaciones anteriores con los
+  replays archivados. La cura de Sneasler sigue siendo una sola, 41 → 47 %.
+- **45 pruebas aprobadas**, incluyendo los tres ZIP y escenarios de
+  ambigüedad, separación por turno/acción/reentrada, falta de identidad o PS
+  confirmados, mensajes repetidos y retroceso narrado después del faint.
+- Alcance actual: las tres frases inglesas de PS reconocidas en los ZIP.
+  Otros mensajes mantienen el tratamiento existente. Una ventana fuera de
+  3 s queda pendiente; estos resultados aún requieren prueba con vídeos
+  nuevos y validación visual independiente. Sigue siendo un prototipo fuera
+  del pipeline de producción.
+
 ## Pruebas
 
 ```bash
@@ -309,7 +362,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Treinta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Cuarenta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
