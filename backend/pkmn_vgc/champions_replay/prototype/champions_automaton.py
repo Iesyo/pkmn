@@ -31,6 +31,7 @@ HP_NARRATION_WINDOW_MS = 3_000
 HP_NARRATION_AMBIGUITY_MS = 500
 MEGA_NARRATION = re.compile(
     r"(The opposing )?(.+?)[’']s (\S+) is reacting to .+?[’']s Omni Ring!", re.I)
+FAINT_NARRATION = re.compile(r"(The opposing )?(.+?) fainted!", re.I)
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
 ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECASE)
@@ -1483,12 +1484,84 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_faint_hud_entries(self) -> None:
+        """Recognize a lingering HUD around a corroborated faint announcement."""
+        faints = [e for e in self.events if e["kind"] == "faint" and e["status"] == "consistent"]
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] not in {"ghost_reentry_after_faint", "reentry_without_exit"}:
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            if rejected["health"] is not None and health_ratio(rejected["health"]) != 0:
+                unresolved.append(issue)
+                continue
+            matches = []
+            for faint in faints:
+                if (faint["actor_id"] != rejected["actor_id"] or faint["slot"] != rejected["slot"] or
+                    faint["turn"] != rejected["turn"] or
+                    abs(faint["observed_ms"] - rejected["observed_ms"]) > 3_000):
+                    continue
+                first, last = sorted((faint["seq"], rejected["seq"]))
+                if any(e["status"] != "suppressed" and e["kind"] in ACTIVITY | {"turn"}
+                       for e in self.events[first:last - 1]):
+                    continue
+                hp = next((e for e in reversed(self.events[:faint["seq"] - 1])
+                           if e["actor_id"] == faint["actor_id"] and e["status"] != "suppressed" and
+                           e["kind"] in HP_KINDS | {"hp_unconfirmed", "hp_zero_rebound", "hp_ocr_conflict", "hp_oscillation"}), None)
+                if (not hp or hp["kind"] != "damage" or hp["status"] != "consistent" or
+                    hp.get("hp_state") != "confirmed" or health_ratio(hp["after"]) != 0):
+                    continue
+                # The HUD fades or slides away during faint. Its last stable
+                # zero may be in either of the two preceding sampled frames.
+                support = next((proof for offset in (0, -1, -2)
+                                for proof in [self._hp_support(faint["slot"], hp["after"], faint["frame"] + offset)]
+                                if proof["state"] == "confirmed"), None)
+                if not support:
+                    continue
+                evidence = []
+                announced_entry = False
+                for row in self.frames:
+                    if (abs(row["timestamp_ms"] - faint["observed_ms"]) > 3_000 or
+                        abs(row["timestamp_ms"] - rejected["observed_ms"]) > 3_000):
+                        continue
+                    for line in row.get("ocr", ()):
+                        if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                            continue
+                        text = line.get("text", "").strip()
+                        if ANNOUNCED_ENTRY.search(text):
+                            announced_entry = True
+                        match = FAINT_NARRATION.fullmatch(text)
+                        if not match:
+                            continue
+                        side = "p2" if match.group(1) else "p1"
+                        named = match.group(2).casefold()
+                        species = identity_species(self.nickname_species[side].get(named, named)).casefold()
+                        expected = identity_species(faint["species"]).casefold()
+                        if faint["slot"].startswith(side) and species in {expected, expected.split("-", 1)[0]}:
+                            evidence.append({"frame": row["frame"], "text": text,
+                                             "confidence": line["confidence"], "kind": "faint_narration"})
+                if not announced_entry and len({e["frame"] for e in evidence}) >= 2:
+                    matches.append((faint, hp, [{**e, "kind": "zero_hp"} for e in support["evidence"]] + evidence))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            faint, hp, evidence = matches[0]
+            resolution = {"state": "resolved", "event_seq": faint["seq"], "hp_event_seq": hp["seq"],
+                          "actor_id": faint["actor_id"], "slot": faint["slot"],
+                          "reason": "HUD transitorio durante el debilitamiento: PS cero confirmados y anuncio repetido del mismo actor.",
+                          "evidence": evidence}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
         self._reconcile_mega_candidates()
+        self._reconcile_faint_hud_entries()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)
@@ -1664,10 +1737,10 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         lines += ["", "## Incidencias resueltas con evidencia", ""]
         for issue in ledger["resolved_issues"]:
             resolution = issue["resolution"]
-            frames = ", ".join(str(e["frame"]) for e in resolution["evidence"])
+            frames = ", ".join(str(f) for f in sorted({e["frame"] for e in resolution["evidence"]}))
             lines += [f"- Frame {issue['frame']} · {issue['code']}: {resolution['reason']} "
                       f"Evento {resolution['event_seq']} en {resolution['slot']}; "
-                      f"texto corroborado en frames {frames}. El candidato original sigue suprimido en JSON."]
+                      f"evidencia en frames {frames}. El candidato original sigue suprimido en JSON."]
     lines += [""]
     return "\n".join(lines)
 

@@ -98,6 +98,14 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    ≥0,95, y ninguna acción, entrada, turno o faint intermedio. Guarda el
    candidato original, `resolution` y la incidencia en `resolved_issues`;
    el informe separa `resolved_issue_codes` de las incidencias pendientes.
+   También resuelve una entrada suprimida alrededor de un faint si ambos
+   pertenecen al mismo actor, slot y turno, a ≤3 s, y no media otra acción,
+   entrada o cambio de turno. Exige daño aceptado a cero, confirmación del
+   cero en ese HUD al debilitarse o en los dos fotogramas previos, y anuncio
+   de faint del mismo actor/bando repetido en dos frames (confianza ≥0,95).
+   Un anuncio de entrada en la ventana o PS positivos en el candidato
+   mantienen la revisión. Sirve tanto para reentradas tras faint como para
+   duplicados inmediatamente anteriores, incluso en el mismo frame.
 7. Ejecuta una **pasada retrospectiva** para los mensajes de quemadura,
    retroceso y recuperación. Busca episodios confirmados del mismo actor,
    slot, turno y sentido del cambio, a ambos lados del texto, hasta 3 s desde
@@ -384,6 +392,35 @@ muestreado y una después. La asociación admite ambos órdenes.
   **328 episodios de PS**, **113 enlaces narrativos** y alineaciones con los
   replays archivados. La integración en producción sigue pendiente.
 
+## HUD durante el debilitamiento de Gori · 27 de septiembre
+
+- Ies aportó capturas de job `10a7fba6fda04585`, partida 1: **11:14.00**
+  muestra Gori con **0/207** y «It's super effective on Gori!»;
+  **11:14.50** muestra «Gori fainted!» y el mismo HUD a cero;
+  **11:15.00** continúa el anuncio durante la animación de debilitamiento.
+  La traza comienza a reconocer «Gori fainted!» en frame 1349 (11:14.00),
+  medio segundo antes del texto visible en el reproductor de las capturas.
+  Ambos muestran la misma secuencia: daño a cero, faint y retirada del HUD.
+- El supuesto `switch` de **1350 (11:14.50)** es el HUD transitorio de Gori.
+  Se conserva suprimido, con resolución enlazada al faint de 1349 y al
+  daño a cero. La regla no cambia los PS ni emite una nueva entrada.
+- La misma regla resuelve por **evidencia OCR** otros tres casos, sin
+  confirmación visual directa de esos fotogramas: Rillaboom rival/Bonkers,
+  job `10a7`, partida 5, frame **6106**; Indeedee-F/Dee Dee, job `90403`,
+  partida 2, frame **1550**; y el duplicado de Dee Dee en partida 3, frame
+  **2688**, emitido en el mismo frame que su faint. Al deslizarse o
+  desvanecerse el HUD, el cero
+  estable de los fotogramas inmediatamente anteriores conserva la evidencia
+  sin reducir los umbrales de confirmación.
+- **52/52 pruebas aprobadas**, incluidos los tres ZIP. Avisos pendientes
+  **5 → 1** (jobs **1/0/0**). Hay cinco incidencias resueltas auditables:
+  cuatro de HUD durante faint y la Mega de Delphox del corte previo.
+  Los eventos, estados de actores, **328 episodios de PS**, **113 enlaces
+  narrativos** y alineaciones con los replays conservan su resultado previo.
+- Queda `reentry_without_exit` de Kingambit en job `10a7`, partida 2,
+  frame **2668 (22:13.50)**, al terminar Grassy Terrain. No cumple los
+  criterios de faint y continúa pendiente de revisión.
+
 ## Pruebas
 
 ```bash
@@ -393,7 +430,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cuarenta y cinco casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Cuarenta y nueve casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

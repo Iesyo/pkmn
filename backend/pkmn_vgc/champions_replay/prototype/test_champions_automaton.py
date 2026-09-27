@@ -45,6 +45,19 @@ def mega_duplicate_trace(correct_frame=3):
             frame(correct_frame + 1, texts=[text])]
 
 
+def faint_hud_trace(same_frame=False):
+    faint = event("faint", "p1a", "Rillaboom")
+    entry = event("switch", "p1a", "Rillaboom")
+    trace = [frame(1, [event("switch", "p1a", "Rillaboom", "10/100"), event("turn", turn=1)]),
+             frame(2, [event("damage", "p1a", "Rillaboom", "0/100")]),
+             frame(6, [entry, faint] if same_frame else [faint], texts=["Gori fainted!"]),
+             frame(7, [] if same_frame else [entry], texts=["Gori fainted!"])]
+    trace[0]["resolved_aliases"]["p1"]["gori"] = "Rillaboom"
+    trace[2]["ocr"].append({"text": "0/100", "left": .14, "right": .20,
+                             "top": .92, "bottom": .96, "confidence": .999})
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
     def test_hp_ratio_parses_fractions_and_rejects_invalid_values(self):
         self.assertEqual(health_ratio("50/200"), .25)
@@ -368,6 +381,70 @@ class TemporalAutomatonTests(unittest.TestCase):
                           if x["kind"] == "switch" and x["status"] == "consistent"],
                          ["Rillaboom", "Blaziken"])
         self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+
+    def test_lingering_faint_hud_resolves_ghost_entry_with_evidence(self):
+        ledger = BattleAutomaton(0, faint_hud_trace()).run()
+        self.assertNotIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+        resolved = ledger["resolved_issues"][0]
+        rejected = ledger["events"][resolved["event_seq"] - 1]
+        faint = ledger["events"][resolved["resolution"]["event_seq"] - 1]
+        self.assertEqual((rejected["kind"], rejected["status"], faint["kind"]), ("switch", "suppressed", "faint"))
+        self.assertEqual({e["kind"] for e in resolved["resolution"]["evidence"]}, {"zero_hp", "faint_narration"})
+        actor = ledger["actors"][faint["actor_id"]]
+        self.assertEqual((actor["health"], actor["fainted"]), ("0/100", True))
+        self.assertEqual(sum(e["kind"] == "switch" and e["status"] == "consistent" for e in ledger["events"]), 1)
+
+    def test_faint_hud_handles_same_frame_duplicate_and_last_stable_zero(self):
+        trace = faint_hud_trace(same_frame=True)
+        zero = trace[2]["ocr"].pop()
+        trace.insert(2, frame(5))
+        trace[2]["ocr"].append(zero)
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertNotIn("reentry_without_exit", [x["code"] for x in ledger["issues"]])
+        self.assertEqual(ledger["resolved_issues"][0]["code"], "reentry_without_exit")
+        proof = ledger["resolved_issues"][0]["resolution"]["evidence"]
+        self.assertTrue(any(e["kind"] == "zero_hp" and e["frame"] == 5 for e in proof))
+
+    def test_faint_hud_does_not_resolve_without_matching_and_uncontradicted_evidence(self):
+        for missing in ("damage", "zero_hud", "partner_hud", "one_message", "wrong_side", "wrong_name",
+                        "confidence", "entry_announcement", "time", "action", "positive_hp"):
+            with self.subTest(missing=missing):
+                trace = faint_hud_trace()
+                if missing == "damage":
+                    trace[1]["detections"]["events"] = []
+                elif missing == "zero_hud":
+                    trace[2]["ocr"].pop()
+                elif missing == "partner_hud":
+                    trace[2]["ocr"][-1].update(left=.34, right=.40)
+                elif missing == "one_message":
+                    trace[-1]["ocr"] = []
+                elif missing in {"wrong_side", "wrong_name", "confidence"}:
+                    for row in trace[-2:]:
+                        if missing == "wrong_side":row["ocr"][0]["text"] = "The opposing Gori fainted!"
+                        elif missing == "wrong_name":row["ocr"][0]["text"] = "Blaziken fainted!"
+                        else:row["ocr"][0]["confidence"] = .8
+                elif missing == "entry_announcement":
+                    trace[-1]["ocr"].append({"text": "Go! Gori!", "top": .75, "confidence": 1})
+                elif missing == "time":
+                    trace[-1]["frame"] = 20
+                    trace[-1]["timestamp_ms"] = 10000
+                elif missing == "action":
+                    trace[-1] = frame(8, trace[-1]["detections"]["events"], texts=["Gori fainted!"])
+                    trace.insert(-1, frame(7, [event("move", "p2a", "Altaria", move="Protect")]))
+                elif missing == "positive_hp":
+                    trace[-1]["detections"]["events"][0]["health"] = "10/100"
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+                self.assertEqual(ledger["resolved_issues"], [])
+
+    def test_real_replacement_after_faint_stays_an_entry(self):
+        trace = faint_hud_trace()
+        trace[-1] = frame(7, [event("switch", "p1a", "Blaziken", "100/100")], texts=["Gori fainted!"])
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([(e["species"], e["health"]) for e in ledger["events"]
+                          if e["kind"] == "switch" and e["status"] == "consistent"],
+                         [("Rillaboom", "10/100"), ("Blaziken", "100/100")])
+        self.assertEqual(ledger["resolved_issues"], [])
 
     def test_isolated_partial_hp_read_does_not_create_damage_or_recovery(self):
         trace = [frame(1, [event("switch", "p2a", "Delphox", "28/100"), event("turn", turn=1)]),
@@ -809,6 +886,10 @@ class TemporalAutomatonTests(unittest.TestCase):
                     self.assertEqual(burn["cause"], "quemadura observada")
                     self.assertEqual(burn["causal_evidence"][0]["frame"], 369)
                     self.assertEqual(rejected["narration"], [])
+                    ghost = next(e for e in ledger["events"] if e["frame"] == 1350 and e["kind"] == "switch")
+                    self.assertEqual(ghost["resolution"]["state"], "resolved")
+                    faint = ledger["events"][ghost["resolution"]["event_seq"] - 1]
+                    self.assertEqual((faint["frame"], faint["kind"]), (1349, "faint"))
                 if index == 1:
                     rejected = next(e for e in ledger["events"] if e["frame"] == 2797 and
                                     e["kind"] == "hp_rejected_reading")
@@ -816,6 +897,11 @@ class TemporalAutomatonTests(unittest.TestCase):
                                      ("suppressed", "88/100", "88/100"))
                     self.assertFalse(any(x["code"] == "hp_oscillation" and x["frame"] == 2797
                                          for x in ledger["issues"]))
+                if index == 4:
+                    ghost = next(e for e in ledger["events"] if e["frame"] == 6106 and e["kind"] == "switch")
+                    self.assertEqual(ghost["resolution"]["state"], "resolved")
+                    self.assertTrue(any(e["kind"] == "zero_hp" and e["frame"] < 6105
+                                        for e in ghost["resolution"]["evidence"]))
         self.assertEqual(message_count, 57)
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SECOND"), "Requiere el segundo ZIP del usuario")
@@ -859,6 +945,14 @@ class TemporalAutomatonTests(unittest.TestCase):
                          (1466, "p2a", "Delphox-Mega"))
         self.assertEqual([e["frame"] for e in rejected_mega["resolution"]["evidence"]], [1466, 1467])
         self.assertNotIn("mega_wrong_occupant", [x["code"] for x in battle["issues"]])
+        ghost = next(e for e in battle["events"] if e["kind"] == "switch" and e["frame"] == 1550)
+        self.assertEqual(ghost["resolution"]["state"], "resolved")
+        duplicate = next(e for e in ledgers[2]["events"] if e["kind"] == "switch" and e["frame"] == 2688)
+        faint = ledgers[2]["events"][duplicate["resolution"]["event_seq"] - 1]
+        self.assertEqual((faint["frame"], faint["kind"], faint["actor_id"]),
+                         (2688, "faint", duplicate["actor_id"]))
+        self.assertFalse(any(x["code"] in {"ghost_reentry_after_faint", "reentry_without_exit"}
+                             for ledger in ledgers.values() for x in ledger["issues"]))
         self.assertFalse(any(e["kind"] == "damage" and e["status"] == "consistent" and
                              e["after"] in {"3/100", "1/100"} and e["slot"] == "p2a"
                              for e in battle["events"]))
