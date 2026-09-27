@@ -1848,6 +1848,32 @@ class TemporalAutomatonTests(unittest.TestCase):
                              for x in ledger["events"]))
         self.assertTrue(next(iter(ledger["actors"].values()))["fainted"])
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_EIGHTH"), "Requiere el octavo ZIP del usuario")
+    def test_buffered_opponent_replacement_keeps_entry_and_ability_at_their_evidence(self):
+        frames, _ = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_EIGHTH"]))
+        ledger = BattleAutomaton(0, frames).run()
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch" and
+                     e["slot"] == "p2b" and e["species"] == "Weavile")
+        ability = next(e for e in ledger["events"] if e["kind"] == "ability" and
+                       e["slot"] == "p2b" and e["value"] == "Pressure")
+        checkpoint = next(e for e in ledger["events"] if e["kind"] == "hp_checkpoint" and
+                          e["slot"] == "p2b")
+        self.assertEqual((entry["logical_frame"], entry["frame"], entry["hp_state"]), (300, 386, "inferred"))
+        self.assertEqual((ability["frame"], ability["logical_frame"], ability["turn"]), (307, 307, 2))
+        self.assertIn("pressure", " ".join(ability["narration"]).casefold())
+        self.assertEqual((checkpoint["frame"], checkpoint["health"], checkpoint["hp_state"]),
+                         (386, "100/100", "confirmed"))
+        self.assertFalse(ledger["issues"])
+        # The buffered timestamp is not enough: remove the independent ability
+        # panel and the old interpretation must remain open to review.
+        for row in frames:
+            if 307 <= row["frame"] <= 310:
+                row["ocr"] = [line for line in row["ocr"] if
+                              line.get("text") not in {"Kushina's", "Pressure"}]
+        uncertain = BattleAutomaton(0, frames).run()
+        self.assertFalse(any(e.get("delayed_voluntary_entry") for e in uncertain["events"]))
+        self.assertIn("unclassified_text", {issue["code"] for issue in uncertain["issues"]})
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC"), "Requiere el ZIP original del usuario")
     def test_five_approved_battles_retain_their_core_event_order(self):
         frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC"]))
