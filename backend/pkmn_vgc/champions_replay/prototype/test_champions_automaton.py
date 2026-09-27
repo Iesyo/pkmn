@@ -156,6 +156,51 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertIn("mismo HUD", oscillation["note"])
         self.assertEqual(oscillation["observations"][0]["competing_ocr"]["stronger"]["text"], "88")
 
+    def test_repeated_hp_around_zero_fragment_suppresses_false_rebound(self):
+        trace = [frame(1, [event("switch", "p2a", "Rillaboom", "88/100"), event("turn", turn=1)]),
+                 frame(2), frame(3),
+                 frame(4, [event("damage", "p2a", "Rillaboom", "0/100")]),
+                 frame(5, [event("heal", "p2a", "Rillaboom", "88/100")]), frame(6)]
+        for row in trace[1:3]:
+            row["ocr"] = [{"text": "88%", "confidence": .999, "left": .70,
+                           "right": .755, "top": .11, "bottom": .16}]
+        trace[3]["ocr"] = [
+            {"text": "88", "confidence": .999, "left": .70, "right": .74,
+             "top": .11, "bottom": .16},
+            {"text": "0%", "confidence": .78, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        trace[4]["ocr"][0]["confidence"] = .87
+        trace[5]["ocr"] = [{"text": "88%", "confidence": .999, "left": .70,
+                            "right": .755, "top": .11, "bottom": .16}]
+        ledger = BattleAutomaton(0, trace).run()
+        rejected = next(e for e in ledger["events"] if e["kind"] == "hp_rejected_reading")
+        self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
+                         ("suppressed", "88/100", "88/100"))
+        self.assertEqual([x["health"] for x in rejected["observations"]], ["0/100", "88/100"])
+        self.assertEqual([x["frame"] for x in rejected["hp_support"]["evidence"]], [2, 3, 6])
+        self.assertEqual(rejected["observations"][0]["competing_ocr"]["suspect"]["text"], "0%")
+        self.assertFalse(any(x["code"] == "hp_oscillation" for x in ledger["issues"]))
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "88/100")
+
+    def test_zero_fragment_with_different_stronger_number_keeps_warning(self):
+        trace = [frame(1, [event("switch", "p2a", "Sneasler", "41/100"), event("turn", turn=1)]),
+                 frame(2), frame(3),
+                 frame(4, [event("damage", "p2a", "Sneasler", "0/100")]),
+                 frame(5, [event("heal", "p2a", "Sneasler", "41/100")])]
+        for row in trace[1:3]:
+            row["ocr"] = [{"text": "41%", "confidence": .999, "left": .70,
+                           "right": .755, "top": .11, "bottom": .16}]
+        trace[3]["ocr"] = [
+            {"text": "44", "confidence": .999, "left": .70, "right": .74,
+             "top": .11, "bottom": .16},
+            {"text": "0%", "confidence": .78, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(sum(x["code"] == "hp_oscillation" for x in ledger["issues"]), 1)
+        self.assertFalse(any(x["kind"] == "hp_rejected_reading" for x in ledger["events"]))
+
     def test_zero_from_distant_partner_hud_is_separate_evidence(self):
         trace = [frame(1, [event("switch", "p2a", "Rillaboom", "88/100"),
                            event("switch", "p2b", "Kingambit", "0/100"), event("turn", turn=1)]),
@@ -513,6 +558,13 @@ class TemporalAutomatonTests(unittest.TestCase):
                     self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
                                      ("suppressed", "18/100", "18/100"))
                     self.assertFalse(any(x["code"] == "hp_ocr_conflict" and x["frame"] == 358
+                                         for x in ledger["issues"]))
+                if index == 1:
+                    rejected = next(e for e in ledger["events"] if e["frame"] == 2797 and
+                                    e["kind"] == "hp_rejected_reading")
+                    self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
+                                     ("suppressed", "88/100", "88/100"))
+                    self.assertFalse(any(x["code"] == "hp_oscillation" and x["frame"] == 2797
                                          for x in ledger["issues"]))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SECOND"), "Requiere el segundo ZIP del usuario")
