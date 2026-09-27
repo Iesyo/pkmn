@@ -34,18 +34,32 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    aviso de movimiento leído en varios frames; los mensajes narrativos se
    adjuntan al evento próximo. Una oscilación de PS que vuelve al valor previo
    antes de actuar queda en `review`, sin producir daño y cura inventados.
-   Si dos números OCR se contradicen en el mismo HUD, conserva ambos como
-   evidencia. Una lectura aislada y contradicha queda en `hp_ocr_conflict`,
-   sin modificar los PS ni generar un daño/cura de Showdown. No mezcla números
-   de HUD separados. Un `0%` seguido de un rebote positivo durante el
-   debilitamiento se conserva en `hp_zero_rebound`, sin reanimar al actor.
-5. Un Pokémon debilitado no vuelve a entrar porque su imagen siga en el HUD.
+   La lectura candidata pasa por un estado **provisional**: se buscan el
+   valor completo y su posición en el HUD del slot durante el fotograma y los
+   dos muestreados siguientes. Se aceptan números y `%` separados pero
+   contiguos, y separadores `/` mal reconocidos cuando hay corroboración
+   suficiente. Un número solo, aunque se repita, no confirma un porcentaje.
+   Una lectura sin apoyo queda en `hp_unconfirmed`: no cambia los PS del
+   actor y obliga a revisar la transición siguiente. Las entradas sin PS
+   confirmados también conservan el candidato en `observations`, con PS de
+   entrada desconocidos.
+5. Si dos números OCR se contradicen en el mismo HUD, conserva ambos como
+   evidencia. La lectura aislada contradicha queda en `hp_ocr_conflict`, sin
+   modificar los PS ni generar daño/cura. No mezcla números de HUD separados.
+   Un `0%` seguido de un rebote positivo durante el debilitamiento se
+   conserva en `hp_zero_rebound`, sin reanimar al actor. El valor final puede
+   estar confirmado por OCR y **seguir en revisión** si el sentido del cambio
+   contradice el estado previo o no se conoce el PS anterior. Una observación
+   confirmada puede fijar el valor actual aunque se desconozca el cambio que
+   lo produjo; una contradicción deja los PS actuales como desconocidos hasta
+   una observación posterior confirmada.
+6. Un Pokémon debilitado no vuelve a entrar porque su imagen siga en el HUD.
    Se detectan aplicaciones de estado repetidas, saltos de turno y lecturas de
    PS de otro ocupante y megaevoluciones atribuidas a otra especie. Las
    identidades aún anónimas se señalan al terminar la batalla. Cuando la
    primera confirmación del HUD sucede después de que comenzó un movimiento,
    el PS de entrada queda **desconocido**.
-6. Compara la secuencia de eventos principales y episodios de PS con los
+7. Compara la secuencia de eventos principales y episodios de PS con los
    replays archivados de ambos jobs. Los desacuerdos se informan; no se
    arreglan copiando la salida anterior.
 
@@ -54,6 +68,12 @@ significa que el evento esté confirmado visualmente. `review` requiere mirar
 el fotograma o investigar una causa; `suppressed` conserva la lectura en el
 JSON pero la excluye de la cronología propuesta. El prototipo **no** exporta
 todavía un replay Showdown: sería prematuro mientras haya discrepancias.
+En los eventos pertinentes, `hp_state` distingue `confirmed`, `unconfirmed`,
+`unknown` y `rejected`.
+`hp_support` guarda la evidencia OCR y la razón de la confirmación o rechazo;
+el estado del actor sólo contiene PS confirmados, o `null` si la lectura
+actual no quedó establecida. `report.json` separa episodios, observaciones
+confirmadas, lecturas sin confirmar y transiciones que requieren revisión.
 
 ## Primer ZIP · 10a7fba6fda04585
 
@@ -112,6 +132,15 @@ de PS y una revisión visual de las discrepancias restantes.
 Este corte establece la frontera entre observación, evento consolidado y
 emisión de Showdown para continuar sin reprocesar el vídeo.
 
+En las **nueve partidas actuales**, los 259 episodios de PS propuestos y no
+suprimidos conservan evidencia OCR verificable en su HUD; los 465 eventos
+principales mantienen el orden de sus replays archivados. Ninguno de esos 259
+episodios necesitó pasar por `hp_unconfirmed`; se detectaron y conservaron en revisión
+los conflictos y transiciones dudosas descritos arriba. Este conjunto prueba
+que la puerta no descartó esas lecturas válidas, **no** que pueda evitar toda
+lectura parcial en futuros vídeos: un OCR erróneo, completo y persistente puede
+requerir una observación adicional o revisión visual.
+
 ## Pruebas
 
 ```bash
@@ -120,9 +149,11 @@ CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Diez casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Quince casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
-fantasma. Dos pruebas de integración usan los cinco y cuatro replays actuales,
+fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
+corroborada del separador y el aislamiento del 0 % del HUD de un compañero.
+Dos pruebas de integración usan los cinco y cuatro replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.

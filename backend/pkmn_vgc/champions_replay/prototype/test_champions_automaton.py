@@ -16,13 +16,22 @@ def event(kind, slot=None, species=None, health=None, move=None, value=None, tur
 
 
 def frame(n, events=(), texts=()):
+    hud = {"p1a": (.14, .92), "p1b": (.34, .92),
+           "p2a": (.70, .12), "p2b": (.92, .12)}
+    ocr = [{"text": text, "top": .75, "confidence": 1} for text in texts]
     for item in events:
         item["timestamp_ms"] = n * 500
         item["source_frame"] = n
+        if item.get("health") and item.get("slot") in hud:
+            left, top = hud[item["slot"]]
+            value = (item["health"].split("/", 1)[0] + "%"
+                     if item["slot"].startswith("p2") else item["health"])
+            ocr.append({"text": value, "confidence": .999, "left": left,
+                        "right": left + .06, "top": top, "bottom": top + .04})
     return {"frame": n, "timestamp_ms": n * 500, "battle_index": 0,
             "resolved_aliases": {"p1": {}, "p2": {"minemine": "Pelipper"}},
             "resolved_identities": {},
-            "ocr": [{"text": text, "top": .75, "confidence": 1} for text in texts],
+            "ocr": ocr,
             "detections": {"events": list(events)}}
 
 
@@ -126,6 +135,75 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(next(iter(ledger["actors"].values()))["health"], "28/100")
         self.assertEqual(sum(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]), 1)
 
+    def test_unconfirmed_hp_marks_actor_unknown_until_a_new_reading_is_confirmed(self):
+        trace = [frame(1, [event("switch", "p2a", "Delphox", "28/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p2a", "Delphox", move="Protect")]),
+                 frame(3, [event("damage", "p2a", "Delphox", "3/100")]),
+                 frame(4, [event("move", "p2a", "Delphox", move="Protect")])]
+        # A high-confidence 3% belongs to the other HUD. The local 3 has no
+        # percent sign and is not repeated; neither is proof of 3/100 here.
+        trace[2]["ocr"] = [
+            {"text": "3", "confidence": .99, "left": .70, "right": .72, "top": .12},
+            {"text": "3%", "confidence": .999, "left": .92, "right": .96, "top": .12},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        suspect = next(x for x in ledger["events"] if x["kind"] == "hp_unconfirmed")
+        self.assertEqual((suspect["before"], suspect["after"], suspect["health"]),
+                         ("28/100", None, "3/100"))
+        self.assertEqual(suspect["hp_state"], "unconfirmed")
+        self.assertEqual(next(iter(ledger["actors"].values()))["health_state"], "unconfirmed")
+        self.assertFalse(any(x["kind"] == "damage" for x in ledger["events"]))
+
+    def test_split_percent_confirms_only_its_own_hud(self):
+        trace = [frame(1, [event("switch", "p2a", "Golisopod", "65/100"), event("turn", turn=1)]),
+                 frame(2, [event("heal", "p2a", "Golisopod", "71/100")])]
+        trace[1]["ocr"] = [
+            {"text": "71", "confidence": .99, "left": .70, "right": .739, "top": .12},
+            {"text": "%", "confidence": .98, "left": .734, "right": .75, "top": .12},
+            {"text": "0%", "confidence": 1, "left": .92, "right": .96, "top": .12},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        hp = next(x for x in ledger["events"] if x["kind"] == "heal")
+        self.assertEqual(hp["hp_state"], "confirmed")
+        self.assertEqual(hp["hp_support"]["reason"], "número y porcentaje separados")
+        self.assertEqual(hp["hp_support"]["evidence"][0]["percent"]["text"], "%")
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "71/100")
+
+    def test_repeated_wrong_separator_can_confirm_own_entry(self):
+        trace = [frame(1, [event("switch", "p1b", "Indeedee-F", "177/177")]), frame(2)]
+        trace[0]["ocr"] = [{"text": "1777177", "confidence": .94, "left": .34, "top": .92}]
+        trace[1]["ocr"] = [{"text": "1777177", "confidence": .95, "left": .34, "top": .92}]
+        ledger = BattleAutomaton(0, trace).run()
+        entry = next(x for x in ledger["events"] if x["kind"] == "switch")
+        self.assertEqual(entry["hp_state"], "confirmed")
+        self.assertEqual(entry["hp_support"]["reason"], "separador OCR reparado en dos frames")
+
+    def test_unconfirmed_entry_cannot_seed_a_false_transition(self):
+        trace = [frame(1, [event("switch", "p2a", "Delphox", "3/100"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Delphox", "1/100")])]
+        trace[0]["ocr"] = [{"text": "3", "confidence": .8, "left": .70, "top": .12}]
+        ledger = BattleAutomaton(0, trace).run()
+        entry = next(x for x in ledger["events"] if x["kind"] == "switch")
+        damage = next(x for x in ledger["events"] if x["kind"] == "damage")
+        self.assertIsNone(entry["health"])
+        self.assertEqual(entry["hp_state"], "unconfirmed")
+        self.assertEqual(damage["status"], "review")
+        self.assertIsNone(damage["before"])
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "1/100")
+
+    def test_stronger_number_in_same_hud_rejects_even_high_confidence_partial(self):
+        trace = [frame(1, [event("switch", "p2a", "Delphox", "28/100"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Delphox", "3/100")])]
+        trace[1]["ocr"] = [
+            {"text": "28", "confidence": .999, "left": .70, "right": .74,
+             "top": .12, "bottom": .16},
+            {"text": "3%", "confidence": .995, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(sum(e["kind"] == "hp_ocr_conflict" for e in ledger["events"]), 1)
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "28/100")
+
     def test_mega_from_other_slot_does_not_change_occupant(self):
         trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "100/100"),
                            event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
@@ -191,6 +269,29 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "damage" and e["status"] == "consistent" and
                              e["after"] in {"3/100", "1/100"} and e["slot"] == "p2a"
                              for e in battle["events"]))
+        kingambit = ledgers[2]
+        suspicious = next(e for e in kingambit["events"] if e["frame"] == 3001 and e["kind"] == "damage")
+        self.assertEqual((suspicious["status"], suspicious["before"], suspicious["after"]),
+                         ("review", "1/100", "85/100"))
+        following = next(e for e in kingambit["events"] if e["frame"] == 3025 and e["kind"] == "damage")
+        self.assertIsNone(following["before"])
+        # Retirar la prueba OCR de una observación de una batalla real simula
+        # un nuevo vídeo con lectura incompleta, sin retocar eventos candidatos.
+        altered = []
+        for row in frames:
+            if row["battle_index"] != 0:
+                continue
+            if 599 <= row["frame"] <= 601:
+                ocr = [line for line in row["ocr"] if not
+                       (.66 <= line.get("left", -1) <= .82 and .08 <= line.get("top", -1) <= .20)]
+                altered.append({**row, "ocr": ocr})
+            else:
+                altered.append(row)
+        partial = BattleAutomaton(0, altered).run()
+        self.assertTrue(any(e["kind"] == "hp_unconfirmed" and e["frame"] == 599
+                            for e in partial["events"]))
+        self.assertFalse(any(e["kind"] == "damage" and e["frame"] == 599
+                             for e in partial["events"]))
         with zipfile.ZipFile(path) as archive:
             name = next(n for n in archive.namelist()
                         if n.startswith("output/history/") and n.endswith("/ocr.trace.jsonl")

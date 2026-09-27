@@ -28,6 +28,12 @@ ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECA
 HP_TEXT = re.compile(r"(?<!\d)\d{1,4}\s*(?:%|/\s*\d{1,4})(?!\d)")
 HUD_NUMBER = re.compile(r"^(\d{1,3})\s*%?$")
 PLACEHOLDER = re.compile(r"^__champions_actor_[^_]+_\d+__$")
+# Zonas normalizadas de los cuatro HUD de Champions. Se comprueba el slot
+# antes de aceptar una lectura: el 0% de p2b no puede confirmar PS de p2a.
+HP_HUD_AREAS = {
+    "p1a": (.10, .27, .87, .98), "p1b": (.30, .48, .87, .98),
+    "p2a": (.66, .82, .08, .20), "p2b": (.89, .99, .08, .20),
+}
 
 
 def health_ratio(health: str | None) -> float | None:
@@ -221,7 +227,8 @@ class BattleAutomaton:
                 actor_id = f"{side}-actor-{self.next_actor:02d}"
         if actor_id not in self.actors:
             self.actors[actor_id] = {"side": side, "species": clean, "forme": None, "health": None,
-                                     "status": None, "item_lost": False, "fainted": False}
+                                     "health_state": "unknown", "status": None,
+                                     "item_lost": False, "fainted": False}
             self.actor_ids_by_species[(side, identity_species(clean))].append(actor_id)
         elif self.actors[actor_id]["species"] != clean:
             self.actors[actor_id]["species"] = clean
@@ -298,7 +305,7 @@ class BattleAutomaton:
             if value != expected or "%" not in suspect["text"]:
                 continue
             for other_value, stronger in readings:
-                if other_value == expected or stronger["confidence"] <= suspect["confidence"] + .04:
+                if other_value == expected or stronger["confidence"] <= suspect["confidence"]:
                     continue
                 # Overlap or touch within the same HP label; Kingambit's distant
                 # 0% and Rillaboom's 88% must never be paired as one reading.
@@ -311,6 +318,77 @@ class BattleAutomaton:
                         "suspect": {"text": suspect["text"], "confidence": suspect["confidence"]},
                         "stronger": {"text": stronger["text"], "confidence": stronger["confidence"]}}
         return None
+
+    def _hp_support(self, slot: str | None, health: str | None, frame: int) -> dict[str, Any]:
+        """Confirm a proposed HP value using complete OCR in the correct HUD.
+
+        The trace is archived, so the next two sampled frames may corroborate
+        an animation. A new occupant in that interval ends the evidence window.
+        """
+        if slot not in HP_HUD_AREAS or not health or not re.fullmatch(r"\d+/\d+", health):
+            return {"state": "unconfirmed", "reason": "PS o slot sin formato comprobable", "evidence": []}
+        current, maximum = map(int, health.split("/"))
+        percent_hud = slot.startswith("p2")
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        full: list[dict[str, Any]] = []
+        split: list[dict[str, Any]] = []
+        bare: list[dict[str, Any]] = []
+        repaired: list[dict[str, Any]] = []
+        for offset in range(3):
+            row = self.frame_lookup.get(frame + offset)
+            if not row:
+                continue
+            if offset and any(e["kind"] in {"switch", "drag"} and e.get("slot") == slot
+                              for e in row.get("detections", {}).get("events", ())):
+                break
+            lines = [line for line in row.get("ocr", ())
+                     if (left <= line.get("left", -1) <= right and
+                         top <= line.get("top", -1) <= bottom and
+                         line.get("right", right) <= right + .02 and
+                         line.get("bottom", bottom) <= bottom + .02)]
+            for line in lines:
+                value = re.sub(r"\s+", "", line.get("text", ""))
+                entry = {"frame": frame + offset, "text": line["text"],
+                         "confidence": float(line.get("confidence", 0))}
+                if percent_hud and value == f"{current}%":
+                    full.append(entry)
+                elif not percent_hud and value == health:
+                    full.append(entry)
+                elif (not percent_hud and value == f"{current}1{maximum}" and
+                      entry["confidence"] >= .9):
+                    entry["separator_repaired"] = True
+                    full.append(entry)
+                elif (not percent_hud and re.fullmatch(
+                        rf"{current}\d{maximum}", value) and entry["confidence"] >= .9):
+                    # A second digit may replace the slash; require a second
+                    # observation before repairing any separator except '1'.
+                    entry["separator_repaired"] = True
+                    repaired.append(entry)
+                elif percent_hud and value == str(current):
+                    bare.append(entry)
+                    percent = next((other for other in lines
+                                    if other is not line and other.get("text", "").strip() == "%" and
+                                    -.015 <= other.get("left", -1) - line.get("right", 1) <= .025 and
+                                    other.get("confidence", 0) >= .9 and
+                                    abs(other.get("top", 0) - line.get("top", 1)) <= .035), None)
+                    if percent:
+                        entry["percent"] = {"text": "%", "confidence": percent["confidence"]}
+                        split.append(entry)
+        threshold = .97 if percent_hud and current < 10 else .9
+        strong = [x for x in full if x["confidence"] >= threshold]
+        if strong:
+            return {"state": "confirmed", "reason": "OCR completo del HUD",
+                    "evidence": [max(strong, key=lambda x: x["confidence"])]}
+        if len({x["frame"] for x in full if x["confidence"] >= .9}) >= 2:
+            return {"state": "confirmed", "reason": "OCR repetido del HUD", "evidence": full}
+        if len({x["frame"] for x in repaired}) >= 2:
+            return {"state": "confirmed", "reason": "separador OCR reparado en dos frames",
+                    "evidence": repaired}
+        if any(x["confidence"] >= .9 for x in split):
+            return {"state": "confirmed", "reason": "número y porcentaje separados",
+                    "evidence": [max(split, key=lambda x: x["confidence"])]}
+        return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
+                "evidence": full + repaired + split + bare}
 
     def _append(self, candidate: dict[str, Any], *, kind: str | None = None,
                 actor_id: str | None = None, status: str = "consistent",
@@ -373,7 +451,21 @@ class BattleAutomaton:
                                     status="review", before=before, after=before,
                                     note=note, observations=observations)
                 item["narration"].extend(episode.narration)
+                item["hp_state"] = "rejected"
                 self._issue("hp_ocr_conflict", note, item["frame"], item["seq"])
+                continue
+            support = self._hp_support(episode.slot, after, last["observed_frame"])
+            if support["state"] != "confirmed" and before != after:
+                note = (f"PS propuestos {after or '?'} sin respaldo suficiente del HUD {episode.slot}; "
+                        "la transición queda pendiente de revisión.")
+                item = self._append(last, kind="hp_unconfirmed", actor_id=episode.actor_id,
+                                    status="review", before=before, after=None, note=note,
+                                    observations=observations)
+                item["narration"].extend(episode.narration)
+                item["hp_state"], item["hp_support"] = "unconfirmed", support
+                if actor:
+                    actor["health"], actor["health_state"] = None, "unconfirmed"
+                self._issue("hp_unconfirmed", note, item["frame"], item["seq"])
                 continue
             result = "consistent"
             notes: list[str] = []
@@ -390,6 +482,7 @@ class BattleAutomaton:
                 notes.append("Actor debilitado con PS positivos sin nueva entrada.")
             if before is None:
                 notes.append("PS previo no observable; conservar como observación.")
+                result = "review"
             cause: int | str | None = None
             if episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
                 cause = "posible efecto de Grassy Terrain; comprobar suelo y cuantía"
@@ -401,8 +494,15 @@ class BattleAutomaton:
                                 status=result, note=" ".join(notes) or None, before=before,
                                 after=after, cause=cause, observations=observations)
             item["narration"].extend(episode.narration)
-            if actor and result != "suppressed":
-                actor["health"] = after
+            item["hp_state"], item["hp_support"] = support["state"], support
+            if actor and result == "consistent":
+                actor["health"], actor["health_state"] = after, "confirmed"
+            elif actor and result == "review" and before is None and support["state"] == "confirmed":
+                # The final value is observed, but its transition from an
+                # unknown baseline has not been established.
+                actor["health"], actor["health_state"] = after, "confirmed"
+            elif actor and result == "review" and not actor.get("fainted"):
+                actor["health"], actor["health_state"] = None, "unconfirmed"
             if result == "review":
                 self._issue("hp_transition", item["note"] or "Transición de PS dudosa.", item["frame"], item["seq"])
 
@@ -423,7 +523,8 @@ class BattleAutomaton:
             return
         key = f"{slot or '?'}:{actor_id or '?'}"
         pending = self.hp_pending.get(key)
-        stable = self.actors.get(actor_id or "", {}).get("health")
+        current_actor = self.actors.get(actor_id or "", {})
+        stable = current_actor.get("health") if current_actor.get("health_state") == "confirmed" else None
         # Durante la selección del nuevo turno, el HUD puede saltar 88→0→88
         # en dos frames sin que ocurra una acción. Conservamos ambos fotogramas
         # y descartamos juntos la falsa pérdida y la falsa curación.
@@ -446,6 +547,7 @@ class BattleAutomaton:
                                                **({"competing_ocr": x["competing_ocr"]} if x.get("competing_ocr") else {})}
                                               for x in reads])
             item["narration"].extend(pending.narration)
+            item["hp_state"] = "rejected"
             self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])
             return
         if pending and (pending.kind != event["kind"] or
@@ -453,6 +555,7 @@ class BattleAutomaton:
             self._flush_hp()
             pending = None
         if (event["kind"] == "heal" and actor_id and
+            self.actors[actor_id]["health_state"] == "confirmed" and
             health_ratio(self.actors[actor_id]["health"]) == 0):
             before = self.actors[actor_id]["health"]
             note = "PS en cero antes del debilitamiento; una lectura aislada no confirma reanimación."
@@ -461,6 +564,7 @@ class BattleAutomaton:
                                 observations=[{"frame": candidate["observed_frame"],
                                                "health": event.get("health"),
                                                "evidence": self._evidence(candidate, "heal")}])
+            item["hp_state"] = "rejected"
             self._issue("hp_zero_rebound", note, item["frame"], item["seq"])
             return
         if pending is None:
@@ -511,20 +615,42 @@ class BattleAutomaton:
             self.active[slot] = actor_id
             self.actors[actor_id]["fainted"] = False
             late_health = bool(candidate.get("late_health") and event.get("health"))
-            initial_health = None if late_health else event.get("health")
-            self.actors[actor_id]["health"] = initial_health or self.actors[actor_id]["health"]
+            support = (self._hp_support(slot, event["health"], candidate["observed_frame"])
+                       if event.get("health") else None)
+            entry_conflict = self._competing_hp_ocr(candidate) if support else None
+            if entry_conflict:
+                support = {"state": "unconfirmed", "reason": "OCR numérico contradictorio en el mismo HUD",
+                           "evidence": [entry_conflict]}
+            initial_health = (event.get("health") if not late_health and support and
+                              support["state"] == "confirmed" else None)
+            if event.get("health"):
+                self.actors[actor_id]["health"] = initial_health
+                self.actors[actor_id]["health_state"] = (
+                    "confirmed" if initial_health else "unknown" if late_health else "unconfirmed")
             item = self._append(candidate, actor_id=actor_id,
-                                status="review" if late_health else "consistent")
+                                status="review" if late_health or (support and support["state"] != "confirmed")
+                                else "consistent")
+            if support:
+                item["hp_state"], item["hp_support"] = (
+                    "unknown" if late_health else support["state"]), support
             if late_health:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
                                               "reason": "HUD confirmado después de comenzar una acción"})
                 item["health"] = None
                 self._issue("late_switch_health", "El PS leído al confirmar la entrada ya estaba en animación; PS de entrada desconocido.",
                             item["frame"], item["seq"])
+            elif support and support["state"] != "confirmed":
+                item["observations"].append({"frame": item["frame"], "health": event["health"],
+                                              "reason": support["reason"]})
+                item["health"] = None
+                self._issue("hp_unconfirmed", "PS de entrada sin lectura confirmada en el HUD del slot.",
+                            item["frame"], item["seq"])
             if candidate.get("anchor") and candidate["anchor"]["frame"] < candidate["observed_frame"]:
                 item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {item['frame']}."
             if late_health:
                 item["note"] = (item["note"] or "") + " PS de entrada desconocido: la barra ya cambiaba."
+            elif support and support["state"] != "confirmed":
+                item["note"] = (item["note"] or "") + " PS de entrada pendiente de revisión."
             if self.turn:
                 self.turn_activity += 1
             return
@@ -573,8 +699,12 @@ class BattleAutomaton:
                                 status="consistent" if actor_id else "review",
                                 note=None if actor_id else "Debilitamiento sin actor activo.")
             if actor_id:
-                self.actors[actor_id]["health"] = "0/100" if not self.actors[actor_id]["health"] else self.actors[actor_id]["health"]
-                self.actors[actor_id]["fainted"] = True
+                actor = self.actors[actor_id]
+                if health_ratio(actor["health"]) != 0:
+                    # Faint implies zero but does not establish a measured
+                    # numerator/denominator for this HUD.
+                    actor["health"], actor["health_state"] = None, "unknown"
+                actor["fainted"] = True
                 del self.active[slot]
             else:
                 self._issue("faint_without_actor", item["note"], item["frame"], item["seq"])
@@ -739,6 +869,9 @@ def event_description(item: dict[str, Any]) -> str:
         return f"{actor} usa {item['move']} → {item['target_slot'] or 'objetivo desconocido'}"
     if kind in HP_KINDS:
         return f"{actor}: PS {item['before'] or '?'} → {item['after'] or '?'} ({kind})"
+    if kind == "hp_unconfirmed":
+        return (f"{actor}: lectura propuesta {item['health'] or '?'} sin confirmar; "
+                f"PS previos {item['before'] or '?'}")
     if kind in {"hp_ocr_conflict", "hp_zero_rebound"}:
         return f"{actor}: lecturas de PS en conflicto; se conserva {item['before'] or '?'}"
     if kind == "faint":
@@ -752,7 +885,8 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
     lines = [f"# Batalla {ledger['battle_index'] + 1} — registro intermedio", "",
              f"Fotogramas {ledger['first_frame']}–{ledger['last_frame']}; "
              f"{ledger['candidate_events']} candidatos; {len(ledger['events'])} sucesos consolidados.",
-             "", "**Consistente** significa que no se detectó contradicción estructural; no equivale a validación visual.", ""]
+             "", "**Consistente** significa que no se detectó contradicción estructural; no equivale a validación visual. "
+             "Las lecturas de PS tienen confirmación OCR separada de la causalidad del cambio.", ""]
     if comparison:
         lines += [f"Referencia aceptada: {comparison['aligned_events']}/{comparison['baseline_core_events']} "
                   f"eventos principales alineados; PS {comparison['aligned_hp_episodes']}/"
@@ -821,6 +955,15 @@ def main() -> None:
                                   "ledger_events": len(ledger["events"]),
                                   "hp_episodes": sum(x["kind"] in HP_KINDS and x["status"] != "suppressed"
                                                      for x in ledger["events"]),
+                                  "hp_confirmed_observations": sum(
+                                      x["kind"] in HP_KINDS and x["status"] != "suppressed" and
+                                      x.get("hp_state") == "confirmed"
+                                      for x in ledger["events"]),
+                                  "hp_unconfirmed": sum(x.get("hp_state") == "unconfirmed"
+                                                        for x in ledger["events"]),
+                                  "hp_review_transitions": sum(x["kind"] in HP_KINDS and
+                                                                x["status"] == "review"
+                                                                for x in ledger["events"]),
                                   "hp_conflicts": sum(x["kind"] == "hp_ocr_conflict" for x in ledger["events"]),
                                   "statuses": dict(collections.Counter(x["status"] for x in ledger["events"])),
                                   "issue_codes": dict(collections.Counter(x["code"] for x in ledger["issues"])),
