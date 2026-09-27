@@ -266,6 +266,45 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(sum(e["kind"] == "hp_ocr_conflict" for e in ledger["events"]), 1)
         self.assertEqual(next(iter(ledger["actors"].values()))["health"], "28/100")
 
+    def test_repeated_complete_hp_before_overlapping_fragment_suppresses_warning(self):
+        trace = [frame(1, [event("switch", "p2b", "Indeedee-F", "18/100")]),
+                 frame(2), frame(3),
+                 frame(4, [event("damage", "p2b", "Indeedee-F", "3/100")])]
+        for row in trace[1:3]:
+            row["ocr"] = [{"text": "18%", "confidence": .999, "left": .91,
+                           "right": .96, "top": .11, "bottom": .15}]
+        trace[3]["ocr"] = [
+            {"text": "18", "confidence": .999, "left": .91, "right": .94,
+             "top": .11, "bottom": .15},
+            {"text": "3%", "confidence": .8, "left": .93, "right": .96,
+             "top": .12, "bottom": .16},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        rejected = next(x for x in ledger["events"] if x["kind"] == "hp_rejected_reading")
+        self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
+                         ("suppressed", "18/100", "18/100"))
+        self.assertEqual([x["frame"] for x in rejected["hp_support"]["evidence"]], [2, 3])
+        self.assertEqual(rejected["observations"][0]["competing_ocr"]["suspect"]["text"], "3%")
+        self.assertFalse(any(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]))
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "18/100")
+
+    def test_repeated_old_hp_does_not_resolve_a_different_stronger_number(self):
+        trace = [frame(1, [event("switch", "p2a", "Sneasler", "41/100")]),
+                 frame(2), frame(3),
+                 frame(4, [event("damage", "p2a", "Sneasler", "1/100")])]
+        for row in trace[1:3]:
+            row["ocr"] = [{"text": "41%", "confidence": .999, "left": .70,
+                           "right": .75, "top": .11, "bottom": .15}]
+        trace[3]["ocr"] = [
+            {"text": "44", "confidence": .999, "left": .70, "right": .74,
+             "top": .11, "bottom": .15},
+            {"text": "1%", "confidence": .86, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(sum(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]), 1)
+        self.assertEqual(next(iter(ledger["actors"].values()))["health"], "41/100")
+
     def test_illusion_reveals_one_actor_then_real_disguised_species_gets_its_own_state(self):
         trace = [frame(1, [event("switch", "p2a", "Kingambit", "100/100"), event("turn", turn=1)]),
                  frame(2, [event("move", "p2a", "Kingambit", move="Bitter Malice")]),
@@ -468,6 +507,13 @@ class TemporalAutomatonTests(unittest.TestCase):
             with self.subTest(battle_index=index):
                 ledger = BattleAutomaton(index, [x for x in frames if x["battle_index"] == index]).run()
                 self.assertTrue(compare_baseline(ledger, baseline)["exact_core_sequence"])
+                if index == 0:
+                    rejected = next(e for e in ledger["events"] if e["frame"] == 358 and
+                                    e["kind"] == "hp_rejected_reading")
+                    self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
+                                     ("suppressed", "18/100", "18/100"))
+                    self.assertFalse(any(x["code"] == "hp_ocr_conflict" and x["frame"] == 358
+                                         for x in ledger["issues"]))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SECOND"), "Requiere el segundo ZIP del usuario")
     def test_second_job_keeps_status_and_exposes_misreadings(self):
@@ -484,7 +530,10 @@ class TemporalAutomatonTests(unittest.TestCase):
                             for a in ledgers[3]["actors"].values()))
         battle = ledgers[1]
         self.assertEqual({e["frame"] for e in battle["events"] if e["kind"] == "hp_ocr_conflict"},
-                         {1694, 1766, 2082})
+                         {2082})
+        self.assertTrue({1694, 1766}.issubset(
+            {e["frame"] for e in battle["events"] if e["kind"] == "hp_rejected_reading" and
+             e["status"] == "suppressed"}))
         self.assertEqual(sum(e["kind"] == "mega" and e["slot"] == "p1a" and
                              e["status"] == "consistent" for e in battle["events"]), 0)
         self.assertFalse(any(e["kind"] == "damage" and e["status"] == "consistent" and
