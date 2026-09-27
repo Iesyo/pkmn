@@ -660,8 +660,124 @@ def _switch_in_hp_issues(battle: CapturedBattle) -> tuple[ReviewIssue, ...]:
     return tuple(issues)
 
 
+def _species_key(species: str) -> str:
+    base = species.split("-", 1)[0]
+    return "".join(character for character in base.lower() if character.isalnum())
+
+
+def _revived_identity_issues(battle: CapturedBattle) -> tuple[ReviewIssue, ...]:
+    """Una identidad ya confirmada debilitada no puede volver a entrar.
+
+    Roku, reapertura estructural del 26 sep, corte sobre `32da465`
+    (quinta vuelta de COL-102): tanto `_drop_ghost_reentries` (arriba)
+    como `reconcile._state_findings` recuerdan qué identidad se debilitó
+    en un slot con un diccionario que vive SÓLO mientras nadie más ocupe
+    ese slot -se borra en el propio `switch`/`drag` de cualquier otro
+    ocupante, antes de mirar si el propio actor debilitado regresa
+    después de ese ocupante. Job real `10a7fba6fda04585`, contraejemplo
+    de Roku: `switch Rillaboom` (sin lectura de HP) → `faint Rillaboom`
+    confirmado por texto, SIN ningún `damage 0/x` legible que lo respalde
+    → `switch Blaziken` (real, con su propia vida) → `switch Rillaboom`
+    otra vez (de nuevo sin HP propio). Ninguna limpieza previa lo atrapa:
+    `_drop_ghost_reentries` exige que no haya habido otro ocupante de por
+    medio (es literalmente la misma animación, no esto), y sin un `0/x`
+    numérico tampoco hay nada que `_reconcile_zero_hp`/`entrada_a_cero`
+    puedan anclar. El HP que arrastre esa segunda entrada de Rillaboom
+    -ausente o, peor, uno positivo heredado de antes de morir- se
+    serializaría como un Pokémon vivo que el propio texto ya declaró
+    debilitado.
+
+    Este chequeo no vive por slot: sigue la identidad por el lado
+    (`p1`/`p2`) más la especie base, resuelta a través de
+    `battle.identities` cuando el evento todavía trae un identificador
+    interno (`is_actor_identity`; ver `ACTOR_IDENTITY_PREFIX` en
+    `models.py`) o directamente la especie ya resuelta por el HUD cuando
+    no lo hay -la mejor clave disponible a esta altura del pipeline,
+    consistente con `_health_key`/`_base_species` de `showdown.py`. Por
+    eso sobrevive a cualquier cantidad de ocupantes intermedios, hasta el
+    final del combate.
+
+    No sustituye a `_drop_ghost_reentries`: ese sigue borrando en
+    silencio la continuación inmediata de la propia animación de
+    debilitado (mismo slot, sin nadie de por medio), que nunca llega a
+    `CapturedBattle.events`. Lo que SÍ llega hasta aquí y aun así repite
+    una identidad ya debilitada es, por regla del propio juego (ninguna
+    especie se repite en un equipo VGC y un debilitado no se reanima
+    solo), siempre un error de lectura -nunca un evento legítimo. Por eso
+    no se borra (Roku: "suprimir sólo con evidencia visual") -se conserva
+    como borrador y se marca `blocking`, con el frame más fiable a mano,
+    para que Teams lo revise contra el vídeo.
+
+    No toca la regla que Ies acaba de revertir en `32da465`: una
+    identidad SIN historial de vida en absoluto (los dos líderes, o
+    cualquier entrada genuinamente nueva) nunca pasa por `fainted_since`
+    -no tiene ningún `faint` propio que la marque- así que sigue sin
+    incidencia.
+
+    Si dos identidades internas distintas de un mismo lado resolvieran a
+    la misma especie -un error de resolución, porque el propio juego no
+    lo permite- no se asume que sean el mismo actor ni que sean
+    distintos: el mensaje lo deja explícito para que la revisión manual
+    decida, en vez de fallar en cualquiera de los dos sentidos.
+    """
+
+    identity_map = dict(battle.identities)
+
+    def resolved(species: str | None) -> str | None:
+        if species is None:
+            return None
+        return identity_map.get(species, species) if is_actor_identity(species) else species
+
+    tokens_by_key: dict[tuple[str, str], set[str]] = {}
+    for event in battle.events:
+        if not event.slot or not is_actor_identity(event.species):
+            continue
+        species = resolved(event.species)
+        if not species:
+            continue
+        keyed = (event.slot[:2], _species_key(species))
+        tokens_by_key.setdefault(keyed, set()).add(event.species or "")
+    ambiguous_keys = {keyed for keyed, tokens in tokens_by_key.items() if len(tokens) > 1}
+
+    issues: list[ReviewIssue] = []
+    fainted_since: dict[tuple[str, str], int | None] = {}
+    for event in battle.events:
+        if not event.slot:
+            continue
+        side = event.slot[:2]
+        if event.kind == "faint":
+            species = resolved(event.species)
+            if species:
+                fainted_since.setdefault((side, _species_key(species)), event.source_frame)
+            continue
+        if event.kind not in {"switch", "drag"}:
+            continue
+        species = resolved(event.species)
+        if not species:
+            continue
+        keyed = (side, _species_key(species))
+        if keyed not in fainted_since:
+            continue
+        note = (
+            " Identidad ambigua en este equipo: más de un Pokémon resolvió a esta misma especie; "
+            "no se puede confirmar si es el mismo actor debilitado ni que sea uno distinto."
+            if keyed in ambiguous_keys
+            else ""
+        )
+        issues.append(
+            ReviewIssue(
+                "blocking",
+                f"{event.slot}: {species} vuelve a entrar tras su propio debilitado confirmado en "
+                "este combate, sin evidencia de reanimación -ningún Pokémon puede volver a entrar "
+                f"tras debilitarse.{note}",
+                frame=event.source_frame,
+            )
+        )
+    return tuple(issues)
+
+
 def review_capture(battle: CapturedBattle, *, confidence_threshold: float = 0.75) -> tuple[ReviewIssue, ...]:
-    issues: list[ReviewIssue] = [*_switch_in_hp_issues(battle)]
+    issues: list[ReviewIssue] = [*_switch_in_hp_issues(battle), *_revived_identity_issues(battle)]
     for label, side in (("jugador", battle.p1), ("rival", battle.p2)):
         if len(side.team) != 6:
             issues.append(

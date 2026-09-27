@@ -83,7 +83,23 @@ from .pipeline import ReviewIssue
 # patrón real del bug de Rillaboom) siguen intactos. Cualquier replay
 # marcado `col102-r8` puede llevar una incidencia `blocking` que ya no
 # aplica; hay que pasarlo otra vez por esta versión.
-RECONCILE_VERSION = "col102-r9"
+#
+# r10, corte de Roku sobre `32da465` (mismo día, quinta vuelta): aceptó
+# el punto anterior -no bloquear una identidad SIN historial-, pero
+# encontró un hueco real distinto: el recuerdo de "qué identidad se
+# debilitó en este slot" (`_drop_ghost_reentries` en `pipeline.py`,
+# `fainted_species` de `_state_findings` acá mismo) vive sólo mientras
+# nadie más ocupe ese slot -se borra en el propio `switch` de cualquier
+# otro ocupante, antes de mirar si el propio debilitado regresa después
+# de él. `pipeline._revived_identity_issues` (nuevo, corre dentro de
+# `review_capture`) sigue la identidad por lado+especie sin depender del
+# slot, así que sobrevive a cualquier ocupante intermedio hasta el final
+# del combate: una identidad ya confirmada debilitada que vuelve a
+# entrar -con HP ausente o positivo, sin ningún `0/x` numérico que
+# `entrada_a_cero` pudiera anclar- ahora queda `blocking`. Ningún replay
+# marcado `col102-r9` -o antes- trae esta protección; hay que pasarlo
+# otra vez por esta versión.
+RECONCILE_VERSION = "col102-r10"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)

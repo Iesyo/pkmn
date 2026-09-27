@@ -27,6 +27,7 @@ from pkmn_vgc.champions_replay.pipeline import (
     CaptureAccumulator,
     CaptureSeed,
     ReplayCapturePipeline,
+    _revived_identity_issues,
     review_capture,
     risk_windows,
 )
@@ -1483,6 +1484,145 @@ class ChampionsReplayTests(unittest.TestCase):
             ],
             [],
         )
+
+    def test_a_fainted_identity_that_returns_after_another_occupant_is_flagged_blocking(self) -> None:
+        """Roku, quinta vuelta de COL-102, corte sobre `32da465`: aceptó no
+        bloquear una identidad sin historial, pero encontró un hueco real
+        distinto -el recuerdo de "quién se debilitó en este slot" se
+        borraba en cuanto otro Pokémon entraba de por medio, así que el
+        propio debilitado podía "regresar" después sin que nada lo
+        atrapara. Contraejemplo exacto de Roku: `faint` confirmado por
+        texto SIN ningún `damage 0/x` numérico que lo respalde (así que
+        `entrada_a_cero`/`_reconcile_zero_hp` no tienen nada que anclar),
+        un ocupante real distinto (Blaziken, con su propia vida) y el
+        propio debilitado "volviendo" sin su propia lectura de HP -exactamente
+        el patrón que `_drop_ghost_reentries` no cubre porque hubo un
+        ocupante real de por medio, no la misma animación.
+        """
+
+        battle = CapturedBattle(
+            p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+            p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+            events=(
+                BattleEvent(
+                    kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom",
+                    health="207/207", source_frame=10,
+                ),
+                BattleEvent(
+                    kind="damage", timestamp_ms=2_000, slot="p1a", species="Rillaboom",
+                    health="40/207", source_frame=11,
+                ),
+                # Faint confirmado por texto, sin ningún evento 0/x numérico.
+                BattleEvent(kind="faint", timestamp_ms=3_000, slot="p1a", species="Rillaboom", source_frame=12),
+                BattleEvent(
+                    kind="switch", timestamp_ms=4_000, slot="p1a", species="Blaziken",
+                    health="156/156", source_frame=13,
+                ),
+                BattleEvent(
+                    kind="switch", timestamp_ms=5_000, slot="p1a", species="Rillaboom",
+                    health=None, source_frame=14,
+                ),
+            ),
+            winner="p1",
+        )
+
+        issues = _revived_identity_issues(battle)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].severity, "blocking")
+        self.assertEqual(issues[0].frame, 14)
+        self.assertIn("Rillaboom", issues[0].message)
+        self.assertIn("vuelve a entrar", issues[0].message)
+        # Llega a la vía servida a Teams: `review_capture` alimenta
+        # `ReplayDocument.issues`/`hasBlockingIssues` (lib/showdown-replay.ts).
+        self.assertIn(issues[0], review_capture(battle))
+
+    def test_a_first_time_entrant_still_raises_no_revived_identity_issue(self) -> None:
+        # No repone el bloqueo general de HP que Ies revirtió en `32da465`:
+        # una identidad SIN historial de vida en absoluto -los dos líderes
+        # con los que arranca el combate- nunca pasa por `fainted_since`
+        # (no tiene ningún `faint` propio que la marque), así que sigue
+        # sin incidencia.
+        battle = CapturedBattle(
+            p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+            p2=BattleSide("Rival", ("Sableye", "Pelipper"), ("Sableye", "Pelipper")),
+            events=(
+                BattleEvent(kind="switch", timestamp_ms=0, slot="p1a", species="Rillaboom", health=None),
+                BattleEvent(kind="switch", timestamp_ms=0, slot="p2a", species="Sableye", health=None),
+                BattleEvent(kind="turn", timestamp_ms=500, turn=1),
+            ),
+            winner="p1",
+        )
+
+        self.assertEqual(_revived_identity_issues(battle), ())
+
+    def test_a_live_actor_that_leaves_and_returns_without_fainting_is_not_flagged(self) -> None:
+        # Un actor vivo que sale del campo (otro Pokémon ocupa su slot) y
+        # vuelve, sin ningún `faint` de por medio, no es el patrón que
+        # este invariante vigila: no hay falso positivo.
+        battle = CapturedBattle(
+            p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+            p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+            events=(
+                BattleEvent(kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom", health="207/207"),
+                BattleEvent(kind="damage", timestamp_ms=2_000, slot="p1a", species="Rillaboom", health="120/207"),
+                BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health="156/156"),
+                BattleEvent(kind="switch", timestamp_ms=4_000, slot="p1a", species="Rillaboom", health="120/207"),
+            ),
+            winner="p1",
+        )
+
+        self.assertEqual(_revived_identity_issues(battle), ())
+
+    def test_revived_identity_issue_is_silent_on_the_real_p1_and_p5_rillaboom_replacements(self) -> None:
+        """Job real `10a7fba6fda04585`, partidas 1 (turno 7) y 5 (turno 5):
+        el switch fantasma de Rillaboom ya se descarta antes de serializar
+        (`_drop_ghost_reentries`), así que el reemplazo real (Blaziken,
+        Golisopod) nunca convive con un Rillaboom "revivido" en
+        `battle.events` -este invariante nuevo no debe encontrar nada acá.
+        Mismo timing real que ya cubre
+        `test_a_confirmed_faint_reentering_as_its_own_resolved_species_is_dropped`
+        (commits `afee177`/`32da465`); esto sólo comprueba, aparte, que el
+        invariante nuevo no dispara sobre ese resultado ya limpio.
+        """
+
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.events = [
+            BattleEvent(kind="damage", timestamp_ms=670_500, slot="p1a", species="Rillaboom", health="0/207"),
+            BattleEvent(kind="faint", timestamp_ms=674_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=674_499, slot="p1a", species="Rillaboom", health=None),
+            BattleEvent(kind="switch", timestamp_ms=689_999, slot="p1a", species="Blaziken", health="82/156"),
+        ]
+        accumulator._drop_ghost_reentries()
+        accumulator._reconcile_zero_hp()
+        accumulator._drop_redundant_reswitches({})
+
+        battle = CapturedBattle(
+            p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+            p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+            events=tuple(accumulator.events),
+            winner="p1",
+        )
+        self.assertEqual(_revived_identity_issues(battle), ())
+
+        second = CaptureAccumulator(CaptureSeed())
+        second.events = [
+            BattleEvent(kind="damage", timestamp_ms=3_048_000, slot="p2b", species="Rillaboom", health="0/100"),
+            BattleEvent(kind="faint", timestamp_ms=3_052_000, slot="p2b", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=3_052_500, slot="p2b", species="Rillaboom", health=None),
+            BattleEvent(kind="switch", timestamp_ms=3_075_500, slot="p2b", species="Golisopod", health="100/182"),
+        ]
+        second._drop_ghost_reentries()
+        second._reconcile_zero_hp()
+        second._drop_redundant_reswitches({})
+
+        second_battle = CapturedBattle(
+            p1=BattleSide("IesYo", ("Sableye",), ("Sableye",)),
+            p2=BattleSide("Rival", ("Rillaboom", "Golisopod"), ("Rillaboom", "Golisopod")),
+            events=tuple(second.events),
+            winner="p1",
+        )
+        self.assertEqual(_revived_identity_issues(second_battle), ())
 
     def test_pipeline_reorders_detected_selection_with_observed_leads_first(self) -> None:
         frames = [

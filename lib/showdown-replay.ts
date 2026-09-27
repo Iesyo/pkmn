@@ -69,7 +69,18 @@ export interface ShowdownReplayDocument {
 // reaparece sin lectura (`entrada_a_cero`/`reentrada_debilitado`, sin
 // cambios). Cualquier replay marcado `col102-r8` necesita pasar otra vez
 // por esta versión.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r9";
+//
+// r10, corte de Roku sobre r9 (mismo día, quinta vuelta): aceptó no
+// bloquear una identidad sin historial, pero encontró que el recuerdo de
+// "qué identidad se debilitó en este slot" vivía sólo mientras nadie más
+// lo ocupara -se perdía en cuanto otro Pokémon entraba de por medio, así
+// que el propio debilitado podía "volver" después de ese ocupante sin
+// que nada lo atrapara. `pipeline._revived_identity_issues` (backend)
+// sigue la identidad por lado+especie, no por slot, y sobrevive a
+// cualquier ocupante intermedio hasta el final del combate. Cualquier
+// replay marcado `col102-r9` -o antes- necesita pasar otra vez por esta
+// versión.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r10";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;
