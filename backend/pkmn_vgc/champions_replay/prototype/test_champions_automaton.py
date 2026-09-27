@@ -1874,6 +1874,64 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertFalse(any(e.get("delayed_voluntary_entry") for e in uncertain["events"]))
         self.assertIn("unclassified_text", {issue["code"] for issue in uncertain["issues"]})
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_NINTH"), "Requiere el noveno ZIP del usuario")
+    def test_partner_hud_and_repeated_faint_text_need_independent_evidence(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_NINTH"])
+        frames, baselines = read_diagnostic(path)
+        self.assertEqual(set(baselines), {0, 1})
+        context = read_diagnostic_context(path)
+        first = [r for r in frames if r["battle_index"] == 0]
+        ledgers = {i: BattleAutomaton(i, [r for r in frames if r["battle_index"] == i], context).run()
+                   for i in baselines}
+        self.assertEqual([ledger["issues"] for ledger in ledgers.values()], [[], []])
+        self.assertEqual([sum(e["kind"] in {"damage", "heal"} and e["status"] == "consistent"
+                              for e in ledger["events"]) for ledger in ledgers.values()], [21, 11])
+        self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_hp_sequence"] for i in baselines))
+        first_ledger = ledgers[0]
+        self.assertTrue(compare_baseline(first_ledger, baselines[0])["exact_core_sequence"])
+        opening = [e for e in ledgers[1]["events"] if e["kind"] == "ability" and e["frame"] < 1390]
+        self.assertEqual([(e["frame"], e["slot"], e["value"]) for e in opening],
+                         [(1370, "p2a", "Intimidate"), (1375, "p1a", "Defiant"),
+                          (1380, "p2b", "Intimidate"), (1385, "p1a", "Defiant")])
+        self.assertEqual(compare_baseline(ledgers[1], baselines[1])["first_differences"],
+                         [{"operation": "insert", "baseline": [],
+                           "automaton": [("ability", "p1a", "Defiant")]}])
+        self.assertTrue(all(len(e["ability_reconstruction"]["evidence"]) >= 2 for e in opening))
+        repeated = next(e for e in first_ledger["events"] if e["kind"] == "faint" and e["frame"] == 672)
+        resurfaced = next(e for e in first_ledger["events"] if e["kind"] == "switch" and
+                          e["slot"] == "p2a" and e["frame"] == 714)
+        self.assertEqual((repeated["status"], resurfaced["status"]), ("suppressed", "suppressed"))
+        self.assertEqual((repeated["resolution"]["slot"], repeated["resolution"]["hp_event_seq"]),
+                         ("p2b", 49))
+        self.assertEqual({e["frame"] for e in resurfaced["resolution"]["evidence"]},
+                         {640, 641, 714, 715})
+        self.assertEqual([i["code"] for i in first_ledger["resolved_issues"]],
+                         ["faint_text_unconfirmed", "reentry_without_exit"])
+
+        # A single faint reading cannot discard the detector's other-slot
+        # candidate; an explicit withdrawal forbids HUD continuity.
+        missing_narration = json.loads(json.dumps(first))
+        for row in missing_narration:
+            if row["frame"] == 670:
+                row["ocr"] = [line for line in row["ocr"] if
+                              line.get("text") != "The opposing Salamence fainted!"]
+        unresolved = BattleAutomaton(0, missing_narration, context).run()
+        self.assertIn("faint_text_unconfirmed", {i["code"] for i in unresolved["issues"]})
+        withdrawn = json.loads(json.dumps(first))
+        for row in withdrawn:
+            if row["frame"] == 705:
+                row["ocr"].append({"text": "Rival withdrew Incineroar!", "confidence": .999,
+                                   "left": .15, "top": .75})
+        unresolved = BattleAutomaton(0, withdrawn, context).run()
+        self.assertIn("reentry_without_exit", {i["code"] for i in unresolved["issues"]})
+        missing_panel = json.loads(json.dumps([r for r in frames if r["battle_index"] == 1]))
+        for row in missing_panel:
+            if 1380 <= row["frame"] <= 1383:
+                row["ocr"] = [line for line in row["ocr"] if line.get("text") != "Captain's"]
+        uncertain = BattleAutomaton(1, missing_panel, context).run()
+        self.assertFalse(any(e["kind"] == "ability" and e["slot"] == "p2b" and
+                             e["value"] == "Intimidate" for e in uncertain["events"]))
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC"), "Requiere el ZIP original del usuario")
     def test_five_approved_battles_retain_their_core_event_order(self):
         frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC"]))
@@ -1882,7 +1940,19 @@ class TemporalAutomatonTests(unittest.TestCase):
         for index, baseline in baselines.items():
             with self.subTest(battle_index=index):
                 ledger = BattleAutomaton(index, [x for x in frames if x["battle_index"] == index]).run()
-                self.assertTrue(compare_baseline(ledger, baseline)["exact_core_sequence"])
+                comparison = compare_baseline(ledger, baseline)
+                if index == 0:
+                    # Four repeated frames show a lead's Psychic Surge panel;
+                    # the archived replay omitted the ability but kept its terrain.
+                    self.assertEqual(comparison["aligned_events"], comparison["baseline_core_events"])
+                    self.assertEqual(comparison["first_differences"],
+                                     [{"operation": "insert", "baseline": [],
+                                       "automaton": [("ability", "p1b", "Psychic Surge")]}])
+                    ability = next(e for e in ledger["events"] if e["kind"] == "ability" and e["frame"] == 209)
+                    self.assertEqual([x["frame"] for x in ability["ability_reconstruction"]["evidence"]],
+                                     [209, 210, 211, 212])
+                else:
+                    self.assertTrue(comparison["exact_core_sequence"])
                 self.assertTrue(all(link["status"] == "linked" for link in ledger["narration_links"]))
                 message_count += len(ledger["narration_links"])
                 if index == 0:

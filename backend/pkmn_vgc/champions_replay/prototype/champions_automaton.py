@@ -634,6 +634,114 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
     return None
 
 
+def recover_opening_ability_panels(candidates: list[dict[str, Any]],
+                                   frames: list[dict[str, Any]],
+                                   aliases: dict[str, dict[str, str]]) -> None:
+    """Anchor opening abilities to repeated owner panels before the first turn.
+
+    Opening switches and ability candidates may all be buffered until the
+    first stable HUD. Only a unique nickname in two HUD frames, a known
+    species/ability pair, and two consecutive panel readings can recover an
+    earlier activation. Separate panel episodes are separate activations.
+    """
+    first_turn = next((c for c in candidates if c["event"]["kind"] == "turn" and
+                       c["event"].get("turn") == 1), None)
+    if not first_turn:
+        return
+    turn_frame = first_turn["observed_frame"]
+    lookup = {row["frame"]: row for row in frames}
+    catalog = species_abilities()
+    owners = {}
+    for item in candidates:
+        event, slot = item["event"], item["event"].get("slot")
+        if event["kind"] not in {"switch", "drag"} or slot not in SLOTS or item["observed_frame"] != turn_frame:
+            continue
+        species = item.get("canonical_species") or event.get("species") or ""
+        if PLACEHOLDER.fullmatch(species):
+            continue
+        names = [hud_nickname(lookup.get(n, {}), slot) for n in (turn_frame, turn_frame + 1)]
+        if (not names[0] or names[0] != names[1] or
+            any(hud_nickname(lookup.get(turn_frame, {}), peer) == names[0]
+                for peer in SLOTS if peer != slot and peer.startswith(slot[:2]))):
+            continue
+        name = names[0]
+        named_species = aliases[slot[:2]].get(name, name)
+        if identity_species(named_species).casefold() != identity_species(species).casefold():
+            continue
+        owners[(slot[:2], name)] = (slot, species, item)
+    if not owners:
+        return
+    start = min(item.get("logical_frame", turn_frame) for _, _, item in owners.values())
+    if turn_frame - start > 80:
+        return
+    hits: dict[tuple[str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+    for row in frames:
+        if not start <= row["frame"] < turn_frame:
+            continue
+        for (side, name), (slot, species, _) in owners.items():
+            area = (.02, .30) if side == "p1" else (.75, .99)
+            panel = [line for line in row.get("ocr", ()) if
+                     area[0] <= line.get("left", -1) <= area[1] and
+                     .30 <= line.get("top", -1) <= .55 and line.get("confidence", 0) >= .95]
+            named = [line for line in panel if re.sub(r"[’']s$", "", line["text"].casefold()) == name]
+            abilities = [line for line in panel if line["text"] in catalog.get(species, ())]
+            if len(named) != 1 or len(abilities) != 1:
+                continue
+            ability = abilities[0]["text"]
+            hits[(slot, ability)].append({"frame": row["frame"], "text": ability,
+                                          "owner": name, "confidence": min(named[0]["confidence"],
+                                                                           abilities[0]["confidence"])})
+    for (slot, ability), evidence in hits.items():
+        episodes: list[list[dict[str, Any]]] = []
+        for line in evidence:
+            if not episodes or line["frame"] != episodes[-1][-1]["frame"] + 1:
+                episodes.append([])
+            episodes[-1].append(line)
+        episodes = [episode for episode in episodes if len(episode) >= 2]
+        existing = [c for c in candidates if c["event"]["kind"] == "ability" and
+                    c["event"].get("slot") == slot and c["event"].get("value") == ability and
+                    c["observed_frame"] == turn_frame]
+        assignments = []
+        for item in existing:
+            source = item["event"].get("source_frame")
+            nearby = [(abs(source - episode[0]["frame"]), index)
+                      for index, episode in enumerate(episodes) if source is not None and
+                      episode[0]["frame"] - 2 <= source <= episode[-1]["frame"] + 1]
+            if not nearby:
+                break
+            _, index = min(nearby)
+            assignments.append((item, index))
+        if (len(assignments) != len(existing) or
+            len({index for _, index in assignments}) != len(assignments)):
+            continue
+        assigned = {index for _, index in assignments}
+        for item, index in assignments:
+            episode = episodes[index]
+            origin = episode[0]["frame"]
+            event = item["event"]
+            item.update(observed_frame=origin, observed_ms=lookup[origin]["timestamp_ms"],
+                        logical_frame=origin,
+                        ability_reconstruction={"detected_frame": turn_frame, "raw_event": dict(event),
+                                                "evidence": episode,
+                                                "reason": "Panel inicial de habilidad repetido y ocupante corroborado por HUD"})
+            item["event"] = {**event, "source_frame": origin,
+                             "timestamp_ms": item["observed_ms"]}
+        species = next(species for (side, owner), (current_slot, species, _) in owners.items()
+                       if current_slot == slot)
+        for index, episode in enumerate(episodes):
+            if index in assigned:
+                continue
+            origin = episode[0]["frame"]
+            candidates.append({"event": {"kind": "ability", "slot": slot, "species": species,
+                                         "value": ability, "source_frame": origin,
+                                         "timestamp_ms": lookup[origin]["timestamp_ms"],
+                                         "confidence": min(e["confidence"] for e in episode)},
+                               "observed_frame": origin, "logical_frame": origin,
+                               "observed_ms": lookup[origin]["timestamp_ms"], "ordinal": 0,
+                               "ability_reconstruction": {"detected_frame": None, "evidence": episode,
+                                                          "reason": "Panel inicial de habilidad repetido, especie y slot confirmados por HUD"}})
+
+
 def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in frames:
@@ -794,6 +902,8 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for item in candidates:
         event = item["event"]
         if event["kind"] == "ability" and event.get("slot"):
+            if item.get("ability_reconstruction"):
+                continue
             anchor = anchors.get((item["observed_frame"], event["slot"]))
             if anchor is not None:
                 item["logical_frame"] = anchor
@@ -830,6 +940,7 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 and start < other["observed_frame"] < end
                 for other in candidates
             )
+    recover_opening_ability_panels(candidates, frames, aliases)
     # El anuncio ocurre cuando entró el Pokémon; el HUD confirma el slot y la
     # especie más tarde. Se ordena por el anuncio y se guardan ambas horas.
     order = {"switch": 0, "drag": 0, "ability": 1}
@@ -2550,6 +2661,197 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_repeated_faint_text(self) -> None:
+        """A lingering faint sentence must not faint the living partner.
+
+        The detector may assign a second reading of one announcement to the
+        other slot after the first actor has left. Only discard that reading
+        when the first faint has confirmed zero HP and the text repeats while
+        the other actor still has positive, confirmed HP.
+        """
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "faint_text_unconfirmed":
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            if rejected["status"] != "review" or not rejected.get("text_support"):
+                unresolved.append(issue)
+                continue
+            previous = next((e for e in reversed(self.events[:rejected["seq"] - 1])
+                             if e["actor_id"] == rejected["actor_id"] and e["status"] == "consistent" and
+                             (e["kind"] in HP_KINDS | {"switch", "drag"})), None)
+            previous_health = (previous["after"] or previous["health"]) if previous else None
+            if (not previous or previous.get("hp_state") != "confirmed" or
+                not 0 < (health_ratio(previous_health) or 0) <= 1 or
+                self._hp_support(rejected["slot"], "0/100", rejected["frame"])["state"] == "confirmed"):
+                unresolved.append(issue)
+                continue
+            matches = []
+            for faint in self.events[:rejected["seq"] - 1]:
+                if (faint["kind"] != "faint" or faint["status"] != "consistent" or
+                    faint["slot"] == rejected["slot"] or faint["turn"] != rejected["turn"] or
+                    faint["slot"][:2] != rejected["slot"][:2] or
+                    not 0 < rejected["observed_ms"] - faint["observed_ms"] <= 3_000):
+                    continue
+                signature = narration_signature(rejected["value"] or "")
+                if not signature or signature[0] != "faint" or signature[1] != faint["slot"][:2]:
+                    continue
+                named = signature[2].casefold()
+                named_species = self.nickname_species[signature[1]].get(named, named)
+                if identity_species(named_species).casefold() != identity_species(faint["species"]).casefold():
+                    continue
+                hp = next((e for e in reversed(self.events[:faint["seq"] - 1])
+                           if e["actor_id"] == faint["actor_id"] and e["status"] != "suppressed" and
+                           e["kind"] in HP_KINDS | {"switch", "drag"}), None)
+                if (not hp or hp["kind"] != "damage" or hp["status"] != "consistent" or
+                    hp.get("hp_state") != "confirmed" or health_ratio(hp["after"]) != 0):
+                    continue
+                if any(e["status"] != "suppressed" and e["kind"] in ACTIVITY | {"turn", "faint"}
+                       for e in self.events[faint["seq"]:rejected["seq"] - 1]):
+                    continue
+                evidence = []
+                rows = [row for row in self.frames
+                        if faint["observed_ms"] <= row["timestamp_ms"] <= rejected["observed_ms"]]
+                if any(b["timestamp_ms"] - a["timestamp_ms"] > 1_000 for a, b in zip(rows, rows[1:])):
+                    continue
+                blocked = False
+                for row in rows:
+                    for line in row.get("ocr", ()):
+                        text = line.get("text", "").strip()
+                        if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                            continue
+                        if ANNOUNCED_ENTRY.search(text) or re.search(r"\b(come back|went back|withdrew|used)\b", text, re.I):
+                            blocked = True
+                        match = FAINT_NARRATION.fullmatch(text)
+                        if not match or ("p2" if match[1] else "p1") != faint["slot"][:2]:
+                            continue
+                        name = match[2].casefold()
+                        species = self.nickname_species[faint["slot"][:2]].get(name, name)
+                        if identity_species(species).casefold() == identity_species(faint["species"]).casefold():
+                            evidence.append({"frame": row["frame"], "text": text,
+                                             "confidence": line["confidence"], "kind": "faint_narration"})
+                if (not blocked and len({e["frame"] for e in evidence}) >= 2 and
+                    any(e["frame"] == rejected["frame"] for e in evidence)):
+                    matches.append((faint, hp, evidence))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            faint, hp, evidence = matches[0]
+            resolution = {"state": "resolved", "event_seq": faint["seq"], "hp_event_seq": hp["seq"],
+                          "actor_id": faint["actor_id"], "slot": faint["slot"],
+                          "reason": "Segundo OCR del mismo debilitamiento: PS cero del actor, anuncio repetido y compañero con PS positivos confirmados.",
+                          "evidence": hp["hp_support"]["evidence"] + evidence}
+            rejected["status"] = "suppressed"
+            rejected["text_support"]["state"] = "rejected"
+            rejected["resolution"] = resolution
+            faint["observations"].append({"frame": rejected["frame"], "text": rejected["value"],
+                                          "reason": "Lectura repetida atribuida al otro slot por el detector"})
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
+    def _reconcile_partner_hud_entries(self) -> None:
+        """A simultaneous partner switch can resurface an unchanged HUD."""
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "reentry_without_exit":
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            slot, health = rejected["slot"], rejected["health"]
+            if (rejected["status"] != "suppressed" or not health or
+                not 0 < (health_ratio(health) or 0) <= 1 or
+                not any(e["kind"] in {"switch", "drag"} and e["status"] == "consistent" and
+                        e["slot"] != slot and e["slot"][:2] == slot[:2] and
+                        e["frame"] == rejected["frame"] for e in self.events)):
+                unresolved.append(issue)
+                continue
+            expected = identity_species(rejected["species"]).casefold()
+            label = health.split("/", 1)[0] + "%" if slot.startswith("p2") else health
+            prior = next((e for e in reversed(self.events[:rejected["seq"] - 1])
+                          if e["actor_id"] == rejected["actor_id"] and e["status"] == "consistent" and
+                          e["kind"] in HP_KINDS | {"switch", "drag", "faint"}), None)
+            if (not prior or prior["kind"] == "faint" or prior.get("hp_state") != "confirmed" or
+                (prior["after"] or prior["health"]) != health):
+                unresolved.append(issue)
+                continue
+
+            def hud_readings(row: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+                areas = NAME_HUD_AREAS if kind == "hud_name" else HP_HUD_AREAS
+                left, right, top, bottom = areas[slot]
+                return [line for line in row.get("ocr", ()) if line.get("confidence", 0) >= .95 and
+                        left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom and
+                        line.get("right", right) <= right + .02 and
+                        line.get("bottom", bottom) <= bottom + .02 and
+                        (re.search(r"[A-Za-z]{3}", line.get("text", "")) if kind == "hud_name"
+                         else HP_TEXT.fullmatch(line.get("text", "").strip()))]
+
+            def valid_reading(line: dict[str, Any], kind: str) -> bool:
+                if kind == "hud_hp":
+                    return re.sub(r"\s+", "", line["text"]) == label
+                name = line["text"].casefold()
+                return identity_species(self.nickname_species[slot[:2]].get(name, name)).casefold() == expected
+
+            def hud_evidence(row: dict[str, Any]) -> list[dict[str, Any]] | None:
+                proof = []
+                for kind in ("hud_name", "hud_hp"):
+                    readings = hud_readings(row, kind)
+                    if len(readings) != 1 or not valid_reading(readings[0], kind):
+                        return None
+                    proof.append({"frame": row["frame"], "text": readings[0]["text"],
+                                  "confidence": readings[0]["confidence"], "kind": kind})
+                return proof
+
+            window = [r for r in self.frames if prior["observed_ms"] <= r["timestamp_ms"] <=
+                      rejected["observed_ms"] + 1_000]
+            pre = [(r, hud_evidence(r)) for r in window if r["timestamp_ms"] < rejected["observed_ms"] and
+                   rejected["observed_ms"] - r["timestamp_ms"] <= 40_000]
+            pre = [(r, proof) for r, proof in pre if proof]
+            post = [(r, hud_evidence(r)) for r in window if r["timestamp_ms"] >= rejected["observed_ms"]]
+            if (len(pre) < 2 or pre[-1][0]["timestamp_ms"] - pre[-2][0]["timestamp_ms"] > 1_000 or
+                len(post) < 2 or not all(proof for _, proof in post[:2]) or
+                post[0][0]["frame"] != rejected["frame"] or
+                post[1][0]["timestamp_ms"] - post[0][0]["timestamp_ms"] > 1_000):
+                unresolved.append(issue)
+                continue
+            start_ms, end_ms = pre[-2][0]["timestamp_ms"], post[1][0]["timestamp_ms"]
+            between = [r for r in window if start_ms <= r["timestamp_ms"] <= end_ms]
+            conflicting_hud = any(any(not valid_reading(line, kind)
+                                      for kind in ("hud_name", "hud_hp")
+                                      for line in hud_readings(row, kind)) for row in between)
+            outgoing_or_return = False
+            for row in between:
+                for line in row.get("ocr", ()):
+                    text = line.get("text", "").strip()
+                    if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                        continue
+                    entry = ANNOUNCED_ENTRY.search(text)
+                    if entry:
+                        name = (entry[1] or entry[2]).casefold()
+                        species = self.nickname_species[slot[:2]].get(name, name)
+                        if identity_species(species).casefold() == expected:
+                            outgoing_or_return = True
+                    if re.search(r"\b(come back|went back|withdrew)\b", text, re.I):
+                        outgoing_or_return = True
+            if (any(e["status"] != "suppressed" and e["slot"] == slot and
+                    e["kind"] in {"switch", "drag", "faint", "illusion_reveal"} and
+                    start_ms < e["observed_ms"] <= end_ms
+                    for e in self.events if e["seq"] != rejected["seq"]) or
+                conflicting_hud or outgoing_or_return or
+                any(e["kind"] in {"switch", "drag"} and e.get("slot") == slot
+                    for r in between for e in r.get("detections", {}).get("events", ())
+                    if r["frame"] != rejected["frame"])):
+                unresolved.append(issue)
+                continue
+            evidence = [item for _, proof in (pre[-2:] + post[:2]) for item in proof]
+            resolution = {"state": "resolved", "event_seq": prior["seq"],
+                          "actor_id": rejected["actor_id"], "slot": slot,
+                          "reason": "HUD del compañero reaparece junto a la entrada del otro slot: nombre y PS estables antes y después, sin salida observada.",
+                          "evidence": evidence}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def _reconcile_hud_identity_entries(self) -> None:
         """Join a provisional HUD identity to its corroborated living occupant.
 
@@ -2945,6 +3247,8 @@ class BattleAutomaton:
         self._reconcile_mega_candidates()
         self._reconcile_faint_hud_entries()
         self._reconcile_hud_identity_entries()
+        self._reconcile_repeated_faint_text()
+        self._reconcile_partner_hud_entries()
         self._reconcile_transient_text()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
