@@ -350,6 +350,54 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(sum(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]), 1)
         self.assertEqual(next(iter(ledger["actors"].values()))["health"], "41/100")
 
+    def test_terrain_restoration_discards_truncated_damage_and_heals_from_prior_hp(self):
+        trace = [frame(1, [event("switch", "p2a", "Sneasler", "41/100"),
+                           event("fieldstart", value="move: Grassy Terrain"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Sneasler", "1/100")]),
+                 frame(3, [event("heal", "p2a", "Sneasler", "47/100")]), frame(4),
+                 frame(5, [event("message", value="The opposing Sneasler had its HP restored.")])]
+        trace[1]["ocr"] = [
+            {"text": "44", "confidence": .999, "left": .70, "right": .74,
+             "top": .11, "bottom": .16},
+            {"text": "1%", "confidence": .86, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        trace[2]["ocr"] = [{"text": "47", "confidence": .97, "left": .70,
+                            "right": .74, "top": .11, "bottom": .16},
+                           {"text": "%", "confidence": .99, "left": .73,
+                            "right": .75, "top": .12, "bottom": .16}]
+        trace[3]["ocr"] = [{"text": "47%", "confidence": .999, "left": .70,
+                            "right": .75, "top": .11, "bottom": .16}]
+        ledger = BattleAutomaton(0, trace).run()
+        rejected = next(x for x in ledger["events"] if x["kind"] == "hp_rejected_reading")
+        heal = next(x for x in ledger["events"] if x["kind"] == "heal")
+        self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
+                         ("suppressed", "41/100", "41/100"))
+        self.assertEqual(rejected["observations"][0]["competing_ocr"]["stronger"]["text"], "44")
+        self.assertEqual((heal["status"], heal["before"], heal["after"]),
+                         ("consistent", "41/100", "47/100"))
+        self.assertEqual(heal["cause"], "Grassy Terrain corroborado por HUD y mensaje")
+        self.assertIn("The opposing Sneasler had its HP restored.", heal["narration"])
+        self.assertFalse(any(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]))
+
+    def test_terrain_without_restoration_message_keeps_conflict_for_review(self):
+        trace = [frame(1, [event("switch", "p2a", "Sneasler", "41/100"),
+                           event("fieldstart", value="move: Grassy Terrain"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Sneasler", "1/100")]),
+                 frame(3, [event("heal", "p2a", "Sneasler", "47/100")]), frame(4)]
+        trace[1]["ocr"] = [
+            {"text": "44", "confidence": .999, "left": .70, "right": .74,
+             "top": .11, "bottom": .16},
+            {"text": "1%", "confidence": .86, "left": .73, "right": .75,
+             "top": .12, "bottom": .16},
+        ]
+        trace[3]["ocr"] = [{"text": "47%", "confidence": .999, "left": .70,
+                            "right": .75, "top": .11, "bottom": .16}]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(sum(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]), 1)
+        self.assertEqual(next(x for x in ledger["events"] if x["kind"] == "heal")["before"],
+                         "41/100")
+
     def test_illusion_reveals_one_actor_then_real_disguised_species_gets_its_own_state(self):
         trace = [frame(1, [event("switch", "p2a", "Kingambit", "100/100"), event("turn", turn=1)]),
                  frame(2, [event("move", "p2a", "Kingambit", move="Bitter Malice")]),
@@ -582,10 +630,15 @@ class TemporalAutomatonTests(unittest.TestCase):
                             for a in ledgers[3]["actors"].values()))
         battle = ledgers[1]
         self.assertEqual({e["frame"] for e in battle["events"] if e["kind"] == "hp_ocr_conflict"},
-                         {2082})
-        self.assertTrue({1694, 1766}.issubset(
+                         set())
+        self.assertTrue({1694, 1766, 2082}.issubset(
             {e["frame"] for e in battle["events"] if e["kind"] == "hp_rejected_reading" and
              e["status"] == "suppressed"}))
+        sneasler_heal = next(e for e in battle["events"] if e["kind"] == "heal" and
+                             e["frame"] == 2083 and e["slot"] == "p2a")
+        self.assertEqual((sneasler_heal["before"], sneasler_heal["after"],
+                          sneasler_heal["cause"]),
+                         ("41/100", "47/100", "Grassy Terrain corroborado por HUD y mensaje"))
         self.assertEqual(sum(e["kind"] == "mega" and e["slot"] == "p1a" and
                              e["status"] == "consistent" for e in battle["events"]), 0)
         self.assertFalse(any(e["kind"] == "damage" and e["status"] == "consistent" and
