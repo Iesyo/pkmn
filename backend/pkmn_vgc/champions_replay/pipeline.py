@@ -203,6 +203,19 @@ class CaptureAccumulator:
         no puede haber daño ni cura reales: es el final del último cambio de
         ese Pokémon en el turno anterior, y corrige su valor. Si no hay tal
         cambio (sin cruzar su entrada o su debilitado), no se toca nada.
+
+        COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida 2:
+        Delphox cierra el turno 2 en 3/100 (daño real); un único frame en el
+        límite del turno 3, antes de cualquier acción, lo lee al revés como
+        28/100 -una cura sin causa-, y el turno 4 vuelve a leerlo bien en
+        3/100, también antes de su primera acción. Exigir que la lectura
+        tardía fuera del MISMO tipo (`damage`/`heal`) que la anterior sólo
+        cubría el dígito que se corrige a sí mismo en la misma dirección; un
+        HUD que se lee al revés por un instante -y luego se vuelve a leer en
+        su valor real, cruzando otra vez este mismo límite de turno- necesita
+        la misma corrección sin importar en qué dirección lea cada extremo:
+        ninguna lectura entre el turno y su primera acción es un cambio real,
+        así que sólo corrige el último valor conocido de ese slot.
         """
 
         turn_index = None
@@ -222,7 +235,7 @@ class CaptureAccumulator:
             if previous.kind in {"switch", "drag", "faint"}:
                 return False
             if previous.kind in {"damage", "heal"}:
-                if previous.kind != event.kind or previous.species != event.species:
+                if previous.species != event.species:
                     return False
                 if previous.health != event.health:
                     self._last_event_at.pop(previous.signature(), None)

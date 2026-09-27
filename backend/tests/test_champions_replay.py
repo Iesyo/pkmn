@@ -1182,6 +1182,45 @@ class ChampionsReplayTests(unittest.TestCase):
             ],
         )
 
+    def test_a_reading_opposite_the_last_hit_settles_too_across_a_turn_boundary(self) -> None:
+        # COL-102, reapertura del 26/27 sep, job 90403f16712d4d41, partida 2:
+        # Delphox cierra el turno 2 en 28/100 (daño real de Hyper Voice); un
+        # solo frame en el límite del turno 3, antes de cualquier acción, lo
+        # lee al revés como una cura -un valor que un turno después, también
+        # antes de cualquier acción, se vuelve a leer distinto. Exigir el
+        # mismo `kind` que la lectura anterior (como en el caso de arriba,
+        # que sólo corrige un daño que se corrige a sí mismo) dejaba pasar
+        # las dos lecturas como un -heal y un -damage nuevos, con el turno 3
+        # vacío salvo por ese -heal fantasma. Ninguna lectura entre un turno
+        # y su primera acción es un cambio real, en cualquier dirección: las
+        # dos se pliegan sobre el mismo dato, sin turno vacío ni segundo
+        # evento sin causa.
+        accumulator = CaptureAccumulator(CaptureSeed())
+        accumulator.apply(
+            FrameDetections(
+                events=(
+                    BattleEvent(kind="move", timestamp_ms=100_000, slot="p1b", species="Gardevoir", move="Hyper Voice"),
+                    BattleEvent(kind="damage", timestamp_ms=100_500, slot="p2a", species="Delphox", health="28/100"),
+                    BattleEvent(kind="turn", timestamp_ms=140_000, turn=3),
+                    BattleEvent(kind="heal", timestamp_ms=140_500, slot="p2a", species="Delphox", health="28/100"),
+                    BattleEvent(kind="turn", timestamp_ms=190_000, turn=4),
+                    BattleEvent(kind="damage", timestamp_ms=190_500, slot="p2a", species="Delphox", health="3/100"),
+                    BattleEvent(kind="move", timestamp_ms=195_000, slot="p2a", species="Delphox", move="Protect"),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [(event.kind, event.health or event.move) for event in accumulator.events],
+            [
+                ("move", "Hyper Voice"),
+                ("damage", "3/100"),
+                ("turn", None),
+                ("turn", None),
+                ("move", "Protect"),
+            ],
+        )
+
     def test_a_faint_animation_noise_is_dropped_around_the_real_faint(self) -> None:
         # COL-102, reapertura estructural del 25 sep, job `90403f16712d4d41`,
         # partida 1: Close Combat deja a Archaludon en 0/100 -real, con
