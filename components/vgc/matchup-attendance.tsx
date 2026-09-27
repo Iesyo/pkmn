@@ -41,12 +41,14 @@ function StatPanel({
   stats,
   kind,
   totalGames,
+  emptyLabel,
   icon: Icon,
 }: {
   title: string;
   stats: OpponentPokemonStat[];
   kind: keyof typeof panelStyles;
   totalGames: number;
+  emptyLabel: string;
   icon: React.ComponentType<{ className?: string }>;
 }) {
   const style = panelStyles[kind];
@@ -73,7 +75,7 @@ function StatPanel({
             <div className="min-w-0">
               <p className="truncate text-[10px] font-semibold text-slate-300">{stat?.species ?? "Sin datos"}</p>
               <p className="text-[9px] text-slate-600">
-                {stat ? (isAttendance ? `visto en ${stat.games} de ${totalGames}` : `${stat.wins} de ${stat.games} ganadas`) : "Registra partidas para calcularlo"}
+                {stat ? (isAttendance ? `visto en ${stat.games} de ${totalGames}` : `${stat.wins} de ${stat.games} ganadas`) : emptyLabel}
               </p>
             </div>
             <span className={cn("font-mono text-[10px] font-bold tabular-nums", stat ? style.metric : "text-slate-700")}>
@@ -87,26 +89,29 @@ function StatPanel({
 }
 
 export function MatchupAttendance({ matches }: { matches: MatchRecord[] }) {
-  const stats = calculateOpponentPokemonStats(matches);
-  const byBest = [...stats].sort((a, b) => b.winRate - a.winRate || b.games - a.games || a.species.localeCompare(b.species));
-  const byWorst = [...stats].sort((a, b) => a.winRate - b.winRate || b.games - a.games || a.species.localeCompare(b.species));
-  const byHighest = [...stats].sort((a, b) => b.attendanceRate - a.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
-  const byLowest = [...stats].sort((a, b) => a.attendanceRate - b.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
+  const pickStats = calculateOpponentPokemonStats(matches, "opponentPicks");
+  const previewStats = calculateOpponentPokemonStats(matches, "opponentSelected");
+  const gamesWithPicks = matches.filter((match) => match.opponentPicks?.length).length;
+  const emptyLabel = matches.length ? "Sin picks rivales registrados" : "Registra partidas para calcularlo";
+  const byBest = [...pickStats].sort((a, b) => b.winRate - a.winRate || b.games - a.games || a.species.localeCompare(b.species));
+  const byWorst = [...pickStats].sort((a, b) => a.winRate - b.winRate || b.games - a.games || a.species.localeCompare(b.species));
+  const byHighest = [...previewStats].sort((a, b) => b.attendanceRate - a.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
+  const byLowest = [...previewStats].sort((a, b) => a.attendanceRate - b.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
 
   return (
     <section className="rounded-2xl border border-white/8 bg-slate-950/45 p-3 sm:p-4">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h3 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><BarChart3 className="size-3.5 text-cyan-300" />Matchups & Attendance</h3>
-          <p className="mt-1 text-[10px] text-slate-600">Rendimiento y frecuencia por cada Pokémon visto en el equipo rival.</p>
+          <p className="mt-1 text-[10px] text-slate-600">Matchups según picks rivales; asistencia según Team Preview.</p>
         </div>
-        <span className="text-[9px] uppercase tracking-wider text-slate-700">{matches.length} partidas base</span>
+        <span className="text-[9px] uppercase tracking-wider text-slate-700">{gamesWithPicks} de {matches.length} partidas con picks rivales</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <StatPanel title="Best Matchups" stats={byBest} kind="best" totalGames={matches.length} icon={TrendingUp} />
-        <StatPanel title="Worst Matchups" stats={byWorst} kind="worst" totalGames={matches.length} icon={TrendingDown} />
-        <StatPanel title="Highest Attendance" stats={byHighest} kind="highest" totalGames={matches.length} icon={Eye} />
-        <StatPanel title="Lowest Attendance" stats={byLowest} kind="lowest" totalGames={matches.length} icon={Eye} />
+        <StatPanel title="Best Matchups" stats={byBest} kind="best" totalGames={matches.length} emptyLabel={emptyLabel} icon={TrendingUp} />
+        <StatPanel title="Worst Matchups" stats={byWorst} kind="worst" totalGames={matches.length} emptyLabel={emptyLabel} icon={TrendingDown} />
+        <StatPanel title="Highest Attendance" stats={byHighest} kind="highest" totalGames={matches.length} emptyLabel="Registra partidas para calcularlo" icon={Eye} />
+        <StatPanel title="Lowest Attendance" stats={byLowest} kind="lowest" totalGames={matches.length} emptyLabel="Registra partidas para calcularlo" icon={Eye} />
       </div>
     </section>
   );
