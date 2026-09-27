@@ -45,6 +45,17 @@ def mega_duplicate_trace(correct_frame=3):
             frame(correct_frame + 1, texts=[text])]
 
 
+def damaged_side_trace():
+    complete = "The opposing Arcanine used Flare Blitz!"
+    damaged = "The opposng Arcanine used Flare Blitz!"
+    return [frame(1, [event("switch", "p1a", "Blaziken", "156/156"),
+                      event("switch", "p2b", "Arcanine", "100/100"), event("turn", turn=1)]),
+            frame(2, [event("move", "p2b", "Arcanine", move="Flare Blitz")], texts=[complete]),
+            frame(3, [event("move", "p1a", "Arcanine", move="Flare Blitz")], texts=[damaged]),
+            frame(4, [event("move", "p2b", "Arcanine", move="Flare Blitz")], texts=[complete]),
+            frame(5, [event("damage", "p1a", "Blaziken", "80/156")])]
+
+
 def faint_hud_trace(same_frame=False):
     faint = event("faint", "p1a", "Rillaboom")
     entry = event("switch", "p1a", "Rillaboom")
@@ -632,6 +643,87 @@ class TemporalAutomatonTests(unittest.TestCase):
         damage = next(e for e in ledger["events"] if e["kind"] == "damage" and e["frame"] == 5)
         self.assertEqual(pelipper[1]["last_confirmed_health"], "63/100")
         self.assertEqual((damage["before"], damage["after"]), ("63/100", "40/100"))
+
+    def test_damaged_side_narration_is_one_opponent_action_with_original_evidence(self):
+        trace = damaged_side_trace()
+        # Reproduce the detector's poisoned alias; it is not HUD evidence.
+        for row in trace:
+            row["resolved_aliases"]["p1"]["the opposng arcanine"] = "Arcanine"
+        raw = json.dumps(trace)
+        ledger = BattleAutomaton(0, trace).run()
+        moves = [e for e in ledger["events"] if e["kind"] == "move"]
+        self.assertEqual([(e["frame"], e["slot"], e["status"]) for e in moves],
+                         [(2, "p2b", "consistent"), (3, "p2b", "suppressed"), (4, "p2b", "suppressed")])
+        repaired = moves[1]["move_narration_support"]
+        self.assertEqual(repaired["raw_event"]["slot"], "p1a")
+        self.assertEqual([e["frame"] for e in repaired["evidence"]], [2, 4])
+        self.assertIn("opposng", repaired["suspect_readings"][0]["text"])
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual(damage["cause"], moves[0]["seq"])
+        self.assertFalse(ledger["issues"])
+        self.assertEqual(json.dumps(trace), raw)
+
+    def test_damaged_side_keeps_same_species_on_both_teams_separate(self):
+        trace = damaged_side_trace()
+        trace[0]["detections"]["events"][0]["species"] = "Arcanine"
+        trace[-1]["detections"]["events"][0]["species"] = "Arcanine"
+        ledger = BattleAutomaton(0, trace).run()
+        move = next(e for e in ledger["events"] if e["frame"] == 3)
+        self.assertEqual((move["slot"], move["status"]), ("p2b", "suppressed"))
+        self.assertNotEqual(move["actor_id"], next(e["actor_id"] for e in ledger["events"] if e["kind"] == "damage"))
+
+    def test_damaged_side_can_use_exact_opponent_nickname(self):
+        trace = damaged_side_trace()
+        for row in trace:
+            row["resolved_aliases"]["p2"]["kuma"] = "Arcanine"
+            for line in row["ocr"]:
+                line["text"] = line["text"].replace("Arcanine", "Kuma")
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 3)["slot"], "p2b")
+        self.assertFalse(ledger["issues"])
+
+    def test_damaged_side_needs_complete_repetition_without_actions_or_gaps(self):
+        for case in ("one_reading", "weak", "turn", "hp", "gap", "other_move", "other_actor", "withdraw"):
+            with self.subTest(case=case):
+                trace = damaged_side_trace()
+                if case == "one_reading": trace[3]["ocr"] = []
+                if case == "weak": trace[3]["ocr"][0]["confidence"] = .94
+                if case == "turn": trace[3]["detections"]["events"].append(event("turn", turn=2))
+                if case == "hp": trace[3]["detections"]["events"].append(event("damage", "p1a", "Blaziken", "140/156"))
+                if case == "gap": trace[3]["timestamp_ms"] += 1500
+                if case == "other_move": trace[3]["ocr"][0]["text"] = "The opposing Arcanine used Protect!"
+                if case == "other_actor": trace[3]["ocr"][0]["text"] = "The opposing Incineroar used Flare Blitz!"
+                if case == "withdraw": trace[3]["ocr"].append({"text": "Arcanine, come back!", "top": .75, "confidence": .99})
+                ledger = BattleAutomaton(0, trace).run()
+                suspect = next(e for e in ledger["events"] if e["frame"] == 3)
+                self.assertEqual((suspect["kind"], suspect["status"]), ("move_text_unconfirmed", "review"))
+                self.assertEqual(suspect["move_narration_support"]["state"], "unconfirmed")
+
+    def test_damaged_side_does_not_choose_between_two_possible_opponents(self):
+        trace = damaged_side_trace()
+        trace[0]["detections"]["events"].insert(1, event("switch", "p2a", "Arcanine", "100/100"))
+        ledger = BattleAutomaton(0, trace).run()
+        suspect = next(e for e in ledger["events"] if e["frame"] == 3)
+        self.assertEqual(suspect["kind"], "move_text_unconfirmed")
+        self.assertIsNone(suspect["actor_id"])
+
+    def test_damaged_side_never_fuzzes_the_actor_name_or_move(self):
+        for text in ("The opposng Incineroar used Flare Blitz!", "The opposng Arcanine used Protect!"):
+            with self.subTest(text=text):
+                trace = damaged_side_trace()
+                trace[2]["ocr"][0]["text"] = text
+                ledger = BattleAutomaton(0, trace).run()
+                suspect = next(e for e in ledger["events"] if e["frame"] == 3)
+                self.assertNotIn("move_narration_support", suspect)
+                self.assertEqual(suspect["slot"], "p1a")
+
+    def test_real_nickname_resembling_opponent_prefix_is_not_reassigned(self):
+        trace = damaged_side_trace()
+        trace[0]["ocr"].append({"text": "The opposng Arcanine", "confidence": .99, "left": .08, "top": .86})
+        ledger = BattleAutomaton(0, trace).run()
+        suspect = next(e for e in ledger["events"] if e["frame"] == 3)
+        self.assertEqual(suspect["slot"], "p1a")
+        self.assertNotIn("move_narration_support", suspect)
 
     def test_hp_animation_and_repeated_move_become_one_action(self):
         trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"),
@@ -1810,6 +1902,28 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] == "9/100" and e["status"] == "consistent"
                              for e in archaludon["events"]))
         self.assertIn("hp_zero_rebound", [x["code"] for x in archaludon["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SEVENTH"), "Requiere el séptimo ZIP del usuario")
+    def test_seventh_job_consolidates_opponent_move_and_preserves_unrelated_reviews(self):
+        frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_SEVENTH"]))
+        self.assertEqual(len(baselines), 2)
+        ledgers = [BattleAutomaton(i, [r for r in frames if r["battle_index"] == i]).run() for i in range(2)]
+        first = ledgers[0]
+        moves = [e for e in first["events"] if 685 <= e["frame"] <= 687]
+        self.assertEqual([(e["slot"], e["move"], e["status"]) for e in moves],
+                         [("p2b", "Wood Hammer", "consistent"), ("p2b", "Wood Hammer", "suppressed"),
+                          ("p2b", "Wood Hammer", "suppressed")])
+        proof = moves[1]["move_narration_support"]
+        self.assertEqual(proof["raw_event"]["slot"], "p1a")
+        self.assertEqual([e["frame"] for e in proof["evidence"]], [685, 687, 688])
+        hp = next(e for e in first["events"] if e["frame"] == 692 and e["kind"] == "damage")
+        self.assertEqual(hp["cause"], moves[0]["seq"])
+        comparison = compare_baseline(first, baselines[0])
+        self.assertEqual(comparison["automaton_core_events"], 38)
+        self.assertTrue(comparison["exact_hp_sequence"])
+        self.assertEqual(sorted((e["code"], e["frame"]) for e in first["issues"]),
+                         [("hp_narration_unmatched", 876), ("unclassified_text", 810)])
+        self.assertEqual([(e["code"], e["frame"]) for e in ledgers[1]["issues"]], [("hp_unconfirmed", 1199)])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SIXTH"), "Requiere el sexto ZIP del usuario")
     def test_sixth_job_confirms_entry_and_excludes_clocks_without_losing_real_hp(self):

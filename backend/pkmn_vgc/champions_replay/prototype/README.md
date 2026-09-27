@@ -761,6 +761,43 @@ Total del corpus: 418 episodios confirmados y 132 mensajes asociados.
 No se modifica el traductor de producción. Cero avisos no sustituye la
 validación visual completa ni elimina las diferencias históricas de extracción.
 
+## Prefijo rival incompleto en una narración de movimiento
+
+En b121, partida 1, el anuncio de Wood Hammer se transcribe completo en
+685 y 687–688, pero en 686 pierde una letra: `The opposng Rillaboom...`.
+El detector crea un alias propio a partir de esa frase y asigna el candidato
+a p1a. Eso cambia la última acción e impide consolidar las lecturas repetidas.
+Las cuatro capturas muestran una animación del Rillaboom rival: en 05:42.00
+todavía no hay texto visible; las siguientes sí muestran el anuncio completo.
+No se altera el tiempo original de la traza para forzar coincidencia con la captura.
+
+Antes de aplicar el movimiento, Ledger puede corroborar el marcador de lado:
+se permite una diferencia de un carácter sólo en `the opposing`; nombre y
+movimiento deben coincidir exactamente. Requiere un único actor rival activo,
+dos lecturas completas ≥0,95 dentro del mismo anuncio continuo, sin cruzar
+otras acciones, cambios de PS, entradas, turnos, huecos o retiradas. Se exploran
+hasta tres segundos a cada lado. Un alias creado por el detector no basta
+para tratar el prefijo defectuoso como mote; un mote con evidencia real del
+HUD impide esta reasignación. Dos rivales posibles mantienen la ambigüedad.
+
+La evidencia y candidato original quedan en `move_narration_support`. Sin
+corroboración suficiente, la lectura sospechosa queda `move_text_unconfirmed`
+y no sustituye la última acción ni incrementa la actividad del turno.
+Con corroboración se corrige el lado antes de reutilizar la consolidación de
+movimientos repetidos. No se cambia el texto original ni se aproxima el nombre
+del actor o del movimiento por similitud.
+
+En el caso revisado, 685 registra la acción de p2b, 686 corrige p1a→p2b
+y se conserva como lectura repetida, y 687 también se consolida. El daño de
+Dee Dee en 692 se vincula a la única acción 685. El lote pasa **4→3 avisos**;
+siguen pendientes entrada/curación de Gori y separadores mixtos de Dee Dee.
+
+**97/97 pruebas sin omisiones; siete ZIP y 20 partidas**. Los otros 19 JSON
+son idénticos a 3c4e895. Se conservan 432 episodios de PS confirmados, 137
+mensajes enlazados y uno pendiente. La partida corregida mantiene PS 14/14;
+sus eventos principales pasan de 40 a 38, con 37/38 alineados porque permanece
+la diferencia de orden de Defiant. Sólo cambia el prototipo, no producción.
+
 ## Pruebas
 
 ```bash
@@ -770,15 +807,16 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 CHAMPIONS_DIAGNOSTIC_FOURTH=/ruta/champions-diagnostics-50808fa9e45e4ccc.zip \
 CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 CHAMPIONS_DIAGNOSTIC_SIXTH=/ruta/champions-diagnostics-f7af8655adb74bc6.zip \
+CHAMPIONS_DIAGNOSTIC_SEVENTH=/ruta/champions-diagnostics-b121903688ad47a5.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Ochenta y tres casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Noventa casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
-Seis pruebas de integración usan los cinco, cuatro, tres, dos, dos y dos replays actuales,
+Siete pruebas de integración usan los cinco, cuatro, tres, dos, dos, dos y dos replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.

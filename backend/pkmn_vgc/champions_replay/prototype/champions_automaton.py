@@ -816,6 +816,111 @@ class BattleAutomaton:
     def _resolve(self, species: str | None) -> str | None:
         return self.id_resolution.get(species, species) if species else None
 
+    def _move_side_support(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Corroborate a damaged opponent prefix before a move changes state.
+
+        Only the side marker may differ by one character; the actor name and
+        move must remain exact. Consecutive complete narration, a unique active
+        opponent, and an uninterrupted announcement establish the correction.
+        Detector aliases alone cannot turn the damaged prefix into a nickname.
+        """
+        event = candidate["event"]
+        if not (event.get("slot") or "").startswith("p1") or not event.get("move"):
+            return None
+        number = candidate["observed_frame"]
+        expected = identity_species(candidate.get("canonical_species") or self._resolve(event.get("species")) or "").casefold()
+        move = event["move"].casefold()
+
+        def prefix_matches(prefix: str) -> bool:
+            a, b = re.sub(r"\s+", "", prefix.casefold()), "theopposing"
+            if len(a) == len(b):
+                return sum(x != y for x, y in zip(a, b)) <= 1
+            longer, shorter = (a, b) if len(a) > len(b) else (b, a)
+            return len(longer) - len(shorter) == 1 and any(
+                longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+
+        def subject(line: dict[str, Any]) -> str | None:
+            signature = narration_signature(line.get("text", "").strip())
+            if (line.get("top", 0) < .55 or line.get("confidence", 0) < .55 or
+                not signature or signature[0] != "move" or signature[3].casefold() != move):
+                return None
+            return (("the opposing " if signature[1] == "p2" else "") + signature[2]).casefold()
+
+        matches = []
+        for slot, actor_id in self.active.items():
+            actor = self.actors[actor_id]
+            if not slot.startswith("p2") or identity_species(actor["species"]).casefold() != expected:
+                continue
+            names = {actor["species"].casefold(), (actor.get("forme") or actor["species"]).casefold()}
+            names.update(name for name, species in self.nickname_species["p2"].items()
+                         if identity_species(species).casefold() == expected)
+            for line in self.frame_lookup.get(number, {}).get("ocr", ()):
+                named = subject(line)
+                if not named:
+                    continue
+                for name in names:
+                    if not named.endswith(" " + name) or not prefix_matches(named[:-len(name)].strip()):
+                        continue
+                    # A real HUD nickname has independent evidence. A parser
+                    # alias made solely from this malformed sentence does not.
+                    if any(hud_nickname(row, s) == named for row in self.frames
+                           for s in ("p1a", "p1b")):
+                        continue
+                    matches.append((slot, actor_id, name, named, line))
+        if not matches:
+            return None
+        proof = {"state": "unconfirmed", "from": "provisional", "raw_event": dict(event),
+                 "reason": "Prefijo rival dudoso: falta un actor único y narración completa repetida.",
+                 "evidence": [{"frame": number, **m[4]} for m in matches]}
+        if len({(m[0], m[2]) for m in matches}) != 1:
+            return proof
+        slot, actor_id, name, damaged, _ = matches[0]
+        complete = "the opposing " + name
+        start_ms = candidate["observed_ms"]
+        evidence = []
+
+        def compatible(row: dict[str, Any]) -> bool:
+            events = row.get("detections", {}).get("events", ())
+            if row.get("detections", {}).get("battle_complete") or any(
+                e["kind"] not in {"move", "message"} or
+                (e["kind"] == "move" and ((e.get("move") or "").casefold() != move or
+                 identity_species(self._resolve(e.get("species")) or "").casefold() != expected))
+                for e in events):
+                return False
+            readings = [line for line in row.get("ocr", ())
+                        if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .55]
+            if any((RAW_ACTION.search(line.get("text", "")) and subject(line) not in {damaged, complete}) or
+                   ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                   MEGA_NARRATION.fullmatch(line.get("text", "")) or
+                   re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I)
+                   for line in readings):
+                return False
+            return any(subject(line) in {damaged, complete} for line in readings)
+
+        if not compatible(self.frame_lookup[number]):
+            return proof
+        rows = [self.frame_lookup[number]]
+        for direction in (-1, 1):
+            previous_ms = start_ms
+            for offset in range(1, 7):
+                row = self.frame_lookup.get(number + direction * offset)
+                if (not row or abs(row["timestamp_ms"] - start_ms) > 3_000 or
+                    not 0 < direction * (row["timestamp_ms"] - previous_ms) <= 1_000 or not compatible(row)):
+                    break
+                rows.append(row)
+                previous_ms = row["timestamp_ms"]
+        for row in sorted(rows, key=lambda r: r["frame"]):
+            for line in row.get("ocr", ()):
+                if subject(line) == complete and line.get("confidence", 0) >= .95:
+                    evidence.append({"frame": row["frame"], "text": line["text"], "confidence": line["confidence"]})
+        if len({e["frame"] for e in evidence}) < 2:
+            return proof
+        proof.update(state="confirmed", slot=slot, actor_id=actor_id,
+                     reason="Lado rival corroborado por narración completa repetida del mismo anuncio.",
+                     evidence=evidence)
+        proof["suspect_readings"] = [{"frame": number, **m[4]} for m in matches]
+        return proof
+
     def _unconfirmed_faint_text(self, candidate: dict[str, Any], actor_id: str) -> dict[str, Any] | None:
         """OCR confidence alone cannot identify the subject of a faint.
 
@@ -1388,7 +1493,11 @@ class BattleAutomaton:
         if candidate.get("slot_correction"):
             item["original_slot"] = candidate["slot_correction"]
             item["note"] = ((item["note"] + " ") if item["note"] else "") + (
-                f"Slot corregido desde {candidate['slot_correction']} por mote visible en el HUD.")
+                f"Slot corregido desde {candidate['slot_correction']} por " +
+                ("narración rival corroborada." if candidate.get("move_narration_support") else
+                 "mote visible en el HUD."))
+        if candidate.get("move_narration_support"):
+            item["move_narration_support"] = candidate["move_narration_support"]
         if candidate.get("identity_support"):
             item["identity_support"] = candidate["identity_support"]
         if candidate.get("entry_reconstruction"):
@@ -1679,6 +1788,15 @@ class BattleAutomaton:
         if kind in HP_KINDS:
             self._hp(candidate)
             return
+        if kind == "move" and (support := self._move_side_support(candidate)):
+            candidate = {**candidate, "move_narration_support": support}
+            if support["state"] != "confirmed":
+                item = self._append(candidate, kind="move_text_unconfirmed", status="review",
+                                    note=support["reason"])
+                self._issue("move_text_unconfirmed", item["note"], item["frame"], item["seq"])
+                return
+            candidate["slot_correction"] = event["slot"]
+            candidate["event"] = event = {**event, "slot": support["slot"]}
         slot = event.get("slot")
         actor_id = self.active.get(slot)
         if kind == "message":
