@@ -42,7 +42,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertIsNone(health_ratio("50%"))
         self.assertIsNone(health_ratio("50/0"))
 
-    def test_announced_entry_is_before_attack_and_its_late_health_is_unknown(self):
+    def test_first_entry_infers_full_hp_and_keeps_late_health_as_observation(self):
         trace = [
             frame(1, [event("switch", "p1a", "Kingambit", "100/100"), event("turn", turn=1)]),
             frame(2, texts=["Ender sent out MineMine!"]),
@@ -56,9 +56,37 @@ class TemporalAutomatonTests(unittest.TestCase):
         entries = [x for x in ledger["events"] if x["kind"] == "switch" and x["slot"] == "p2a"]
         self.assertEqual(len(entries), 1)
         self.assertLess(entries[0]["seq"], next(x["seq"] for x in ledger["events"] if x["kind"] == "move"))
-        self.assertIsNone(entries[0]["health"])
+        self.assertEqual(entries[0]["health"], "100/100")
+        self.assertEqual(entries[0]["hp_state"], "inferred")
+        self.assertEqual(entries[0]["observations"][0]["health"], "74/100")
         self.assertEqual(entries[0]["logical_frame"], 2)
-        self.assertIn("late_switch_health", [x["code"] for x in ledger["issues"]])
+        damage = next(x for x in ledger["events"] if x["kind"] == "damage")
+        self.assertEqual((damage["before"], damage["after"]), ("100/100", "37/100"))
+        self.assertEqual(damage["hp_baseline"]["state"], "inferred")
+        self.assertNotIn("late_switch_health", [x["code"] for x in ledger["issues"]])
+
+    def test_first_player_entry_deduces_max_from_first_confirmed_damage(self):
+        trace = [frame(1, [event("switch", "p1a", "Kingambit"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p2a", "Salamence", move="Hyper Voice")]),
+                 frame(3, [event("damage", "p1a", "Kingambit", "86/177")])]
+        ledger = BattleAutomaton(0, trace).run()
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch")
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual((entry["health"], entry["hp_state"]), ("177/177", "inferred"))
+        self.assertEqual((damage["before"], damage["after"]), ("177/177", "86/177"))
+        self.assertEqual(damage["hp_baseline"]["state"], "inferred")
+
+    def test_returning_actor_keeps_confirmed_hp_instead_of_resetting_to_full(self):
+        trace = [frame(1, [event("switch", "p2a", "Pelipper", "100/100"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Pelipper", "63/100")]),
+                 frame(3, [event("switch", "p2a", "Kingambit", "100/100")]),
+                 frame(4, [event("switch", "p2a", "Pelipper")]),
+                 frame(5, [event("damage", "p2a", "Pelipper", "40/100")])]
+        ledger = BattleAutomaton(0, trace).run()
+        pelipper = [e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Pelipper"]
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage" and e["frame"] == 5)
+        self.assertEqual(pelipper[1]["last_confirmed_health"], "63/100")
+        self.assertEqual((damage["before"], damage["after"]), ("63/100", "40/100"))
 
     def test_hp_animation_and_repeated_move_become_one_action(self):
         trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"),
@@ -232,7 +260,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertTrue(ledger["actors"][entries[0]["actor_id"]]["item_lost"])
         self.assertFalse(ledger["actors"][entries[1]["actor_id"]]["item_lost"])
         damage = next(x for x in ledger["events"] if x["kind"] == "damage" and x["frame"] == 7)
-        self.assertIsNone(damage["before"])
+        self.assertEqual(damage["before"], "100/100")
         self.assertEqual(damage["after"], "85/100")
         self.assertNotIn("illusion_reveal_mismatch", [x["code"] for x in ledger["issues"]])
 
@@ -279,7 +307,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ("207/207", "117/207", "consistent"))
         self.assertEqual(damage["hp_baseline"]["evidence"][0]["frame"], 4)
 
-    def test_two_different_pre_impact_hp_values_do_not_seed_baseline(self):
+    def test_two_different_pre_impact_hp_values_leave_only_inferred_baseline(self):
         trace = [frame(1, [event("switch", "p1b", "Rillaboom"), event("turn", turn=1)]),
                  frame(2, [event("move", "p2a", "Golisopod", move="Iron Head")]),
                  frame(3), frame(4), frame(5),
@@ -293,9 +321,9 @@ class TemporalAutomatonTests(unittest.TestCase):
             row["resolved_aliases"]["p1"]["gori"] = "Rillaboom"
         ledger = BattleAutomaton(0, trace).run()
         damage = next(e for e in ledger["events"] if e["kind"] == "damage")
-        self.assertIsNone(damage["before"])
-        self.assertEqual(damage["status"], "review")
-        self.assertNotIn("hp_baseline", damage)
+        self.assertEqual(damage["before"], "207/207")
+        self.assertEqual(damage["hp_baseline"]["state"], "inferred")
+        self.assertFalse(damage["hp_baseline"]["evidence"])
 
     def test_provisional_id_reused_in_two_slots_uses_nickname_and_appearance(self):
         anon = "__champions_actor_p2_0003__"
@@ -489,7 +517,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(set(baselines), {0, 1, 2})
         ledgers = [BattleAutomaton(i, [row for row in frames if row["battle_index"] == i]).run()
                    for i in range(3)]
-        self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [0, 0, 2])
+        self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [0, 0, 0])
         self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
                             for i in (0, 1)))
         battle = ledgers[2]
@@ -501,7 +529,14 @@ class TemporalAutomatonTests(unittest.TestCase):
                             e["frame"] == 3161)
         self.assertEqual((faint_damage["before"], faint_damage["after"], faint_damage["species"]),
                          ("6/100", "0/100", "Indeedee-F"))
-        self.assertEqual({issue["frame"] for issue in battle["issues"]}, {2735, 2736})
+        inwood_entry = next(e for e in battle["events"] if e["kind"] == "switch" and
+                            e["slot"] == "p2b" and e["frame"] == 2735)
+        inwood_damage = next(e for e in battle["events"] if e["kind"] == "damage" and
+                             e["slot"] == "p2b" and e["frame"] == 2736)
+        self.assertEqual((inwood_entry["health"], inwood_entry["hp_state"]), ("100/100", "inferred"))
+        self.assertEqual(inwood_entry["observations"][0]["health"], "76/100")
+        self.assertEqual((inwood_damage["before"], inwood_damage["after"]), ("100/100", "54/100"))
+        self.assertEqual(inwood_damage["hp_baseline"]["state"], "inferred")
         gardevoir = next(e for e in battle["events"] if e["kind"] == "damage" and
                          e["frame"] == 2527 and e["slot"] == "p1a")
         self.assertEqual((gardevoir["before"], gardevoir["after"],

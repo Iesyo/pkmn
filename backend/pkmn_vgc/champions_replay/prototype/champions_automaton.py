@@ -502,9 +502,8 @@ class BattleAutomaton:
     def _entry_baseline(self, candidate: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         """Find a complete, stable HUD value after entry and before any action.
 
-        The entry detector often knows the species but omits HP. No inferred
-        full health is allowed: the value must actually appear in that slot's
-        HUD before the next move or HP transition.
+        A directly observed pre-action value takes precedence over the
+        first-appearance full-health assumption.
         """
         slot = candidate["event"].get("slot")
         if slot not in SLOTS:
@@ -671,7 +670,8 @@ class BattleAutomaton:
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
             baseline = (self._pre_impact_baseline(episode, actor)
-                        if actor and before is None and support["state"] == "confirmed" else None)
+                        if actor and (before is None or actor["health_state"] == "inferred")
+                        and support["state"] == "confirmed" else None)
             if baseline:
                 expected, measured = health_ratio(baseline[0]), health_ratio(after)
                 if expected is None or measured is None or not (
@@ -680,6 +680,18 @@ class BattleAutomaton:
                     baseline = None
                 else:
                     before = baseline[0]
+            if (not baseline and actor and actor["health_state"] == "inferred" and
+                before is None and support["state"] == "confirmed" and after and
+                re.fullmatch(r"\d+/[1-9]\d*", after)):
+                maximum = after.split("/", 1)[1]
+                before = f"{maximum}/{maximum}"
+                entry_seq = actor.get("first_entry_seq")
+                if entry_seq:
+                    self.events[entry_seq - 1]["health"] = before
+                    self.events[entry_seq - 1]["note"] = (
+                        (self.events[entry_seq - 1]["note"] or "") +
+                        f" Máximo {maximum} deducido del primer HUD completo.")
+            inferred_baseline = bool(actor and actor["health_state"] == "inferred" and not baseline and before)
             previous = (self._hp_support(episode.slot, before, last["observed_frame"] - 2)
                         if actor and before and before != after and support["state"] != "confirmed"
                         else {"state": "unconfirmed", "evidence": []})
@@ -757,6 +769,9 @@ class BattleAutomaton:
             item["hp_state"], item["hp_support"] = support["state"], support
             if baseline:
                 item["hp_baseline"] = baseline[1]
+            elif inferred_baseline:
+                item["hp_baseline"] = {"state": "inferred", "reason": "primer avistamiento; PS iniciales al máximo",
+                                       "evidence": []}
             if actor and result == "consistent":
                 actor["health"], actor["health_state"] = after, "confirmed"
             elif actor and result == "review" and before is None and support["state"] == "confirmed":
@@ -915,6 +930,7 @@ class BattleAutomaton:
                     self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
                 return
             actor_id = self._actor_for_entry(slot, candidate.get("canonical_species") or event.get("species"))
+            first_appearance = not self.actors[actor_id].get("seen_entry", False)
             if self.actors[actor_id]["fainted"]:
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
                                     note="El HUD conserva la especie debilitada; no hubo reanimación observada.")
@@ -922,6 +938,7 @@ class BattleAutomaton:
                 return
             self.active[slot] = actor_id
             self.actors[actor_id]["fainted"] = False
+            self.actors[actor_id]["seen_entry"] = True
             late_health = bool(candidate.get("late_health") and event.get("health"))
             support = (self._hp_support(slot, event["health"], candidate["observed_frame"])
                        if event.get("health") else None)
@@ -933,13 +950,29 @@ class BattleAutomaton:
                            "evidence": [entry_conflict]}
             initial_health = (baseline[0] if baseline else event.get("health") if not late_health and support and
                               support["state"] == "confirmed" else None)
+            assume_full = first_appearance and not baseline and (
+                not event.get("health") or late_health) and initial_health is None
+            if assume_full and slot.startswith("p2"):
+                initial_health = "100/100"
             if event.get("health") or baseline:
                 self.actors[actor_id]["health"] = initial_health
                 self.actors[actor_id]["health_state"] = (
                     "confirmed" if initial_health else "unknown" if late_health else "unconfirmed")
+            if assume_full:
+                self.actors[actor_id]["health"] = initial_health
+                self.actors[actor_id]["health_state"] = "inferred"
             item = self._append(candidate, actor_id=actor_id,
-                                status="review" if not baseline and (late_health or (support and support["state"] != "confirmed"))
+                                status="review" if not baseline and not assume_full and
+                                (late_health or (support and support["state"] != "confirmed"))
                                 else "consistent")
+            if assume_full:
+                item["health"] = initial_health
+                item["hp_state"] = "inferred"
+                item["hp_support"] = {"state": "inferred", "reason": "primer avistamiento; PS iniciales al máximo",
+                                      "evidence": []}
+                self.actors[actor_id]["first_entry_seq"] = item["seq"]
+                if initial_health is None:
+                    item["note"] = "Primer avistamiento: PS al máximo inferidos; máximo aún desconocido."
             if baseline:
                 item["health"] = baseline[0]
                 item["hp_state"], item["hp_support"] = "confirmed", baseline[1]
@@ -947,15 +980,16 @@ class BattleAutomaton:
                                              "health": baseline[0], "reason": baseline[1]["reason"]})
             if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
                 item["last_confirmed_health"] = self.actors[actor_id]["health"]
-            if support:
+            if support and not assume_full:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
             if late_health and not baseline:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
-                                              "reason": "HUD confirmado después de comenzar una acción"})
-                item["health"] = None
-                self._issue("late_switch_health", "El PS leído al confirmar la entrada ya estaba en animación; PS de entrada desconocido.",
-                            item["frame"], item["seq"])
+                                              "reason": "HUD después de comenzar una acción; lectura transitoria"})
+                if not assume_full:
+                    item["health"] = None
+                    self._issue("late_switch_health", "El PS leído al confirmar la entrada ya estaba en animación; PS de entrada desconocido.",
+                                item["frame"], item["seq"])
             elif support and support["state"] != "confirmed" and not baseline:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
                                               "reason": support["reason"]})
@@ -965,7 +999,9 @@ class BattleAutomaton:
             if candidate.get("anchor") and candidate["anchor"]["frame"] < candidate["observed_frame"]:
                 item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {item['frame']}."
             if late_health and not baseline:
-                item["note"] = (item["note"] or "") + " PS de entrada desconocido: la barra ya cambiaba."
+                item["note"] = (item["note"] or "") + (
+                    " PS iniciales al máximo inferidos; el HUD ya cambiaba." if assume_full else
+                    " PS de entrada desconocido: la barra ya cambiaba.")
             elif support and support["state"] != "confirmed" and not baseline:
                 item["note"] = (item["note"] or "") + " PS de entrada pendiente de revisión."
             if self.turn:
@@ -1187,7 +1223,8 @@ def event_description(item: dict[str, Any]) -> str:
     if kind in {"switch", "drag"}:
         previous = (f" (último confirmado: {item['last_confirmed_health']})"
                     if not item['health'] and item.get('last_confirmed_health') else "")
-        return f"Entra {actor}, PS {item['health'] or '?'}{previous}"
+        inferred = " (inferidos al máximo)" if item.get("hp_state") == "inferred" else ""
+        return f"Entra {actor}, PS {item['health'] or '?'}{inferred}{previous}"
     if kind == "illusion_reveal":
         return f"Se rompe la Ilusión: {item['species']} aparece en {slot}; PS {item['after'] or '?'}"
     if kind == "move":
@@ -1241,9 +1278,12 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
             seen = " → ".join(str(x["health"]) for x in item["observations"])
             lines += ["  - Lecturas durante la animación: " + seen]
         if item.get("hp_baseline"):
-            prior = item["hp_baseline"]["evidence"][0]
-            lines += [f"  - PS previos en el HUD de {prior['nickname']}: "
-                      f"{prior['text']} (frame {prior['frame']}, antes del cambio)."]
+            if item["hp_baseline"]["state"] == "inferred":
+                lines += ["  - PS previos inferidos al máximo por primer avistamiento; no confirmados por OCR."]
+            else:
+                prior = item["hp_baseline"]["evidence"][0]
+                lines += [f"  - PS previos en el HUD de {prior['nickname']}: "
+                          f"{prior['text']} (frame {prior['frame']}, antes del cambio)."]
         if item["evidence"]:
             lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» (frame {item['evidence'][0]['frame']})."]
     lines += ["", "## Incidencias para revisión", ""]
@@ -1290,6 +1330,12 @@ def main() -> None:
                                   "hp_confirmed_observations": sum(
                                       x["kind"] in HP_KINDS and x["status"] != "suppressed" and
                                       x.get("hp_state") == "confirmed"
+                                      for x in ledger["events"]),
+                                  "hp_inferred_entry_baselines": sum(
+                                      x["kind"] in {"switch", "drag"} and x.get("hp_state") == "inferred"
+                                      for x in ledger["events"]),
+                                  "hp_inferred_transition_baselines": sum(
+                                      x["kind"] in HP_KINDS and x.get("hp_baseline", {}).get("state") == "inferred"
                                       for x in ledger["events"]),
                                   "hp_unconfirmed": sum(x.get("hp_state") == "unconfirmed"
                                                         for x in ledger["events"]),

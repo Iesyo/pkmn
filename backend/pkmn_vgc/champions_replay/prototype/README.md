@@ -46,10 +46,12 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    obliga a revisar la transición siguiente. Si el PS anterior todavía se
    ve confirmado en **ese mismo HUD**, el valor candidato queda como
    `hp_rejected_reading` suprimido y no invalida el valor estable. Las
-   entradas sin PS confirmados conservan el candidato en `observations`, con
-   PS de entrada desconocidos. El autómata recupera los PS omitidos por el
-   detector sólo si aparecen completos junto al mote correcto **antes de
-   cualquier acción**.
+   entradas sin PS confirmados conservan el candidato en `observations`.
+   Si es el **primer avistamiento** de ese actor y la lectura llega tras
+   comenzar una acción (o falta), asume PS iniciales al máximo con
+   `hp_state: inferred`. En p2 esto es `100/100`; en p1 deduce el máximo
+   del primer HUD completo. Una lectura anterior a la acción, completa y
+   atribuida al mote correcto tiene prioridad sobre la inferencia.
    También puede tomar el último PS completo del HUD **justo antes de que
    empiece a bajar o subir la barra**, aunque el aviso del movimiento ya esté
    en pantalla. Exige mote del ocupante, posición correcta y un solo valor
@@ -70,7 +72,9 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    PS de otro ocupante y megaevoluciones atribuidas a otra especie. Las
    identidades aún anónimas se señalan al terminar la batalla. Cuando la
    primera confirmación del HUD sucede después de que comenzó un movimiento,
-   el PS de entrada queda **desconocido**. Si la pantalla anuncia que se rompió
+   conserva ese número como lectura transitoria y aplica la hipótesis del
+   primer avistamiento. Si ya conocía al actor, mantiene sus PS previos o
+   deja la entrada pendiente de revisión. Si la pantalla anuncia que se rompió
    la Ilusión de Zoroark, el supuesto cambio de su apariencia es
    `illusion_reveal`: conserva actor, PS, objeto y movimientos previos, y
    registra la especie mostrada por separado de la identidad real. La entrada
@@ -85,12 +89,13 @@ significa que el evento esté confirmado visualmente. `review` requiere mirar
 el fotograma o investigar una causa; `suppressed` conserva la lectura en el
 JSON pero la excluye de la cronología propuesta. El prototipo **no** exporta
 todavía un replay Showdown: sería prematuro mientras haya discrepancias.
-En los eventos pertinentes, `hp_state` distingue `confirmed`, `unconfirmed`,
-`unknown` y `rejected`.
+En los eventos pertinentes, `hp_state` distingue `confirmed`, `inferred`,
+`unconfirmed`, `unknown` y `rejected`.
 `hp_support` guarda la evidencia OCR y la razón de la confirmación o rechazo;
-el estado del actor sólo contiene PS confirmados, o `null` si la lectura
-actual no quedó establecida. `report.json` separa episodios, observaciones
-confirmadas, lecturas sin confirmar y transiciones que requieren revisión.
+el estado del actor distingue PS confirmados, PS iniciales inferidos y PS
+desconocidos. `report.json` cuenta por separado inferencias de entradas y de
+transiciones, episodios, observaciones confirmadas, lecturas sin confirmar y
+transiciones que requieren revisión.
 
 ## Primer ZIP · 10a7fba6fda04585
 
@@ -115,9 +120,9 @@ el `0%` real de Kingambit. El replay archivado añadió una curación
 la oscilación y el conflicto OCR para revisión, y no emite daño ni curación a
 partir de ella. Las capturas no incluyen el fotograma exacto 2796. La
 partida 1 necesita resolver **frames 1233–1234** (`94/207` y `93/207`). En la
-partida 5, revisar las entradas de Pelipper y Rillaboom anunciadas antes de
-los frames **5550 y 5826**: el PS leído en la confirmación no demuestra el
-PS con el que entraron.
+partida 5, las entradas de Pelipper y Rillaboom anunciadas antes de los
+frames **5550 y 5826** usan PS iniciales al máximo **inferidos**; el PS leído
+durante la animación no demuestra por sí mismo el valor con el que entraron.
 
 ## Segundo ZIP · 90403f16712d4d41
 
@@ -148,7 +153,8 @@ Banda Focus (2882) y la pantalla dice que la Ilusión de Zoroark terminó
 (2893–2896). No salió un Pokémon nuevo en ese momento: todos esos sucesos
 pertenecen al **mismo Zoroark-Hisui**. Después se retira Zoroark (texto en
 2982) y se anuncia al **Kingambit real** (2988). Su primer PS observado es
-85 % después de Grassy Glide (3001); no hay lectura de sus PS al entrar, pero
+85 % después de Grassy Glide (3001); su entrada se anota como 100 % inferido,
+pero
 el HUD muestra **93 % en el frame 3000**, antes del impacto. Ese daño se
 registra como 93 → 85 %, sin el falso salto de 1 % a 85 %. Kingambit cae en
 3152; Zoroark vuelve en 3193 con su último
@@ -175,16 +181,17 @@ requerir una observación adicional o revisión visual.
 
 ## Tercer ZIP · 331e6e783c3e45a4
 
-El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 2**:
+El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 0**:
 varias entradas tienen PS completos en pantalla antes de la primera acción,
-aunque el detector no los añadió al candidato. No se infieren PS máximos si
-el HUD sólo aparece después de un movimiento.
+aunque el detector no los añadió al candidato. La primera aparición de Inwood
+aplica la hipótesis de PS completos iniciales cuando su primer HUD aparece
+durante el daño.
 
 | Partida | Candidatos → sucesos | Avisos antes → ahora | Orden frente al replay | Episodios de PS |
 | --- | ---: | ---: | ---: | ---: |
 | 1 | 154 → 83 | 2 → 0 | 50/50 | 30/30 |
 | 2 | 102 → 58 | 2 → 0 | 37/37 | 18/18 |
-| 3 | 139 → 91 | 9 → 2 | 55/57 | 22/22 |
+| 3 | 139 → 91 | 9 → 0 | 55/57 | 22/22 |
 
 En la tercera partida, el identificador provisional `...p2_0003` designó
 primero a **Indeedee-F (Inwood) en p2b** y después a **Salamence (Farmingdale)
@@ -202,11 +209,13 @@ En la primera partida, el `207/207` de Rillaboom en el frame 584 está en su
 HUD **antes** de que el golpe de Iron Head reduzca sus PS en 585–586; el daño
 queda establecido como 207 → 117 y ya no genera aviso. Lo mismo ocurre con
 Gardevoir en la tercera: `168/171` en 2525 antes de bajar a `113/171` en 2527.
-Quedan dos avisos en esa partida: frame 2735 (PS de entrada de Indeedee leídos
-después de una acción) y frame 2736 (cambio sin PS anteriores confirmados).
-En las **doce partidas**, los avisos bajan de **61 a 22** (primer ZIP: 28 → 13;
-segundo: 20 → 7; tercero: 13 → 2). Los **329 episodios de PS propuestos** tienen respaldo OCR
-en su HUD. Los avisos pendientes siguen visibles; estos datos aún no prueban
+En el frame 2735, Inwood muestra 76 % mientras baja la barra: ese número queda
+como observación transitoria, con entrada `100/100` inferida. El frame 2736
+confirma 54 % y el episodio queda `100/100 → 54/100` con
+`hp_baseline.state: inferred`, no como PS iniciales confirmados en pantalla.
+En las **doce partidas**, los avisos bajan de **61 a 15** (primer ZIP: 28 → 8;
+segundo: 20 → 7; tercero: 13 → 0). Los **329 episodios de PS propuestos** tienen respaldo OCR
+del valor final en su HUD; algunos PS iniciales se infieren. Los avisos pendientes siguen visibles; estos datos aún no prueban
 que el replay final reproduzca fielmente el vídeo.
 
 ## Pruebas
@@ -218,7 +227,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Veintidós casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Veinticuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
