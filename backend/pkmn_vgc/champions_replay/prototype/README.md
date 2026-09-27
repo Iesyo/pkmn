@@ -58,8 +58,13 @@ todavía un replay Showdown: sería prematuro mientras haya discrepancias.
 | 4 | 190 → 107 | 68/68, orden exacto | 32/32 | Sin discrepancias detectadas por este corte. |
 | 5 | 174 → 104 | 57/57, orden exacto | 30/30 | Pelipper y Rillaboom se anuncian antes de que el HUD confirme su PS; éste ya cambió cuando se leyó. |
 
-La partida 2 merece inspección visual en **frames 2795–2798**: `88%` estable,
-`0%` con menor confianza en el frame 2796, `88%` de nuevo sin acción. La
+En la partida 2, la captura compartida por el usuario a los **23:18** muestra
+al Rillaboom rival con **88 %**. En el frame 2796 (23:17.5), el OCR leyó a la
+vez `88` (confianza 0.99996) y `0%` (0.78096); en el frame 2797 (23:18) leyó
+de nuevo `88%`, sin acción intermedia. El replay archivado añadió una curación
+`|-heal|p2a: Rillaboom|88/100` al inicio del turno 8. El autómata conserva
+la oscilación para revisión y no emite daño ni curación a partir de ella. La
+captura comprueba el instante 23:18; no contiene por sí sola el frame 2796. La
 partida 1 necesita resolver **frames 1233–1234** (`94/207` y `93/207`). En la
 partida 5, revisar las entradas de Pelipper y Rillaboom anunciadas antes de
 los frames **5550 y 5826**: el PS leído en la confirmación no demuestra el
