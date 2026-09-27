@@ -1945,6 +1945,75 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "ability" and e["slot"] == "p2b" and
                              e["value"] == "Intimidate" for e in uncertain["events"]))
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_TENTH"), "Requiere el décimo ZIP del usuario")
+    def test_tenth_job_has_readable_logs_without_local_issues(self):
+        frames, _ = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_TENTH"]))
+        ledgers = [BattleAutomaton(i, [r for r in frames if r["battle_index"] == i]).run()
+                   for i in range(2)]
+        self.assertEqual([ledger["issues"] for ledger in ledgers], [[], []])
+        self.assertEqual([sum(e["kind"] in {"damage", "heal"} and e["status"] == "consistent"
+                              for e in ledger["events"]) for ledger in ledgers], [10, 8])
+        text = render_markdown(ledgers[1], None)
+        self.assertEqual(text.count("Termina la batalla por abandono"), 1)
+        self.assertNotIn("Are you sure you wish to forfeit?", text)
+        self.assertIn("HUD: «83» y «%» separados", text)
+        prompt = next(e for e in ledgers[1]["events"] if e["frame"] == 1301)
+        self.assertEqual((prompt["kind"], prompt["status"]), ("ui_text", "suppressed"))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_ELEVENTH"), "Requiere el undécimo ZIP del usuario")
+    def test_golden_opponent_hp_needs_hud_and_repeated_narration(self):
+        frames, _ = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_ELEVENTH"]))
+        second = [r for r in frames if r["battle_index"] == 1]
+        ledger = BattleAutomaton(1, second).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(sum(e["kind"] in {"damage", "heal"} and e["status"] == "consistent"
+                             for e in ledger["events"]), 19)
+        self.assertEqual(len(ledger["narration_links"]), 9)
+        self.assertTrue(all(link["status"] == "linked" for link in ledger["narration_links"]))
+        fragment = next(e for e in ledger["events"] if e["frame"] == 1705)
+        restored = next(e for e in ledger["events"] if e["frame"] == 1707)
+        loss = next(e for e in ledger["events"] if e["frame"] == 1782)
+        self.assertEqual((fragment["kind"], fragment["status"]), ("hp_rejected_reading", "suppressed"))
+        self.assertEqual((restored["before"], restored["after"], restored["cause"]),
+                         ("78/100", "84/100", "Grassy Terrain corroborado por HUD y mensaje"))
+        self.assertEqual((loss["kind"], loss["before"], loss["after"], loss["hp_state"]),
+                         ("damage", "84/100", "75/100", "confirmed"))
+        self.assertEqual([e["frame"] for e in loss["hp_support"]["evidence"]],
+                         [1780, 1782, 1782, 1784, 1785])
+        log = render_markdown(ledger, None)
+        self.assertIn("Gholdengo (rival, p2a) pierde PS: 84/100 → 75/100", log)
+        blaziken = log.split("Blaziken-Mega (propio, p1a) pierde PS: 156/156 → 0/156", 1)[1]
+        self.assertIn("Pantalla: «0/156»", blaziken.split("\n- ", 1)[0])
+
+        def without_ocr(number, words):
+            altered = json.loads(json.dumps(second))
+            for row in altered:
+                if row["frame"] == number:
+                    row["ocr"] = [line for line in row["ocr"] if line.get("text") not in words]
+            return BattleAutomaton(1, altered).run()
+
+        no_stronger = without_ocr(1705, {"78"})
+        self.assertFalse(any(e["frame"] == 1705 and e["status"] == "suppressed"
+                             for e in no_stronger["events"]))
+        altered = json.loads(json.dumps(second))
+        for row in altered:
+            if row["frame"] in {1709, 1710, 1711}:
+                row["ocr"] = [line for line in row["ocr"] if
+                              line.get("text") != "The opposing Gholdengo had its HP restored."]
+                row["detections"]["events"] = [event for event in row["detections"]["events"] if
+                                                 event.get("value") != "The opposing Gholdengo had its HP restored."]
+        no_restoration = BattleAutomaton(1, altered).run()
+        self.assertIn("hp_ocr_conflict", {i["code"] for i in no_restoration["issues"]})
+        no_number = without_ocr(1782, {"75"})
+        self.assertIn("hp_unconfirmed", {i["code"] for i in no_number["issues"]})
+        altered = json.loads(json.dumps(second))
+        for row in altered:
+            if row["frame"] in {1785, 1786}:
+                row["ocr"] = [line for line in row["ocr"] if
+                              line.get("text") != "The opposing Gholdengo lost some of its HP!"]
+        no_repetition = BattleAutomaton(1, altered).run()
+        self.assertIn("hp_unconfirmed", {i["code"] for i in no_repetition["issues"]})
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC"), "Requiere el ZIP original del usuario")
     def test_five_approved_battles_retain_their_core_event_order(self):
         frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC"]))

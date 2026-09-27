@@ -1529,6 +1529,8 @@ class BattleAutomaton:
         if proof["state"] != "confirmed" and zero and zeros and len({e["frame"] for e in faint_texts}) >= 2:
             proof = {"state": "confirmed", "reason": "cero visible corroborado por faint repetido del mismo actor",
                      "evidence": zeros + faint_texts}
+        if proof["state"] != "confirmed" and episode.kind == "damage":
+            proof = self._narrated_partial_opponent_hp(episode, actor) or proof
         if proof["state"] == "confirmed":
             proof["confirmation"] = {"from": "provisional", "to": "confirmed",
                                      "candidate_frame": last["observed_frame"],
@@ -1536,6 +1538,79 @@ class BattleAutomaton:
                                      "reason": "corroboración temporal sin cruzar otra acción"}
             return proof
         return support
+
+    def _narrated_partial_opponent_hp(self, episode: HpEpisode,
+                                      actor: dict[str, Any]) -> dict[str, Any] | None:
+        """Confirm a weak percent only with its strong number, prior HUD and repeated text.
+
+        The number and percent from one frame alone are not independent OCR
+        confirmation. Require an earlier complete value for this occupant and
+        a later matching loss message before any new action.
+        """
+        slot = episode.slot
+        if (not slot or not slot.startswith("p2") or not actor or
+            actor.get("health_state") != "confirmed" or not actor.get("health") or
+            episode.kind != "damage" or any(c.get("competing_ocr") for c in episode.candidates)):
+            return None
+        first, last = episode.candidates[0], episode.candidates[-1]
+        health = last["event"].get("health")
+        before, after = health_ratio(actor["health"]), health_ratio(health)
+        values = [health_ratio(c["event"].get("health")) for c in episode.candidates]
+        if (not health or not re.fullmatch(r"\d+/100", health) or before is None or after is None or
+            not before > after or any(v is None for v in values) or
+            any(left < right for left, right in zip([before] + values, values))):
+            return None
+        previous_frame = first["observed_frame"] - 1
+        previous = self._hp_support(slot, actor["health"], previous_frame, [previous_frame])
+        if previous["state"] != "confirmed":
+            return None
+        prior_row = self.frame_lookup.get(previous_frame, {})
+        prior_name = hud_nickname(prior_row, slot)
+        prior_species = self.nickname_species["p2"].get(prior_name or "", prior_name or "")
+        if not prior_name or identity_species(prior_species).casefold() != identity_species(
+            actor["species"]).casefold():
+            return None
+        row = self.frame_lookup.get(last["observed_frame"], {})
+        name = hud_nickname(row, slot)
+        species = self.nickname_species[slot[:2]].get(name or "", name or "")
+        if not name or identity_species(species).casefold() != identity_species(actor["species"]).casefold():
+            return None
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        hud = [line for line in row.get("ocr", ()) if
+               left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom and
+               line.get("right", right) <= right + .02 and line.get("bottom", bottom) <= bottom + .02]
+        value = health.split("/", 1)[0]
+        bare = next((line for line in hud if line.get("text", "").strip() == value and
+                     line.get("confidence", 0) >= .99), None)
+        partial = next((line for line in hud if line.get("text", "").strip() == value + "%" and
+                        line.get("confidence", 0) >= .8), None)
+        if (not bare or not partial or any(
+            re.fullmatch(r"\d+%", line.get("text", "").strip()) and
+            line.get("text", "").strip() != value + "%" and line.get("confidence", 0) >= .9
+            for line in hud)):
+            return None
+        messages = []
+        for future in self._confirmation_rows(last["observed_frame"])[1:]:
+            for line in future.get("ocr", ()):
+                match = re.fullmatch(r"(The opposing )?(.+?) lost some of its HP!",
+                                     line.get("text", "").strip(), re.I)
+                if not match or line.get("top", 0) < .55 or line.get("confidence", 0) < .95 or not match.group(1):
+                    continue
+                narrated = match.group(2).casefold()
+                narrated = self.nickname_species["p2"].get(narrated, narrated)
+                if identity_species(narrated).casefold() != identity_species(actor["species"]).casefold():
+                    continue
+                messages.append({"frame": future["frame"], "text": line["text"],
+                                 "confidence": line["confidence"]})
+        if len({x["frame"] for x in messages}) < 2:
+            return None
+        number = last["observed_frame"]
+        evidence = previous["evidence"] + [
+            {"frame": number, "text": bare["text"], "confidence": bare["confidence"]},
+            {"frame": number, "text": partial["text"], "confidence": partial["confidence"]},
+        ] + messages[:2]
+        return {"state": "confirmed", "reason": "número del HUD y mensaje de pérdida repetido",
+                "evidence": evidence, "narrated_partial": messages[0]}
 
     def _stable_hp_before_conflict(self, slot: str | None, health: str | None,
                                    frame: int, stronger: dict[str, Any]) -> dict[str, Any] | None:
@@ -1596,8 +1671,17 @@ class BattleAutomaton:
             return None
         prior_number = int(before.split("/", 1)[0])
         final_number = int(after.split("/", 1)[0])
-        if not (str(prior_number).endswith(suspect.group(1)) and
-                prior_number < int(stronger.group(1)) < final_number):
+        stronger_number = int(stronger.group(1))
+        stable_hud = stronger_number == prior_number and conflict["stronger"]["confidence"] >= .99
+        if stable_hud:
+            row = self.frame_lookup.get(partial["observed_frame"], {})
+            nickname = hud_nickname(row, slot)
+            named = self.nickname_species["p2"].get(nickname or "", nickname or "")
+            if not nickname or identity_species(named).casefold() != identity_species(
+                self.actors[actor_id]["species"]).casefold():
+                return None
+        elif not (str(prior_number).endswith(suspect.group(1)) and
+                  prior_number < stronger_number < final_number):
             return None
         support = self._hp_support(slot, after, healing["observed_frame"])
         if support["state"] != "confirmed":
@@ -1613,7 +1697,11 @@ class BattleAutomaton:
                 if (event["kind"] == "message" and message.endswith("had its HP restored.") and
                     self._hp_message_actor(message) == actor_id):
                     return {"state": "confirmed", "reason": "cura de terreno de ~1/16 y mensaje del actor",
-                            "evidence": support["evidence"] + [{"frame": number, "text": message}]}
+                            "evidence": ([{"frame": partial["observed_frame"],
+                                           "text": conflict["stronger"]["text"],
+                                           "confidence": conflict["stronger"]["confidence"]}]
+                                         if stable_hud else []) + support["evidence"] + [
+                                {"frame": number, "text": message}]}
         return None
 
     def _entry_baseline(self, candidate: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -1950,6 +2038,18 @@ class BattleAutomaton:
                                 after=after, cause=cause, observations=observations)
             item["narration"].extend(episode.narration)
             item["hp_state"], item["hp_support"] = support["state"], support
+            narrated = support.get("narrated_partial") if result == "consistent" else None
+            if narrated:
+                row = self.frame_lookup[narrated["frame"]]
+                raw_message = next((e for e in row["detections"].get("events", ()) if
+                                    e["kind"] == "message" and e.get("value") == narrated["text"]), None)
+                self.hp_messages.append({
+                    "frame": narrated["frame"],
+                    "source_frame": raw_message.get("source_frame") if raw_message else narrated["frame"],
+                    "observed_ms": row["timestamp_ms"], "text": narrated["text"],
+                    "effect": "self_damage", "actor_id": episode.actor_id,
+                    "slot": episode.slot, "turn": item["turn"], "confidence": narrated["confidence"],
+                })
             if last.get("terrain_heal_confirmed"):
                 item["terrain_restoration_support"] = last["terrain_heal_confirmed"]
             if baseline:
@@ -2135,7 +2235,11 @@ class BattleAutomaton:
                 self._append(candidate, kind="ui_text", status="suppressed",
                              note="Aviso del menú de selección; no ocurrió como acción de batalla.")
                 return
-            if "battle has ended" in value.casefold() or "forfeit" in value.casefold():
+            if re.fullmatch(r"Are you sure you wish to forfeit\?", value, re.I):
+                self._append(candidate, kind="ui_text", status="suppressed",
+                             note="Confirmación del menú de abandono; aún no terminó la batalla.")
+                return
+            if "battle has ended" in value.casefold():
                 self._flush_hp()
                 self._append(candidate, kind="battle_end", note="Fin de la batalla observado en la pantalla.")
                 return
@@ -2523,10 +2627,69 @@ class BattleAutomaton:
                 item["cause"] = "quemadura observada"
             elif link["effect"] == "recoil":
                 item["cause"] = "retroceso observado"
+            elif link["effect"] == "self_damage":
+                item["cause"] = "pérdida de PS observada; origen sin confirmar"
             elif item.get("terrain_restoration_support"):
                 item["cause"] = "Grassy Terrain corroborado por HUD y mensaje"
             elif not (isinstance(item["cause"], str) and "Grassy Terrain" in item["cause"]):
                 item["cause"] = "recuperación observada; origen sin confirmar"
+
+    def _reconcile_terrain_hp_fragments(self) -> None:
+        """Resolve a truncated rival percent after the final terrain heal is known.
+
+        The first intermediate heal value can be smaller than a terrain tick.
+        Wait until its whole episode and the same actor's restoration message
+        are linked; a conflicting fragment alone never establishes HP.
+        """
+        for issue in list(self.issues):
+            if issue["code"] != "hp_ocr_conflict" or issue["event_seq"] is None:
+                continue
+            item = self.events[issue["event_seq"] - 1]
+            if (item["kind"] != "hp_ocr_conflict" or item["status"] != "review" or
+                not item["slot"] or not item["slot"].startswith("p2") or not item["before"]):
+                continue
+            conflict = next((obs.get("competing_ocr") for obs in item["observations"] if
+                             obs.get("competing_ocr")), None)
+            if not conflict or conflict["stronger"]["confidence"] < .99 or \
+                    conflict["stronger"]["text"] != item["before"].split("/", 1)[0]:
+                continue
+            row = self.frame_lookup.get(item["frame"], {})
+            nickname = hud_nickname(row, item["slot"])
+            species = self.nickname_species["p2"].get(nickname or "", nickname or "")
+            if (not nickname or identity_species(species).casefold() !=
+                    identity_species(item["species"]).casefold()):
+                continue
+            heal = next((event for event in self.events[issue["event_seq"]:] if
+                         event["kind"] == "heal" and event["status"] == "consistent" and
+                         event["actor_id"] == item["actor_id"] and event["slot"] == item["slot"] and
+                         event["turn"] == item["turn"] and event["before"] == item["before"] and
+                         0 < event["frame"] - item["frame"] <= 4), None)
+            if not heal or "Grassy Terrain" not in str(heal.get("cause")) or not any(
+                proof["effect"] == "restoration" and 0 <= proof["frame"] - heal["frame"] <= 6
+                for proof in heal.get("causal_evidence", ())):
+                continue
+            before, after = health_ratio(heal["before"]), health_ratio(heal["after"])
+            if before is None or after is None or not .045 <= after - before <= .075 or any(
+                event["status"] != "suppressed" and event["kind"] in ACTIVITY | {"turn", "faint", "battle_end"} and
+                item["logical_ms"] < event["logical_ms"] <= heal["logical_ms"]
+                for event in self.events):
+                continue
+            proof = [{"frame": item["frame"], "text": conflict["stronger"]["text"],
+                      "confidence": conflict["stronger"]["confidence"]}] + heal["hp_support"]["evidence"] + [
+                {"frame": line["frame"], "text": line["text"], "confidence": line["confidence"]}
+                for line in heal["causal_evidence"] if line["effect"] == "restoration"]
+            reason = ("Fragmento OCR superpuesto al PS previo confirmado; cura completa de "
+                      "Grassy Terrain y mensaje del mismo actor corroborados.")
+            item.update(kind="hp_rejected_reading", status="suppressed", note=reason,
+                        hp_state="rejected", hp_support={"state": "confirmed", "reason": reason,
+                                                        "evidence": proof})
+            heal["terrain_restoration_support"] = {"state": "confirmed", "reason": reason,
+                                                   "evidence": proof}
+            heal["cause"] = "Grassy Terrain corroborado por HUD y mensaje"
+            self.issues.remove(issue)
+            self.resolved_issues.append({**issue, "resolution": {
+                "state": "resolved", "event_seq": heal["seq"], "actor_id": item["actor_id"],
+                "slot": item["slot"], "reason": reason, "evidence": proof}})
 
     def _reconcile_mega_candidates(self) -> None:
         """Resolve a wrong-slot duplicate only with a supported accepted Mega.
@@ -3244,6 +3407,7 @@ class BattleAutomaton:
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
+        self._reconcile_terrain_hp_fragments()
         self._reconcile_mega_candidates()
         self._reconcile_faint_hud_entries()
         self._reconcile_hud_identity_entries()
@@ -3426,10 +3590,12 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
                      item["logical_ms"], item["seq"]))
     displayed: list[list[dict[str, Any]]] = []
     for item in ordered:
-        if (displayed and item["kind"] == displayed[-1][-1]["kind"] == "fieldstart" and
+        if (displayed and item["kind"] == displayed[-1][-1]["kind"] and
+            item["kind"] in {"fieldstart", "battle_end"} and
             item["turn"] == displayed[-1][-1]["turn"] and
             item["value"] == displayed[-1][-1]["value"] and
-            item["logical_ms"] - displayed[-1][-1]["logical_ms"] <= 3_000):
+            item["logical_ms"] - displayed[-1][-1]["logical_ms"] <= (
+                10_000 if item["kind"] == "battle_end" else 3_000)):
             displayed[-1].append(item)
         else:
             displayed.append([item])
@@ -3437,7 +3603,9 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         item = repetition[0]
         if item["turn"] != section:
             section = item["turn"]
-            lines += ["", f"## {'Apertura' if section == 0 else 'Turno ' + str(section)}", ""]
+            if lines[-1]:
+                lines.append("")
+            lines += [f"## {'Apertura' if section == 0 else 'Turno ' + str(section)}", ""]
         marker = "⚠️ " if item["status"] == "review" else ""
         mm, ss = divmod(item["logical_ms"] // 1000, 60)
         when = "Inicial" if section == 0 and item["kind"] in {"switch", "drag"} else f"{mm:02d}:{ss:02d}"
@@ -3489,9 +3657,23 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
                 prior = item["hp_baseline"]["evidence"][0]
                 lines += [f"  - PS anteriores en el HUD de {prior['nickname']}: "
                           f"{prior['text']} (fotograma {prior['frame']})."]
-        if item["evidence"]:
-            lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» "
-                      f"(fotograma {item['evidence'][0]['frame']})."]
+        screen = item["evidence"][0] if item["evidence"] else None
+        if item["kind"] in HP_KINDS and item.get("after"):
+            expected = (item["after"].split("/", 1)[0] + "%" if item["slot"].startswith("p2")
+                        else item["after"])
+            readings = item.get("hp_support", {}).get("evidence", []) + item["evidence"]
+            screen = next((line for line in readings if
+                           line.get("text", "").replace(" ", "") == expected), None)
+        if screen:
+            lines += [f"  - Pantalla: «{screen['text']}» "
+                      f"(fotograma {screen['frame']})."]
+        elif item["kind"] in HP_KINDS and item.get("after"):
+            support = item.get("hp_support", {})
+            split = next((line for line in support.get("evidence", ()) if
+                          line.get("percent") and line.get("text") == item["after"].split("/", 1)[0]), None)
+            if split:
+                lines += [f"  - HUD: «{split['text']}» y «%» separados "
+                          f"(fotograma {split['frame']})."]
         for evidence in item.get("causal_evidence", []):
             delta = evidence["delta_ms"] / 1000
             lines += [f"  - Narración asociada: «{evidence['text']}» (fotograma {evidence['frame']}; "
@@ -3508,7 +3690,7 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
                       f"{link['reason']}"]
     if ledger.get("resolved_issues"):
         lines += ["", "## Avisos resueltos con evidencia", ""]
-        for issue in ledger["resolved_issues"]:
+        for issue in sorted(ledger["resolved_issues"], key=lambda row: row["frame"]):
             resolution = issue["resolution"]
             frames = ", ".join(str(f) for f in sorted({e["frame"] for e in resolution["evidence"]}))
             lines += [f"- Fotograma {issue['frame']}: {resolution['reason']} "
