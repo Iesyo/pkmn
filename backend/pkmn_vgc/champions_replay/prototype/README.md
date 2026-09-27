@@ -98,7 +98,7 @@ desconocidos. `report.json` cuenta por separado inferencias de entradas y de
 transiciones, episodios, observaciones confirmadas, lecturas sin confirmar y
 transiciones que requieren revisión.
 
-## Primer ZIP · 10a7fba6fda04585
+## Primer ZIP · 10a7fba6fda04585 (corte inicial)
 
 | Partida | Candidatos → sucesos | Orden principal frente al replay | PS coincidentes | Hallazgo |
 | --- | ---: | ---: | ---: | --- |
@@ -125,7 +125,7 @@ partida 5, las entradas de Pelipper y Rillaboom anunciadas antes de los
 frames **5550 y 5826** usan PS iniciales al máximo **inferidos**; el PS leído
 durante la animación no demuestra por sí mismo el valor con el que entraron.
 
-## Segundo ZIP · 90403f16712d4d41
+## Segundo ZIP · 90403f16712d4d41 (corte inicial)
 
 El ZIP contiene la salida actual y dos archivos de reanálisis anteriores.
 La primera versión produjo sólo tres replays: una identidad rival en la
@@ -180,7 +180,7 @@ que la puerta no descartó esas lecturas válidas, **no** que pueda evitar toda
 lectura parcial en futuros vídeos: un OCR erróneo, completo y persistente puede
 requerir una observación adicional o revisión visual.
 
-## Tercer ZIP · 331e6e783c3e45a4
+## Tercer ZIP · 331e6e783c3e45a4 (corte inicial)
 
 El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 0**:
 varias entradas tienen PS completos en pantalla antes de la primera acción,
@@ -219,6 +219,25 @@ segundo: 20 → 7; tercero: 13 → 0). Los **329 episodios de PS propuestos** ti
 del valor final en su HUD; algunos PS iniciales se infieren. Los avisos pendientes siguen visibles; estos datos aún no prueban
 que el replay final reproduzca fielmente el vídeo.
 
+## Refinamiento de episodios y textos de menú · 27 de septiembre
+
+- En el job `10a7fba6fda04585`, batalla 1, el aviso de quemadura aparece en
+  frame 369 y los PS de Indeedee-F bajan `18 → 15 → 12 %` en frames 370–371.
+  El detector llamó `heal` a 15 % con una etiqueta de Rocky Helmet; Ledger
+  conserva ambas lecturas y registra **un daño 18 → 12 % por quemadura**. La
+  etiqueta errónea del candidato no determina la dirección ni la causa. La
+  narración de quemadura ya no se atribuye al daño de Blaziken en el otro slot.
+- Los mensajes `has no energy left to battle` y `can't use its sealed...`
+  vistos durante `Battle Info` o `MOVE TIME` quedan en JSON como `ui_text`
+  suprimido: son avisos del menú, no sucesos de la batalla. Fuera del menú
+  siguen necesitando interpretación normal.
+- Recuento actualizado en las mismas trazas: **11 incidencias** pendientes
+  (primer ZIP: 5; segundo: 6; tercero: 0), frente a 15 antes de estas dos
+  correcciones. Hay **328 episodios de PS** propuestos. Los sucesos
+  principales mantienen las mismas alineaciones con los replays archivados.
+  Las incidencias restantes incluyen candidatos suprimidos para auditoría;
+  ninguna reducción equivale a validación visual del vídeo.
+
 ## Pruebas
 
 ```bash
@@ -228,7 +247,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Veinticuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Veintiséis casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
