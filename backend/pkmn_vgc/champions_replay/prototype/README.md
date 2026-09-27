@@ -106,6 +106,15 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    Un anuncio de entrada en la ventana o PS positivos en el candidato
    mantienen la revisión. Sirve tanto para reentradas tras faint como para
    duplicados inmediatamente anteriores, incluso en el mismo frame.
+   Para una identidad provisional creada al regresar el HUD, exige nombre y
+   PS completos en el mismo slot antes del candidato (hasta 8 s) y en dos
+   frames posteriores (hasta 1,5 s), con confianza ≥0,95. En esos dos frames
+   la resolución local del ID y el alias leído deben identificar al ocupante.
+   Los PS previos deben estar confirmados y ser positivos. Una lectura
+   contradictoria, acción, entrada, salida, faint o cambio de turno anterior
+   al candidato impide cerrar el aviso; el paso al menú del siguiente turno
+   sí puede corroborarlo. La resolución conserva el candidato suprimido y
+   la evidencia; no modifica entradas, actores ni PS.
 7. Ejecuta una **pasada retrospectiva** para los mensajes de quemadura,
    retroceso y recuperación. Busca episodios confirmados del mismo actor,
    slot, turno y sentido del cambio, a ambos lados del texto, hasta 3 s desde
@@ -421,6 +430,43 @@ muestreado y una después. La asociación admite ambos órdenes.
   frame **2668 (22:13.50)**, al terminar Grassy Terrain. No cumple los
   criterios de faint y continúa pendiente de revisión.
 
+## Kingambit · identidad provisional al regresar el HUD · 27 de septiembre
+
+- Job `10a7fba6fda04585`, partida 2, candidato **2668 (22:13.50)**.
+  El OCR leyó `Kingamh` mientras reaparecía el HUD y produjo un `switch`
+  con `__champions_actor_p2_0001__` para el slot ya ocupado por Kingambit.
+  Los frames **2669 (22:14.00)** y **2670 (22:14.50)** resuelven ese ID y
+  alias como Kingambit, con **12 %**. Las dos capturas de Ies confirman
+  a Kingambit en campo con esos PS, primero en el menú general y luego al
+  elegir movimiento. La captura previa a 22:13.50 todavía mostraba la
+  transición sin HUD; el tiempo del detector no implica sincronía visual
+  exacta con el reproductor.
+- La evidencia anterior está en **2659 (22:09.00)**: la recuperación
+  deja a Kingambit en **12 %**. Nombre, PS y slot coinciden a ambos lados
+  de la transición. Ledger enlaza el candidato suprimido con ese episodio
+  y las dos confirmaciones posteriores; la desaparición del terreno no
+  genera otra entrada.
+- **55/55 pruebas aprobadas**, incluidas las tres integraciones. Pendientes
+  **1 → 0**; seis incidencias resueltas conservan su evidencia (Mega, cuatro
+  de faint y esta identidad provisional). La regla también se prueba con
+  otro Pokémon y mote, y rechaza continuidad incompleta o contradictoria,
+  datos del compañero, identidad/alias sin confirmar, acciones o salidas.
+- Comparación completa frente al corte previo: idénticos eventos salvo la
+  nueva `resolution`, actores, PS, orden, estados, enlaces narrativos y
+  alineaciones con los replays archivados. Sólo el aviso 2668 pasa de
+  pendiente a resuelto.
+
+| Job | Partidas | Episodios de PS | Mensajes asociados | Pendientes | Resueltos |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `10a7fba6fda04585` | 5 | 146 | 57 | 0 | 3 |
+| `90403f16712d4d41` | 4 | 112 | 39 | 0 | 3 |
+| `331e6e783c3e45a4` | 3 | 70 | 17 | 0 | 0 |
+| **Total** | **12** | **328** | **113** | **0** | **6** |
+
+Cero avisos se refiere a este corpus revisado. El siguiente paso es una
+prueba ciega con partidas nuevas y anotación manual, seguida de validación
+Showdown e integración con COL-102. El prototipo sigue fuera de producción.
+
 ## Pruebas
 
 ```bash
@@ -430,7 +476,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cuarenta y nueve casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Cincuenta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

@@ -1555,6 +1555,117 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_hud_identity_entries(self) -> None:
+        """Join a provisional HUD identity to its corroborated living occupant.
+
+        Require the same name and complete HP before the HUD disappears and
+        in two frames after it returns. Only a locally resolved placeholder
+        can explain this duplicate; species equality alone is insufficient.
+        """
+        def hud_lines(row: dict[str, Any], slot: str, areas: dict) -> list[dict[str, Any]]:
+            left, right, top, bottom = areas[slot]
+            return [line for line in row.get("ocr", ())
+                    if line.get("confidence", 0) >= .95 and
+                    left <= line.get("left", -1) <= right and
+                    top <= line.get("top", -1) <= bottom and
+                    line.get("right", right) <= right + .02 and
+                    line.get("bottom", bottom) <= bottom + .02]
+
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "reentry_without_exit":
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            slot = rejected["slot"]
+            row = self.frame_lookup[rejected["frame"]]
+            raw_entries = [e for e in row.get("detections", {}).get("events", ())
+                           if e["kind"] == "switch" and e.get("slot") == slot and
+                           PLACEHOLDER.fullmatch(e.get("species") or "")]
+            partial = hud_nickname(row, slot)
+            hp = next((e for e in reversed(self.events[:rejected["seq"] - 1])
+                       if e["actor_id"] == rejected["actor_id"] and e["status"] != "suppressed" and
+                       (e["kind"] in HP_KINDS | {"switch", "drag", "faint", "illusion_reveal"} or
+                        e["kind"].startswith("hp_"))), None)
+            if (len(raw_entries) != 1 or not partial or not hp or
+                hp["slot"] != slot or hp["status"] != "consistent" or
+                hp.get("hp_state") != "confirmed" or hp["kind"] not in HP_KINDS | {"switch", "drag"}):
+                unresolved.append(issue)
+                continue
+            health = hp["after"] or hp["health"]
+            if (not 0 < (health_ratio(health) or 0) <= 1 or
+                rejected["health"] not in {None, health} or
+                not 0 < rejected["observed_ms"] - hp["observed_ms"] <= 8_000):
+                unresolved.append(issue)
+                continue
+            raw = raw_entries[0]["species"]
+            expected = identity_species(rejected["species"]).casefold()
+            expected_hp = health.split("/", 1)[0] + "%" if slot.startswith("p2") else health
+            before = self.frame_lookup[hp["frame"]]
+            name = hud_nickname(before, slot)
+            named_species = self.nickname_species[slot[:2]].get(name, name) if name else ""
+            if identity_species(named_species).casefold() != expected:
+                unresolved.append(issue)
+                continue
+            window = [r for r in self.frames
+                      if hp["observed_ms"] <= r["timestamp_ms"] <= rejected["observed_ms"] + 1_500]
+            proofs = []
+            conflict = False
+            for r in window:
+                names = [line for line in hud_lines(r, slot, NAME_HUD_AREAS)
+                         if re.search(r"[A-Za-z]{3}", line.get("text", ""))]
+                values = [line for line in hud_lines(r, slot, HP_HUD_AREAS)
+                          if HP_TEXT.fullmatch(line.get("text", "").strip())]
+                if (any(line["text"].strip().casefold() != name for line in names) or
+                    any(re.sub(r"\s+", "", line["text"]) != expected_hp for line in values)):
+                    conflict = True
+                if not names or not values:
+                    continue
+                if r["timestamp_ms"] > rejected["observed_ms"]:
+                    local = r.get("resolved_identities", {}).get(raw, "")
+                    alias = r.get("resolved_aliases", {}).get(slot[:2], {}).get(partial, "")
+                    if (identity_species(local).casefold() != expected or
+                        identity_species(alias).casefold() != expected):
+                        continue
+                elif r["frame"] != hp["frame"]:
+                    continue
+                proofs.append((r, [{"frame": r["frame"], "text": line["text"],
+                                    "confidence": line["confidence"], "kind": kind}
+                                   for kind, lines in (("hud_name", names), ("hud_hp", values))
+                                   for line in lines]))
+            following = [p for p in proofs if p[0]["timestamp_ms"] > rejected["observed_ms"]]
+            if (conflict or not any(p[0]["frame"] == hp["frame"] for p in proofs) or
+                len({p[0]["frame"] for p in following}) < 2):
+                unresolved.append(issue)
+                continue
+            end_ms = following[1][0]["timestamp_ms"]
+            blocked = any(e["seq"] != rejected["seq"] and e["seq"] > hp["seq"] and
+                          e["observed_ms"] <= end_ms and e["status"] != "suppressed" and
+                          (e["kind"] in ACTIVITY | HP_KINDS | {"faint", "illusion_reveal"} or
+                           e["kind"].startswith("hp_") or
+                           (e["kind"] == "turn" and e["seq"] < rejected["seq"]))
+                          for e in self.events)
+            for r in window:
+                if r["timestamp_ms"] > end_ms:
+                    continue
+                for line in r.get("ocr", ()):
+                    text = line.get("text", "").strip()
+                    if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and (
+                        ANNOUNCED_ENTRY.search(text) or RAW_ACTION.search(text) or
+                        re.search(r"\b(come back|went back|withdrew)\b", text, re.I)):
+                        blocked = True
+            if blocked:
+                unresolved.append(issue)
+                continue
+            resolution = {"state": "resolved", "event_seq": hp["seq"],
+                          "actor_id": rejected["actor_id"], "slot": slot,
+                          "provisional_identity": raw, "observed_name": partial,
+                          "reason": "Identidad provisional al regresar el HUD: mismo nombre y PS antes y en dos frames posteriores, sin salida ni nueva acción.",
+                          "evidence": [e for r, evidence in proofs if r["timestamp_ms"] <= end_ms for e in evidence]}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         for candidate in ordered_candidates(self.frames):
             self._handle(candidate)
@@ -1562,6 +1673,7 @@ class BattleAutomaton:
         self._reconcile_hp_narration()
         self._reconcile_mega_candidates()
         self._reconcile_faint_hud_entries()
+        self._reconcile_hud_identity_entries()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)

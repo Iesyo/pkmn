@@ -58,6 +58,29 @@ def faint_hud_trace(same_frame=False):
     return trace
 
 
+def returning_hud_trace(species="Kingambit", name="Kingambit"):
+    raw = "__champions_actor_p2_0001__"
+    partial = name[:-1].casefold()
+    trace = [frame(1, [event("switch", "p2b", species, "6/100"), event("turn", turn=1),
+                      event("move", "p2b", species, move="Protect")]),
+             frame(2, [event("heal", "p2b", species, "12/100")]),
+             frame(3), frame(4, [event("switch", "p2b", raw)]),
+             frame(5, [event("turn", turn=2)]), frame(6),
+             frame(10, [event("move", "p2b", species, move="Protect")])]
+    for i in (1, 4, 5):
+        trace[i]["ocr"].append({"text": name, "left": .84, "right": .90,
+                                  "top": .05, "bottom": .09, "confidence": .999})
+        trace[i]["resolved_aliases"]["p2"][name.casefold()] = species
+    trace[3]["ocr"].append({"text": partial, "left": .87, "right": .94,
+                              "top": .05, "bottom": .09, "confidence": .933})
+    for i in (4, 5):
+        trace[i]["ocr"].append({"text": "12%", "left": .92, "right": .97,
+                                  "top": .12, "bottom": .16, "confidence": .999})
+        trace[i]["resolved_identities"][raw] = species
+        trace[i]["resolved_aliases"]["p2"][partial] = species
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
     def test_hp_ratio_parses_fractions_and_rejects_invalid_values(self):
         self.assertEqual(health_ratio("50/200"), .25)
@@ -444,6 +467,81 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual([(e["species"], e["health"]) for e in ledger["events"]
                           if e["kind"] == "switch" and e["status"] == "consistent"],
                          [("Rillaboom", "10/100"), ("Blaziken", "100/100")])
+        self.assertEqual(ledger["resolved_issues"], [])
+
+    def test_returning_hud_resolves_provisional_identity_without_new_entry(self):
+        for species, name in (("Kingambit", "Kingambit"), ("Rillaboom", "Bonkers")):
+            with self.subTest(species=species):
+                ledger = BattleAutomaton(0, returning_hud_trace(species, name)).run()
+                self.assertEqual(ledger["issues"], [])
+                self.assertEqual(len(ledger["actors"]), 1)
+                self.assertEqual(next(iter(ledger["actors"].values()))["health"], "12/100")
+                self.assertEqual(sum(e["kind"] == "switch" and e["status"] == "consistent"
+                                     for e in ledger["events"]), 1)
+                resolved = ledger["resolved_issues"][0]
+                duplicate = ledger["events"][resolved["event_seq"] - 1]
+                self.assertEqual((duplicate["frame"], duplicate["status"]), (4, "suppressed"))
+                proof = resolved["resolution"]["evidence"]
+                self.assertEqual({e["frame"] for e in proof}, {2, 5, 6})
+                self.assertEqual({e["kind"] for e in proof}, {"hud_name", "hud_hp"})
+
+    def test_returning_hud_keeps_warning_without_continuity(self):
+        for missing in ("prior_name", "prior_hp", "prior_event", "later_name", "later_hp", "partner_name",
+                        "partner_hp", "one_frame", "confidence", "different_hp", "different_name",
+                        "resolution", "alias", "placeholder", "candidate_hp", "time",
+                        "entry_text", "exit_text", "action_text", "move", "turn", "faint"):
+            with self.subTest(missing=missing):
+                trace = returning_hud_trace()
+                if missing == "prior_name":
+                    trace[1]["ocr"].pop()
+                elif missing == "prior_hp":
+                    trace[1]["ocr"].pop(0)
+                elif missing == "prior_event":
+                    trace[1]["detections"]["events"] = []
+                elif missing in {"later_name", "later_hp", "partner_name", "partner_hp", "confidence",
+                                 "different_hp", "different_name", "resolution", "alias"}:
+                    for row in trace[4:6]:
+                        if missing == "later_name":row["ocr"].pop(0)
+                        elif missing == "later_hp":row["ocr"].pop()
+                        elif missing == "partner_name":row["ocr"][0].update(left=.62, right=.69)
+                        elif missing == "partner_hp":row["ocr"][-1].update(left=.70, right=.75)
+                        elif missing == "confidence":row["ocr"][0]["confidence"] = .8
+                        elif missing == "different_hp":row["ocr"][-1]["text"] = "13%"
+                        elif missing == "different_name":row["ocr"][0]["text"] = "Blaziken"
+                        elif missing == "resolution":row["resolved_identities"] = {}
+                        elif missing == "alias":row["resolved_aliases"]["p2"].pop("kingambi")
+                elif missing == "one_frame":
+                    trace[5]["ocr"] = []
+                elif missing == "placeholder":
+                    trace[3]["detections"]["events"][0]["species"] = "Kingambit"
+                elif missing == "candidate_hp":
+                    trace[3]["detections"]["events"][0]["health"] = "15/100"
+                elif missing == "time":
+                    for row in trace[3:]:
+                        row["timestamp_ms"] += 10_000
+                elif missing in {"entry_text", "exit_text", "action_text"}:
+                    text = {"entry_text": "Rival sent out Kingambit!", "exit_text": "Kingambit, come back!",
+                            "action_text": "The opposing Kingambit used Protect!"}[missing]
+                    trace[2]["ocr"].append({"text": text, "top": .75, "confidence": 1})
+                elif missing == "move":
+                    trace[2] = frame(3, [event("move", "p2b", "Kingambit", move="Protect")])
+                elif missing == "turn":
+                    trace[2] = frame(3, [event("turn", turn=2)])
+                elif missing == "faint":
+                    trace[5]["detections"]["events"].append(event("faint", "p2b", "Kingambit"))
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertTrue(any(i["code"] == "reentry_without_exit" and i["frame"] == 4
+                                    for i in ledger["issues"]))
+                self.assertEqual(ledger["resolved_issues"], [])
+
+    def test_returning_hud_does_not_absorb_real_replacement(self):
+        trace = returning_hud_trace()
+        trace[3] = frame(4, [event("switch", "p2b", "Blaziken", "100/100")],
+                         texts=["Rival sent out Blaziken!"])
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([e["species"] for e in ledger["events"]
+                          if e["kind"] == "switch" and e["status"] == "consistent"],
+                         ["Kingambit", "Blaziken"])
         self.assertEqual(ledger["resolved_issues"], [])
 
     def test_isolated_partial_hp_read_does_not_create_damage_or_recovery(self):
@@ -891,6 +989,13 @@ class TemporalAutomatonTests(unittest.TestCase):
                     faint = ledger["events"][ghost["resolution"]["event_seq"] - 1]
                     self.assertEqual((faint["frame"], faint["kind"]), (1349, "faint"))
                 if index == 1:
+                    self.assertEqual(ledger["issues"], [])
+                    duplicate = next(e for e in ledger["events"] if e["frame"] == 2668 and e["kind"] == "switch")
+                    self.assertEqual(duplicate["resolution"]["state"], "resolved")
+                    self.assertEqual(duplicate["resolution"]["observed_name"], "kingamh")
+                    self.assertEqual({e["frame"] for e in duplicate["resolution"]["evidence"]}, {2659, 2669, 2670})
+                    hp = ledger["events"][duplicate["resolution"]["event_seq"] - 1]
+                    self.assertEqual((hp["frame"], hp["after"]), (2659, "12/100"))
                     rejected = next(e for e in ledger["events"] if e["frame"] == 2797 and
                                     e["kind"] == "hp_rejected_reading")
                     self.assertEqual((rejected["status"], rejected["before"], rejected["after"]),
