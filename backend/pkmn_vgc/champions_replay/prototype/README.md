@@ -67,7 +67,10 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    HUD separados. Si el detector crea una pérdida y un rebote inmediatos
    antes de la primera acción, también exige PS completos estables después
    del fragmento antes de descartar ambos; sin esa prueba mantiene
-   `hp_oscillation` para revisión.
+   `hp_oscillation` para revisión. Si una cura de ~1/16 bajo Grassy Terrain
+   termina en PS confirmados y el mensaje posterior nombra al mismo actor,
+   un porcentaje OCR recortado durante la subida se descarta por separado:
+   conserva los PS previos y registra una sola curación con causa corroborada.
    Un `0%` seguido de un rebote positivo durante el debilitamiento se
    conserva en `hp_zero_rebound`, sin reanimar al actor. El valor final puede
    estar confirmado por OCR y **seguir en revisión** si el sentido del cambio
@@ -279,6 +282,24 @@ que el replay final reproduzca fielmente el vídeo.
   en el segundo ZIP, partida 2, frame 2082 requiere inspección visual para
   resolver sus PS. Seis avisos son candidatos ya suprimidos y auditables.
 
+## Cura de Sneasler por terreno · 27 de septiembre
+
+- Capturas del job `90403f16712d4d41`, partida 2: a las **17:20.50**
+  Sneasler tiene **41 %**; a las **17:21.50**, **47 %**. La pantalla muestra
+  el efecto verde y en frame 2085 (17:22) aparece «The opposing Sneasler
+  had its HP restored.» Grassy Terrain seguía activo. El `1%` del frame
+  2082 era un recorte falso; el `44` OCR coexistente tampoco fija PS nuevos.
+- Ledger guarda el fragmento como `hp_rejected_reading` suprimido y emite
+  **una cura 41 → 47 %**, causa «Grassy Terrain corroborado por HUD y
+  mensaje». Exige que el incremento corresponda a ~1/16, que el PS final
+  tenga OCR completo y que el mensaje nombre al mismo actor. Sin esas
+  pruebas conserva el conflicto para revisión.
+- Quedan **6 avisos** auditables en 12 partidas (primer ZIP: 3; segundo: 3;
+  tercero: 0), todos por candidatos suprimidos; ningún conflicto de PS
+  pendiente en estas trazas. Persisten **328 episodios de PS** y las mismas
+  alineaciones principales con los replays archivados. La prueba ciega y la
+  validación del replay generado siguen pendientes.
+
 ## Pruebas
 
 ```bash
@@ -288,7 +309,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Treinta casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Treinta y dos casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
