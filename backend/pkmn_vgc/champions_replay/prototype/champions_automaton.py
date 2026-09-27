@@ -57,6 +57,21 @@ NAME_HUD_AREAS = {
     "p1a": (.05, .27, .82, .91), "p1b": (.27, .49, .82, .91),
     "p2a": (.57, .81, .02, .10), "p2b": (.81, .99, .02, .10),
 }
+# The clock may be merged with the team icons to its right. Classify its
+# origin (left/top), not the merged box's centre, in normalized video space.
+CLOCK_AREAS = {"p1_clock": (.15, .25, .78, .855),
+               "p2_clock": (.77, .86, .145, .205)}
+
+
+def clock_region(line: dict[str, Any]) -> str | None:
+    if not re.search(r"\d", line.get("text", "")):
+        return None
+    for name, (left, right, top, bottom) in CLOCK_AREAS.items():
+        if (left <= line.get("left", -1) <= right and
+            top <= line.get("top", -1) <= bottom and
+            line.get("bottom", bottom) <= bottom):
+            return name
+    return None
 
 
 def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
@@ -739,6 +754,14 @@ class BattleAutomaton:
         # before ANY pass can use them. Never mutate the archived trace.
         frames = [{**row, "ocr": [], "resolved_aliases": {}, "resolved_identities": {},
                    "detections": {"events": []}} if row["frame"] in ignored else row for row in frames]
+        # Clock digits are UI, even when OCR turns ':' into '/' or merges
+        # a party icon into the seconds. Keep the raw trace and coordinates
+        # for provenance, but never use these numbers as HP in any pass.
+        self.clock_readings = {row["frame"]: [dict(line, region=region)
+                               for line in row.get("ocr", ()) if (region := clock_region(line))]
+                               for row in frames}
+        frames = [{**row, "ocr": [line for line in row.get("ocr", ()) if not clock_region(line)]}
+                  if self.clock_readings[row["frame"]] else row for row in frames]
         self.frames = frames
         self.frame_lookup = {row["frame"]: row for row in frames}
         observed_resolutions: dict[str, set[str]] = collections.defaultdict(set)
@@ -970,11 +993,14 @@ class BattleAutomaton:
             return {"state": "unconfirmed", "reason": "PS o slot sin formato comprobable", "evidence": []}
         current, maximum = map(int, health.split("/"))
         percent_hud = slot.startswith("p2")
+        if maximum <= 0 or current > maximum or (percent_hud and maximum != 100):
+            return {"state": "unconfirmed", "reason": "PS incompatibles con el formato del HUD", "evidence": []}
         left, right, top, bottom = HP_HUD_AREAS[slot]
         full: list[dict[str, Any]] = []
         split: list[dict[str, Any]] = []
         bare: list[dict[str, Any]] = []
         repaired: list[dict[str, Any]] = []
+        missing: list[dict[str, Any]] = []
         frames = list(range(frame, frame + 3)) if confirmation_frames is None else confirmation_frames
         for offset, observed_frame in enumerate(frames):
             row = self.frame_lookup.get(observed_frame)
@@ -1006,6 +1032,16 @@ class BattleAutomaton:
                     # observation before repairing any separator except '1'.
                     entry["separator_repaired"] = True
                     repaired.append(entry)
+                elif (not percent_hud and value == f"{current}{maximum}" and
+                      entry["confidence"] >= .9 and current == maximum and maximum >= 10):
+                    # Missing slash: require adjacent stationary observations,
+                    # the same unique HUD name, and no intervening action.
+                    name = hud_nickname(row, slot)
+                    if name and sum(hud_nickname(row, s) == name for s in SLOTS
+                                    if s.startswith(slot[:2])) == 1:
+                        entry.update(separator_repaired=True, repair="missing_slash", nickname=name,
+                                     left=line["left"], top=line["top"], observed_ms=row["timestamp_ms"])
+                        missing.append(entry)
                 elif percent_hud and value == str(current):
                     bare.append(entry)
                     percent = next((other for other in lines
@@ -1026,11 +1062,45 @@ class BattleAutomaton:
         if len({x["frame"] for x in repaired}) >= 2:
             return {"state": "confirmed", "reason": "separador OCR reparado en dos frames",
                     "evidence": repaired}
+        safe_frames = {r["frame"] for r in self._confirmation_rows(frame)} if len(missing) >= 2 else set()
+        for previous, following in zip(missing, missing[1:]):
+            if (previous["frame"] in safe_frames and following["frame"] in safe_frames and
+                following["frame"] == previous["frame"] + 1 and
+                0 < following["observed_ms"] - previous["observed_ms"] <= 1_000 and
+                previous["nickname"] == following["nickname"] and
+                abs(previous["left"] - following["left"]) <= .01 and
+                abs(previous["top"] - following["top"]) <= .01):
+                return {"state": "confirmed", "reason": "separador OCR omitido, corroborado en dos frames",
+                        "evidence": [previous, following]}
         if any(x["confidence"] >= .9 for x in split):
             return {"state": "confirmed", "reason": "número y porcentaje separados",
                     "evidence": [max(split, key=lambda x: x["confidence"])]}
         return {"state": "unconfirmed", "reason": "lectura parcial o sin confirmación en el HUD",
-                "evidence": full + repaired + split + bare}
+                "evidence": full + repaired + missing + split + bare}
+
+    def _clock_hp_source(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Identify an archived HP candidate whose number comes from a clock.
+
+        Even a weak matching number in the actual HUD takes precedence. Do not infer
+        provenance from a nearby time or simply from an unusual denominator.
+        """
+        event = candidate["event"]
+        health, slot, number = event.get("health"), event.get("slot"), candidate["observed_frame"]
+        if not health or slot not in SLOTS:
+            return None
+        sources = []
+        for line in self.clock_readings.get(number, ()):
+            value = re.sub(r"\s+", "", line["text"]).replace("O", "0").replace("o", "0")
+            fraction = re.fullmatch(r"(\d{1,4})\D+(\d{1,4})", value)
+            percentage = re.fullmatch(r"(\d{1,3})%", value)
+            parsed = (f"{int(fraction[1])}/{int(fraction[2])}" if fraction else
+                      f"{int(percentage[1])}/100" if percentage else None)
+            if parsed == health:
+                sources.append({"frame": number, **line})
+        if not sources or self._hp_support(slot, health, number, [number])["evidence"]:
+            return None
+        return {"state": "rejected", "reason": "cifra localizada en la zona del reloj, fuera del HUD de PS",
+                "evidence": sources, "raw_event": dict(event)}
 
     def _confirm_pending_hp(self, episode: HpEpisode, support: dict[str, Any]) -> dict[str, Any]:
         """Keep weak final readings provisional until stable evidence arrives."""
@@ -1488,6 +1558,14 @@ class BattleAutomaton:
 
     def _hp(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
+        clock = self._clock_hp_source(candidate)
+        if clock:
+            actor_id = self.active.get(event.get("slot"))
+            before = self.actors.get(actor_id or "", {}).get("health")
+            item = self._append(candidate, kind="hp_rejected_reading", actor_id=actor_id,
+                                status="suppressed", before=before, after=before, note=clock["reason"])
+            item["hp_state"], item["hp_support"] = "rejected", clock
+            return
         conflict = self._competing_hp_ocr(candidate)
         if conflict:
             candidate["competing_ocr"] = conflict

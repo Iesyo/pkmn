@@ -722,6 +722,45 @@ en la auditoría: siguen 33/33 eventos principales y 12/12 episodios de PS
 en secuencia exacta. El lote mantiene 29 episodios confirmados y 7/7
 mensajes de PS asociados. No se modifica el traductor de producción.
 
+## Zonas de reloj y separador omitido
+
+Las cinco capturas del lote f7af confirman Dee Dee con **177/177** en
+01:31.50, 01:32.50 y 01:38.50, y Raichu con **100 %** en 13:20.50 y
+15:06.50. La traza convierte `05:18 0` en `5/180` (1603) y `04:330`
+en `4/330` (1815): esas líneas comienzan en la zona del reloj rival y
+se extienden sobre los iconos del equipo, debajo de los PS.
+
+Ledger clasifica las cifras de ambos relojes por sus coordenadas
+normalizadas antes de todas las pasadas. Usa el origen de la caja OCR,
+no su centro, porque puede incluir iconos a la derecha. Los números de
+esas zonas no sirven para confirmar PS, entradas o reconstrucciones.
+Se conserva la traza original; no se descarta el frame ni su HUD real.
+
+Cuando un candidato archivado de daño/curación coincide exactamente con
+una cifra del reloj del mismo frame y no tiene lectura compatible en el
+HUD de su slot, se registra como `hp_rejected_reading`. Conserva texto,
+confianza, coordenadas, zona y candidato original en `hp_support`, sin
+cambiar PS ni cortar una animación en curso. Una lectura compatible en
+el HUD, incluso débil, impide atribuirla sólo al reloj: se aplica la
+validación normal o queda pendiente. No se descarta por denominador
+inusual, presencia de Communicating ni mera proximidad a un reloj.
+El HUD rival porcentual sólo puede confirmar valores con denominador 100.
+
+Para PS propios completos como `177177`, se amplía la reparación del
+separador: numerador igual al máximo, máximo de al menos dos cifras,
+dos lecturas consecutivas ≥0,90, posición estable, mote único e idéntico
+y sin cruzar acciones, cambios, turnos o huecos. No se adivinan fracciones
+parciales ambiguas. Dee Dee queda confirmado en su entrada 184 con
+evidencia de 184–185; no necesita esperar hasta la lectura con `/` en 198.
+
+**89/89 pruebas aprobadas sin omisiones; seis ZIP, 18 partidas, cero
+avisos pendientes**. Los 16 JSON previos son idénticos a a2914ae. En f7af
+se resuelven los tres avisos, conservando 34 episodios de PS confirmados,
+9/9 mensajes enlazados y secuencias principales exactas de 23/23 y 48/48.
+Total del corpus: 418 episodios confirmados y 132 mensajes asociados.
+No se modifica el traductor de producción. Cero avisos no sustituye la
+validación visual completa ni elimina las diferencias históricas de extracción.
+
 ## Pruebas
 
 ```bash
@@ -730,15 +769,16 @@ CHAMPIONS_DIAGNOSTIC_SECOND=/ruta/champions-diagnostics-90403f16712d4d41.zip \
 CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 CHAMPIONS_DIAGNOSTIC_FOURTH=/ruta/champions-diagnostics-50808fa9e45e4ccc.zip \
 CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
+CHAMPIONS_DIAGNOSTIC_SIXTH=/ruta/champions-diagnostics-f7af8655adb74bc6.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Setenta y cuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Ochenta y tres casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
 el seguimiento de Zoroark bajo Ilusión frente a un cambio normal de especie.
-Cinco pruebas de integración usan los cinco, cuatro, tres, dos y dos replays actuales,
+Seis pruebas de integración usan los cinco, cuatro, tres, dos, dos y dos replays actuales,
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.

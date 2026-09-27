@@ -1172,6 +1172,131 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(entry["hp_state"], "confirmed")
         self.assertEqual(entry["hp_support"]["reason"], "separador OCR reparado en dos frames")
 
+    def test_missing_slash_requires_repeated_stationary_named_full_hp(self):
+        trace = [frame(1, [event("switch", "p1b", "Indeedee-F", "143/143")]), frame(2)]
+        for row in trace:
+            row["ocr"] = [
+                {"text": "143143", "confidence": .93, "left": .34, "top": .92},
+                {"text": "Example", "confidence": .999, "left": .29, "top": .86},
+            ]
+        raw = json.dumps(trace)
+        ledger = BattleAutomaton(0, trace).run()
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch")
+        self.assertEqual((entry["health"], entry["hp_state"]), ("143/143", "confirmed"))
+        self.assertEqual([e["frame"] for e in entry["hp_support"]["evidence"]], [1, 2])
+        self.assertTrue(all(e["repair"] == "missing_slash" for e in entry["hp_support"]["evidence"]))
+        self.assertEqual(json.dumps(trace), raw)
+
+    def test_missing_slash_stays_provisional_without_continuity_or_unique_name(self):
+        for case in ("single", "weak", "moving", "other_name", "duplicate_name", "action", "gap", "partial"):
+            with self.subTest(case=case):
+                trace = [frame(1), frame(2)]
+                for row in trace:
+                    row["ocr"] = [
+                        {"text": "143143", "confidence": .93, "left": .34, "top": .92},
+                        {"text": "Example", "confidence": .999, "left": .29, "top": .86},
+                    ]
+                health = "143/143"
+                if case == "single": trace[1]["ocr"] = []
+                if case == "weak": trace[1]["ocr"][0]["confidence"] = .89
+                if case == "moving": trace[1]["ocr"][0]["left"] = .37
+                if case == "other_name": trace[1]["ocr"][1]["text"] = "Other"
+                if case == "duplicate_name":
+                    trace[1]["ocr"].append({"text": "Example", "confidence": .999, "left": .09, "top": .86})
+                if case == "action": trace[1]["detections"]["events"] = [event("move", "p1a", "Blaziken", move="Protect")]
+                if case == "gap": trace[1]["timestamp_ms"] = 2500
+                if case == "partial":
+                    health = "14/3143"
+                machine = BattleAutomaton(0, trace)
+                self.assertEqual(machine._hp_support("p1b", health, 1)["state"], "unconfirmed")
+
+    def test_clock_numbers_are_excluded_before_all_hp_passes_without_mutating_trace(self):
+        trace = [frame(1)]
+        trace[0]["ocr"] = [
+            {"text": "3%", "confidence": .999, "left": .79, "top": .16, "bottom": .19},
+            {"text": "5/180", "confidence": .999, "left": .17, "top": .81, "bottom": .84},
+            {"text": "Protect", "confidence": .999, "left": .85, "top": .55},
+        ]
+        raw = json.dumps(trace)
+        machine = BattleAutomaton(0, trace)
+        self.assertEqual(machine._hp_support("p2a", "3/100", 1)["state"], "unconfirmed")
+        self.assertEqual([line["text"] for line in machine.frames[0]["ocr"]], ["Protect"])
+        self.assertEqual({line["region"] for line in machine.clock_readings[1]}, {"p1_clock", "p2_clock"})
+        self.assertEqual(json.dumps(trace), raw)
+
+    def test_clock_candidate_is_rejected_before_state_even_after_an_action(self):
+        for slot, species, health, left, top in (("p2b", "Pikachu", "100/100", .79, .16),
+                                                 ("p1a", "Arcanine", "180/180", .17, .81)):
+            with self.subTest(slot=slot):
+                trace = [frame(1, [event("switch", slot, species, health), event("turn", turn=1),
+                                  event("move", slot, species, move="Protect")]),
+                         frame(2, [event("damage", slot, species, "5/180")]),
+                         frame(3, [event("heal", slot, species, health)])]
+                trace[1]["ocr"] = [{"text": "05:18 0", "confidence": .84, "left": left,
+                                     "right": left + .14, "top": top, "bottom": top + .03}]
+                ledger = BattleAutomaton(0, trace).run()
+                rejected = next(e for e in ledger["events"] if e["kind"] == "hp_rejected_reading")
+                self.assertEqual((rejected["before"], rejected["after"], rejected["hp_state"]),
+                                 (health, health, "rejected"))
+                self.assertEqual(rejected["hp_support"]["raw_event"]["health"], "5/180")
+                self.assertEqual(rejected["hp_support"]["evidence"][0]["text"], "05:18 0")
+                self.assertFalse(ledger["issues"])
+                self.assertFalse(any(e["kind"] in {"damage", "heal"} and e["status"] != "suppressed"
+                                     for e in ledger["events"]))
+
+    def test_real_hp_in_its_hud_wins_over_same_number_in_clock(self):
+        for slot, species, initial, after, clock in (("p1a", "Arcanine", "180/180", "5/180", "05:180"),
+                                                    ("p2b", "Pikachu", "100/100", "4/100", "04:100")):
+            with self.subTest(slot=slot):
+                trace = [frame(1, [event("switch", slot, species, initial), event("turn", turn=1),
+                                  event("move", slot, species, move="Protect")]),
+                         frame(2, [event("damage", slot, species, after)])]
+                trace[1]["ocr"].append({"text": clock, "confidence": .999, "left": .79,
+                                          "right": .92, "top": .16, "bottom": .19})
+                ledger = BattleAutomaton(0, trace).run()
+                damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+                self.assertEqual((damage["after"], damage["hp_state"]), (after, "confirmed"))
+                self.assertFalse(any(e["kind"] == "hp_rejected_reading" for e in ledger["events"]))
+
+    def test_clock_source_requires_matching_digits_and_clock_coordinates(self):
+        trace = [frame(1)]
+        for text, left, top in (("05:180", .50, .40), ("04:330", .79, .16)):
+            with self.subTest(text=text):
+                trace[0]["ocr"] = [{"text": text, "confidence": .99, "left": left, "top": top}]
+                machine = BattleAutomaton(0, trace)
+                candidate = {"event": event("damage", "p2b", "Pikachu", "5/180"),
+                             "observed_frame": 1, "observed_ms": 500}
+                self.assertIsNone(machine._clock_hp_source(candidate))
+
+    def test_weak_real_hp_matching_clock_remains_pending_instead_of_being_discarded(self):
+        trace = [frame(1, [event("switch", "p2b", "Pikachu", "100/100"), event("turn", turn=1),
+                          event("move", "p2b", "Pikachu", move="Protect")]),
+                 frame(2, [event("damage", "p2b", "Pikachu", "4/100")])]
+        trace[1]["ocr"][0]["confidence"] = .8
+        trace[1]["ocr"].append({"text": "04:100", "confidence": .999, "left": .79,
+                                  "right": .92, "top": .16, "bottom": .19})
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertTrue(any(e["kind"] == "hp_unconfirmed" for e in ledger["events"]))
+        self.assertFalse(any(e["kind"] == "hp_rejected_reading" for e in ledger["events"]))
+
+    def test_clock_noise_does_not_split_an_ongoing_hp_animation(self):
+        trace = [frame(1, [event("switch", "p1a", "Arcanine", "180/180"),
+                          event("switch", "p2b", "Pikachu", "100/100"), event("turn", turn=1),
+                          event("move", "p2b", "Pikachu", move="Thunderbolt")]),
+                 frame(2, [event("damage", "p1a", "Arcanine", "140/180")]),
+                 frame(3, [event("damage", "p2b", "Pikachu", "5/180")]),
+                 frame(4, [event("damage", "p1a", "Arcanine", "80/180")])]
+        trace[2]["ocr"] = [{"text": "05:180", "confidence": .9, "left": .79, "top": .16}]
+        ledger = BattleAutomaton(0, trace).run()
+        hp = [e for e in ledger["events"] if e["kind"] == "damage"]
+        self.assertEqual(len(hp), 1)
+        self.assertEqual((hp[0]["before"], hp[0]["after"]), ("180/180", "80/180"))
+        self.assertEqual([o["frame"] for o in hp[0]["observations"]], [2, 4])
+
+    def test_percentage_hud_cannot_confirm_fraction_with_another_denominator(self):
+        machine = BattleAutomaton(0, [frame(1, [event("damage", "p2b", "Pikachu", "5/180")])])
+        self.assertEqual(machine._hp_support("p2b", "5/180", 1)["state"], "unconfirmed")
+
     def test_unconfirmed_entry_cannot_seed_a_false_transition(self):
         trace = [frame(1, [event("switch", "p2a", "Delphox", "3/100"), event("turn", turn=1)]),
                  frame(2, [event("damage", "p2a", "Delphox", "1/100")])]
@@ -1685,6 +1810,34 @@ class TemporalAutomatonTests(unittest.TestCase):
                              e["after"] == "9/100" and e["status"] == "consistent"
                              for e in archaludon["events"]))
         self.assertIn("hp_zero_rebound", [x["code"] for x in archaludon["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_SIXTH"), "Requiere el sexto ZIP del usuario")
+    def test_sixth_job_confirms_entry_and_excludes_clocks_without_losing_real_hp(self):
+        frames, baselines = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_SIXTH"]))
+        self.assertEqual(len(baselines), 2)
+        ledgers = [BattleAutomaton(i, [r for r in frames if r["battle_index"] == i]).run() for i in range(2)]
+        for ledger, baseline in zip(ledgers, (baselines[0], baselines[1])):
+            self.assertFalse(ledger["issues"])
+            self.assertTrue(compare_baseline(ledger, baseline)["exact_core_sequence"])
+        entry = next(e for e in ledgers[0]["events"] if e["frame"] == 184 and e["kind"] == "switch" and e["slot"] == "p1b")
+        self.assertEqual((entry["species"], entry["health"], entry["hp_state"]),
+                         ("Indeedee-F", "177/177", "confirmed"))
+        self.assertEqual([e["frame"] for e in entry["hp_support"]["evidence"]], [184, 185])
+        for number, raw_health in ((1603, "5/180"), (1815, "4/330")):
+            reading = next(e for e in ledgers[1]["events"] if e["frame"] == number)
+            self.assertEqual((reading["kind"], reading["status"], reading["before"], reading["after"]),
+                             ("hp_rejected_reading", "suppressed", "100/100", "100/100"))
+            self.assertEqual(reading["hp_support"]["raw_event"]["health"], raw_health)
+            self.assertEqual(reading["hp_support"]["evidence"][0]["region"], "p2_clock")
+            rebound = next(e for e in ledgers[1]["events"] if e["frame"] == number + 1)
+            self.assertEqual((rebound["status"], rebound["before"], rebound["after"]),
+                             ("suppressed", "100/100", "100/100"))
+        hp = [e for ledger in ledgers for e in ledger["events"]
+              if e["kind"] in {"damage", "heal"} and e["status"] != "suppressed"]
+        self.assertEqual(len(hp), 34)
+        self.assertTrue(all(e["hp_state"] == "confirmed" for e in hp))
+        self.assertEqual(len(ledgers[1]["narration_links"]), 9)
+        self.assertTrue(all(e["status"] == "linked" for e in ledgers[1]["narration_links"]))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FIFTH"), "Requiere el quinto ZIP del usuario")
     def test_fifth_job_stabilizes_lead_identity_and_keeps_unrelated_issues(self):
