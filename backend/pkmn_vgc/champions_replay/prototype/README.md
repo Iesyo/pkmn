@@ -688,6 +688,40 @@ siguen 29 episodios de PS confirmados y 7/7 mensajes asociados. La partida
 de PS. Sólo queda el texto del panel informativo de Psychic Terrain en
 1587 (13:13), pendiente de revisión. Prototipo fuera de producción.
 
+## Panel de consulta Active Statuses & Effects
+
+La captura de 13:13.00 del job 9fd1, partida 2, confirma que el texto
+«are immune to priority moves.» procede de la descripción de Psychic
+Terrain dentro del panel de consulta. Ese panel cubre casi todo el campo:
+sus cifras, nombres y descripciones no son observaciones de una acción.
+
+Antes de cualquier pasada, Ledger reconoce el encabezado completo
+**Active Statuses & Effects** con confianza ≥0,90. Tolera mayúsculas,
+espacios y `and` en lugar de `&`. En cada frame reconocido excluye OCR,
+candidatos, alias e identidades de la vista de trabajo, conservando sus
+tiempos. Así el panel no puede producir eventos ni confirmar PS, sujetos
+o narraciones de otros eventos en la pasada retrospectiva. La traza
+original no cambia y la lectura normal continúa en frames sin ese panel.
+Un rótulo genérico como Battle Info, el nombre del terreno, una descripción
+o un encabezado incompleto/débil no bastan para excluir un frame.
+
+`ignored_ui_frames` conserva frame, tiempo, motivo, encabezado, OCR y
+detecciones originales. El total de candidatos sigue contando la traza
+original; los candidatos del panel quedan en esa auditoría, fuera de los
+sucesos de batalla. El informe Markdown indica los frames excluidos.
+
+Se excluyen **1587–1588** de 9fd1, eliminando el último aviso. La misma
+regla reconoce **3093–3096 de 331, partida 3**, que no tenían candidatos:
+allí sólo se añade evidencia de exclusión y los sucesos siguen idénticos.
+
+**79/79 pruebas Ledger aprobadas, sin omisiones; cinco ZIP, 16 partidas,
+cero avisos pendientes**. Catorce JSON son idénticos al corte anterior;
+el de 331 partida 3 sólo añade auditoría de interfaz. En 9fd1 partida 2
+se retira el candidato informativo del registro de batalla y se conserva
+en la auditoría: siguen 33/33 eventos principales y 12/12 episodios de PS
+en secuencia exacta. El lote mantiene 29 episodios confirmados y 7/7
+mensajes de PS asociados. No se modifica el traductor de producción.
+
 ## Pruebas
 
 ```bash
@@ -699,7 +733,7 @@ CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Setenta y un casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Setenta y cuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

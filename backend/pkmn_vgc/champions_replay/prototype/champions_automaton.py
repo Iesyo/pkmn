@@ -69,6 +69,24 @@ def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
     return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
 
 
+def status_panel_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
+    """The status inspection overlay is not the battle HUD or narration.
+
+    Recognize its complete heading, independent of the selected effect or
+    Pokémon. A generic menu label or a terrain description is insufficient.
+    Keep the unmodified OCR and candidates for audit outside the event stream.
+    """
+    heading = next((line for line in row.get("ocr", ()) if line.get("confidence", 0) >= .9 and
+                    re.fullmatch(r"active\s+statuses\s*(?:&|and)\s*effects",
+                                 line.get("text", "").strip(), re.I)), None)
+    if not heading:
+        return None
+    return {"frame": row["frame"], "observed_ms": row["timestamp_ms"], "screen": "status_panel",
+            "reason": "Pantalla Active Statuses & Effects; contenido informativo excluido del estado de batalla.",
+            "heading": dict(heading), "ocr": row.get("ocr", []),
+            "detections": row.get("detections", {})}
+
+
 def corroborate_entry_identity(candidate: dict[str, Any], frames: dict[int, dict[str, Any]],
                                aliases: dict[str, str]) -> dict[str, Any]:
     """Resolve conflicting HUD names only after the entry's HUD stops moving.
@@ -713,6 +731,14 @@ class HpEpisode:
 class BattleAutomaton:
     def __init__(self, battle_index: int, frames: list[dict[str, Any]]):
         self.battle_index = battle_index
+        self.raw_frames = frames
+        self.ignored_ui_frames = [proof for row in frames if (proof := status_panel_evidence(row))]
+        ignored = {proof["frame"] for proof in self.ignored_ui_frames}
+        # Keep timestamps so temporal windows still measure real elapsed
+        # time, but exclude overlay text, HP, aliases and detector events
+        # before ANY pass can use them. Never mutate the archived trace.
+        frames = [{**row, "ocr": [], "resolved_aliases": {}, "resolved_identities": {},
+                   "detections": {"events": []}} if row["frame"] in ignored else row for row in frames]
         self.frames = frames
         self.frame_lookup = {row["frame"]: row for row in frames}
         observed_resolutions: dict[str, set[str]] = collections.defaultdict(set)
@@ -2345,10 +2371,11 @@ class BattleAutomaton:
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
-                    len(row["detections"]["events"]) for row in self.frames),
+                    len(row["detections"]["events"]) for row in self.raw_frames),
                 "events": self.events, "issues": self.issues, "resolved_issues": self.resolved_issues,
                 "narration_links": self.narration_links,
-                "counts": dict(counts), "actors": self.actors}
+                "counts": dict(counts), "actors": self.actors,
+                **({"ignored_ui_frames": self.ignored_ui_frames} if self.ignored_ui_frames else {})}
 
 
 def baseline_tokens(log: str) -> list[tuple[str, str, str]]:
@@ -2445,6 +2472,12 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
              f"{ledger['candidate_events']} candidatos; {len(ledger['events'])} sucesos consolidados.",
              "", "**Consistente** significa que no se detectó contradicción estructural; no equivale a validación visual. "
              "Las lecturas de PS tienen confirmación OCR separada de la causalidad del cambio.", ""]
+    if ledger.get("ignored_ui_frames"):
+        ignored = ledger["ignored_ui_frames"]
+        excluded = sum(len(row["detections"].get("events", ())) for row in ignored)
+        frames = ", ".join(str(row["frame"]) for row in ignored)
+        lines += [f"Panel Active Statuses & Effects excluido: frames {frames}; "
+                  f"{excluded} candidatos informativos conservados en ignored_ui_frames del JSON.", ""]
     if comparison:
         lines += [f"Replay archivado: {comparison['aligned_events']}/{comparison['baseline_core_events']} "
                   f"eventos principales alineados; PS {comparison['aligned_hp_episodes']}/"

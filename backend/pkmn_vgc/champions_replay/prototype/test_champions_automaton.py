@@ -681,6 +681,73 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ["ui_text", "ui_text"])
         self.assertFalse(any(x["code"] == "unclassified_text" for x in ledger["issues"]))
 
+    def test_status_panel_excludes_all_candidates_and_resumes_real_battle(self):
+        for heading in ("Active Statuses & Effects", " ACTIVE   STATUSES & EFFECTS ",
+                        "Active Statuses and Effects"):
+            with self.subTest(heading=heading):
+                panel = frame(2, [event("damage", "p1a", "Pelipper", "0/100"),
+                                  event("heal", "p1a", "Pelipper", "99/100"),
+                                  event("faint", "p1a", "Pelipper"),
+                                  event("move", "p1a", "Pelipper", move="Tackle"),
+                                  event("switch", "p1a", "Pikachu", "100/100"),
+                                  event("status", "p1a", "Pelipper", value="brn"),
+                                  event("mega", "p1a", "Pelipper", value="Fake Stone"),
+                                  event("fieldstart", value="Grassy Terrain"),
+                                  event("turn", turn=2), event("battle_end"),
+                                  event("message", value="are immune to priority moves.")],
+                              texts=[heading, "Pelipper used Tackle!", "Pelipper fainted!", "Go! Pikachu!"])
+                panel["resolved_aliases"]["p1"]["falsealias"] = "Pikachu"
+                panel["resolved_identities"]["__champions_actor_p1_0001__"] = "Pikachu"
+                panel["detections"]["battle_complete"] = True
+                trace = [frame(1, [event("switch", "p1a", "Pelipper", "100/100"), event("turn", turn=1),
+                                   event("move", "p1a", "Pelipper", move="Protect")]),
+                         panel, frame(3, [event("damage", "p1a", "Pelipper", "75/100")])]
+                original = json.dumps(trace, sort_keys=True)
+                automaton = BattleAutomaton(0, trace)
+                ledger = automaton.run()
+                self.assertEqual(json.dumps(trace, sort_keys=True), original)
+                self.assertEqual(ledger["issues"], [])
+                self.assertEqual(ledger["counts"], {"switch": 1, "turn": 1, "move": 1, "damage": 1})
+                self.assertEqual((ledger["events"][-1]["before"], ledger["events"][-1]["after"]), ("100/100", "75/100"))
+                self.assertIsNone(automaton.terrain)
+                self.assertNotIn("falsealias", automaton.nickname_species["p1"])
+                self.assertNotIn("__champions_actor_p1_0001__", automaton.id_resolution)
+                actor = next(iter(ledger["actors"].values()))
+                self.assertFalse(actor["fainted"])
+                self.assertIsNone(actor["status"])
+                self.assertIsNone(actor["forme"])
+                self.assertEqual(ledger["candidate_events"], 15)
+                ignored = ledger["ignored_ui_frames"][0]
+                self.assertEqual((ignored["frame"], ignored["ocr"], ignored["detections"]),
+                                 (2, panel["ocr"], panel["detections"]))
+                self.assertIn("Panel Active Statuses & Effects excluido", render_markdown(ledger, None))
+
+    def test_status_panel_cannot_confirm_hp_or_supply_raw_action_evidence(self):
+        trace = [frame(1, [event("switch", "p1a", "Pelipper", "100/100"), event("turn", turn=1),
+                           event("move", "p1a", "Pelipper", move="Protect")]),
+                 frame(2, [event("damage", "p1a", "Pelipper", "40/100")]),
+                 frame(3, texts=["Active Statuses & Effects", "Pelipper used Surf!", "Pelipper fainted!"]),
+                 frame(4)]
+        trace[1]["ocr"][0]["confidence"] = .8
+        trace[2]["ocr"].append({"text": "40/100", "left": .14, "top": .92, "confidence": .999})
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([i["code"] for i in ledger["issues"]], ["hp_unconfirmed"])
+        self.assertFalse(any(e["kind"] in {"damage", "faint"} for e in ledger["events"]))
+        self.assertEqual(len(ledger["ignored_ui_frames"]), 1)
+
+    def test_status_panel_requires_complete_heading_not_effect_description_or_menu_label(self):
+        for heading, confidence in (("Active Statuses", 1), ("Battle Info", 1), ("Psychic Terrain", 1),
+                                    ("Active Statuses & Effects", .89), ("", 1)):
+            with self.subTest(heading=heading, confidence=confidence):
+                text = "are immune to priority moves."
+                trace = [frame(1, [event("switch", "p1a", "Pelipper", "100/100"), event("turn", turn=1)]),
+                         frame(2, [event("message", value=text)], texts=[heading]),
+                         frame(3, [event("move", "p1a", "Pelipper", move="Protect")])]
+                trace[1]["ocr"][0]["confidence"] = confidence
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertNotIn("ignored_ui_frames", ledger)
+                self.assertTrue(any(i["code"] == "unclassified_text" for i in ledger["issues"]))
+
     def test_retrospective_burn_does_not_attach_to_previous_heal(self):
         trace = [frame(1, [event("switch", "p1a", "Gardevoir", "20/100"), event("turn", turn=1)]),
                  frame(2, [event("move", "p1a", "Gardevoir", move="Protect")]),
@@ -1660,8 +1727,11 @@ class TemporalAutomatonTests(unittest.TestCase):
                          [("Fake Out", 703, "p1b", 4), ("Grassy Glide", 882, "p1b", 5)])
         self.assertEqual(moves[0]["action_reconstruction"]["detected_frame"], 882)
         self.assertEqual(compare_baseline(first, baselines[0])["aligned_hp_episodes"], 17)
-        self.assertEqual([(i["code"], i["frame"]) for i in ledgers[1]["issues"]],
-                         [("unclassified_text", 1587)])
+        self.assertEqual(ledgers[1]["issues"], [])
+        ignored = ledgers[1]["ignored_ui_frames"]
+        self.assertEqual([row["frame"] for row in ignored], [1587, 1588])
+        self.assertEqual(ignored[0]["detections"]["events"][0]["value"], "are immune to priority moves.")
+        self.assertFalse(any(e["frame"] == 1587 for e in ledgers[1]["events"]))
         pending = next(e for e in ledgers[1]["events"] if e["frame"] == 1437)
         faint = next(e for e in ledgers[1]["events"] if e["frame"] == 1438)
         self.assertEqual((pending["status"], pending["text_support"]["state"]), ("suppressed", "rejected"))
