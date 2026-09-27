@@ -883,12 +883,24 @@ class BattleAutomaton:
             self.hp_pending.pop(key)
             self.hp_order.remove(key)
             conflict = next((x["competing_ocr"] for x in reads if x.get("competing_ocr")), None)
+            suspect = pending.candidates[-1]
+            stable_before = (self._stable_hp_before_conflict(
+                slot, stable, suspect["observed_frame"], suspect["competing_ocr"]["stronger"])
+                if suspect.get("competing_ocr") else None)
+            stable_after = (self._hp_support(slot, stable, candidate["observed_frame"])
+                            if stable_before else None)
+            confirmed_fragment = bool(stable_after and stable_after["state"] == "confirmed")
             note = "Dos lecturas opuestas antes de la primera acción regresan al PS previo."
-            if conflict:
+            if confirmed_fragment:
+                note = (f"El fragmento OCR {conflict['suspect']['text']} contradice "
+                        f"{conflict['stronger']['text']} en el mismo HUD; los PS completos "
+                        "son estables antes y después, sin acción entre ambas lecturas.")
+            elif conflict:
                 note += (f" En el mismo HUD, {conflict['suspect']['text']} compite con "
                          f"{conflict['stronger']['text']} de mayor confianza OCR.")
-            item = self._append(candidate, kind="hp_oscillation", actor_id=actor_id,
-                                status="review", before=stable, after=stable,
+            item = self._append(candidate, kind="hp_rejected_reading" if confirmed_fragment else "hp_oscillation",
+                                actor_id=actor_id, status="suppressed" if confirmed_fragment else "review",
+                                before=stable, after=stable,
                                 note=note,
                                 observations=[{"frame": x["observed_frame"], "health": x["event"].get("health"),
                                                "evidence": self._evidence(x, x["event"]["kind"]),
@@ -896,7 +908,12 @@ class BattleAutomaton:
                                               for x in reads])
             item["narration"].extend(pending.narration)
             item["hp_state"] = "rejected"
-            self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])
+            if confirmed_fragment:
+                item["hp_support"] = {"state": "confirmed",
+                                      "reason": "PS completos estables antes y después del fragmento OCR",
+                                      "evidence": stable_before["evidence"] + stable_after["evidence"]}
+            else:
+                self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])
             return
         # El detector puede llamar "heal" a un valor intermedio de una barra
         # que sigue bajando (o viceversa). La dirección de una animación se
