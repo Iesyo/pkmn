@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from champions_automaton import BattleAutomaton, compare_baseline, health_ratio, read_diagnostic, render_markdown
+from champions_automaton import BattleAutomaton, compare_baseline, health_ratio, read_diagnostic, render_markdown, strip_pokemon_title
 
 
 def event(kind, slot=None, species=None, health=None, move=None, value=None, turn=None):
@@ -126,7 +126,89 @@ def sliding_hud_trace(side="p1", species="Blaziken", partner="Kingambit"):
     return trace
 
 
+def delayed_entry_trace(side="p1", title="the Paldea Champion"):
+    slot = side + "a"
+    text = ("Go! " if side == "p1" else "Rival sent out ") + "Alpha " + title + "!"
+    trace = [frame(n) for n in range(1, 97)]
+    trace[0] = frame(1, [event("switch", slot, "Toxtricity", "10/100"), event("turn", turn=1)])
+    trace[1] = frame(2, [event("damage", slot, "Toxtricity", "0/100")])
+    trace[2] = frame(3, [event("faint", slot, "Toxtricity")])
+    trace[4] = frame(5, texts=[text])
+    trace[5] = frame(6, texts=[text])
+    trace[49] = frame(50, [event("move", slot, "Pelipper", move="Protect")])
+    trace[94] = frame(95, [event("switch", slot, "Pelipper", "100/100")])
+    for row in trace:row["resolved_aliases"][side]["alpha"] = "Pelipper"
+    for n in (10, 11):
+        x, y, hp_x, hp_y = (.08, .86, .14, .92) if side == "p1" else (.62, .05, .70, .12)
+        trace[n-1]["ocr"] = [
+            {"text": "Alpha", "left": x, "top": y, "confidence": .999},
+            {"text": "100/100" if side == "p1" else "100%", "left": hp_x, "top": hp_y, "confidence": .999}]
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_shared_title_rules_preserve_real_nicknames_and_double_announcements(self):
+        self.assertEqual(strip_pokemon_title("Revenant the Paldea Champion"), "Revenant")
+        self.assertEqual(strip_pokemon_title("Rex the Tried and True"), "Rex")
+        self.assertEqual(strip_pokemon_title("Tonatiuh and Revenant the Paldea Champion"), "Tonatiuh and Revenant")
+        self.assertEqual(strip_pokemon_title("Judge the Royal Master"), "Judge")
+        self.assertEqual(strip_pokemon_title("Revenant the Unknown Title"), "Revenant the Unknown Title")
+        self.assertEqual(strip_pokemon_title("Alpha and Beta"), "Alpha and Beta")
+
+    def test_delayed_entry_uses_announced_time_and_real_initial_hp_on_both_sides(self):
+        for side, title in (("p1", "the Paldea Champion"), ("p2", "the Peckish")):
+            with self.subTest(side=side):
+                ledger = BattleAutomaton(0, delayed_entry_trace(side, title)).run()
+                self.assertEqual(ledger["issues"], [])
+                entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Pelipper")
+                self.assertEqual((entry["frame"], entry["logical_frame"], entry["health"], entry["hp_state"]),
+                                 (95, 5, "100/100", "confirmed"))
+                proof = entry["entry_reconstruction"]
+                self.assertEqual([e["frame"] for e in proof["evidence"]], [10, 11])
+                self.assertEqual([e["frame"] for e in proof["announcements"]], [5, 6])
+                self.assertEqual(proof["raw_event"]["source_frame"], 95)
+                move = next(e for e in ledger["events"] if e["kind"] == "move")
+                self.assertEqual((move["actor_id"], move["status"]), (entry["actor_id"], "consistent"))
+                self.assertLess(entry["seq"], move["seq"])
+
+    def test_delayed_entry_never_bridges_missing_or_conflicting_evidence(self):
+        for missing in ("announcement", "title", "alias_collision", "name", "hp", "confidence", "slot",
+                        "one_hud", "motion", "gap", "action_before_hud", "occupied", "replacement",
+                        "faint", "raw_faint", "withdraw", "end", "different_name", "hp_change", "zero_hp", "candidate_hp"):
+            with self.subTest(missing=missing):
+                trace = delayed_entry_trace()
+                if missing == "announcement":trace[5]["ocr"] = []
+                elif missing in {"title", "alias_collision"}:
+                    for i in (4, 5):
+                        trace[i]["ocr"][0]["text"] = trace[i]["ocr"][0]["text"].replace(
+                            "the Paldea Champion" if missing == "title" else "Alpha",
+                            "the Unknown Title" if missing == "title" else "AlphaBeta")
+                elif missing in {"name", "hp", "confidence", "slot", "motion"}:
+                    for i in (9, 10):
+                        if missing == "name":trace[i]["ocr"][0]["text"] = "Beta"
+                        elif missing == "hp":trace[i]["ocr"][1]["text"] = "100"
+                        elif missing == "confidence":trace[i]["ocr"][0]["confidence"] = .92
+                        elif missing == "slot":trace[i]["ocr"][1]["left"] = .34
+                        elif missing == "motion" and i == 10:trace[i]["ocr"][0]["left"] += .02
+                elif missing == "one_hud":trace[10]["ocr"] = []
+                elif missing == "gap":trace.pop(20)
+                elif missing == "action_before_hud":trace[7] = frame(8, texts=["Alpha used Protect!"])
+                elif missing == "occupied":trace[2]["detections"]["events"] = []
+                elif missing in {"replacement", "faint"}:
+                    trace[29] = frame(30, [event("switch" if missing == "replacement" else "faint", "p1a", "Pelipper")])
+                elif missing in {"raw_faint", "withdraw", "end"}:
+                    text = {"raw_faint": "Alpha fainted!", "withdraw": "Alpha, come back!", "end": "The battle has ended!"}[missing]
+                    trace[29] = frame(30, texts=[text])
+                elif missing == "different_name":
+                    trace[29]["ocr"] = [{"text": "Beta", "left": .08, "top": .86, "confidence": .999}]
+                elif missing in {"hp_change", "zero_hp"}:
+                    trace[29]["ocr"] = [{"text": "90/100" if missing == "hp_change" else "0/100",
+                                         "left": .14, "top": .92, "confidence": .999}]
+                elif missing == "candidate_hp":trace[94]["detections"]["events"][0]["health"] = "50/100"
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertFalse(any(e.get("entry_reconstruction") for e in ledger["events"]))
+                self.assertTrue(ledger["issues"])
+
     def test_sliding_hud_assigns_identity_after_stable_names_on_either_side(self):
         for side, species, partner in (("p1", "Blaziken", "Kingambit"), ("p2", "Delphox", "Indeedee-F")):
             with self.subTest(side=side):
@@ -1354,8 +1436,15 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((recoil["status"], recoil["actor_id"], recoil["event_seq"]),
                          ("linked", leads[0]["actor_id"], damage[1]["seq"]))
         self.assertEqual([(i["code"], i["frame"]) for i in first["issues"]],
-                         [("actor_mismatch", 609), ("actor_mismatch", 882),
-                          ("actor_mismatch", 882), ("hp_narration_unmatched", 776)])
+                         [("actor_mismatch", 882), ("actor_mismatch", 882), ("hp_narration_unmatched", 776)])
+        entry = next(e for e in first["events"] if e["kind"] == "switch" and e["species"] == "Basculegion")
+        self.assertEqual((entry["frame"], entry["logical_frame"], entry["health"], entry["hp_state"]),
+                         (672, 479, "219/219", "confirmed"))
+        self.assertEqual([e["frame"] for e in entry["entry_reconstruction"]["evidence"]], [495, 496])
+        aqua_jet = next(e for e in first["events"] if e["kind"] == "move" and e["frame"] == 609)
+        self.assertEqual((aqua_jet["actor_id"], aqua_jet["status"]), (entry["actor_id"], "consistent"))
+        gori = next(e for e in first["events"] if e["kind"] == "switch" and e["species"] == "Rillaboom")
+        self.assertNotIn("entry_reconstruction", gori)
         self.assertEqual([(i["code"], i["frame"]) for i in ledgers[1]["issues"]],
                          [("faint_without_actor", 1438), ("unclassified_text", 1587)])
         self.assertIn("Identidad corroborada tras estabilizarse el HUD", render_markdown(first, None))

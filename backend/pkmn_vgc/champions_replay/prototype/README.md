@@ -568,6 +568,46 @@ de las 14 partidas previas y de la segunda del lote nuevo son idénticos a
 los del corte previo. El primer corte del ZIP nuevo queda archivado separado.
 El prototipo sigue fuera de producción y no emite replays Showdown.
 
+## Entradas tardías con títulos · Revenant/Basculegion
+
+Las cuatro capturas nuevas confirman **Go! Revenant the Paldea Champion!**
+a 03:59–03:59.50, seguido del HUD **Revenant 219/219**, junto a Tomoe 78/177,
+a 04:07–04:08. La entrada candidata de Basculegion llegaba recién en el
+frame 672 (05:35.50), después de su Aqua Jet, fuera de los 80 frames del
+anclaje habitual.
+
+El traductor y Ledger ahora comparten la lista y función exacta de títulos
+en `champions_replay/pokemon_names.py`. El traductor conserva su importación
+`_strip_pokemon_title`; la extracción no modifica sus reglas. Se quitan
+únicamente sufijos conocidos, preservando motes reales, títulos con `and`
+y anuncios dobles. Ledger sigue funcionando como CLI sin dependencias OCR.
+
+Para el candidato tardío se añade una corroboración conservadora: anuncio
+repetido en al menos dos frames (confianza ≥0,95), mote exacto después de
+retirar el título, slot previamente liberado por faint, y dos HUD consecutivos
+con nombre único y posición estable (≥0,95) y los mismos PS completos (≥0,90).
+El HUD debe llegar antes de otra acción, en ≤80 frames y ≤40 s. La continuidad
+hasta el candidato exige ausencia de reemplazo, faint, retirada, cierre,
+identidad contradictoria, huecos >1 s o cambios de PS. Si los PS intermedios
+faltan, se conserva el caso pendiente para reconstruir esos episodios.
+
+`entry_reconstruction` conserva el candidato original completo y las pruebas.
+La entrada lógica de Revenant queda en **479**, confirmada por **495–496**
+con **219/219 PS**; el frame observado del candidato sigue siendo **672**.
+La acción Aqua Jet de **609** queda asociada al actor ya presente. El lote
+baja de **6 a 5 avisos (3/2)**; conserva 27 episodios de PS confirmados y
+seis de siete mensajes enlazados. Gori sigue pendiente: su primer HUD muestra
+207/207, mientras el candidato tardío marca 35/207 y faltan episodios
+intermedios. También siguen los dos avisos de la segunda partida.
+
+**69/69 pruebas Ledger aprobadas, cinco ZIP y 16 partidas**. Los eventos,
+orden, actores, PS y avisos de las 14 partidas anteriores se conservan.
+Doce de esos JSON son idénticos; en dos sólo se añade evidencia de anclaje
+para cinco entradas con títulos ya presentes en el mismo frame del candidato.
+La segunda partida del nuevo lote permanece idéntica. La suite del traductor
+ejecuta 150 pruebas: **149 aprobadas y una omitida por falta de RapidOCR**,
+sin fallos. Las capturas y el primer corte del lote permanecen archivados.
+
 ## Pruebas
 
 ```bash
@@ -579,7 +619,7 @@ CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Sesenta y un casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Sesenta y cuatro casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y

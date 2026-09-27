@@ -13,10 +13,19 @@ import collections
 import difflib
 import json
 import re
+import sys
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+if __package__:
+    from ..pokemon_names import strip_pokemon_title
+else:
+    # Keep the standalone CLI dependency-free while sharing the parser's
+    # exact title rules instead of maintaining a second list.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from pokemon_names import strip_pokemon_title
 
 
 SLOTS = {"p1a", "p1b", "p2a", "p2b"}
@@ -173,6 +182,148 @@ def read_trace(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def complete_hud_health(row: dict[str, Any], slot: str) -> list[tuple[str, dict[str, Any]]]:
+    """Strict whole HP readings for a retrospective entry checkpoint."""
+    left, right, top, bottom = HP_HUD_AREAS[slot]
+    readings = []
+    for line in row.get("ocr", ()):
+        value = line.get("text", "").replace(" ", "")
+        if not (line.get("confidence", 0) >= .9 and left <= line.get("left", -1) <= right and
+                top <= line.get("top", -1) <= bottom):
+            continue
+        if slot.startswith("p2"):
+            if not re.fullmatch(r"\d{1,3}%", value):
+                continue
+            value = value[:-1] + "/100"
+        if re.fullmatch(r"\d{1,4}/\d{1,4}", value):
+            current, total = map(int, value.split("/"))
+            if 0 <= current <= total and total:
+                readings.append((value, line))
+    return readings
+
+
+def corroborate_delayed_entry(item: dict[str, Any], announcements: list[dict[str, Any]],
+                             candidates: list[dict[str, Any]], frames: dict[int, dict[str, Any]],
+                             aliases: dict[str, str]) -> dict[str, Any] | None:
+    """Bridge a late detector entry to repeated announcement + stable HUD.
+
+    This fallback requires a slot explicitly vacated by faint. The short
+    announcement-to-HUD window stays bounded; the later detector candidate
+    is attached only within that same, uninterrupted appearance with unchanged
+    HP. Missing intervening HP episodes require separate reconstruction.
+    """
+    event, end = item["event"], item["observed_frame"]
+    slot = event["slot"]
+    species = identity_species(item.get("canonical_species") or event.get("species") or "")
+    matches = [a for a in announcements if a["side"] == slot[:2] and
+               identity_species(a["species"]) == species and end - a["frame"] > 80]
+    if not matches:
+        return None
+    latest = max(a["frame"] for a in matches)
+    # Only the most recent repeated announcement of this actor is eligible.
+    episode = [a for a in matches if latest - a["frame"] <= 6]
+    announcement_evidence = []
+    for a in episode:
+        match = ANNOUNCED_ENTRY.search(a["text"])
+        name = strip_pokemon_title(match.group(1) or match.group(2)).casefold()
+        if identity_species(aliases.get(name, "")) != species:
+            continue
+        for line in frames[a["frame"]].get("ocr", ()):
+            if line.get("text", "").strip() == a["text"] and line.get("confidence", 0) >= .95:
+                announcement_evidence.append({**a, "nickname": name, "confidence": line["confidence"]})
+                break
+    if len({a["frame"] for a in announcement_evidence}) < 2 or len({
+        a["nickname"] for a in announcement_evidence}) != 1:
+        return None
+    anchor = min(announcement_evidence, key=lambda a: a["frame"])
+    start, name = anchor["frame"], anchor["nickname"]
+    previous = [c for c in candidates if c is not item and c["event"].get("slot") == slot and
+                c["event"]["kind"] in {"switch", "drag", "faint"} and
+                c.get("logical_frame", c["observed_frame"]) < start]
+    vacated = max(previous, key=lambda c: c.get("logical_frame", c["observed_frame"])) if previous else None
+    if not vacated or vacated["event"]["kind"] != "faint":
+        return None
+    if any(c is not item and c["event"].get("slot") == slot and
+           c["event"]["kind"] in {"switch", "drag", "faint"} and
+           start <= c.get("logical_frame", c["observed_frame"]) <= end for c in candidates):
+        return None
+    hud_evidence = []
+    previous_hud = None
+    previous_ms = frames[start]["timestamp_ms"]
+    for number in range(start, min(end, start + 80) + 1):
+        row = frames.get(number)
+        if row is None or not 0 <= row["timestamp_ms"] - previous_ms <= 1_000:
+            return None
+        previous_ms = row["timestamp_ms"]
+        if row["timestamp_ms"] - frames[start]["timestamp_ms"] > 40_000:
+            break
+        events = row.get("detections", {}).get("events", ())
+        if row.get("detections", {}).get("battle_complete") or any(
+            e["kind"] in {"move", "cant", "mega", "damage", "heal", "battle_end"} for e in events):
+            break
+        if any(line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+               (RAW_ACTION.search(line.get("text", "")) or MEGA_NARRATION.fullmatch(line.get("text", "")))
+               for line in row.get("ocr", ())):
+            break
+        peers = [s for s in SLOTS if s.startswith(slot[:2]) and hud_nickname(row, s) == name]
+        left, right, top, bottom = NAME_HUD_AREAS[slot]
+        labels = [line for line in row.get("ocr", ()) if line.get("text", "").casefold() == name and
+                  line.get("confidence", 0) >= .95 and left <= line.get("left", -1) <= right and
+                  top <= line.get("top", -1) <= bottom]
+        health = complete_hud_health(row, slot)
+        current_hud = None
+        if peers == [slot] and len(labels) == 1 and len(health) == 1 and health_ratio(health[0][0]) > 0:
+            current_hud = {"frame": number, "observed_ms": row["timestamp_ms"], "nickname": name,
+                           "health": health[0][0], "text": health[0][1]["text"],
+                           "confidence": health[0][1]["confidence"], "name_confidence": labels[0]["confidence"],
+                           "left": labels[0]["left"], "top": labels[0]["top"]}
+            if (previous_hud and previous_hud["health"] == current_hud["health"] and
+                abs(previous_hud["left"] - current_hud["left"]) <= .01 and
+                abs(previous_hud["top"] - current_hud["top"]) <= .01):
+                hud_evidence = [previous_hud, current_hud]
+                break
+        previous_hud = current_hud
+    if not hud_evidence:
+        return None
+    if event.get("health") and event["health"] != hud_evidence[0]["health"]:
+        return None
+    if any(c["event"]["kind"] in HP_KINDS and c["event"].get("slot") == slot and
+           start <= c["observed_frame"] <= end for c in candidates):
+        return None
+    # Validate the entire bridge, not just the two matching endpoints.
+    previous_ms = frames[start]["timestamp_ms"]
+    for number in range(start, end + 1):
+        row = frames.get(number)
+        if row is None or not 0 <= row["timestamp_ms"] - previous_ms <= 1_000:
+            return None
+        previous_ms = row["timestamp_ms"]
+        if row.get("detections", {}).get("battle_complete"):
+            return None
+        seen = hud_nickname(row, slot)
+        if number >= hud_evidence[0]["frame"] and seen and seen != name and (
+            identity_species(aliases.get(seen, seen)).casefold() != species.casefold()):
+            return None
+        if number >= hud_evidence[0]["frame"] and any(
+            health != hud_evidence[0]["health"] for health, _ in complete_hud_health(row, slot)):
+            return None
+        for line in row.get("ocr", ()):
+            text = line.get("text", "").strip()
+            if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                continue
+            faint = FAINT_NARRATION.fullmatch(text)
+            if faint and ("p2" if faint[1] else "p1") == slot[:2] and (
+                identity_species(aliases.get(faint[2].casefold(), faint[2])).casefold() == species.casefold()):
+                return None
+            if (name in text.casefold() and ("withdrew" in text.casefold() or "come back" in text.casefold())) or \
+               "battle has ended" in text.casefold() or "forfeit" in text.casefold():
+                return None
+    return {"state": "confirmed", "anchor": anchor, "health": hud_evidence[0]["health"],
+            "announcements": announcement_evidence, "evidence": hud_evidence,
+            "confirmed_frame": hud_evidence[-1]["frame"], "vacated_frame": vacated["observed_frame"],
+            "raw_event": dict(event), "observed_frame": end,
+            "reason": "Entrada anunciada y HUD estable anteriores al candidato tardío"}
+
+
 def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in frames:
@@ -251,7 +402,7 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
             found = ANNOUNCED_ENTRY.search(text)
             if found and line.get("top", 0) >= .55:
                 side = "p2" if found.group(1) else "p1"
-                announced = found.group(1) or found.group(2)
+                announced = strip_pokemon_title(found.group(1) or found.group(2))
                 key = re.sub(r"\W+", "", announced.casefold())
                 for alias, species in aliases[side].items():
                     normalized = re.sub(r"\W+", "", alias.casefold())
@@ -278,8 +429,13 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                    and 0 <= item["observed_frame"] - a["frame"] <= 80
                    and (a["frame"], a["side"], a["species"]) not in used_announcements]
         if not matches:
-            continue
-        anchor = max(matches, key=lambda a: a["frame"])
+            proof = corroborate_delayed_entry(item, announcements, candidates, frame_lookup, aliases[slot[:2]])
+            if not proof:
+                continue
+            item["entry_reconstruction"] = proof
+            anchor = proof["anchor"]
+        else:
+            anchor = max(matches, key=lambda a: a["frame"])
         used_announcements.add((anchor["frame"], anchor["side"], anchor["species"]))
         item["logical_frame"] = anchor["frame"]
         item["anchor"] = anchor
@@ -950,6 +1106,8 @@ class BattleAutomaton:
                 f"Slot corregido desde {candidate['slot_correction']} por mote visible en el HUD.")
         if candidate.get("identity_support"):
             item["identity_support"] = candidate["identity_support"]
+        if candidate.get("entry_reconstruction"):
+            item["entry_reconstruction"] = candidate["entry_reconstruction"]
         self.events.append(item)
         return item
 
@@ -1341,6 +1499,10 @@ class BattleAutomaton:
                        if event.get("health") else None)
             baseline = (self._entry_baseline(candidate) if self.actors[actor_id]["health"] is None and
                         (not support or late_health or support["state"] != "confirmed") else None)
+            reconstruction = candidate.get("entry_reconstruction")
+            if reconstruction:
+                baseline = (reconstruction["health"], {"state": "confirmed", "reason": reconstruction["reason"],
+                                                       "evidence": reconstruction["evidence"]})
             entry_conflict = self._competing_hp_ocr(candidate) if support else None
             if entry_conflict:
                 support = {"state": "unconfirmed", "reason": "OCR numérico contradictorio en el mismo HUD",
@@ -1377,7 +1539,7 @@ class BattleAutomaton:
                                              "health": baseline[0], "reason": baseline[1]["reason"]})
             if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
                 item["last_confirmed_health"] = self.actors[actor_id]["health"]
-            if support and not assume_full:
+            if support and not assume_full and not reconstruction:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
             if late_health and not baseline:
@@ -1394,7 +1556,8 @@ class BattleAutomaton:
                 self._issue("hp_unconfirmed", "PS de entrada sin lectura confirmada en el HUD del slot.",
                             item["frame"], item["seq"])
             if candidate.get("anchor") and candidate["anchor"]["frame"] < candidate["observed_frame"]:
-                item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {item['frame']}."
+                confirmed = reconstruction["confirmed_frame"] if reconstruction else item["frame"]
+                item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {confirmed}."
             if late_health and not baseline:
                 item["note"] = (item["note"] or "") + (
                     " PS iniciales al máximo inferidos; el HUD ya cambiaba." if assume_full else
@@ -2079,6 +2242,12 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         lines += ["- " + detail]
         if item["note"]:
             lines += ["  - " + item["note"]]
+        reconstruction = item.get("entry_reconstruction")
+        if reconstruction:
+            proof = reconstruction["evidence"]
+            lines += [f"  - PS de entrada confirmados: {reconstruction['health']} "
+                      f"(frames {proof[0]['frame']} y {proof[1]['frame']}); "
+                      f"candidato tardío conservado del frame {reconstruction['observed_frame']}."]
         identity = item.get("identity_support")
         if identity and identity["state"] == "confirmed":
             proof = identity["evidence"]
