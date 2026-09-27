@@ -67,7 +67,23 @@ from .pipeline import ReviewIssue
 # no puede, el propio detalle lo dice en vez de dejar `frame=None` sin
 # explicación. Ningún replay marcado `col102-r7` -o antes- trae ninguna de
 # las dos protecciones; hay que pasarlo otra vez por esta versión.
-RECONCILE_VERSION = "col102-r8"
+#
+# r9, reversión de Ies sobre el corte r8 (mismo día, cuarta vuelta): el
+# punto (1) de arriba resultó demasiado amplio -disparaba también en la
+# entrada de cualquier identidad SIN historial previo en absoluto,
+# incluidos los dos líderes con los que arranca cada combate, porque el
+# HUD de este pipeline nunca muestra un número en el instante neutral del
+# `switch`. Con eso, ningún replay del job real pasaba ya el gate
+# automático. Ies decidió explícitamente revertir sólo ese punto: una
+# entrada genuinamente nueva vuelve a caer al máximo (o a "100/100") sin
+# incidencia -"quien pisa el campo por primera vez entra a tope" es una
+# regla del juego, no una deducción arriesgada-, mientras que
+# `entrada_a_cero`/`reentrada_debilitado` (una identidad que YA tiene
+# historial en este combate y reaparece sin lectura que lo sostenga, el
+# patrón real del bug de Rillaboom) siguen intactos. Cualquier replay
+# marcado `col102-r8` puede llevar una incidencia `blocking` que ya no
+# aplica; hay que pasarlo otra vez por esta versión.
+RECONCILE_VERSION = "col102-r9"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)

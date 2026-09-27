@@ -58,7 +58,18 @@ export interface ShowdownReplayDocument {
 // `showdown._unsupported_health_issues`); antes quedaba "verificado" sin
 // marca. Cualquier replay marcado con `col102-r7` -o antes- necesita
 // pasar otra vez por esta versión.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r8";
+//
+// r9, reversión de Ies sobre r8 (mismo día): la incidencia `blocking` de
+// r8 disparaba también en cualquier entrada SIN historial previo en
+// absoluto, incluidos los dos líderes de cada combate -el HUD nunca
+// muestra un número en el instante neutral del switch-, así que ningún
+// replay del job real pasaba el gate automático. Revertido: una entrada
+// genuinamente nueva vuelve a caer al máximo sin incidencia; sólo sigue
+// bloqueada una identidad que YA tenía historial en este combate y
+// reaparece sin lectura (`entrada_a_cero`/`reentrada_debilitado`, sin
+// cambios). Cualquier replay marcado `col102-r8` necesita pasar otra vez
+// por esta versión.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r9";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;

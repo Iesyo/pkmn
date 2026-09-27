@@ -284,22 +284,17 @@ class ChampionsReplayTests(unittest.TestCase):
         # Vuelve al campo: conserva la última vida que se le vio -lectura
         # previa del mismo actor, verificada, sin incidencia de procedencia.
         self.assertIn("|switch|p1a: Basculegion|Basculegion, L50|13/195", document.log)
-        # Primera entrada: a tope, con el máximo que el log revela más
-        # adelante -deducción de una lectura FUTURA (ver
-        # test_a_replacement_with_only_a_future_health_reading_is_flagged_not_verified):
-        # el borrador se conserva igual, pero desde `ff9e53f`/este corte
-        # también carga su propia incidencia `blocking` en `document.issues`.
+        # Primera entrada de una identidad sin historial: a tope, con el
+        # máximo que el log revela más adelante. Ies revirtió el `blocking`
+        # que esto llevaba en `col102-r8` (ver
+        # test_a_first_time_entrant_with_only_a_future_health_reading_is_not_flagged):
+        # entrar a tope sin historial previo es la regla del juego, no una
+        # deducción arriesgada.
         self.assertIn("|switch|p1a: Venusaur|Venusaur, L50|156/156", document.log)
         # Del rival sólo se conoce el porcentaje, y nunca se leyó: queda el
-        # relleno -ninguna lectura en absoluto (ver
-        # test_a_replacement_with_no_health_reading_at_all_is_flagged_not_verified),
-        # con su propia incidencia `blocking` aparte.
+        # relleno de siempre, también sin incidencia tras la reversión (ver
+        # test_a_first_time_entrant_with_no_health_reading_at_all_is_not_flagged).
         self.assertIn("|switch|p2a: Sableye|Sableye, L50|100/100", document.log)
-        blocking = [
-            issue for issue in document.issues
-            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
-        ]
-        self.assertEqual(len(blocking), 2)
 
     def test_a_bad_health_reading_does_not_decide_the_maximum(self) -> None:
         events = (
@@ -461,29 +456,18 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(
             [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
         )
-        # Filtra por el marcador de las incidencias de procedencia de HP
-        # (`_unsupported_health_issue`, showdown.py) -no por severidad a
-        # secas: este fixture también dispara `blocking` por selección
-        # incompleta (sólo 1-2/4 Pokémon), ajeno a lo que se prueba aquí.
-        self.assertEqual(
-            [i for i in document.issues if i["severity"] == "blocking" and "entra sin ninguna lectura de HP" in i["message"]],
-            [],
-        )
 
-    def test_a_replacement_with_only_a_future_health_reading_is_flagged_not_verified(self) -> None:
-        """(c-negativo #1) COL-102, corte de Roku sobre `ff9e53f`, defecto
-        #2: exactamente el fixture que la prueba vieja usaba como
-        "reemplazo legítimo" -sin HP propio en el `switch`, sin ninguna
-        lectura previa de esa clave, y el único indicio del máximo es un
-        daño observado DESPUÉS (82/156)- pero ahora como lo que en
-        realidad es: una deducción, no una observación. `_with_known_health`
-        sigue sirviendo "156/156" -Showdown exige un número, y es la
-        hipótesis menos mala-, pero `build_replay_document` debe adjuntar
-        una incidencia `blocking` señalando que ese máximo sólo lo sostiene
-        una lectura futura. Nunca debe leerse como "revisado, sin
-        hallazgos": ni `entrada_a_cero` la cubre (no hay 0 de por medio) ni
-        `reentrada_debilitado` (especie distinta), así que sin esta
-        incidencia aparte el defecto pasaría en silencio.
+    def test_a_first_time_entrant_with_only_a_future_health_reading_is_not_flagged(self) -> None:
+        """(c-negativo #1, invertido) COL-102, reversión de Ies sobre el
+        corte r8 de Roku (defecto #2 de `ff9e53f`, cuarta vuelta): la ronda
+        anterior trataba esto como "deducción sin evidencia" y adjuntaba un
+        `blocking`. Pero Blaziken aquí es una identidad SIN historial
+        previo en absoluto en este combate -exactamente el caso de los dos
+        líderes con los que arranca cada batalla real-, y "quien pisa el
+        campo por primera vez entra a tope" es la regla del propio juego,
+        no una deducción arriesgada. Ies revirtió ese `blocking`: el máximo
+        revelado por el daño POSTERIOR (82/156) vuelve a servirse en
+        silencio, sin incidencia.
         """
 
         events = (
@@ -513,31 +497,19 @@ class ChampionsReplayTests(unittest.TestCase):
             )
         )
 
-        # El borrador se conserva -Showdown recibe un número-, pero nunca
-        # sin marca: "conservar el borrador" es justo lo que pidió Roku.
         self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|156/156", document.log)
         findings = reconcile._state_findings(document.log.splitlines())
         self.assertEqual(
             [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
         )
-        # Filtra por el marcador de la incidencia de procedencia de HP -no
-        # por severidad a secas: este fixture también dispara `blocking`
-        # por selección incompleta, ajeno a lo que se prueba aquí.
-        blocking = [
-            issue for issue in document.issues
-            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
-        ]
-        self.assertEqual(len(blocking), 1)
-        self.assertIn("Blaziken", blocking[0]["message"])
-        self.assertIn("POSTERIOR", blocking[0]["message"])
 
-    def test_a_replacement_with_no_health_reading_at_all_is_flagged_not_verified(self) -> None:
-        """(c-negativo #2) COL-102, corte de Roku sobre `ff9e53f`, defecto
-        #2: igual que el anterior, pero sin ninguna lectura en absoluto -ni
-        antes ni después- de esta clave en todo el combate.
-        `showdown._health(None)` cae a "100/100" por relleno puro -ni
-        siquiera hay una lectura futura que lo sostenga. Debe quedar
-        igualmente marcado `blocking`, nunca leído como fiel.
+    def test_a_first_time_entrant_with_no_health_reading_at_all_is_not_flagged(self) -> None:
+        """(c-negativo #2, invertido) Mismo caso que el anterior, pero sin
+        ninguna lectura en absoluto -ni antes ni después- de esta clave en
+        todo el combate: `showdown._health(None)` cae a "100/100" por
+        relleno puro. Sigue siendo una entrada genuinamente nueva sin
+        historial -no el patrón de Rillaboom-, así que tampoco lleva
+        incidencia tras la reversión de Ies.
         """
 
         events = (
@@ -569,13 +541,6 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(
             [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
         )
-        blocking = [
-            issue for issue in document.issues
-            if issue["severity"] == "blocking" and "entra sin ninguna lectura de HP" in issue["message"]
-        ]
-        self.assertEqual(len(blocking), 1)
-        self.assertIn("Blaziken", blocking[0]["message"])
-        self.assertIn("ninguna lectura de HP en todo el combate", blocking[0]["message"])
 
     def test_fills_the_target_when_only_one_rival_was_hit(self) -> None:
         # El detector sabe quién usó el movimiento y, por separado, a quién le
