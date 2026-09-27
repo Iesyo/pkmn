@@ -3334,103 +3334,151 @@ def event_description(item: dict[str, Any]) -> str:
     display = item.get("display_species")
     if display and identity_species(display) != identity_species(species):
         species = f"{species} (apariencia: {display})"
-    actor = f"{species} ({slot})" if slot else species
+    side = "propio" if slot.startswith("p1") else "rival" if slot.startswith("p2") else ""
+    actor = f"{species} ({side}, {slot})" if side else species
     if kind == "turn":
         return f"Inicio del turno {item['turn']}"
     if kind in {"switch", "drag"}:
-        previous = (f" (último confirmado: {item['last_confirmed_health']})"
-                    if not item['health'] and item.get('last_confirmed_health') else "")
-        inferred = " (inferidos al máximo)" if item.get("hp_state") == "inferred" else ""
-        return f"Entra {actor}, PS {item['health'] or '?'}{inferred}{previous}"
+        health = item.get("health")
+        if item.get("hp_state") == "inferred":
+            health = f"{health or 'completos'} (inferidos; sin lectura del HUD)"
+        elif not health:
+            health = f"sin lectura (última lectura: {item['last_confirmed_health']})" if item.get(
+                "last_confirmed_health") else "sin lectura"
+        return f"Entra {actor} · PS {health}"
     if kind == "illusion_reveal":
         return f"Se rompe la Ilusión: {item['species']} aparece en {slot}; PS {item['after'] or '?'}"
     if kind == "move":
-        return f"{actor} usa {item['move']} → {item['target_slot'] or 'objetivo desconocido'}"
+        target = item.get("target_slot")
+        suffix = " sobre sí mismo" if target == slot else f" → {target}" if target else ""
+        return f"{actor} usa {item['move']}{suffix}"
     if kind in HP_KINDS:
-        return f"{actor}: PS {item['before'] or '?'} → {item['after'] or '?'} ({kind})"
+        verb = "pierde" if kind == "damage" else "recupera"
+        return f"{actor} {verb} PS: {item['before'] or '?'} → {item['after'] or '?'}"
     if kind == "hp_checkpoint":
-        return f"{actor}: HUD confirma PS actuales {item['health']}"
+        return f"HUD confirma PS actuales de {actor}: {item['health']}"
     if kind == "hp_unconfirmed":
-        return (f"{actor}: lectura propuesta {item['health'] or '?'} sin confirmar; "
-                f"PS previos {item['before'] or '?'}")
+        return (f"PS de {actor} sin confirmar: lectura {item['health'] or '?'}; "
+                f"última lectura {item['before'] or '?'}")
     if kind in {"hp_ocr_conflict", "hp_zero_rebound"}:
-        return f"{actor}: lecturas de PS en conflicto; se conserva {item['before'] or '?'}"
+        return f"Lecturas de PS en conflicto para {actor}; se conserva {item['before'] or '?'}"
     if kind == "faint":
         return f"Se debilita {actor}"
     if kind == "status":
-        return f"{actor}: {STATUS_NAMES.get(str(item['value']), item['value'])}"
-    return f"{kind}: {actor} {item['value'] or ''}".strip()
+        return f"{actor} queda {STATUS_NAMES.get(str(item['value']), item['value'])}"
+    if kind == "ability":
+        return f"Habilidad de {actor}: {item['value']}"
+    if kind == "mega":
+        return f"{actor} megaevoluciona con {item['value']}"
+    if kind == "enditem":
+        return f"Se activa {item['value']} de {actor}"
+    effect = str(item.get("value") or "").removeprefix("move: ")
+    if kind == "fieldstart":
+        return f"Comienza el efecto de campo: {effect}"
+    if kind == "fieldend":
+        return f"Termina el efecto de campo: {effect}"
+    if kind == "weather":
+        weather = {"RainDance": "lluvia", "SunnyDay": "sol", "Sandstorm": "tormenta de arena"}
+        return f"Cambia el clima: {weather.get(effect, effect)}"
+    if kind == "sidestart":
+        return f"Se activa {effect} en el lado {side or 'desconocido'}"
+    if kind == "cant":
+        reason = {"flinch": "retroceso", "par": "parálisis"}
+        return f"{actor} no puede actuar ({reason.get(effect, effect)})"
+    if kind == "miss":
+        return f"El ataque falla sobre {item.get('target_slot') or 'el objetivo'}"
+    if kind == "battle_end":
+        return "Termina la batalla por abandono" if "forfeit" in effect.lower() else f"Termina la batalla: {effect}"
+    if kind in {"ui_text", "unclassified_text"}:
+        return f"Mensaje de pantalla: «{effect}»"
+    return f"Suceso {kind} de {actor}: {effect}".strip()
 
 
 def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -> str:
-    lines = [f"# Batalla {ledger['battle_index'] + 1} — registro intermedio", "",
-             f"Fotogramas {ledger['first_frame']}–{ledger['last_frame']}; "
-             f"{ledger['candidate_events']} candidatos; {len(ledger['events'])} sucesos consolidados.",
-             "", "**Consistente** significa que no se detectó contradicción estructural; no equivale a validación visual. "
-             "Las lecturas de PS tienen confirmación OCR separada de la causalidad del cambio.", ""]
+    # The archived comparison remains in report.json for audits. The readable
+    # battle log describes only what this automaton retained from the OCR trace.
+    visible = [item for item in ledger["events"] if item["status"] != "suppressed" and item["kind"] != "turn"]
+    hp_count = sum(item["kind"] in HP_KINDS for item in visible)
+    lines = [f"# Batalla {ledger['battle_index'] + 1} — log de Champions Ledger", "",
+             f"{len(visible)} sucesos · {hp_count} cambios de PS · {len(ledger['issues'])} avisos abiertos "
+             f"· fotogramas {ledger['first_frame']}–{ledger['last_frame']}.", "",
+             "p1 = equipo propio; p2 = rival. Los PS del rival son porcentajes normalizados del HUD "
+             "(100/100 = 100 %), no puntos absolutos. Un aviso abierto indica que el autómata necesita revisión; "
+             "cero avisos no equivale a validar visualmente el vídeo.", ""]
     if ledger.get("ignored_ui_frames"):
         ignored = ledger["ignored_ui_frames"]
         excluded = sum(len(row["detections"].get("events", ())) for row in ignored)
         frames = ", ".join(str(row["frame"]) for row in ignored)
-        lines += [f"Panel Active Statuses & Effects excluido: frames {frames}; "
-                  f"{excluded} candidatos informativos conservados en ignored_ui_frames del JSON.", ""]
-    if comparison:
-        lines += [f"Replay archivado: {comparison['aligned_events']}/{comparison['baseline_core_events']} "
-                  f"eventos principales alineados; PS {comparison['aligned_hp_episodes']}/"
-                  f"{comparison['baseline_hp_events']}; secuencia principal exacta: "
-                  f"{comparison['exact_core_sequence']}.", ""]
-        if any(item["kind"] == "illusion_reveal" for item in ledger["events"]):
-            lines += ["El replay archivado contó la ruptura de Ilusión como un cambio de Pokémon "
-                      "y llamó Kingambit al Zoroark inicial; esas diferencias son intencionales.", ""]
+        lines += [f"Panel de estados excluido del combate (fotogramas {frames}); "
+                  f"{excluded} lecturas informativas disponibles en el JSON.", ""]
     links = ledger.get("narration_links", [])
     if links:
         linked = sum(link["status"] == "linked" for link in links)
-        lines += [f"Pasada retrospectiva: {linked}/{len(links)} mensajes de PS asociados; "
-                  f"{len(links) - linked} pendientes de revisión.", ""]
+        lines += [f"Mensajes de PS asociados a un cambio: {linked}/{len(links)}; "
+                  f"{len(links) - linked} sin asociar.", ""]
+    by_seq = {item["seq"]: item for item in ledger["events"]}
+    event_positions = {item["seq"]: index for index, item in enumerate(ledger["events"])}
     section = None
-    for item in ledger["events"]:
+    # Entries with late HUD identification are listed together as the opening
+    # lineup. The remaining events are ordered by their observed time.
+    ordered = sorted(visible, key=lambda item: (item["turn"],
+                     0 if item["turn"] == 0 and item["kind"] in {"switch", "drag"} else 1,
+                     item["logical_ms"], item["seq"]))
+    displayed: list[list[dict[str, Any]]] = []
+    for item in ordered:
+        if (displayed and item["kind"] == displayed[-1][-1]["kind"] == "fieldstart" and
+            item["turn"] == displayed[-1][-1]["turn"] and
+            item["value"] == displayed[-1][-1]["value"] and
+            item["logical_ms"] - displayed[-1][-1]["logical_ms"] <= 3_000):
+            displayed[-1].append(item)
+        else:
+            displayed.append([item])
+    for repetition in displayed:
+        item = repetition[0]
         if item["turn"] != section:
             section = item["turn"]
-            lines += [f"## {'Apertura' if section == 0 else 'Turno ' + str(section)}", ""]
-        if item["kind"] == "turn":
-            continue
-        if item["status"] == "suppressed":
-            continue
+            lines += ["", f"## {'Apertura' if section == 0 else 'Turno ' + str(section)}", ""]
         marker = "⚠️ " if item["status"] == "review" else ""
         mm, ss = divmod(item["logical_ms"] // 1000, 60)
-        detail = f"{marker}{mm:02d}:{ss:02d} · {event_description(item)} [frame {item['source_frame']}]"
-        if item["cause"] is not None:
-            detail += f" · causa: {item['cause']}"
+        when = "Inicial" if section == 0 and item["kind"] in {"switch", "drag"} else f"{mm:02d}:{ss:02d}"
+        detail = f"{marker}{when} · {event_description(item)} · fotograma {item['source_frame']}"
+        if len(repetition) > 1:
+            frames = ", ".join(str(e["source_frame"]) for e in repetition)
+            detail += f" · {len(repetition)} lecturas seguidas (fotogramas {frames})"
+        cause = item.get("cause")
+        if isinstance(cause, int) and item["kind"] == "damage":
+            action = by_seq.get(cause)
+            if action and action["kind"] == "move":
+                detail += f" · acción asociada: {action['move']}"
+        elif isinstance(cause, str):
+            detail += f" · {cause}"
+        elif item["kind"] == "heal":
+            item_index = event_positions[item["seq"]]
+            previous = ledger["events"][max(0, item_index - 3):item_index]
+            activated = next((e for e in reversed(previous) if e["kind"] == "enditem" and
+                              e["actor_id"] == item["actor_id"] and e["turn"] == item["turn"]), None)
+            if activated:
+                detail += f" · tras {activated['value']}"
         lines += ["- " + detail]
-        if item["note"]:
+        if item["note"] and item["status"] == "review":
             lines += ["  - " + item["note"]]
         reconstruction = item.get("entry_reconstruction")
         if reconstruction:
             proof = reconstruction["evidence"]
-            lines += [f"  - PS de entrada confirmados: {reconstruction['health']} "
-                      f"(frames {proof[0]['frame']} y {proof[1]['frame']}); "
-                      f"candidato tardío conservado del frame {reconstruction['observed_frame']}."]
-            if reconstruction.get("hp_observations"):
-                lines += [f"  - Recuperadas {len(reconstruction['hp_observations'])} lecturas de PS "
-                          "del HUD del mismo actor; consolidación y curación usan las reglas habituales."]
+            lines += [f"  - Entrada corroborada por HUD: PS {reconstruction['health']} "
+                      f"(fotogramas {proof[0]['frame']} y {proof[1]['frame']})."]
         delayed = item.get("delayed_voluntary_entry")
         if delayed:
-            lines += [f"  - Entrada anunciada en frame {delayed['anchor']['frame']}; retirada anterior, "
-                      f"habilidad y HUD corroboran el slot. Detector tardío en frame {delayed['detected_frame']}; "
-                      "PS iniciales inferidos si no hubo HUD anterior a la acción."]
-        ability = item.get("ability_reconstruction")
-        if ability:
-            lines += [f"  - Habilidad confirmada por panel en frame {ability['evidence'][0]['frame']}; "
-                      f"detector tardío en frame {ability['detected_frame']}."]
+            lines += [f"  - Entrada anunciada en fotograma {delayed['anchor']['frame']}; "
+                      "retirada anterior y HUD corroboran el slot."]
         action = item.get("action_reconstruction")
         if action:
-            lines += [f"  - Acción recuperada en frame {item['frame']} por reloj original y narración; "
-                      f"candidato conservado del frame {action['detected_frame']}."]
+            lines += [f"  - Acción corroborada por reloj y narración (fotograma {item['frame']})."]
         identity = item.get("identity_support")
         if identity and identity["state"] == "confirmed":
             proof = identity["evidence"]
             lines += [f"  - Identidad corroborada tras estabilizarse el HUD: {proof[0]['nickname']} "
-                      f"→ {identity['species']} (frames {proof[0]['frame']} y {proof[1]['frame']})."]
+                      f"→ {identity['species']} (fotogramas {proof[0]['frame']} y {proof[1]['frame']})."]
         if item["kind"] in HP_KINDS and len(item["observations"]) > 1:
             seen = " → ".join(str(x["health"]) for x in item["observations"])
             lines += ["  - Lecturas durante la animación: " + seen]
@@ -3439,32 +3487,32 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
                 lines += ["  - PS previos inferidos al máximo por primer avistamiento; no confirmados por OCR."]
             else:
                 prior = item["hp_baseline"]["evidence"][0]
-                lines += [f"  - PS previos en el HUD de {prior['nickname']}: "
-                          f"{prior['text']} (frame {prior['frame']}, antes del cambio)."]
+                lines += [f"  - PS anteriores en el HUD de {prior['nickname']}: "
+                          f"{prior['text']} (fotograma {prior['frame']})."]
         if item["evidence"]:
-            lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» (frame {item['evidence'][0]['frame']})."]
+            lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» "
+                      f"(fotograma {item['evidence'][0]['frame']})."]
         for evidence in item.get("causal_evidence", []):
             delta = evidence["delta_ms"] / 1000
-            lines += [f"  - Narración asociada: «{evidence['text']}» (frame {evidence['frame']}; "
+            lines += [f"  - Narración asociada: «{evidence['text']}» (fotograma {evidence['frame']}; "
                       f"{delta:+g} s respecto al inicio del cambio de PS)."]
-    lines += ["", "## Incidencias para revisión", ""]
+    lines += ["", "## Avisos abiertos", ""]
     if ledger["issues"]:
         for issue in ledger["issues"]:
-            lines += [f"- Frame {issue['frame']} · {issue['code']}: {issue['message']}"]
+            lines += [f"- Fotograma {issue['frame']}: {issue['message']} (`{issue['code']}`)"]
     else:
-        lines += ["- Sin contradicciones estructurales detectadas en este primer corte."]
+        lines += ["- Ninguno."]
     for link in links:
         if link["status"] != "linked":
-            lines += [f"- Mensaje conservado, frame {link['frame']}: «{link['text']}»; "
+            lines += [f"- Mensaje sin asociar, fotograma {link['frame']}: «{link['text']}»; "
                       f"{link['reason']}"]
     if ledger.get("resolved_issues"):
-        lines += ["", "## Incidencias resueltas con evidencia", ""]
+        lines += ["", "## Avisos resueltos con evidencia", ""]
         for issue in ledger["resolved_issues"]:
             resolution = issue["resolution"]
             frames = ", ".join(str(f) for f in sorted({e["frame"] for e in resolution["evidence"]}))
-            lines += [f"- Frame {issue['frame']} · {issue['code']}: {resolution['reason']} "
-                      f"Evento {resolution['event_seq']} en {resolution['slot']}; "
-                      f"evidencia en frames {frames}. El candidato original sigue suprimido en JSON."]
+            lines += [f"- Fotograma {issue['frame']}: {resolution['reason']} "
+                      f"Evidencia en fotogramas {frames}."]
     lines += [""]
     return "\n".join(lines)
 
@@ -3527,11 +3575,9 @@ def main() -> None:
                                   "comparison": comparison})
     (args.out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     for row in report["battles"]:
-        comp = row["comparison"] or {}
         print(f"Batalla {row['battle_index'] + 1}: {row['candidate_events']} candidatos -> "
               f"{row['ledger_events']} sucesos; PS {row['hp_episodes']}; "
-              f"incidencias {sum(row['issue_codes'].values())}; "
-              f"referencia {comp.get('aligned_events', '-')}/{comp.get('baseline_core_events', '-')}")
+              f"avisos abiertos {sum(row['issue_codes'].values())}")
 
 
 if __name__ == "__main__":

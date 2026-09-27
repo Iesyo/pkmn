@@ -586,7 +586,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(text["resolution"]["evidence"][0]["frame"], 4)
         self.assertIn("racting", text["value"])
         self.assertEqual(sum(e["kind"] == "mega" and e["status"] == "consistent" for e in ledger["events"]), 1)
-        self.assertIn("Incidencias resueltas", render_markdown(ledger, None))
+        self.assertIn("Avisos resueltos", render_markdown(ledger, None))
 
     def test_transient_text_preserves_unexplained_or_different_events(self):
         for missing in ("event", "legible", "confidence", "time", "action", "turn", "species", "stone", "side", "meaningful", "unrelated"):
@@ -835,7 +835,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 ignored = ledger["ignored_ui_frames"][0]
                 self.assertEqual((ignored["frame"], ignored["ocr"], ignored["detections"]),
                                  (2, panel["ocr"], panel["detections"]))
-                self.assertIn("Panel Active Statuses & Effects excluido", render_markdown(ledger, None))
+                self.assertIn("Panel de estados excluido del combate", render_markdown(ledger, None))
 
     def test_status_panel_cannot_confirm_hp_or_supply_raw_action_evidence(self):
         trace = [frame(1, [event("switch", "p1a", "Pelipper", "100/100"), event("turn", turn=1),
@@ -1897,6 +1897,16 @@ class TemporalAutomatonTests(unittest.TestCase):
                          [{"operation": "insert", "baseline": [],
                            "automaton": [("ability", "p1a", "Defiant")]}])
         self.assertTrue(all(len(e["ability_reconstruction"]["evidence"]) >= 2 for e in opening))
+        readable = render_markdown(ledgers[1], compare_baseline(ledgers[1], baselines[1]))
+        self.assertIn("0 avisos abiertos", readable)
+        self.assertIn("Inicial · Entra Salamence (rival, p2a)", readable)
+        self.assertIn("Habilidad de Kingambit (propio, p1a): Defiant", readable)
+        self.assertIn("pierde PS: 177/177 → 102/177 · fotograma 1479 · acción asociada: Dragon Pulse", readable)
+        self.assertIn("recupera PS: 30/177 → 74/177 · fotograma 1580 · tras Sitrus Berry", readable)
+        self.assertNotIn("Replay archivado", readable)
+        self.assertNotIn("detector tardío en frame None", readable)
+        self.assertNotIn("causa: 14", readable)
+        self.assertLess(readable.index("Habilidad de Salamence"), readable.index("Habilidad de Kingambit"))
         repeated = next(e for e in first_ledger["events"] if e["kind"] == "faint" and e["frame"] == 672)
         resurfaced = next(e for e in first_ledger["events"] if e["kind"] == "switch" and
                           e["slot"] == "p2a" and e["frame"] == 714)
@@ -1907,6 +1917,9 @@ class TemporalAutomatonTests(unittest.TestCase):
                          {640, 641, 714, 715})
         self.assertEqual([i["code"] for i in first_ledger["resolved_issues"]],
                          ["faint_text_unconfirmed", "reentry_without_exit"])
+        first_log = render_markdown(first_ledger, compare_baseline(first_ledger, baselines[0]))
+        self.assertIn("Trick Room · fotograma 473 · 3 lecturas seguidas (fotogramas 473, 475, 476)", first_log)
+        self.assertIn("Avisos resueltos con evidencia", first_log)
 
         # A single faint reading cannot discard the detector's other-slot
         # candidate; an explicit withdrawal forbids HUD continuity.
@@ -2228,7 +2241,7 @@ class TemporalAutomatonTests(unittest.TestCase):
             self.assertEqual(transient["status"], "suppressed")
             accepted = ledger["events"][transient["resolution"]["event_seq"] - 1]
             self.assertEqual((transient["frame"], accepted["frame"]), (179, 181) if index == 0 else (1298, 1299))
-            self.assertIn("Incidencias resueltas", render_markdown(ledger, comparison))
+            self.assertIn("Avisos resueltos", render_markdown(ledger, comparison))
             if index == 0:
                 heal = next(e for e in ledger["events"] if e["frame"] == 261)
                 self.assertEqual((heal["kind"], heal["before"], heal["after"]), ("heal", "38/100", "87/100"))
