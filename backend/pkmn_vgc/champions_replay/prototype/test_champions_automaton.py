@@ -102,6 +102,40 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((hp[0]["before"], hp[0]["after"]), ("100/100", "40/100"))
         self.assertEqual(len(hp[0]["observations"]), 2)
 
+    def test_burn_tick_keeps_one_damage_when_detector_calls_midpoint_heal(self):
+        trace = [frame(1, [event("switch", "p1a", "Blaziken", "100/100"),
+                           event("switch", "p2b", "Indeedee-F", "18/100"),
+                           event("turn", turn=1)]),
+                 frame(2, [event("move", "p1a", "Blaziken", move="Flare Blitz")]),
+                 frame(3, [event("damage", "p1a", "Blaziken", "82/100")]),
+                 frame(4, [event("message", value="The opposing Indeedee was hurt by its burn!")]),
+                 frame(5, [event("heal", "p2b", "Indeedee-F", "15/100")]),
+                 frame(6, [event("damage", "p2b", "Indeedee-F", "12/100")]),
+                 frame(7, [event("turn", turn=2)])]
+        ledger = BattleAutomaton(0, trace).run()
+        tick = [x for x in ledger["events"] if x["slot"] == "p2b" and
+                x["kind"] in {"damage", "heal"}]
+        self.assertEqual(len(tick), 1)
+        self.assertEqual((tick[0]["kind"], tick[0]["before"], tick[0]["after"]),
+                         ("damage", "18/100", "12/100"))
+        self.assertEqual([x["health"] for x in tick[0]["observations"]], ["15/100", "12/100"])
+        self.assertEqual(tick[0]["cause"], "quemadura observada")
+        self.assertFalse(any("hurt by its burn" in text for x in ledger["events"]
+                             if x["slot"] == "p1a" for text in x["narration"]))
+        self.assertFalse(any(x["code"] == "hp_transition" for x in ledger["issues"]))
+
+    def test_menu_messages_are_audited_without_becoming_battle_warnings(self):
+        trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "100/100"),
+                           event("turn", turn=1)]),
+                 frame(2, [event("message", value="Indeedee-F has no energy left to battle!")],
+                       texts=["Battle Info", "Indeedee-F has no energy left to battle!"]),
+                 frame(3, [event("message", value="Indeedee-F can't use its sealed Follow Me!")],
+                       texts=["MOVE TIME", "Indeedee-F can't use its sealed Follow Me!"])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual([x["kind"] for x in ledger["events"] if x["status"] == "suppressed"],
+                         ["ui_text", "ui_text"])
+        self.assertFalse(any(x["code"] == "unclassified_text" for x in ledger["issues"]))
+
     def test_opposite_hp_readings_before_action_are_flagged_without_heal(self):
         trace = [frame(1, [event("switch", "p1a", "Rillaboom", "88/100"), event("turn", turn=1)]),
                  frame(2, [event("move", "p1a", "Rillaboom", move="Protect")]),
