@@ -60,7 +60,11 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    `hp_baseline` del evento.
 5. Si dos números OCR se contradicen en el mismo HUD, conserva ambos como
    evidencia. La lectura aislada contradicha queda en `hp_ocr_conflict`, sin
-   modificar los PS ni generar daño/cura. No mezcla números de HUD separados.
+   modificar los PS ni generar daño/cura. Cuando el número de mayor confianza
+   coincide con los PS previos y el HUD completo los repite en al menos dos
+   fotogramas inmediatamente anteriores, el porcentaje recortado queda como
+   `hp_rejected_reading` suprimido con esa evidencia. No mezcla números de
+   HUD separados.
    Un `0%` seguido de un rebote positivo durante el debilitamiento se
    conserva en `hp_zero_rebound`, sin reanimar al actor. El valor final puede
    estar confirmado por OCR y **seguir en revisión** si el sentido del cambio
@@ -238,6 +242,25 @@ que el replay final reproduzca fielmente el vídeo.
   Las incidencias restantes incluyen candidatos suprimidos para auditoría;
   ninguna reducción equivale a validación visual del vídeo.
 
+## Confirmación visual y fragmentos OCR · 27 de septiembre
+
+- La captura aportada del job `10a7fba6fda04585`, partida 1, frame 358
+  (02:58.5), muestra **18 %** en el HUD de Indeedee-F. El `3%` de la traza
+  es un recorte superpuesto al `18` de mayor confianza; los fotogramas
+  anteriores repiten `18%`. Se conserva como `hp_rejected_reading` suprimido,
+  con las observaciones originales y sin transición de PS.
+- La misma regla de evidencia repetida suprime los `3%` de Delphox en el
+  segundo ZIP, partida 2, frames 1694 y 1766: el `28` de mayor confianza
+  coincide con los `28%` completos de fotogramas anteriores. Estas dos
+  decisiones provienen de la traza OCR, sin confirmación visual de esos
+  fotogramas. El `1%` de Sneasler junto a `44` en frame 2082 permanece en
+  revisión porque `44` no coincide con los PS previos registrados.
+- Recuento actual: **8 incidencias** en 12 partidas (primer ZIP: 4;
+  segundo: 4; tercero: 0), frente a 11 antes de esta corrección. Siguen
+  siendo **328 episodios de PS** propuestos y no cambia el orden principal
+  alineado con los replays archivados. Las lecturas suprimidas permanecen en
+  JSON para auditoría.
+
 ## Pruebas
 
 ```bash
@@ -247,7 +270,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Veintiséis casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Veintiocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
