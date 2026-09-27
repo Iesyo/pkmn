@@ -42,7 +42,16 @@ export interface ShowdownReplayDocument {
 // r6, reapertura estructural del 26 sep: `_state_findings` (reconcile.py)
 // ahora detecta la reentrada al slot donde la misma especie se acaba de
 // debilitar (job real `10a7fba6fda04585`, partidas 1 y 5).
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r6";
+//
+// r7, corte de Roku sobre el commit `afee177` (mismo día): quitada la
+// fabricación de HP en `showdown._with_known_health` -un switch/drag con
+// "0/max" ya no se convierte en "max/max"- y `_state_findings` ahora
+// detecta cualquier switch/drag serializado con 0 PS reales que no venga
+// justo tras el `faint` confirmado de esa misma especie en ese slot
+// (`entrada_a_cero`), no sólo la reentrada de identidad ya cubierta por
+// `reentrada_debilitado`. Cualquier replay marcado con `col102-r6` -o
+// antes- necesita pasar otra vez por esta versión.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r7";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;

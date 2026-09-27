@@ -41,7 +41,20 @@ from .pipeline import ReviewIssue
 # especie se acaba de debilitar (partidas 1 y 5 de ese job, exactamente lo
 # que `col102-r5` dejaba pasar con `issues: []`). Cualquier replay ya
 # marcado con `col102-r5` necesita pasar otra vez por esta versión.
-RECONCILE_VERSION = "col102-r6"
+#
+# r7, corte de Roku sobre el commit `afee177` (mismo día): ese commit quitó
+# la fabricación de HP en `showdown._with_known_health` -un switch/drag con
+# "0/max" ya no cae en "max/max"-, pero `_state_findings` sólo detectaba la
+# reentrada por IDENTIDAD (misma especie repetida en el slot). Ahora
+# también detecta, aparte (`entrada_a_cero`), cualquier switch/drag
+# serializado con 0 PS reales que no venga inmediatamente después del
+# `faint` confirmado de esa misma especie en ese slot -especie distinta
+# leyendo 0, o HP heredado en 0 sin ningún faint que lo explique-, para que
+# el bloqueo sobreviva al análisis del `.log` ya escrito y no dependa de
+# que la limpieza previa del pipeline sea perfecta. Cualquier replay ya
+# marcado con `col102-r6` -o antes- necesita pasar otra vez por esta
+# versión.
+RECONCILE_VERSION = "col102-r7"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
@@ -52,6 +65,7 @@ _LOG_FAINT = re.compile(r"^\|faint\|(p[12][ab]): ([^|]+)$")
 _LOG_MEGA = re.compile(r"^\|-mega\|(p[12][ab]): [^|]+\|([^|]+)\|")
 _LOG_HP = re.compile(r"^\|-(damage|heal)\|(p[12][ab]): ([^|]+)\|(\d+)/(\d+)")
 _LOG_ENTRY = re.compile(r"^\|(switch|drag)\|(p[12][ab]): ([^|]+)\|[^|]*\|([^|]+)")
+_LOG_ENTRY_HP = re.compile(r"^(\d+)/(\d+)")
 _OPPOSING = re.compile(r"^(?:the[\s-]+)?([^\s-]+)[\s-]+(.+)$", re.IGNORECASE)
 
 
@@ -269,6 +283,20 @@ def _state_findings(lines: list[str]) -> list[Finding]:
     además la última especie confirmada debilitada por slot (sin borrarla
     en el propio `faint`, sólo cuando una especie de verdad distinta ocupa
     el slot) para poder comparar contra ella en la entrada siguiente.
+
+    Roku, revisión del commit `afee177` (mismo turno): ese fix quitó la
+    fabricación de HP en `showdown._with_known_health`, pero un
+    `switch`/`drag` con "0/max" real puede llegar aquí por una vía que
+    `reentrada_debilitado` no cubre -especie DISTINTA a la que se acaba de
+    debilitar en ese slot (lectura de OCR cruzada, o cualquier entrada
+    fantasma que se le escape a la limpieza previa) o directamente sin
+    ningún `|faint|` que lo preceda. `reentrada_debilitado` sólo mira la
+    identidad (misma especie repetida); esto mira la vida codificada en la
+    propia línea de entrada: cualquier `switch`/`drag` con HP resuelto en
+    0 que no venga inmediatamente después del `|faint|` confirmado de esa
+    MISMA especie en ese slot es imposible -Showdown nunca hace entrar a
+    un Pokémon a 0 PS- y se marca aparte (`entrada_a_cero`) para no
+    depender de que la identidad además coincida.
     """
 
     result: list[Finding] = []
@@ -279,7 +307,10 @@ def _state_findings(lines: list[str]) -> list[Finding]:
         if match := _LOG_ENTRY.match(line):
             slot, species = match[2], match[3]
             fainted = fainted_species.get(slot)
-            if fainted and key(fainted.split("-")[0]) == key(species.split("-")[0]):
+            same_species_as_fainted = bool(
+                fainted and key(fainted.split("-")[0]) == key(species.split("-")[0])
+            )
+            if same_species_as_fainted:
                 result.append(
                     Finding(
                         "reentrada_debilitado",
@@ -289,6 +320,21 @@ def _state_findings(lines: list[str]) -> list[Finding]:
                 )
             else:
                 fainted_species.pop(slot, None)
+            entry_hp = _LOG_ENTRY_HP.match(match[4])
+            if (
+                entry_hp
+                and entry_hp[1] == "0"
+                and int(entry_hp[2]) > 0
+                and not same_species_as_fainted
+            ):
+                result.append(
+                    Finding(
+                        "entrada_a_cero",
+                        f"{slot}: {species} entra con 0/{entry_hp[2]} PS sin faint confirmado de esa misma especie "
+                        "en ese slot inmediatamente antes; ningún switch/drag puede resolver con 0 PS reales",
+                        line=i,
+                    )
+                )
             occupants[slot] = species
             dead_at.pop(slot, None)
             continue

@@ -305,14 +305,19 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(_with_known_health(events)[0].health, "156/156")
 
     def test_a_switch_never_inherits_a_fainted_zero_health(self) -> None:
-        """COL-102, reapertura estructural del 26 sep, job real
-        `10a7fba6fda04585`, partidas 1 y 5: si por lo que sea un `switch`
-        sin HP propio llega hasta aquí para la misma clave (slot, especie)
-        cuya última lectura conocida es "0/max" -el valor que dejó su
-        propio debilitado-, esto ya no debe estampar ese 0 como si fuera la
-        vida real de quien entra: un `switch`/`drag` nunca puede introducir
-        un Pokémon a 0 PS. Sin lectura propia se trata igual que ninguna
-        lectura -se cae al máximo, como una entrada nueva.
+        """COL-102, corte de Roku sobre el commit `afee177` (26 sep, job
+        real `10a7fba6fda04585`, partidas 1 y 5): esta prueba antes
+        afirmaba que un `switch` sin HP propio para la clave (slot,
+        especie) cuya última lectura conocida es "0/max" -el valor que
+        dejó su propio debilitado- se convertía en "max/max". Roku marcó
+        eso como HP inventado sin evidencia: "el test nuevo afirma
+        precisamente que una reentrada sin HP propio tras 0/207 se
+        convierta en 207/207". Ahora se prueba lo contrario -conservar la
+        procedencia real, nunca fabricar el máximo- y que esa evidencia
+        sobrevive el serializado: sin ningún `|faint|` que preceda a esta
+        entrada (el 0 llegó por daño, no por un debilitado confirmado),
+        `reconcile._state_findings` la marca `entrada_a_cero` sobre el
+        `.log` ya escrito.
         """
 
         events = (
@@ -324,7 +329,114 @@ class ChampionsReplayTests(unittest.TestCase):
         completed = _with_known_health(events)
 
         self.assertEqual(completed[0].health, "207/207")
-        self.assertEqual(completed[2].health, "207/207")
+        self.assertEqual(completed[2].health, "0/207")
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom",), ("Rillaboom",)),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        # La primera entrada de Rillaboom es legítima (pisa el campo sin
+        # lectura previa, cae al máximo); la segunda -su reentrada tras
+        # 0/207- nunca debe convertirse en esa misma línea fabricada.
+        self.assertEqual(document.log.count("|switch|p1a: Rillaboom|Rillaboom, L50|207/207"), 1)
+        self.assertIn("|switch|p1a: Rillaboom|Rillaboom, L50|0/207", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        matching = [item for item in findings if item.category == "entrada_a_cero"]
+        self.assertEqual(len(matching), 1)
+        self.assertIn("Rillaboom", matching[0].detail)
+
+    def test_entrada_a_cero_flags_a_different_species_reading_zero_health(self) -> None:
+        """(a) COL-102, corte de Roku sobre `afee177`: si el OCR (o cualquier
+        entrada fantasma que se le escape a `_drop_ghost_reentries`/
+        `_drop_redundant_reswitches`) lee 0 PS en el `switch` de una
+        especie DISTINTA a la que se acaba de debilitar en ese slot,
+        `reentrada_debilitado` no lo detecta -sólo mira identidad
+        repetida-, así que hace falta un hallazgo aparte que mire la vida
+        codificada en la propia línea de entrada. Nunca debe convertirse
+        en "100/100": la vida real (0) se conserva, y la incidencia
+        sobrevive el serializado.
+        """
+
+        events = (
+            BattleEvent(
+                kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom", health="207/207"
+            ),
+            BattleEvent(kind="faint", timestamp_ms=2_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(
+                kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health="0/100"
+            ),
+        )
+
+        completed = _with_known_health(events)
+        self.assertEqual(completed[2].health, "0/100")
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|0/100", document.log)
+        self.assertNotIn("100/100", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        matching = [item for item in findings if item.category == "entrada_a_cero"]
+        self.assertEqual(len(matching), 1)
+        self.assertIn("Blaziken", matching[0].detail)
+
+    def test_a_legitimate_replacement_with_health_observed_later_raises_no_finding(self) -> None:
+        """(c) Contraejemplo de (a)/(b): un reemplazo legítimo (especie
+        distinta) tras un `faint`, sin HP propio en el propio `switch`
+        pero con una lectura positiva del HUD momentos después, debe
+        entrar limpio -sin `entrada_a_cero` ni `reentrada_debilitado`- y
+        sin ningún "max/max" inventado en el log servido.
+        """
+
+        events = (
+            BattleEvent(kind="switch", timestamp_ms=1_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="faint", timestamp_ms=2_000, slot="p1a", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=3_000, slot="p1a", species="Blaziken", health=None),
+            BattleEvent(
+                kind="damage", timestamp_ms=4_000, slot="p1a", species="Blaziken", health="82/156"
+            ),
+        )
+
+        completed = _with_known_health(events)
+        self.assertEqual(completed[2].health, "156/156")
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=events,
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        self.assertNotIn("0/156", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        self.assertEqual(
+            [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
+        )
 
     def test_fills_the_target_when_only_one_rival_was_hit(self) -> None:
         # El detector sabe quién usó el movimiento y, por separado, a quién le
@@ -1128,6 +1240,16 @@ class ChampionsReplayTests(unittest.TestCase):
         t=670500 ms, `faint` en t=674000 ms, reentrada fantasma de la misma
         especie sin HP propio en t=674499 ms (~500 ms después, tal como en
         la traza), y el reemplazo real (Blaziken) en t=689999 ms.
+
+        (d) COL-102, corte de Roku sobre `afee177`: además de que la
+        limpieza previa siga descartando el switch fantasma, se comprueba
+        que el resultado ya limpio -sin la línea fantasma- no arrastra
+        ningún hallazgo `entrada_a_cero` ni ningún "max/max" inventado al
+        pasar por `build_replay_document`/`_with_known_health` y quedar
+        serializado; y se repite el mismo timing real, ahora para la
+        partida 5 (turno 5, Bonkers/Rillaboom): daño a 0/207 en
+        t=3048000 ms, `faint` en t=3052000 ms, reentrada fantasma 500 ms
+        después en t=3052500 ms y el reemplazo real en t=3075500 ms.
         """
 
         accumulator = CaptureAccumulator(CaptureSeed())
@@ -1148,6 +1270,52 @@ class ChampionsReplayTests(unittest.TestCase):
                 ("damage", "Rillaboom", "0/207"),
                 ("faint", "Rillaboom", None),
                 ("switch", "Blaziken", "82/156"),
+            ],
+        )
+
+        battle = self.capture()
+        document = build_replay_document(
+            CapturedBattle(
+                p1=BattleSide("IesYo", ("Rillaboom", "Blaziken"), ("Rillaboom", "Blaziken")),
+                p2=BattleSide("Rival", ("Sableye",), ("Sableye",)),
+                events=tuple(accumulator.events),
+                winner=battle.winner,
+                started_at=battle.started_at,
+                format=battle.format,
+                source_mode=battle.source_mode,
+            )
+        )
+
+        # El fantasma ya se descartó antes de serializar: ningún switch de
+        # Rillaboom sobrevive, y nada estampa "207/207" -el máximo que
+        # antes se fabricaba sobre esa reentrada.
+        self.assertNotIn("|switch|p1a: Rillaboom", document.log)
+        self.assertNotIn("207/207", document.log)
+        self.assertIn("|-damage|p1a: Rillaboom|0/207", document.log)
+        findings = reconcile._state_findings(document.log.splitlines())
+        self.assertEqual(
+            [item for item in findings if item.category in {"entrada_a_cero", "reentrada_debilitado"}], []
+        )
+
+        # Partida 5 (turno 5, Bonkers/Rillaboom): mismo patrón, mismo resultado.
+        second = CaptureAccumulator(CaptureSeed())
+        second.events = [
+            BattleEvent(kind="damage", timestamp_ms=3_048_000, slot="p2a", species="Rillaboom", health="0/207"),
+            BattleEvent(kind="faint", timestamp_ms=3_052_000, slot="p2a", species="Rillaboom"),
+            BattleEvent(kind="switch", timestamp_ms=3_052_500, slot="p2a", species="Rillaboom", health=None),
+            BattleEvent(kind="switch", timestamp_ms=3_075_500, slot="p2a", species="Farigiraf", health="90/165"),
+        ]
+
+        second._drop_ghost_reentries()
+        second._reconcile_zero_hp()
+        second._drop_redundant_reswitches({})
+
+        self.assertEqual(
+            [(event.kind, event.species, event.health) for event in second.events],
+            [
+                ("damage", "Rillaboom", "0/207"),
+                ("faint", "Rillaboom", None),
+                ("switch", "Farigiraf", "90/165"),
             ],
         )
 

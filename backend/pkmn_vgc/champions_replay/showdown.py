@@ -75,19 +75,21 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
     recibe daño. Rellenar con 100/100 lo hacía reaparecer lleno y le cambiaba
     el máximo a mitad del log.
 
-    COL-102, reapertura estructural del 26 sep, job real `10a7fba6fda04585`,
-    partidas 1 y 5: esto conservaba sin más la última lectura de vida de la
-    clave (slot, especie base) aunque esa lectura fuera exactamente "0/max"
-    -el valor que dejó el propio debilitado. Un `switch`/`drag` nunca puede
-    introducir un Pokémon a 0 PS: si de verdad seguía en pie el HUD lo habría
-    dicho, y si de verdad se debilitó no puede volver a salir -en ningún
-    caso 0 es la vida real de quien entra. Esto ya no debería ver un evento
-    así (`_drop_ghost_reentries`/`_drop_redundant_reswitches` lo eliminan
-    antes de llegar aquí), pero esta función no depende de que la limpieza
-    previa sea perfecta: sin lectura propia, una vida conocida de 0 se trata
-    igual que ninguna lectura -se cae al máximo, como una entrada nueva-, en
-    vez de estampar un 0 que el propio formato de Showdown no permite
-    volver a leer como "en pie".
+    COL-102, corte de Roku sobre el commit `afee177` (26 sep, job real
+    `10a7fba6fda04585`, partidas 1 y 5): la versión anterior de esta función
+    convertía un `current` resuelto en "0/algo" -explícito en el propio
+    evento o heredado de `health.get(key)`- en `None` y lo dejaba caer al
+    máximo, exactamente la fabricación de HP que Ies prohibió. Bastaba con
+    que la limpieza previa (`_drop_ghost_reentries`/`_drop_redundant_reswitches`)
+    dejara escapar cualquier entrada fantasma, o que el OCR leyera un 0 de
+    otra especie en el mismo slot, para que el log pasara de "0 PS
+    imposible" a un "HP completo" que ninguna lectura sostenía. Esta
+    función ya no fabrica nada: conserva la procedencia real del HP -sea
+    0, sea positivo, sea ausente- y sólo cae al máximo cuando no hay
+    ninguna lectura previa que citar (una entrada nueva de verdad). Que un
+    `switch`/`drag` serializado quede con "0/max" es ahora una señal, no un
+    problema que esta función deba disimular: `reconcile._state_findings`
+    la detecta sobre el `.log` ya escrito y la marca `blocking`.
     """
 
     maximums = _health_maximums(events)
@@ -99,8 +101,6 @@ def _with_known_health(events: Sequence[BattleEvent]) -> tuple[BattleEvent, ...]
             active[event.slot] = event.species
             key = _health_key(event.slot, event.species)
             current = event.health or health.get(key)
-            if current is not None and current.partition("/")[0] == "0":
-                current = None
             if not current:
                 maximum = maximums.get(key)
                 current = f"{maximum}/{maximum}" if maximum else None
