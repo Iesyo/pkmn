@@ -104,25 +104,30 @@ test("formats major and minor team versions without decimal ambiguity", async ()
   assert.equal(formatVersion({ version: 1, minorVersion: 10 }), "1.10");
 });
 
-test("computes matchup and attendance stats from opposing Pokémon", async () => {
+test("uses rival picks for matchups and Team Preview for attendance without inferring missing picks", async () => {
   const { calculateOpponentPokemonStats } = await vite.ssrLoadModule("/lib/team-stats.ts");
   const matches = [
-    { result: "win", opponentSelected: ["Rillaboom", "Incineroar"] },
-    { result: "loss", opponentSelected: ["Rillaboom", "Rillaboom", "Calyrex-Ice"] },
+    { result: "win", opponentSelected: ["Rillaboom", "Incineroar"], opponentPicks: ["Incineroar", "Incineroar"] },
+    { result: "loss", opponentSelected: ["Rillaboom", "Rillaboom", "Calyrex-Ice"], opponentPicks: ["Rillaboom"] },
+    { result: "loss", opponentSelected: ["Rillaboom", "Incineroar"], opponentPicks: [] },
   ];
 
-  const stats = calculateOpponentPokemonStats(matches);
-  const rillaboom = stats.find((entry) => entry.species === "Rillaboom");
-  const incineroar = stats.find((entry) => entry.species === "Incineroar");
+  const attendance = calculateOpponentPokemonStats(matches, "opponentSelected");
+  const matchups = calculateOpponentPokemonStats(matches, "opponentPicks");
+  const rillaboom = attendance.find((entry) => entry.species === "Rillaboom");
+  const incineroar = matchups.find((entry) => entry.species === "Incineroar");
 
   assert.deepEqual(rillaboom, {
     species: "Rillaboom",
-    games: 2,
+    games: 3,
     wins: 1,
-    winRate: 50,
+    winRate: 33.3,
     attendanceRate: 100,
   });
-  assert.equal(incineroar.attendanceRate, 50);
+  assert.equal(incineroar.games, 1);
+  assert.equal(incineroar.winRate, 100);
+  assert.equal(matchups.find((entry) => entry.species === "Rillaboom").winRate, 0);
+  assert.equal(matchups.some((entry) => entry.species === "Calyrex-Ice"), false);
 });
 
 test("computes move usage from replay telemetry instead of dividing 100 by four", async () => {
