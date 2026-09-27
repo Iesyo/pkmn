@@ -26,6 +26,7 @@ STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": 
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
 ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECASE)
 HP_TEXT = re.compile(r"(?<!\d)\d{1,4}\s*(?:%|/\s*\d{1,4})(?!\d)")
+HUD_NUMBER = re.compile(r"^(\d{1,3})\s*%?$")
 PLACEHOLDER = re.compile(r"^__champions_actor_[^_]+_\d+__$")
 
 
@@ -276,6 +277,41 @@ class BattleAutomaton:
     def _issue(self, code: str, message: str, frame: int, seq: int | None = None) -> None:
         self.issues.append({"code": code, "message": message, "frame": frame, "event_seq": seq})
 
+    def _competing_hp_ocr(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Find a stronger, different number overlapping a percent reading in one HUD.
+
+        A different HUD on the same screen is not competing evidence: a fainted
+        partner can legitimately show 0% beside an active Pokémon at 88%.
+        """
+        health = str(candidate["event"].get("health") or "")
+        if not re.fullmatch(r"\d+/100", health):
+            return None
+        expected = int(health.split("/", 1)[0])
+        readings = []
+        for line in self.frame_lookup.get(candidate["observed_frame"], {}).get("ocr", ()):
+            match = HUD_NUMBER.fullmatch(line.get("text", "").strip())
+            if match and all(key in line for key in ("left", "right", "top", "bottom")):
+                value = int(match.group(1))
+                if value <= 100:
+                    readings.append((value, line))
+        for value, suspect in readings:
+            if value != expected or "%" not in suspect["text"]:
+                continue
+            for other_value, stronger in readings:
+                if other_value == expected or stronger["confidence"] <= suspect["confidence"] + .1:
+                    continue
+                # Overlap or touch within the same HP label; Kingambit's distant
+                # 0% and Rillaboom's 88% must never be paired as one reading.
+                if (suspect["left"] > stronger["right"] + .02 or
+                    stronger["left"] > suspect["right"] + .02 or
+                    suspect["top"] > stronger["bottom"] + .005 or
+                    stronger["top"] > suspect["bottom"] + .005):
+                    continue
+                return {"frame": candidate["observed_frame"],
+                        "suspect": {"text": suspect["text"], "confidence": suspect["confidence"]},
+                        "stronger": {"text": stronger["text"], "confidence": stronger["confidence"]}}
+        return None
+
     def _append(self, candidate: dict[str, Any], *, kind: str | None = None,
                 actor_id: str | None = None, status: str = "consistent",
                 note: str | None = None, before: str | None = None,
@@ -323,7 +359,8 @@ class BattleAutomaton:
             before = actor.get("health") if actor else None
             after = raw.get("health")
             observations = [{"frame": c["observed_frame"], "health": c["event"].get("health"),
-                             "parser_kind": c["event"]["kind"], "evidence": self._evidence(c, c["event"]["kind"])}
+                             "parser_kind": c["event"]["kind"], "evidence": self._evidence(c, c["event"]["kind"]),
+                             **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
             result = "consistent"
             notes: list[str] = []
@@ -358,6 +395,9 @@ class BattleAutomaton:
 
     def _hp(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
+        conflict = self._competing_hp_ocr(candidate)
+        if conflict:
+            candidate["competing_ocr"] = conflict
         slot = event.get("slot")
         actor_id = self.active.get(slot)
         # Una lectura tardía de un ocupante distinto no cambia el estado del
@@ -380,11 +420,17 @@ class BattleAutomaton:
             reads = pending.candidates + [candidate]
             self.hp_pending.pop(key)
             self.hp_order.remove(key)
+            conflict = next((x["competing_ocr"] for x in reads if x.get("competing_ocr")), None)
+            note = "Dos lecturas opuestas antes de la primera acción regresan al PS previo."
+            if conflict:
+                note += (f" En el mismo HUD, {conflict['suspect']['text']} compite con "
+                         f"{conflict['stronger']['text']} de mayor confianza OCR.")
             item = self._append(candidate, kind="hp_oscillation", actor_id=actor_id,
                                 status="review", before=stable, after=stable,
-                                note="Dos lecturas opuestas antes de la primera acción regresan al PS previo.",
+                                note=note,
                                 observations=[{"frame": x["observed_frame"], "health": x["event"].get("health"),
-                                               "evidence": self._evidence(x, x["event"]["kind"])}
+                                               "evidence": self._evidence(x, x["event"]["kind"]),
+                                               **({"competing_ocr": x["competing_ocr"]} if x.get("competing_ocr") else {})}
                                               for x in reads])
             item["narration"].extend(pending.narration)
             self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])

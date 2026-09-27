@@ -34,6 +34,8 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    aviso de movimiento leído en varios frames; los mensajes narrativos se
    adjuntan al evento próximo. Una oscilación de PS que vuelve al valor previo
    antes de actuar queda en `review`, sin producir daño y cura inventados.
+   Si dos números OCR se contradicen en el mismo HUD, conserva la lectura de
+   mayor confianza como evidencia; no mezcla números de HUD separados.
 5. Un Pokémon debilitado no vuelve a entrar porque su imagen siga en el HUD.
    Se detectan aplicaciones de estado repetidas, saltos de turno y lecturas de
    PS de otro ocupante. Cuando la primera confirmación del HUD sucede después
@@ -53,18 +55,23 @@ todavía un replay Showdown: sería prematuro mientras haya discrepancias.
 | Partida | Candidatos → sucesos | Orden principal frente al replay | PS coincidentes | Hallazgo |
 | --- | ---: | ---: | ---: | --- |
 | 1 | 206 → 109 | 62/62, orden exacto | 36/37 | HUD repite Rillaboom tras faint; un PS termina en 93/207 en traza y 94/207 en replay. |
-| 2 | 184 → 100 | 56/56, orden exacto | 33/34 | Al inicio de T8, Rillaboom tiene 88 %, una lectura aislada marca 0 % y vuelve a 88 %; el replay archivado escribe una cura. |
+| 2 | 184 → 100 | 56/56, orden exacto | 33/34 | Kingambit está a 0 % en su HUD; luego una lectura OCR aislada confunde el 88 % de Rillaboom con 0 % y el replay archivado escribe una cura. |
 | 3 | 94 → 51 | 32/32, orden exacto | 15/15 | Sin discrepancias detectadas por este corte. |
 | 4 | 190 → 107 | 68/68, orden exacto | 32/32 | Sin discrepancias detectadas por este corte. |
 | 5 | 174 → 104 | 57/57, orden exacto | 30/30 | Pelipper y Rillaboom se anuncian antes de que el HUD confirme su PS; éste ya cambió cuando se leyó. |
 
-En la partida 2, la captura compartida por el usuario a los **23:18** muestra
-al Rillaboom rival con **88 %**. En el frame 2796 (23:17.5), el OCR leyó a la
-vez `88` (confianza 0.99996) y `0%` (0.78096); en el frame 2797 (23:18) leyó
-de nuevo `88%`, sin acción intermedia. El replay archivado añadió una curación
+En la partida 2, la captura a los **23:02** muestra a **Kingambit a 0 %** en el
+HUD derecho. La traza atribuye correctamente ese PS a `p2b: Kingambit` (frames
+2766–2773; posición horizontal del `0%` ≈ 0.92). La captura a los **23:18**
+muestra al Rillaboom rival con **88 %** en otro HUD. En el frame 2796
+(23:17.5), el OCR leyó a la vez `88` (confianza 0.99996) y `0%` (0.78096)
+en la zona del PS de Rillaboom (posición ≈ 0.70–0.75); en el frame 2797
+(23:18) leyó de nuevo `88%`, sin acción intermedia. La lectura `0%` de 2796
+parece un recorte fallido del número de Rillaboom: está en otra posición que
+el `0%` real de Kingambit. El replay archivado añadió una curación
 `|-heal|p2a: Rillaboom|88/100` al inicio del turno 8. El autómata conserva
-la oscilación para revisión y no emite daño ni curación a partir de ella. La
-captura comprueba el instante 23:18; no contiene por sí sola el frame 2796. La
+la oscilación y el conflicto OCR para revisión, y no emite daño ni curación a
+partir de ella. Las capturas no incluyen el fotograma exacto 2796. La
 partida 1 necesita resolver **frames 1233–1234** (`94/207` y `93/207`). En la
 partida 5, revisar las entradas de Pelipper y Rillaboom anunciadas antes de
 los frames **5550 y 5826**: el PS leído en la confirmación no demuestra el
@@ -84,6 +91,7 @@ CHAMPIONS_DIAGNOSTIC=/ruta/champions-diagnostics-10a7fba6fda04585.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Cinco casos pequeños cubren causalidad, agrupación y cálculo de PS, oscilación y
-reentrada fantasma; el sexto comprueba el orden de las cinco partidas del
-diagnóstico. Sin `CHAMPIONS_DIAGNOSTIC` se omite sólo la prueba de integración.
+Seis casos pequeños cubren causalidad, agrupación y cálculo de PS, oscilación,
+separación espacial de HUD y reentrada fantasma; el séptimo comprueba el orden
+de las cinco partidas del diagnóstico. Sin `CHAMPIONS_DIAGNOSTIC` se omite sólo
+la prueba de integración.

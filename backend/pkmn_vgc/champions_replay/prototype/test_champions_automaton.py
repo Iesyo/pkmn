@@ -69,10 +69,33 @@ class TemporalAutomatonTests(unittest.TestCase):
                  frame(3, [event("turn", turn=2)]),
                  frame(4, [event("damage", "p1a", "Rillaboom", "0/100")]),
                  frame(5, [event("heal", "p1a", "Rillaboom", "88/100")])]
+        trace[3]["ocr"] = [
+            {"text": "88", "confidence": .99, "left": .70, "right": .74, "top": .11, "bottom": .16},
+            {"text": "0%", "confidence": .78, "left": .73, "right": .75, "top": .12, "bottom": .16},
+            {"text": "Kingambit", "confidence": .99, "left": .83, "right": .90, "top": .04, "bottom": .09},
+            {"text": "0%", "confidence": .99, "left": .92, "right": .96, "top": .11, "bottom": .16},
+        ]
         ledger = BattleAutomaton(0, trace).run()
         self.assertEqual(sum(x["kind"] == "heal" for x in ledger["events"]), 0)
         self.assertIn("hp_oscillation", [x["code"] for x in ledger["issues"]])
         self.assertEqual(ledger["actors"][next(iter(ledger["actors"]))]["health"], "88/100")
+        oscillation = next(x for x in ledger["events"] if x["kind"] == "hp_oscillation")
+        self.assertIn("mismo HUD", oscillation["note"])
+        self.assertEqual(oscillation["observations"][0]["competing_ocr"]["stronger"]["text"], "88")
+
+    def test_zero_from_distant_partner_hud_is_separate_evidence(self):
+        trace = [frame(1, [event("switch", "p2a", "Rillaboom", "88/100"),
+                           event("switch", "p2b", "Kingambit", "0/100"), event("turn", turn=1)]),
+                 frame(2, [event("damage", "p2a", "Rillaboom", "0/100")]),
+                 frame(3, [event("heal", "p2a", "Rillaboom", "88/100")])]
+        trace[1]["ocr"] = [
+            {"text": "88", "confidence": .99, "left": .70, "right": .74, "top": .11, "bottom": .16},
+            {"text": "0%", "confidence": .99, "left": .92, "right": .96, "top": .11, "bottom": .16},
+        ]
+        oscillation = next(x for x in BattleAutomaton(0, trace).run()["events"]
+                           if x["kind"] == "hp_oscillation")
+        self.assertNotIn("mismo HUD", oscillation["note"])
+        self.assertNotIn("competing_ocr", oscillation["observations"][0])
 
     def test_fainted_actor_cannot_reenter_from_stale_hud(self):
         trace = [frame(1, [event("switch", "p1a", "Rillaboom", "10/100"), event("turn", turn=1)]),
