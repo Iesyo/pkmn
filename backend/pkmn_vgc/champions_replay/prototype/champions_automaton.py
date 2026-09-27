@@ -554,6 +554,45 @@ class BattleAutomaton:
         return {"state": "confirmed", "reason": "PS completos repetidos antes del fragmento OCR",
                 "evidence": list(reversed(evidence))}
 
+    def _terrain_restoration_context(self, slot: str | None, actor_id: str | None,
+                                     before: str | None, partial: dict[str, Any],
+                                     healing: dict[str, Any]) -> dict[str, Any] | None:
+        """Corroborate a terrain tick after an overlapping, truncated HP reading."""
+        if (not slot or not slot.startswith("p2") or not actor_id or not before or
+            not self.terrain or "Grassy Terrain" not in self.terrain or
+            not partial.get("competing_ocr")):
+            return None
+        after = healing["event"].get("health")
+        old, new = health_ratio(before), health_ratio(after)
+        if old is None or new is None or not .045 <= new - old <= .075:
+            return None
+        conflict = partial["competing_ocr"]
+        suspect = HUD_NUMBER.fullmatch(conflict["suspect"]["text"])
+        stronger = HUD_NUMBER.fullmatch(conflict["stronger"]["text"])
+        if not suspect or not stronger:
+            return None
+        prior_number = int(before.split("/", 1)[0])
+        final_number = int(after.split("/", 1)[0])
+        if not (str(prior_number).endswith(suspect.group(1)) and
+                prior_number < int(stronger.group(1)) < final_number):
+            return None
+        support = self._hp_support(slot, after, healing["observed_frame"])
+        if support["state"] != "confirmed":
+            return None
+        for number in range(healing["observed_frame"] + 1,
+                            healing["observed_frame"] + 7):
+            row = self.frame_lookup.get(number, {})
+            for event in row.get("detections", {}).get("events", ()):
+                if (event["kind"] in {"switch", "drag"} and event.get("slot") == slot or
+                    event["kind"] == "fieldend" and "Terrain" in str(event.get("value"))):
+                    return None
+                message = str(event.get("value") or "")
+                if (event["kind"] == "message" and message.endswith("had its HP restored.") and
+                    self._hp_message_actor(message) == actor_id):
+                    return {"state": "confirmed", "reason": "cura de terreno de ~1/16 y mensaje del actor",
+                            "evidence": support["evidence"] + [{"frame": number, "text": message}]}
+        return None
+
     def _entry_baseline(self, candidate: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
         """Find a complete, stable HUD value after entry and before any action.
 
@@ -773,6 +812,17 @@ class BattleAutomaton:
             # Si se confirma en frames posteriores, llegará como otro episodio.
             if len(episode.candidates) == 1 and last.get("competing_ocr"):
                 conflict = last["competing_ocr"]
+                restored = last.get("restoration_context")
+                if restored:
+                    note = (f"OCR {conflict['suspect']['text']} recortado durante una cura de "
+                            f"Grassy Terrain; PS previos {before} y finales confirmados, "
+                            "con mensaje de recuperación del mismo actor.")
+                    item = self._append(last, kind="hp_rejected_reading", actor_id=episode.actor_id,
+                                        status="suppressed", before=before, after=before,
+                                        note=note, observations=observations)
+                    item["narration"].extend(episode.narration)
+                    item["hp_state"], item["hp_support"] = "rejected", restored
+                    continue
                 stable = self._stable_hp_before_conflict(
                     episode.slot, before, last["observed_frame"], conflict["stronger"])
                 if stable:
@@ -826,6 +876,9 @@ class BattleAutomaton:
             if episode.kind == "damage" and any("was hurt by its burn!" in text.casefold()
                                                 for text in episode.narration):
                 cause = "quemadura observada"
+            elif (episode.kind == "heal" and last.get("terrain_heal_confirmed") and
+                  any("had its HP restored." in text for text in episode.narration)):
+                cause = "Grassy Terrain corroborado por HUD y mensaje"
             elif episode.kind == "heal" and self.terrain and "Grassy Terrain" in self.terrain:
                 cause = "posible efecto de Grassy Terrain; comprobar suelo y cuantía"
             elif self.last_action and last["observed_ms"] - self.last_action["observed_ms"] <= 20_000:
@@ -915,6 +968,14 @@ class BattleAutomaton:
             else:
                 self._issue("hp_oscillation", item["note"], item["frame"], item["seq"])
             return
+        if (pending and len(pending.candidates) == 1 and pending.kind == "damage" and
+            event["kind"] == "heal" and stable and
+            candidate["observed_ms"] - pending.last_ms <= 1_500):
+            restoration = self._terrain_restoration_context(
+                slot, actor_id, stable, pending.candidates[0], candidate)
+            if restoration:
+                pending.candidates[0]["restoration_context"] = restoration
+                candidate["terrain_heal_confirmed"] = restoration
         # El detector puede llamar "heal" a un valor intermedio de una barra
         # que sigue bajando (o viceversa). La dirección de una animación se
         # decide por los PS estables, no por la etiqueta de cada fotograma.
