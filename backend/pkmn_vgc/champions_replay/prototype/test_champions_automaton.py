@@ -172,7 +172,87 @@ def delayed_health_trace(side="p1", species="Pelipper"):
     return trace
 
 
+def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
+    slot = side + "a"
+    prefix = "The opposing " if side == "p2" else ""
+    bad = prefix + name[1:] + " fainted!"
+    clean = prefix + name + " fainted!"
+    trace = [frame(1, [event("switch", slot, species, "10/100"), event("turn", turn=1),
+                      event("move", slot, species, move="Double-Edge")]),
+             frame(2, [event("damage", slot, species, "0/100")]),
+             frame(3, [event("faint", slot, species)], texts=[bad]),
+             frame(4), frame(5, [event("faint", slot, species)], texts=[clean]),
+             frame(6, texts=[clean])]
+    for row in trace:row["resolved_aliases"][side][name.casefold()] = species
+    trace[2]["ocr"][0]["confidence"] = .99999
+    trace[4]["ocr"][0]["confidence"] = .98
+    return trace
+
+
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_partial_high_confidence_faint_cannot_change_actor_state(self):
+        for side, name, species in (("p1", "Tomoe", "Kingambit"), ("p2", "Alpha", "Pelipper")):
+            with self.subTest(side=side):
+                trace = partial_faint_trace(side, name, species)[:3]
+                automaton = BattleAutomaton(0, trace)
+                ledger = automaton.run()
+                actor_id = automaton.active[side + "a"]
+                self.assertFalse(ledger["actors"][actor_id]["fainted"])
+                self.assertEqual(ledger["actors"][actor_id]["health"], "0/100")
+                self.assertEqual([i["code"] for i in ledger["issues"]], ["faint_text_unconfirmed"])
+                pending = ledger["events"][-1]
+                self.assertEqual((pending["status"], pending["text_support"]["state"]), ("review", "unconfirmed"))
+                self.assertEqual(pending["text_support"]["evidence"][0]["confidence"], .99999)
+
+    def test_partial_faint_reuses_transient_text_state_after_complete_accepted_event(self):
+        for side, name, species in (("p1", "Tomoe", "Kingambit"), ("p2", "Alpha", "Pelipper")):
+            with self.subTest(side=side):
+                trace = partial_faint_trace(side, name, species)
+                raw = json.dumps(trace, sort_keys=True)
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertEqual(json.dumps(trace, sort_keys=True), raw)
+                self.assertEqual(ledger["issues"], [])
+                pending, accepted = [e for e in ledger["events"] if e["kind"] == "faint"]
+                self.assertEqual((pending["frame"], pending["status"], pending["text_support"]["state"]),
+                                 (3, "suppressed", "rejected"))
+                self.assertEqual((accepted["frame"], accepted["status"]), (5, "consistent"))
+                self.assertEqual(ledger["counts"]["faint"], 1)
+                self.assertTrue(ledger["actors"][accepted["actor_id"]]["fainted"])
+                proof = pending["resolution"]
+                self.assertEqual((proof["event_seq"], proof["actor_id"], proof["slot"]),
+                                 (accepted["seq"], accepted["actor_id"], side + "a"))
+                self.assertEqual([e["frame"] for e in proof["evidence"]], [5, 6])
+                self.assertEqual(pending["text_support"]["raw_event"]["source_frame"], 3)
+
+    def test_partial_faint_stays_pending_without_same_actor_and_temporal_proof(self):
+        for missing in ("accepted_event", "repeated", "confidence", "side", "name", "known_other_actor",
+                        "zero_hp", "unconfirmed_hp", "move", "turn", "entry", "raw_action", "raw_entry", "gap"):
+            with self.subTest(missing=missing):
+                trace = partial_faint_trace()
+                if missing == "accepted_event":trace[4]["detections"]["events"] = []
+                elif missing == "repeated":trace[5]["ocr"] = []
+                elif missing in {"confidence", "side", "name"}:
+                    for i in (4, 5):
+                        if missing == "confidence":trace[i]["ocr"][0]["confidence"] = .8
+                        elif missing == "side":trace[i]["ocr"][0]["text"] = "The opposing Tomoe fainted!"
+                        else:trace[i]["ocr"][0]["text"] = "Alpha fainted!"
+                elif missing == "known_other_actor":
+                    for row in trace:row["resolved_aliases"]["p1"]["omoe"] = "Pelipper"
+                elif missing == "zero_hp":trace[1] = frame(2, [event("damage", "p1a", "Kingambit", "1/100")])
+                elif missing == "unconfirmed_hp":trace[1]["ocr"][0]["confidence"] = .8
+                elif missing in {"move", "turn", "entry"}:
+                    kind = "switch" if missing == "entry" else missing
+                    trace[3]["detections"]["events"] = [event(kind, "p1a", "Pelipper", move="Protect", turn=2)]
+                elif missing == "raw_action":trace[3]["ocr"] = [{"text": "Tomoe used Protect!", "top": .75, "confidence": .99}]
+                elif missing == "raw_entry":trace[3]["ocr"] = [{"text": "Go! Tomoe!", "top": .75, "confidence": .99}]
+                elif missing == "gap":
+                    for row in trace[3:]:row["timestamp_ms"] += 3000
+                ledger = BattleAutomaton(0, trace).run()
+                pending = next(e for e in ledger["events"] if e["kind"] == "faint" and e["frame"] == 3)
+                self.assertEqual(pending["status"], "review")
+                self.assertNotIn("resolution", pending)
+                self.assertTrue(any(i["code"] == "faint_text_unconfirmed" for i in ledger["issues"]))
+
     def test_retrospective_appearance_recovers_hp_and_buffered_move_on_both_sides(self):
         for side, species in (("p1", "Pelipper"), ("p2", "Kingambit")):
             with self.subTest(side=side):
@@ -876,7 +956,11 @@ class TemporalAutomatonTests(unittest.TestCase):
                 elif missing == "positive_hp":
                     trace[-1]["detections"]["events"][0]["health"] = "10/100"
                 ledger = BattleAutomaton(0, trace).run()
-                self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+                if missing in {"wrong_side", "wrong_name", "confidence"}:
+                    self.assertIn("faint_text_unconfirmed", [x["code"] for x in ledger["issues"]])
+                    self.assertFalse(next(iter(ledger["actors"].values()))["fainted"])
+                else:
+                    self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
                 self.assertEqual(ledger["resolved_issues"], [])
 
     def test_real_replacement_after_faint_stays_an_entry(self):
@@ -1577,7 +1661,13 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(moves[0]["action_reconstruction"]["detected_frame"], 882)
         self.assertEqual(compare_baseline(first, baselines[0])["aligned_hp_episodes"], 17)
         self.assertEqual([(i["code"], i["frame"]) for i in ledgers[1]["issues"]],
-                         [("faint_without_actor", 1438), ("unclassified_text", 1587)])
+                         [("unclassified_text", 1587)])
+        pending = next(e for e in ledgers[1]["events"] if e["frame"] == 1437)
+        faint = next(e for e in ledgers[1]["events"] if e["frame"] == 1438)
+        self.assertEqual((pending["status"], pending["text_support"]["state"]), ("suppressed", "rejected"))
+        self.assertEqual((faint["kind"], faint["status"], faint["species"]), ("faint", "consistent", "Kingambit"))
+        self.assertEqual(pending["resolution"]["event_seq"], faint["seq"])
+        self.assertEqual([e["frame"] for e in pending["resolution"]["evidence"]], [1438, 1439, 1440])
         self.assertIn("Identidad corroborada tras estabilizarse el HUD", render_markdown(first, None))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FOURTH"), "Requiere el cuarto ZIP del usuario")

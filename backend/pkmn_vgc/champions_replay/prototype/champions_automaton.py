@@ -767,6 +767,37 @@ class BattleAutomaton:
     def _resolve(self, species: str | None) -> str | None:
         return self.id_resolution.get(species, species) if species else None
 
+    def _unconfirmed_faint_text(self, candidate: dict[str, Any], actor_id: str) -> dict[str, Any] | None:
+        """OCR confidence alone cannot identify the subject of a faint.
+
+        Check the actual narration before mutating the active actor. A parsed
+        event can still come from an incomplete nickname with very high OCR
+        confidence. Sources without faint narration retain their existing
+        candidate handling; this guard addresses explicit suspect readings.
+        """
+        slot = candidate["event"]["slot"]
+        expected = identity_species(self.actors[actor_id]["species"]).casefold()
+        readings = []
+        for line in self.frame_lookup[candidate["observed_frame"]].get("ocr", ()):
+            text = line.get("text", "").strip()
+            match = FAINT_NARRATION.fullmatch(text)
+            if not match or line.get("top", 0) < .55:
+                continue
+            side = "p2" if match[1] else "p1"
+            named = match[2].casefold()
+            species = identity_species(self.nickname_species[side].get(named, named)).casefold()
+            if (side == slot[:2] and species in {expected, expected.split("-", 1)[0]} and
+                line.get("confidence", 0) >= .95):
+                return None
+            readings.append({"frame": candidate["observed_frame"], "text": text,
+                             "confidence": line.get("confidence", 0), "side": side,
+                             "subject": named, "resolved_species": species})
+        if not readings:
+            return None
+        return {"state": "unconfirmed", "from": "provisional", "evidence": readings,
+                "raw_event": dict(candidate["event"]),
+                "reason": "Narración de debilitamiento sin sujeto fiable del actor; confianza OCR insuficiente por sí sola."}
+
     def _actor_for_entry(self, slot: str, species: str | None) -> str:
         side = slot[:2]
         raw = species or "unknown"
@@ -1771,6 +1802,15 @@ class BattleAutomaton:
         if kind == "cant":
             self.turn_activity += 1
         if kind == "faint":
+            support = self._unconfirmed_faint_text(candidate, actor_id) if actor_id else None
+            if support:
+                item = self._append(candidate, actor_id=actor_id, status="review", note=support["reason"])
+                item["text_support"] = support
+                item["value"] = max(support["evidence"], key=lambda e: e["confidence"])["text"]
+                self._issue("faint_text_unconfirmed", item["note"], item["frame"], item["seq"])
+                # The candidate is auditable, but it has not vacated the slot
+                # or changed the actor's HP/fainted state.
+                return
             item = self._append(candidate, actor_id=actor_id,
                                 status="consistent" if actor_id else "review",
                                 note=None if actor_id else "Debilitamiento sin actor activo.")
@@ -2190,18 +2230,29 @@ class BattleAutomaton:
         names.update(name for aliases in self.nickname_species.values() for name in aliases)
         unresolved = []
         for issue in self.issues:
-            if issue["code"] != "unclassified_text":
+            if issue["code"] not in {"unclassified_text", "faint_text_unconfirmed"}:
                 unresolved.append(issue)
                 continue
             transient = self.events[issue["event_seq"] - 1]
             text = transient["value"] or ""
+            pending_faint = issue["code"] == "faint_text_unconfirmed"
             # An already meaningful but unhandled sentence may describe a
             # distinct event, even when it resembles a later announcement.
-            if narration_signature(text):
+            if narration_signature(text) and not pending_faint:
                 unresolved.append(issue)
                 continue
+            if pending_faint:
+                signature = narration_signature(text)
+                _, side, named, _ = signature
+                known = self.nickname_species[side].get(named.casefold())
+                expected = identity_species(transient["species"] or "").casefold()
+                if (side != transient["slot"][:2] or
+                    (known and identity_species(known).casefold() not in {expected, expected.split("-", 1)[0]})):
+                    unresolved.append(issue)
+                    continue
             matches: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
-            for row in self._confirmation_rows(transient["frame"], include_boundary=True):
+            for row in self._confirmation_rows(transient["frame"], include_boundary=not pending_faint,
+                                                faint_slot=transient["slot"] if pending_faint else None):
                 if row["frame"] == transient["frame"]:
                     continue
                 for line in row.get("ocr", ()):
@@ -2225,7 +2276,11 @@ class BattleAutomaton:
                     for accepted in self.events:
                         if (accepted["status"] != "consistent" or accepted["turn"] != transient["turn"] or
                             accepted["kind"] != kind or not (accepted["slot"] or "").startswith(side) or
-                            row["frame"] not in {accepted["frame"], accepted["logical_frame"]}):
+                            (not pending_faint and row["frame"] not in {accepted["frame"], accepted["logical_frame"]})):
+                            continue
+                        if pending_faint and (kind != "faint" or accepted["slot"] != transient["slot"] or
+                            accepted["actor_id"] != transient["actor_id"] or
+                            not transient["frame"] < accepted["frame"] <= row["frame"]):
                             continue
                         expected = identity_species(accepted["species"] or "").casefold()
                         if species != expected and not (kind == "switch" and species.startswith(expected + " ")):
@@ -2240,6 +2295,15 @@ class BattleAutomaton:
                 continue
             seq, evidence = next(iter(matches.items()))
             accepted = self.events[seq - 1]
+            if pending_faint:
+                hp = next((e for e in reversed(self.events[:transient["seq"] - 1])
+                           if e["actor_id"] == transient["actor_id"] and e["status"] != "suppressed" and
+                           (e["kind"] in HP_KINDS | {"switch", "drag", "faint"} or e["kind"].startswith("hp_"))), None)
+                if (len({e["frame"] for e in evidence}) < 2 or not hp or hp["kind"] != "damage" or
+                    hp["status"] != "consistent" or hp.get("hp_state") != "confirmed" or
+                    health_ratio(hp["after"]) != 0):
+                    unresolved.append(issue)
+                    continue
             resolution = {"state": "resolved", "event_seq": seq,
                           "slot": accepted["slot"], "actor_id": accepted["actor_id"],
                           "from": "provisional", "to": "discarded",
@@ -2247,6 +2311,13 @@ class BattleAutomaton:
                           "evidence": evidence}
             transient["status"] = "suppressed"
             transient["resolution"] = resolution
+            if pending_faint:
+                transient["text_support"]["state"] = "rejected"
+                resolution["hp_event_seq"] = hp["seq"]
+                resolution["reason"] = ("Candidato de texto incompleto sin efecto sobre el actor; "
+                                        "PS cero confirmados y anuncio legible repetido del único debilitamiento aceptado.")
+                accepted["observations"].append({"frame": transient["frame"], "text": text,
+                                                  "reason": "Lectura provisional anterior sin aplicar al estado"})
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 

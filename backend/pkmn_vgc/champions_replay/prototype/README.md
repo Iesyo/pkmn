@@ -651,6 +651,43 @@ Ausencia de avisos no significa extracción completa de todas las habilidades.
 Siguen pendientes el faint duplicado de 1438 y el texto de interfaz de 1587
 en la segunda partida. El prototipo continúa fuera de producción.
 
+## Texto transitorio antes de aplicar un debilitamiento
+
+El estado retrospectivo de texto transitorio ya existía, pero sólo recibía
+mensajes sin clasificar. Una lectura incompleta que el detector convertía
+directamente en `faint` se aplicaba antes de comprobar su sujeto. En 9fd1,
+partida 2, `omoe fainted!` (1437) tenía confianza OCR **0,98236**, mayor que
+`Tomoe fainted!` (1438, **0,97972**). Ese valor no certifica que el nombre
+esté completo ni que corresponda al actor del slot.
+
+Cuando la traza aporta narración de debilitamiento, se comprueba el sujeto
+contra especie/motes del actor y el lado, además de confianza ≥0,95. Si
+ninguna lectura cumple, el candidato queda en `faint_text_unconfirmed`:
+no vacía el slot, no cambia los PS ni marca al actor como debilitado. El
+texto, la puntuación y el candidato original permanecen en `text_support`.
+Las fuentes que no aportan esa narración mantienen su tratamiento previo;
+esta comprobación cubre lecturas explícitas de sujeto dudoso o poca confianza.
+
+El mismo reconciliador de texto transitorio puede descartar esa lectura
+cuando existe un único faint posterior aceptado del mismo actor/slot/turno,
+PS cero confirmados y al menos dos anuncios completos concordantes dentro
+de la ventana existente de tres segundos, sin cruzar acciones, cambios,
+turnos o huecos. Un nombre conocido de otro actor o un lado distinto no se
+reinterpreta por parecido. Sin corroboración, la incidencia permanece.
+
+La captura de **11:58.00** muestra todavía «It's not very effective on
+Tomoe.» y no confirma visualmente el OCR parcial de 1437. La de
+**11:58.50** muestra «Tomoe fainted!» completo y 0/177. El candidato 1437
+queda provisional y luego descartado con evidencia; **1438** registra el
+único debilitamiento, corroborado por el texto repetido en **1439–1440**.
+
+**76/76 pruebas Ledger sin omisiones**, cinco ZIP y 16 partidas. Los otros
+15 JSON son idénticos al corte anterior. Avisos: **2→1 (0/1)** en 9fd1;
+siguen 29 episodios de PS confirmados y 7/7 mensajes asociados. La partida
+2 mantiene secuencias exactas de 33/33 eventos principales y 12/12 episodios
+de PS. Sólo queda el texto del panel informativo de Psychic Terrain en
+1587 (13:13), pendiente de revisión. Prototipo fuera de producción.
+
 ## Pruebas
 
 ```bash
@@ -662,7 +699,7 @@ CHAMPIONS_DIAGNOSTIC_FIFTH=/ruta/champions-diagnostics-9fd1afffbf8340df.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Sesenta y ocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Setenta y un casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
