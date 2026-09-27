@@ -64,7 +64,10 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    coincide con los PS previos y el HUD completo los repite en al menos dos
    fotogramas inmediatamente anteriores, el porcentaje recortado queda como
    `hp_rejected_reading` suprimido con esa evidencia. No mezcla números de
-   HUD separados.
+   HUD separados. Si el detector crea una pérdida y un rebote inmediatos
+   antes de la primera acción, también exige PS completos estables después
+   del fragmento antes de descartar ambos; sin esa prueba mantiene
+   `hp_oscillation` para revisión.
    Un `0%` seguido de un rebote positivo durante el debilitamiento se
    conserva en `hp_zero_rebound`, sin reanimar al actor. El valor final puede
    estar confirmado por OCR y **seguir en revisión** si el sentido del cambio
@@ -261,6 +264,21 @@ que el replay final reproduzca fielmente el vídeo.
   alineado con los replays archivados. Las lecturas suprimidas permanecen en
   JSON para auditoría.
 
+## Rillaboom · 27 de septiembre
+
+- La captura aportada a las **23:17.04** muestra **88 %** en el HUD de
+  Rillaboom. No coincide exactamente con el frame 2796 (23:17.5), pero es
+  contigua: los frames 2793–2795 muestran `88%`; en 2796 el OCR leyó `88`
+  (confianza .99996) superpuesto a `0%` (.78096); en 2798 aparece otra vez
+  `88%` completo. No hay acción entre estas lecturas. El rebote inventado
+  en 2797 se conserva como `hp_rejected_reading` suprimido, con ambas
+  observaciones y evidencia antes y después. Rillaboom sigue a 88 %.
+- En los mismos 12 combates quedan **7 incidencias** (primer ZIP: 3;
+  segundo: 4; tercero: 0), **328 episodios de PS** y las mismas alineaciones
+  de eventos principales. Sólo el conflicto `1%` frente a `44` de Sneasler
+  en el segundo ZIP, partida 2, frame 2082 requiere inspección visual para
+  resolver sus PS. Seis avisos son candidatos ya suprimidos y auditables.
+
 ## Pruebas
 
 ```bash
@@ -270,7 +288,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Veintiocho casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Treinta casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
