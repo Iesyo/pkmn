@@ -262,6 +262,41 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((damage["before"], damage["after"], damage["status"]),
                          ("177/177", "86/177", "consistent"))
 
+    def test_pre_impact_hud_seeds_hp_after_move_announcement(self):
+        trace = [frame(1, [event("switch", "p1b", "Rillaboom"), event("turn", turn=1)]),
+                 frame(2), frame(3, [event("move", "p2a", "Golisopod", move="Iron Head")]),
+                 frame(4), frame(5, [event("damage", "p1b", "Rillaboom", "128/207")]),
+                 frame(6, [event("damage", "p1b", "Rillaboom", "117/207")])]
+        trace[3]["ocr"] = [
+            {"text": "Gori", "left": .287, "top": .866, "confidence": 1},
+            {"text": "207/207", "left": .332, "top": .923, "confidence": .972},
+        ]
+        for row in trace:
+            row["resolved_aliases"]["p1"]["gori"] = "Rillaboom"
+        ledger = BattleAutomaton(0, trace).run()
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertEqual((damage["before"], damage["after"], damage["status"]),
+                         ("207/207", "117/207", "consistent"))
+        self.assertEqual(damage["hp_baseline"]["evidence"][0]["frame"], 4)
+
+    def test_two_different_pre_impact_hp_values_do_not_seed_baseline(self):
+        trace = [frame(1, [event("switch", "p1b", "Rillaboom"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p2a", "Golisopod", move="Iron Head")]),
+                 frame(3), frame(4), frame(5),
+                 frame(6, [event("damage", "p1b", "Rillaboom", "117/207")])]
+        for index, value in ((2, "207/207"), (3, "128/207")):
+            trace[index]["ocr"] = [
+                {"text": "Gori", "left": .287, "top": .866, "confidence": 1},
+                {"text": value, "left": .332, "top": .923, "confidence": .99},
+            ]
+        for row in trace:
+            row["resolved_aliases"]["p1"]["gori"] = "Rillaboom"
+        ledger = BattleAutomaton(0, trace).run()
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage")
+        self.assertIsNone(damage["before"])
+        self.assertEqual(damage["status"], "review")
+        self.assertNotIn("hp_baseline", damage)
+
     def test_provisional_id_reused_in_two_slots_uses_nickname_and_appearance(self):
         anon = "__champions_actor_p2_0003__"
         trace = [frame(1, [event("switch", "p2b", "Salamence", "100/100"),
@@ -414,7 +449,8 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertFalse(kingambit["actors"][real["actor_id"]]["item_lost"])
         suspicious = next(e for e in kingambit["events"] if e["frame"] == 3001 and e["kind"] == "damage")
         self.assertEqual((suspicious["status"], suspicious["before"], suspicious["after"]),
-                         ("review", None, "85/100"))
+                         ("consistent", "93/100", "85/100"))
+        self.assertEqual(suspicious["hp_baseline"]["evidence"][0]["frame"], 3000)
         following = next(e for e in kingambit["events"] if e["frame"] == 3025 and e["kind"] == "damage")
         self.assertEqual(following["before"], "85/100")
         # Retirar la prueba OCR de una observación de una batalla real simula
@@ -453,7 +489,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(set(baselines), {0, 1, 2})
         ledgers = [BattleAutomaton(i, [row for row in frames if row["battle_index"] == i]).run()
                    for i in range(3)]
-        self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [1, 0, 3])
+        self.assertEqual([len(ledger["issues"]) for ledger in ledgers], [0, 0, 2])
         self.assertTrue(all(compare_baseline(ledgers[i], baselines[i])["exact_core_sequence"]
                             for i in (0, 1)))
         battle = ledgers[2]
@@ -465,7 +501,12 @@ class TemporalAutomatonTests(unittest.TestCase):
                             e["frame"] == 3161)
         self.assertEqual((faint_damage["before"], faint_damage["after"], faint_damage["species"]),
                          ("6/100", "0/100", "Indeedee-F"))
-        self.assertEqual({issue["frame"] for issue in battle["issues"]}, {2527, 2735, 2736})
+        self.assertEqual({issue["frame"] for issue in battle["issues"]}, {2735, 2736})
+        gardevoir = next(e for e in battle["events"] if e["kind"] == "damage" and
+                         e["frame"] == 2527 and e["slot"] == "p1a")
+        self.assertEqual((gardevoir["before"], gardevoir["after"],
+                          gardevoir["hp_baseline"]["evidence"][0]["frame"]),
+                         ("168/171", "113/171", 2525))
 
 
 if __name__ == "__main__":

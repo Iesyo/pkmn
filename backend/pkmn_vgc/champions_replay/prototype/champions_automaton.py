@@ -551,6 +551,60 @@ class BattleAutomaton:
         support = {**support, "reason": "OCR del HUD anterior a la primera acción"}
         return health, support
 
+    def _pre_impact_baseline(self, episode: HpEpisode, actor: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        """Use a complete HP reading immediately before an animation changes it.
+
+        The move announcement precedes the impact, so stopping at the move
+        would discard a genuine last pre-hit HUD. Require the same occupant's
+        nickname and one unambiguous value in the preceding three frames.
+        """
+        slot = episode.slot
+        if slot not in SLOTS or not actor.get("species"):
+            return None
+        first_frame = episode.candidates[0]["observed_frame"]
+        left, right, top, bottom = HP_HUD_AREAS[slot]
+        found: list[tuple[int, str, dict[str, Any]]] = []
+        for frame in range(first_frame - 3, first_frame):
+            row = self.frame_lookup.get(frame)
+            if not row:
+                continue
+            if any(e["kind"] in HP_KINDS and e.get("slot") == slot
+                   for e in row.get("detections", {}).get("events", ())):
+                return None
+            if any(e["kind"] in {"switch", "drag"} and e.get("slot") == slot
+                   for e in row.get("detections", {}).get("events", ())):
+                found.clear()
+                continue
+            nickname = hud_nickname(row, slot)
+            species = self.nickname_species[slot[:2]].get(nickname or "", nickname or "")
+            if not nickname or (identity_species(species).casefold() !=
+                                identity_species(actor["species"]).casefold() and
+                                nickname != actor["species"].casefold().split("-", 1)[0]):
+                continue
+            for line in row.get("ocr", ()):
+                if not (left <= line.get("left", -1) <= right and
+                        top <= line.get("top", -1) <= bottom):
+                    continue
+                value = line.get("text", "").replace(" ", "")
+                if slot.startswith("p2") and re.fullmatch(r"\d{1,3}%", value):
+                    health = value[:-1] + "/100"
+                elif slot.startswith("p1") and re.fullmatch(r"\d{1,4}/\d{1,4}", value):
+                    health = value
+                else:
+                    continue
+                numerator, denominator = map(int, health.split("/"))
+                threshold = .97 if slot.startswith("p2") and numerator < 10 else .96
+                if not denominator or numerator > denominator or line.get("confidence", 0) < threshold:
+                    continue
+                found.append((frame, health, {"frame": frame, "text": line["text"],
+                                              "nickname": nickname,
+                                              "confidence": line["confidence"]}))
+        if len({value for _, value, _ in found}) != 1:
+            return None
+        _, health, evidence = max(found, key=lambda item: item[0])
+        return health, {"state": "confirmed", "reason": "HUD inmediatamente antes del cambio de PS",
+                        "evidence": [evidence]}
+
     def _append(self, candidate: dict[str, Any], *, kind: str | None = None,
                 actor_id: str | None = None, status: str = "consistent",
                 note: str | None = None, before: str | None = None,
@@ -616,6 +670,16 @@ class BattleAutomaton:
                              **({"competing_ocr": c["competing_ocr"]} if c.get("competing_ocr") else {})}
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
+            baseline = (self._pre_impact_baseline(episode, actor)
+                        if actor and before is None and support["state"] == "confirmed" else None)
+            if baseline:
+                expected, measured = health_ratio(baseline[0]), health_ratio(after)
+                if expected is None or measured is None or not (
+                    (episode.kind == "damage" and expected > measured) or
+                    (episode.kind == "heal" and expected < measured)):
+                    baseline = None
+                else:
+                    before = baseline[0]
             previous = (self._hp_support(episode.slot, before, last["observed_frame"] - 2)
                         if actor and before and before != after and support["state"] != "confirmed"
                         else {"state": "unconfirmed", "evidence": []})
@@ -691,6 +755,8 @@ class BattleAutomaton:
                                 after=after, cause=cause, observations=observations)
             item["narration"].extend(episode.narration)
             item["hp_state"], item["hp_support"] = support["state"], support
+            if baseline:
+                item["hp_baseline"] = baseline[1]
             if actor and result == "consistent":
                 actor["health"], actor["health_state"] = after, "confirmed"
             elif actor and result == "review" and before is None and support["state"] == "confirmed":
@@ -1174,6 +1240,10 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         if item["kind"] in HP_KINDS and len(item["observations"]) > 1:
             seen = " → ".join(str(x["health"]) for x in item["observations"])
             lines += ["  - Lecturas durante la animación: " + seen]
+        if item.get("hp_baseline"):
+            prior = item["hp_baseline"]["evidence"][0]
+            lines += [f"  - PS previos en el HUD de {prior['nickname']}: "
+                      f"{prior['text']} (frame {prior['frame']}, antes del cambio)."]
         if item["evidence"]:
             lines += [f"  - Pantalla: «{item['evidence'][0]['text']}» (frame {item['evidence'][0]['frame']})."]
     lines += ["", "## Incidencias para revisión", ""]

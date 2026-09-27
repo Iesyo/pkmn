@@ -50,6 +50,11 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    PS de entrada desconocidos. El autómata recupera los PS omitidos por el
    detector sólo si aparecen completos junto al mote correcto **antes de
    cualquier acción**.
+   También puede tomar el último PS completo del HUD **justo antes de que
+   empiece a bajar o subir la barra**, aunque el aviso del movimiento ya esté
+   en pantalla. Exige mote del ocupante, posición correcta y un solo valor
+   previo en la ventana de tres fotogramas; conserva esa prueba en
+   `hp_baseline` del evento.
 5. Si dos números OCR se contradicen en el mismo HUD, conserva ambos como
    evidencia. La lectura aislada contradicha queda en `hp_ocr_conflict`, sin
    modificar los PS ni generar daño/cura. No mezcla números de HUD separados.
@@ -128,7 +133,7 @@ lista para exportar. En esa misma versión, Archaludon osciló `0 → 9 → 0 �
 | --- | ---: | ---: | ---: | --- |
 | 1 | 169 → 91 | 55/55 | 32/32 | Golisopod conserva la parálisis observada; no hay cura de estado. |
 | 2 | 164 → 92 | 47/47 | 32/34 | Un falso Mega de Delphox apuntaba al slot de Indeedee; `3%` dos veces y `1%` una vez compiten con `28`, `28` y `44` en sus respectivos HUD. El autómata marca los tres sin cambiar PS. |
-| 3 | 150 → 84 | 44/46, diferencia intencional por Ilusión | 31/31 | El Kingambit inicial es Zoroark-Hisui disfrazado; rompe la Ilusión a 1 %, y después entra un Kingambit real. Su lectura posterior de 85 % queda con PS previos desconocidos. |
+| 3 | 150 → 84 | 44/46, diferencia intencional por Ilusión | 31/31 | El Kingambit inicial es Zoroark-Hisui disfrazado; rompe la Ilusión a 1 %, y después entra un Kingambit real. Justo antes de bajar a 85 %, su HUD muestra 93 %. |
 | 4 | 114 → 67 | 42/42 | 17/17 | Indeedee-F mantiene la parálisis. Un texto `can't use` sin acción identificable queda en revisión. |
 
 Los PS `1%` de Sneasler y `3%` de Delphox parecen recortes OCR de menor confianza,
@@ -143,9 +148,10 @@ Banda Focus (2882) y la pantalla dice que la Ilusión de Zoroark terminó
 (2893–2896). No salió un Pokémon nuevo en ese momento: todos esos sucesos
 pertenecen al **mismo Zoroark-Hisui**. Después se retira Zoroark (texto en
 2982) y se anuncia al **Kingambit real** (2988). Su primer PS observado es
-85 % después de Grassy Glide (3001); no hay lectura de sus PS al entrar, así
-que el daño queda en `review` por PS previos desconocidos, sin el falso salto
-de 1 % a 85 %. Kingambit cae en 3152; Zoroark vuelve en 3193 con su último
+85 % después de Grassy Glide (3001); no hay lectura de sus PS al entrar, pero
+el HUD muestra **93 % en el frame 3000**, antes del impacto. Ese daño se
+registra como 93 → 85 %, sin el falso salto de 1 % a 85 %. Kingambit cae en
+3152; Zoroark vuelve en 3193 con su último
 PS confirmado de 1 % y cae en 3282. Las dos diferencias de eventos con el
 replay archivado corresponden a la entrada inicial bajo la identidad falsa y
 al falso cambio que el replay inventó al romperse la Ilusión.
@@ -169,16 +175,16 @@ requerir una observación adicional o revisión visual.
 
 ## Tercer ZIP · 331e6e783c3e45a4
 
-El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 4**:
+El diagnóstico nuevo añade tres partidas. Sus avisos bajan de **13 a 2**:
 varias entradas tienen PS completos en pantalla antes de la primera acción,
 aunque el detector no los añadió al candidato. No se infieren PS máximos si
 el HUD sólo aparece después de un movimiento.
 
 | Partida | Candidatos → sucesos | Avisos antes → ahora | Orden frente al replay | Episodios de PS |
 | --- | ---: | ---: | ---: | ---: |
-| 1 | 154 → 83 | 2 → 1 | 50/50 | 30/30 |
+| 1 | 154 → 83 | 2 → 0 | 50/50 | 30/30 |
 | 2 | 102 → 58 | 2 → 0 | 37/37 | 18/18 |
-| 3 | 139 → 91 | 9 → 3 | 55/57 | 22/22 |
+| 3 | 139 → 91 | 9 → 2 | 55/57 | 22/22 |
 
 En la tercera partida, el identificador provisional `...p2_0003` designó
 primero a **Indeedee-F (Inwood) en p2b** y después a **Salamence (Farmingdale)
@@ -192,12 +198,14 @@ como `hp_rejected_reading`, junto con los PS persistentes de Inwood. El
 replay archivado nombró Indeedee-F a la primera entrada de Salamence y luego
 duplicó su entrada; de ahí las dos diferencias de eventos principales.
 
-Quedan tres avisos en esa batalla: frame 2527 (PS previos de Gardevoir no
-visibles), frame 2735 (PS de entrada de Indeedee leídos después de una
-acción), y frame 2736 (cambio de PS sin valor previo confirmado). La primera
-partida conserva un aviso similar en 586. En las **doce partidas**, los
-avisos bajan de **61 a 37** (primer ZIP: 28 → 20; segundo: 20 → 13;
-tercero: 13 → 4). Los **329 episodios de PS propuestos** tienen respaldo OCR
+En la primera partida, el `207/207` de Rillaboom en el frame 584 está en su
+HUD **antes** de que el golpe de Iron Head reduzca sus PS en 585–586; el daño
+queda establecido como 207 → 117 y ya no genera aviso. Lo mismo ocurre con
+Gardevoir en la tercera: `168/171` en 2525 antes de bajar a `113/171` en 2527.
+Quedan dos avisos en esa partida: frame 2735 (PS de entrada de Indeedee leídos
+después de una acción) y frame 2736 (cambio sin PS anteriores confirmados).
+En las **doce partidas**, los avisos bajan de **61 a 22** (primer ZIP: 28 → 13;
+segundo: 20 → 7; tercero: 13 → 2). Los **329 episodios de PS propuestos** tienen respaldo OCR
 en su HUD. Los avisos pendientes siguen visibles; estos datos aún no prueban
 que el replay final reproduzca fielmente el vídeo.
 
@@ -210,7 +218,7 @@ CHAMPIONS_DIAGNOSTIC_THIRD=/ruta/champions-diagnostics-331e6e783c3e45a4.zip \
 python3 -m unittest discover -s . -p 'test_champions_automaton.py' -v
 ```
 
-Veinte casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
+Veintidós casos pequeños cubren causalidad, PS, conflictos OCR, separación de HUD,
 megas asignadas al slot equivocado, identidades sin resolver y reentrada
 fantasma. Incluyen PS sin confirmar, porcentajes divididos, corrección
 corroborada del separador, el aislamiento del 0 % del HUD de un compañero y
