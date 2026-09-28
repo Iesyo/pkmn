@@ -79,6 +79,7 @@ class TraceContext:
     winner_evidence: dict[str, Any]
     teams: dict[str, tuple[str, ...]]
     team_evidence: dict[str, Any]
+    aliases: dict[str, dict[str, str]]
 
 
 def _team(value: object, label: str) -> tuple[str, ...] | None:
@@ -122,6 +123,7 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     if len(ends) != 1:
         raise ReplayEvidenceError("Hace falta un único cierre confirmado por Ledger.")
     players: dict[str, Counter[str]] = {"p1": Counter(), "p2": Counter()}
+    alias_votes: dict[str, dict[str, Counter[str]]] = {"p1": {}, "p2": {}}
     team_votes: dict[str, dict[tuple[str, ...], list[int]]] = {"p1": {}, "p2": {}}
     outcomes: list[tuple[int, str, float]] = []
     for raw in rows:
@@ -135,6 +137,10 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
             if isinstance(name, str) and name.strip() and name not in ("Player", "Rival"):
                 players[side][_atom(name, f"jugador {side}")] += 1
         detections = row.get("detections") or {}
+        for side in ("p1", "p2"):
+            for nickname, species in (row.get("resolved_aliases") or {}).get(side, {}).items():
+                if isinstance(nickname, str) and isinstance(species, str) and nickname and species:
+                    alias_votes[side].setdefault(nickname.casefold(), Counter())[species] += 1
         if detections.get("team_preview"):
             detected_teams = detections.get("teams") or {}
             for side in ("p1", "p2"):
@@ -156,7 +162,8 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     for frame, text, confidence in outcomes:
         win, loss = _WIN.fullmatch(text), _LOSS.fullmatch(text)
         opponent = (win or loss).group(1)
-        if opponent.casefold() == p2.casefold():
+        if opponent.casefold() == p2.casefold() or (
+                p2.casefold() == "trainer" and opponent.casefold() == "the trainer"):
             winners.add("p1" if win else "p2")
             valid.append((frame, text, confidence))
     if len(winners) != 1:
@@ -177,11 +184,13 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
         team_evidence[side] = evidence or {"source": "job.context.teams", "votes": 0, "frames": []}
     fmt = _atom((job.get("context") or {}).get("format"), "formato del diagnóstico")
     stamp = datetime.fromisoformat(_atom(job.get("created_at"), "fecha del diagnóstico"))
+    aliases = {side: {name: next(iter(votes)) for name, votes in alias_votes[side].items()
+                      if len(votes) == 1 and next(iter(votes.values())) >= 2} for side in ("p1", "p2")}
     return TraceContext(
         job_id=job_id, p1=p1, p2=p2, format=fmt, uploadtime=int(stamp.timestamp()),
         winner=p1 if "p1" in winners else p2,
         winner_evidence={"frame": source_frame, "text": source_text, "confidence": source_confidence},
-        teams=teams, team_evidence=team_evidence,
+        teams=teams, team_evidence=team_evidence, aliases=aliases,
     )
 
 
@@ -200,6 +209,7 @@ def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
 
 def _intermediate_baseline(
     event: dict[str, Any], move: dict[str, Any] | None, inferred: str,
+    aliases: dict[str, dict[str, str]],
 ) -> dict[str, Any] | None:
     """Reconoce un HUD tomado durante el golpe, posterior al comienzo del movimiento.
 
@@ -226,15 +236,17 @@ def _intermediate_baseline(
         return None
     slot = _slot(event.get("slot"))
     literal = f"{b}%" if slot.startswith("p2") else prior
-    # En esta primera regla sólo resolvemos motes que el mismo Ledger vincula
-    # sin ambigüedad a la especie. Una abreviatura o un apodo ajeno no valida
-    # el HUD del slot por el mero hecho de tener texto.
+    # El mote debe ser la especie o una identidad resuelta de modo único por
+    # la traza. Un apodo ajeno no valida el HUD sólo por contener texto.
     species_key = re.sub(r"[^a-z0-9]", "", str(event.get("species") or "").casefold())
     for evidence in baseline.get("evidence") or ():
         frame = evidence.get("frame")
-        nickname_key = re.sub(r"[^a-z0-9]", "", str(evidence.get("nickname") or "").casefold())
+        nickname = str(evidence.get("nickname") or "").casefold()
+        nickname_key = re.sub(r"[^a-z0-9]", "", nickname)
+        alias_key = re.sub(r"[^a-z0-9]", "", aliases[slot[:2]].get(nickname, "").casefold())
         if (isinstance(frame, int) and move_frame <= frame < end_frame
-                and evidence.get("text") == literal and nickname_key == species_key and species_key):
+                and evidence.get("text") == literal and species_key and
+                species_key in {nickname_key, alias_key}):
             return {
                 "ledger_seq": event["seq"], "causing_move_seq": move["seq"],
                 "inferred_entry": inferred, "intermediate": prior,
@@ -333,13 +345,30 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                                  if (isinstance(reading.get("frame"), int)
                                      and event.get("frame", 0) <= reading["frame"] < following.get("frame", 0)
                                      and reading.get("text") == observed)]
-                        if current == maximum and proof:
+                        nickname = str(proof[0].get("nickname") or "").casefold() if proof else ""
+                        observed_species = context.aliases[slot[:2]].get(nickname, nickname)
+                        same_actor = (re.sub(r"[^a-z0-9]", "", observed_species.casefold()) ==
+                                      re.sub(r"[^a-z0-9]", "", canonical.casefold()))
+                        if current == maximum and proof and same_actor:
                             hp_value = observed
                             inferred_entry_health.append({
                                 "ledger_seq": seq, "source": "first_confirmed_full_baseline",
                                 "health": observed, "hp_ledger_seq": following["seq"],
                                 "evidence": proof,
                             })
+                        elif proof and same_actor and following["kind"] == "damage" and 0 < current < maximum:
+                            after = _health(following.get("after"), f"PS finales {following['seq']}")
+                            move = moves_by_seq.get(following.get("cause"))
+                            if (int(after.split("/", 1)[0]) < current and
+                                    after.split("/", 1)[1] == observed.split("/", 1)[1] and
+                                    move and isinstance(move.get("frame"), int) and
+                                    event.get("logical_frame", event.get("frame", 0)) < move["frame"] <= proof[0]["frame"]):
+                                hp_value = f"{maximum}/{maximum}"
+                                inferred_entry_health.append({
+                                    "ledger_seq": seq, "source": "inferred_full_before_first_damage",
+                                    "health": hp_value, "hp_ledger_seq": following["seq"],
+                                    "causing_move_seq": move["seq"], "evidence": proof,
+                                })
                     break
             hp = _health(hp_value, f"cambio {seq}")
             if actor in known_hp and known_hp[actor] != hp:
@@ -359,7 +388,10 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             slot, identifier = actor_at(event)
             form = _atom(event.get("species"), f"forma Mega {seq}")
             base = known_species[active[slot]]
-            if not form.startswith(base + "-Mega"):
+            form_base = base.split("-", 1)[0]
+            canonical_form = (actors.get(active[slot]) or {}).get("forme")
+            if not (form.startswith(base + "-Mega") or
+                    (canonical_form == form and form.startswith(form_base + "-Mega"))):
                 raise ReplayEvidenceError(f"La Mega en {seq} no pertenece al actor activo.")
             stone = _atom(event.get("value"), f"piedra de la Mega {seq}")
             known_formes[active[slot]] = form
@@ -386,7 +418,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             prior = _health(event.get("before"), f"PS previos {seq}")
             result = _health(event.get("after"), f"PS finales {seq}")
             if prior != known_hp[actor]:
-                bridge = (_intermediate_baseline(event, moves_by_seq.get(event.get("cause")), known_hp[actor])
+                bridge = (_intermediate_baseline(event, moves_by_seq.get(event.get("cause")), known_hp[actor], context.aliases)
                           if hp_source[actor] == "inferred_entry" else None)
                 if bridge:
                     intermediate_baselines.append(bridge)
