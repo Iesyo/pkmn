@@ -57,6 +57,62 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"), "Requiere ZIP de Trick Room")
+    def test_137129_replay_only_removes_two_duplicate_room_starts(self):
+        from champions_automaton import BattleAutomaton, read_diagnostic, read_diagnostic_context
+
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, [r for r in rows if r["battle_index"] == 0],
+                                 read_diagnostic_context(path)).run()
+        context = load_trace_context(path, ledger)
+        replay = build_replay(ledger, context)
+        with zipfile.ZipFile(path) as archive:
+            old = archive.read("output/replay.log").decode().splitlines()
+            old_ledger = json.loads(archive.read("output/ledger-battle-001.json"))
+        with self.assertRaisesRegex(ReplayEvidenceError, "Inicio duplicado de Trick Room"):
+            build_replay(old_ledger, context)
+        expected = []
+        starts = 0
+        for line in old:
+            if line == "|-fieldstart|move: Trick Room":
+                starts += 1
+                if starts > 1:
+                    continue
+            expected.append(line)
+        self.assertEqual(starts, 3)
+        self.assertEqual(replay["log"].splitlines(), expected)
+
+    def test_trick_room_state_rejects_duplicates_and_accepts_reactivation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+
+            def with_room(transitions):
+                changed = copy.deepcopy(battle)
+                changed["events"][-1]["seq"] += len(transitions)
+                changed["events"][-1:-1] = [
+                    {"seq": 9 + i, "kind": kind, "value": value, "status": "consistent"}
+                    for i, (kind, value) in enumerate(transitions)]
+                return changed
+
+            result = build_replay(with_room([
+                ("fieldstart", "Trick Room"), ("fieldend", "move: Trick Room"),
+                ("fieldstart", "move: Trick Room"), ("fieldend", "Trick Room"),
+            ]), context)
+            lines = [line for line in result["log"].splitlines() if "Trick Room" in line]
+            self.assertEqual(lines, ["|-fieldstart|move: Trick Room", "|-fieldend|move: Trick Room"] * 2)
+            for transitions in [
+                [("fieldstart", "move: Trick Room"), ("fieldstart", "Trick Room")],
+                [("fieldend", "move: Trick Room")],
+                [("fieldstart", "Trick Room"), ("fieldend", "Trick Room"), ("fieldend", "Trick Room")],
+            ]:
+                with self.subTest(transitions=transitions), self.assertRaisesRegex(ReplayEvidenceError, "Trick Room"):
+                    build_replay(with_room(transitions), context)
+            # No automatic end at the winner: only observed transitions are emitted.
+            active = build_replay(with_room([("fieldstart", "Trick Room")]), context)
+            self.assertNotIn("|-fieldend|", active["log"])
+
     def test_hp_checkpoint_verifies_current_state_without_protocol_line(self):
         with tempfile.TemporaryDirectory() as temp:
             battle, zip_path = _pilot_fixture(Path(temp))
