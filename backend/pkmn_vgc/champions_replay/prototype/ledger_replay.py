@@ -13,6 +13,7 @@ import html
 import json
 import re
 import zipfile
+from collections.abc import Iterable, Mapping
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -122,10 +123,18 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     """Lee identidad, rosters y resultado de esta batalla, nunca el replay viejo."""
     with zipfile.ZipFile(diagnostic) as archive:
         job = json.loads(archive.read("job.json"))
-        rows = archive.read("output/ocr.trace.jsonl").splitlines()
+        rows = [json.loads(raw) for raw in archive.read("output/ocr.trace.jsonl").splitlines() if raw.strip()]
     job_id = _atom(job.get("id"), "ID del diagnóstico")
     if job_id not in diagnostic.name:
         raise ReplayEvidenceError("El ID del diagnóstico no corresponde al ZIP.")
+    return build_trace_context(job, rows, battle)
+
+
+def build_trace_context(
+    job: Mapping[str, Any], rows: Iterable[dict[str, Any]], battle: dict[str, Any],
+) -> TraceContext:
+    """Misma evidencia para el job local y el diagnóstico descargado."""
+    job_id = _atom(job.get("id"), "ID del diagnóstico")
     index = battle.get("battle_index")
     if not isinstance(index, int) or index < 0:
         raise ReplayEvidenceError("Ledger no identifica la batalla de la traza.")
@@ -140,8 +149,7 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     alias_votes: dict[str, dict[str, Counter[str]]] = {"p1": {}, "p2": {}}
     team_votes: dict[str, dict[tuple[str, ...], list[int]]] = {"p1": {}, "p2": {}}
     outcomes: list[tuple[int, str, float]] = []
-    for raw in rows:
-        row = json.loads(raw)
+    for row in rows:
         frame = row.get("frame")
         if row.get("battle_index") != index or not isinstance(frame, int) or not bounds[0] <= frame <= bounds[1]:
             continue
