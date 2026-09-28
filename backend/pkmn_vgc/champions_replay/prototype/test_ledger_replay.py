@@ -151,6 +151,54 @@ class LedgerReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos"):
                 build_replay(battle, context)
 
+    def test_reentrada_mega_y_sucesos_de_objeto_y_retroceso(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            battle["actors"]["p1-three"] = {"species": "Kingambit"}
+            battle["events"][-1]["seq"] = 14
+            battle["events"][-1]["frame"] = 12
+            battle["events"][-1:-1] = [
+                {"seq": 9, "kind": "enditem", "status": "consistent", "slot": "p1b",
+                 "actor_id": "p1-two", "value": "Sitrus Berry"},
+                {"seq": 10, "kind": "cant", "status": "consistent", "slot": "p1a",
+                 "actor_id": "p1-one", "value": "flinch"},
+                {"seq": 11, "kind": "mega", "status": "consistent", "slot": "p1a",
+                 "actor_id": "p1-one", "species": "Blaziken-Mega", "value": "Blazikenite"},
+                {"seq": 12, "kind": "switch", "status": "consistent", "slot": "p1a",
+                 "actor_id": "p1-three", "species": "Kingambit", "health": "100/100"},
+                {"seq": 13, "kind": "switch", "status": "consistent", "slot": "p1a",
+                 "actor_id": "p1-one", "species": "Blaziken-Mega", "health": None},
+            ]
+            document = build_replay(battle, context)
+            lines = document["log"].splitlines()
+            self.assertIn("|-enditem|p1b: Indeedee-F|Sitrus Berry", lines)
+            self.assertIn("|cant|p1a: Blaziken|flinch", lines)
+            self.assertIn("|switch|p1a: Blaziken|Blaziken-Mega, L50|156/156", lines)
+            self.assertEqual(document["ledger_source"]["inferred_entry_health"], [
+                {"ledger_seq": 13, "source": "last_known_health", "health": "156/156",
+                 "ledger_last_confirmed_health": None}])
+
+    def test_primera_entrada_inferida_exige_hud_confirmado_al_maximo(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            battle["events"][0].update(health=None, hp_state="inferred")
+            battle["events"][-1]["seq"] = 10
+            battle["events"].insert(-1, {
+                "seq": 9, "kind": "damage", "status": "consistent", "slot": "p1a",
+                "actor_id": "p1-one", "before": "156/156", "after": "100/156",
+                "health": "100/156", "hp_state": "confirmed", "frame": 9,
+                "hp_baseline": {"state": "confirmed", "evidence": [
+                    {"frame": 8, "text": "156/156", "nickname": "blaziken"}]},
+            })
+            document = build_replay(battle, context)
+            self.assertIn("|switch|p1a: Blaziken|Blaziken, L50|156/156", document["log"])
+            self.assertEqual(document["ledger_source"]["inferred_entry_health"][0]["hp_ledger_seq"], 9)
+            battle["events"][-2]["hp_baseline"]["state"] = "unconfirmed"
+            with self.assertRaisesRegex(ReplayEvidenceError, "cambio 1 no tiene PS completos"):
+                build_replay(battle, context)
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
                          "requiere el diagnóstico y el JSON real de f7af/01")
     def test_partida_real_f7af_01(self):
