@@ -364,6 +364,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     end_seen = False
     event_lines: list[dict[str, int]] = []
     side_conditions: dict[tuple[str, str], dict[str, Any]] = {}
+    trick_room_active = False
     previous_event: dict[str, Any] | None = None
 
     def actor_at(event: dict[str, Any]) -> tuple[str, str]:
@@ -585,7 +586,15 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 raise ReplayEvidenceError(f"Fallo con objetivo del mismo bando en suceso {seq}.")
             lines.append(f"|-miss|{source}|{target}: {known_species[active[target]]}")
         elif kind in ("fieldstart", "fieldend", "weather"):
-            lines.append(f"|-{kind}|{_atom(event.get('value'), f'efecto {seq}')}")
+            effect = _atom(event.get("value"), f"efecto {seq}")
+            if kind in ("fieldstart", "fieldend") and effect.removeprefix("move: ") == "Trick Room":
+                if kind == "fieldstart" and trick_room_active:
+                    raise ReplayEvidenceError(f"Inicio duplicado de Trick Room en suceso {seq}.")
+                if kind == "fieldend" and not trick_room_active:
+                    raise ReplayEvidenceError(f"Fin de Trick Room sin inicio activo en suceso {seq}.")
+                trick_room_active = kind == "fieldstart"
+                effect = "move: Trick Room"
+            lines.append(f"|-{kind}|{effect}")
         elif kind == "sidestart":
             slot, _ = actor_at(event)
             effect = _atom(event.get("value"), f"condición lateral {seq}")
