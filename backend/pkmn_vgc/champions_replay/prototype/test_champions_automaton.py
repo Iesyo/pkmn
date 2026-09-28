@@ -2605,6 +2605,47 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((repeat["kind"], repeat["status"]), ("heal", "suppressed"))
         self.assertEqual((damage["before"], damage["after"], damage["cause"]),
                          ("100/100", "68/100", 36))
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_B3F7"), "Requiere diagnóstico b3f7")
+    def test_pelipper_y_archaludon_conservan_actor_y_ps(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_B3F7"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        ledger = BattleAutomaton(0, frames, context).run()
+        self.assertFalse(ledger["issues"])
+        self.assertEqual([(item["code"], item["frame"]) for item in ledger["resolved_issues"]],
+                         [("ghost_reentry_after_faint", 1070),
+                          ("faint_text_unconfirmed", 477), ("reentry_without_exit", 488)])
+        faint = next(e for e in ledger["events"] if e["frame"] == 477)
+        entry = next(e for e in ledger["events"] if e["frame"] == 488)
+        heal = next(e for e in ledger["events"] if e["frame"] == 489)
+        self.assertEqual((faint["status"], faint["resolution"]["slot"]), ("suppressed", "p2b"))
+        self.assertEqual((entry["status"], entry["resolution"]["event_seq"]),
+                         ("suppressed", heal["seq"]))
+        self.assertEqual((heal["before"], heal["after"]), ("6/100", "12/100"))
+        self.assertIn((488, "9%"), [(proof["frame"], proof["text"])
+                                       for proof in entry["resolution"]["evidence"]])
+
+        # The full repeated faint is required to reject the damaged reading.
+        one_announcement = copy.deepcopy(frames)
+        for row in one_announcement:
+            if row["frame"] == 476:
+                row["ocr"] = [line for line in row["ocr"]
+                              if line.get("text") != "The opposing Pelipper fainted!"]
+        uncertain = BattleAutomaton(0, one_announcement, context).run()
+        self.assertIn("faint_text_unconfirmed", {item["code"] for item in uncertain["issues"]})
+
+        # The intermediate percentage must be literal, with no return announced.
+        for mutate in ("missing_middle", "announced_entry"):
+            altered = copy.deepcopy(frames)
+            for row in altered:
+                if mutate == "missing_middle" and row["frame"] == 488:
+                    row["ocr"] = [line for line in row["ocr"] if line.get("text") != "9%"]
+                if mutate == "announced_entry" and row["frame"] == 487:
+                    row["ocr"].append({"text": "Dragonsbane sent out Archaludon!",
+                                       "confidence": .999, "left": .15, "top": .75})
+            uncertain = BattleAutomaton(0, altered, context).run()
+            self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
+
 
 
 if __name__ == "__main__":
