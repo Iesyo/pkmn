@@ -95,6 +95,46 @@ def faint_hud_trace(same_frame=False):
     return trace
 
 
+def opponent_menu_hud_trace():
+    """The p2a percentage reappears while p2b stays occupied after a menu."""
+    raw = "__champions_actor_p2_0001__"
+    trace = [frame(n) for n in range(1, 25)]
+    trace[0]["detections"]["events"] = [event("switch", "p2a", "Hatterene", "100/100"),
+                                         event("switch", "p2b", "Indeedee-F", "100/100"),
+                                         event("turn", turn=1)]
+    trace[1]["detections"]["events"] = [event("damage", "p2a", "Hatterene", "73/100")]
+    trace[2]["detections"]["events"] = [event("damage", "p2b", "Indeedee-F", "0/100")]
+    trace[3]["detections"]["events"] = [event("faint", "p2b", "Indeedee-F")]
+    trace[5]["detections"]["events"] = [event("switch", "p2b", "Baxcalibur", "100/100")]
+    trace[8]["detections"]["events"] = [event("move", "p2b", "Baxcalibur", move="Protect")]
+    trace[11]["detections"]["events"] = [event("switch", "p2b", raw, "73/100")]
+    trace[17]["detections"]["events"] = [event("switch", "p2b", "Baxcalibur", "100/100")]
+    for row in trace:
+        n = row["frame"]
+        for detected in row["detections"]["events"]:
+            detected.update(timestamp_ms=n * 500, source_frame=n - 1)
+        row["resolved_aliases"]["p2"].update({"waistis": "Hatterene", "ringo": "Indeedee-F"})
+        row["resolved_identities"][raw] = "Indeedee-F"
+        row["ocr"] = []
+        for slot, name, hp, x in (("p2a", "Waistis", "100%" if n == 1 else "73%", .63),
+                                  ("p2b", "Ringo" if n <= 4 else "Baxcalibur",
+                                   "0%" if n in (3, 4) else "100%", .83)):
+            if slot == "p2b" and n == 5:
+                continue
+            row["ocr"].extend([{"text": name, "confidence": .999, "left": x,
+                                "right": x + .08, "top": .05, "bottom": .09},
+                               {"text": hp, "confidence": .999,
+                                "left": .70 if slot == "p2a" else .92,
+                                "right": .75 if slot == "p2a" else .97,
+                                "top": .12, "bottom": .16}])
+        if n in (4, 5):
+            row["ocr"].append({"text": "The opposing Ringo fainted!", "top": .75,
+                               "confidence": .999})
+        if n == 18:
+            row["ocr"].append({"text": "MOVE TIME", "top": .28, "confidence": .999})
+    return trace
+
+
 def returning_hud_trace(species="Kingambit", name="Kingambit"):
     raw = "__champions_actor_p2_0001__"
     partial = name[:-1].casefold()
@@ -1319,6 +1359,56 @@ class TemporalAutomatonTests(unittest.TestCase):
                           if x["kind"] == "switch" and x["status"] == "consistent"],
                          ["Rillaboom", "Blaziken"])
         self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+
+    def test_opponent_menu_hud_uses_both_named_slots_and_keeps_real_entries(self):
+        trace = opponent_menu_hud_trace()
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertFalse([i for i in ledger["issues"] if i["frame"] in (12, 18)])
+        resolved = {i["frame"]: i for i in ledger["resolved_issues"]}
+        self.assertEqual(set(resolved), {12, 18})
+        self.assertEqual({e["kind"] for e in resolved[12]["resolution"]["evidence"]},
+                         {"hud_name", "hud_hp"})
+        self.assertEqual([e["species"] for e in ledger["events"]
+                          if e["kind"] == "switch" and e["status"] == "consistent" and e["slot"] == "p2b"],
+                         ["Indeedee-F", "Baxcalibur"])
+        for change in ("other_hp", "missing_name", "entry_announcement", "duplicate_announcement"):
+            with self.subTest(change=change):
+                altered = copy.deepcopy(trace)
+                if change == "other_hp":
+                    for row in altered:
+                        if 12 <= row["frame"] <= 16:
+                            row["ocr"] = [line for line in row["ocr"] if line.get("text") != "73%"]
+                elif change == "missing_name":
+                    for row in altered:
+                        if 12 <= row["frame"] <= 16:
+                            row["ocr"] = [line for line in row["ocr"] if line.get("text") != "Baxcalibur"]
+                elif change == "entry_announcement":
+                    altered[11]["ocr"].append({"text": "Rival sent out Ringo!", "top": .75, "confidence": 1})
+                else:
+                    altered[17]["ocr"].append({"text": "Rival sent out Baxcalibur!", "top": .75,
+                                                "confidence": 1})
+                issues = BattleAutomaton(0, altered).run()["issues"]
+                expected = 18 if change == "duplicate_announcement" else 12
+                self.assertTrue(any(i["frame"] == expected for i in issues), change)
+
+    def test_local_effect_source_wins_when_placeholder_is_reused_later(self):
+        raw = "__champions_actor_p2_0001__"
+        trace = [frame(1, [event("switch", "p2a", "Hatterene", "100/100"),
+                           event("switch", "p2b", "Indeedee-F", "100/100"), event("turn", turn=1)]),
+                 frame(2, [event("move", "p2a", "Hatterene", move="Trick Room")]),
+                 frame(3, [event("fieldstart", value="move: Trick Room")]), frame(4)]
+        trace[2]["detections"]["events"][0]["tags"] = [f"[of] p2a: {raw}"]
+        for row in trace[:3]:
+            row["resolved_identities"][raw] = "Hatterene"
+        trace[3]["resolved_identities"][raw] = "Indeedee-F"
+        ledger = BattleAutomaton(0, trace).run()
+        source = next(e for e in ledger["events"] if e["kind"] == "fieldstart")
+        self.assertEqual(source["tags"], ["[of] p2a: Hatterene"])
+        self.assertEqual(source["raw_tags"], [f"[of] p2a: {raw}"])
+        trace[2]["resolved_identities"][raw] = "Indeedee-F"
+        untrusted = BattleAutomaton(0, trace).run()
+        source = next(e for e in untrusted["events"] if e["kind"] == "fieldstart")
+        self.assertEqual(source["tags"], [f"[of] p2a: {raw}"])
 
     def test_lingering_faint_hud_resolves_ghost_entry_with_evidence(self):
         ledger = BattleAutomaton(0, faint_hud_trace()).run()
