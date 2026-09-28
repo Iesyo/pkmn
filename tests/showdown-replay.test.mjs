@@ -107,6 +107,114 @@ test("imports a replay reconstructed from Pokémon Champions video", async () =>
   assert.match(match.warnings.join(" "), /rating final/);
 });
 
+const megaOwnTeam = ["Indeedee-F", "Gardevoir", "Basculegion", "Rillaboom", "Blaziken", "Kingambit"];
+const megaRivalTeam = ["Indeedee", "Armarouge", "Raichu", "Arcanine-Hisui", "Sneasler", "Absol"];
+const megaReentryLog = [
+  "|player|p1|Roku",
+  "|player|p2|Rival",
+  ...megaOwnTeam.map((species) => `|poke|p1|${species}, L50|`),
+  ...megaRivalTeam.map((species) => `|poke|p2|${species}, L50|`),
+  "|start",
+  "|switch|p1a: Blaze|Blaziken, L50|156/156",
+  "|switch|p1b: Support|Indeedee-F, L50|177/177",
+  "|switch|p2a: Chu|Raichu, L50|100/100",
+  "|switch|p2b: Armor|Armarouge, L50|100/100",
+  "|turn|1",
+  "|move|p1a: Blaze|Close Combat|p2a: Chu",
+  "|detailschange|p1a: Blaze|Blaziken-Mega, L50",
+  "|-mega|p1a: Blaze|Blazikenite",
+  "|detailschange|p2a: Chu|Raichu-Mega-Y, L50",
+  "|move|p1a: Blaze|Detect|p1a: Blaze",
+  "|move|p2a: Chu|Protect|p2a: Chu",
+  "|turn|2",
+  "|switch|p1a: King|Kingambit, L50|177/177",
+  "|switch|p2a: Support|Indeedee, L50|100/100",
+  "|turn|3",
+  "|switch|p1b: Blaze|Blaziken-Mega, L50|156/156",
+  "|switch|p2b: Chu|Raichu-Mega-Y, L50|100/100",
+  "|move|p1b: Blaze|Rock Tomb|p2a: Support",
+  "|move|p2b: Chu|Zap Cannon|p1a: King",
+  "|turn|4",
+  "|switch|p1b: Fish|Basculegion, L50|219/219",
+  "|switch|p2b: Dog|Arcanine-Hisui, L50|100/100",
+  "|move|p1b: Fish|Wave Crash|p2b: Dog",
+  "|move|p2b: Dog|Head Smash|p1b: Fish",
+  "|win|Rival",
+].join("\n");
+
+for (const ownSide of ["p1", "p2"]) {
+  test(`keeps four distinct picks and all moves after Mega reentry, viewed from ${ownSide}`, async () => {
+    const { importShowdownReplay } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+    const picks = {
+      p1: ["Blaziken", "Indeedee-F", "Kingambit", "Basculegion"],
+      p2: ["Raichu", "Armarouge", "Indeedee", "Arcanine-Hisui"],
+    };
+    const moves = {
+      p1: { Blaziken: ["Close Combat", "Detect", "Rock Tomb"], "Indeedee-F": [], Kingambit: [], Basculegion: ["Wave Crash"] },
+      p2: { Raichu: ["Protect", "Zap Cannon"], Armarouge: [], Indeedee: [], "Arcanine-Hisui": ["Head Smash"] },
+    };
+    const otherSide = ownSide === "p1" ? "p2" : "p1";
+    const document = { log: megaReentryLog, inputlog: "" };
+    const match = importShowdownReplay(document, {
+      replayUrl: "",
+      showdownNames: [ownSide === "p1" ? "Roku" : "Rival"],
+      teamSpecies: ownSide === "p1" ? megaOwnTeam : megaRivalTeam,
+      origin: "champions",
+      replayArtifact: document,
+    });
+
+    assert.deepEqual(match.selected, picks[ownSide]);
+    assert.deepEqual(match.lead, picks[ownSide].slice(0, 2));
+    assert.deepEqual(match.movesUsed, moves[ownSide]);
+    assert.deepEqual(match.opponentPicks, picks[otherSide]);
+    assert.deepEqual(match.opponentSelected, ownSide === "p1" ? megaRivalTeam : megaOwnTeam);
+    assert.equal(match.replayArtifact.log, megaReentryLog);
+  });
+}
+
+test("normalizes Mega X, Y and Z while preserving gender and regional forms", async () => {
+  const { importShowdownReplay } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  for (const [base, mega, otherForm] of [
+    ["Raichu", "Raichu-Mega-X", "Raichu-Alola"],
+    ["Raichu", "Raichu-Mega-Y", "Raichu-Alola"],
+    ["Garchomp", "Garchomp-Mega-Z", "Arcanine-Hisui"],
+    ["Meowstic-M", "Meowstic-M-Mega", "Meowstic-F"],
+    ["Meganium", "Meganium-Mega", "Indeedee-F"],
+  ]) {
+    const team = [base, otherForm, "Kingambit", "Basculegion", "Rillaboom", "Gardevoir"];
+    const match = importShowdownReplay({ log: [
+      "|player|p1|Roku", "|player|p2|Rival",
+      // Some public previews already name the Mega form.
+      ...[mega, ...team.slice(1)].map((species) => `|poke|p1|${species}, L50|`),
+      "|start",
+      `|switch|p1a: Lead|${base}, L50|100/100`,
+      `|switch|p1b: Partner|${otherForm}, L50|100/100`,
+      "|turn|1",
+      "|switch|p1a: King|Kingambit, L50|100/100",
+      `|drag|p1b: Lead|${mega}, L50|100/100`,
+      "|switch|p1a: Fish|Basculegion, L50|100/100",
+      "|win|Roku",
+    ].join("\n") }, { replayUrl: "", showdownNames: ["Roku"], teamSpecies: team });
+
+    assert.deepEqual(match.selected, team.slice(0, 4), mega);
+    assert.deepEqual(match.lead, team.slice(0, 2), mega);
+    assert.deepEqual(Object.keys(match.movesUsed), team.slice(0, 4), mega);
+  }
+});
+
+test("preserves explicit team choices and merges moves across Mega reentries", async () => {
+  const { importShowdownReplay } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const match = importShowdownReplay({
+    log: megaReentryLog,
+    inputlog: ">p1 team 5163\n>p2 team 3214",
+  }, { replayUrl: "", showdownNames: ["Roku"], teamSpecies: megaOwnTeam });
+
+  assert.deepEqual(match.selected, ["Blaziken", "Indeedee-F", "Kingambit", "Basculegion"]);
+  assert.deepEqual(match.opponentPicks, ["Raichu", "Armarouge", "Indeedee", "Arcanine-Hisui"]);
+  assert.deepEqual(match.movesUsed.Blaziken, ["Close Combat", "Detect", "Rock Tomb"]);
+  assert.deepEqual(match.movesUsed.Basculegion, ["Wave Crash"]);
+});
+
 test("surfaces the backend's review_capture issues on match.issues, structured", async () => {
   // Roku, revisión del tercer corte, 26 sep: aplanar a texto perdía
   // severidad/alternativas -esto confirma que `match.issues` conserva la
@@ -199,7 +307,8 @@ test("falls back to the saved roster and public switches when inputlog is absent
     Pelipper: ["Tailwind"],
     Sinistcha: ["Matcha Gotcha"],
   });
-  assert.match(match.warnings.join(" "), /cuatro picks/);
+  assert.match(match.warnings.join(" "), /3\/4 picks propios/);
+  assert.match(match.warnings.join(" "), /2\/4 picks rivales/);
 });
 
 test("imports the trainer on p2 and removes Showdown's hidden-form marker", async () => {
