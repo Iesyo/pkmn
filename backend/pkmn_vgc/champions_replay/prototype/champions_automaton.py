@@ -2336,6 +2336,54 @@ class BattleAutomaton:
             self.hp_order.append(key)
         pending.candidates.append(candidate)
 
+    def _move_menu_label_evidence(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """A short OCR fragment is a move label only within the corroborated menu."""
+        number = candidate["observed_frame"]
+        row = self.frame_lookup.get(number, {})
+        value = str(candidate["event"].get("value") or "").strip()
+        if not value or len(value.split()) > 4 or not re.fullmatch(r"[\w\s'’-]+", value):
+            return None
+
+        def has_label(source: dict[str, Any], label: str) -> bool:
+            return any(str(line.get("text", "")).strip().casefold() == label and
+                       line.get("confidence", 0) >= .95 for line in source.get("ocr", ()))
+
+        if not all(has_label(row, label) for label in ("battle info", "move time", "close")):
+            return None
+        if not any(has_label(self.frame_lookup.get(number - step, {}), "move info")
+                   for step in (1, 2)):
+            return None
+        source = next((line for line in row.get("ocr", ())
+                       if str(line.get("text", "")).strip() == value and
+                       line.get("confidence", 0) >= .9 and
+                       .4 <= line.get("top", -1) <= .55 and
+                       .5 <= line.get("left", -1) <= .85), None)
+        if source is None:
+            return None
+        support: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+        for later in range(number + 1, number + 5):
+            next_row = self.frame_lookup.get(later, {})
+            if (not next_row or next_row["timestamp_ms"] - row["timestamp_ms"] > 2_000 or
+                    next_row.get("detections", {}).get("events") or
+                    not all(has_label(next_row, label) for label in ("battle info", "move time", "close"))):
+                continue
+            for line in next_row.get("ocr", ()):
+                label = str(line.get("text", "")).strip()
+                if (line.get("confidence", 0) < .95 or
+                        abs(line.get("top", -1) - source["top"]) > .03 or
+                        abs(line.get("left", -1) - source["left"]) > .03 or
+                        difflib.SequenceMatcher(None, value.casefold(), label.casefold()).ratio() < .88):
+                    continue
+                support[label.casefold()].append({"frame": later, "text": label,
+                                                   "confidence": line["confidence"]})
+        confirmed = next((items for items in support.values()
+                          if len({item["frame"] for item in items}) >= 2), None)
+        if not confirmed:
+            return None
+        return {"source": "move_info_panel", "menu_frame": number,
+                "ocr": [{"frame": number, "text": value, "confidence": source["confidence"]},
+                        *confirmed], "ui_cues": ["Battle Info", "Move Info", "MOVE TIME", "Close"]}
+
     def _handle(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
         kind = event["kind"]
@@ -2379,6 +2427,12 @@ class BattleAutomaton:
             value = str(event.get("value") or "")
             row = self.frame_lookup.get(candidate["observed_frame"], {})
             menu_labels = {line.get("text", "").casefold() for line in row.get("ocr", ())}
+            if support := self._move_menu_label_evidence(candidate):
+                item = self._append(candidate, kind="ui_text", status="suppressed",
+                                    note="Etiqueta del menú de movimientos, confirmada por OCR posterior; no fue una acción.")
+                item["evidence"] = support["ocr"]
+                item["ui_support"] = support
+                return
             if ("move time" in menu_labels or "battle info" in menu_labels) and (
                 "has no energy left to battle!" in value.casefold() or
                 "can't use its sealed" in value.casefold()
