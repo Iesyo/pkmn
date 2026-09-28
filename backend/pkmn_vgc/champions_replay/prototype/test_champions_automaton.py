@@ -2647,6 +2647,36 @@ class TemporalAutomatonTests(unittest.TestCase):
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_7F41"), "Requiere diagnóstico 7f41")
+    def test_7f41_recovers_named_lethal_hp_and_nickname_withdrawals(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_7F41"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        ledger = BattleAutomaton(0, frames, context).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual([e["frame"] for e in ledger["events"] if e["kind"] == "damage" and
+                          e["slot"] == "p2b" and e["after"] == "0/100" and e["frame"] < 609], [602])
+        damage = next(e for e in ledger["events"] if e["kind"] == "damage" and e["frame"] == 602)
+        self.assertEqual((damage["before"], damage["after"], damage["cause"]),
+                         ("100/100", "0/100", 42))
+        self.assertEqual([i["frame"] for i in ledger["resolved_issues"] if
+                          i["code"] == "unclassified_text"], [543, 928])
+
+        no_zero_repeat = copy.deepcopy(frames)
+        for row in no_zero_repeat:
+            if row["frame"] == 603:
+                row["ocr"] = [line for line in row["ocr"] if line.get("text") != "0%"]
+        uncertain = BattleAutomaton(0, no_zero_repeat, context).run()
+        self.assertFalse(any(e["kind"] == "damage" and e["frame"] == 602
+                             for e in uncertain["events"]))
+
+        no_withdrawal_repeat = copy.deepcopy(frames)
+        for row in no_withdrawal_repeat:
+            if row["frame"] in (544, 545):
+                row["ocr"] = [line for line in row["ocr"] if "withdrew Kaiju!" not in line.get("text", "")]
+        uncertain = BattleAutomaton(0, no_withdrawal_repeat, context).run()
+        self.assertIn(543, [i["frame"] for i in uncertain["issues"] if i["code"] == "unclassified_text"])
+
 
 if __name__ == "__main__":
     unittest.main()
