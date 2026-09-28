@@ -23,6 +23,59 @@ flowchart TD
 
 ## Ruta implementada
 
+### Motor web vigente: Champions Ledger (28 sep 2026)
+
+La carga y reanálisis de vídeos de la aplicación usan ahora esta ruta:
+
+1. Un recorrido OCR secuencial conserva `output/ocr.trace.jsonl`. La captura
+   separa batallas y espera los aliases/Team Preview pendientes, sin pedir al
+   ensamblador de COL-102 que apruebe o reconstruya una batalla.
+2. `champions_replay/ledger_pipeline.py` ejecuta `BattleAutomaton` para cada
+   índice original de batalla. Guarda `ledger-battle-NNN.json` y su cronología
+   `.md`, incluidos los avisos y su evidencia.
+3. El puente `prototype/ledger_replay.py` corrobora jugadores, equipos y
+   ganador desde la misma traza y el contexto del job. Sólo emite el replay
+   cuando ambos autómatas pasan; no consulta replays anteriores como verdad.
+4. El documento canónico recibe `reconciliation_version: champions-ledger-v1`
+   y conserva `ledger_source` y `source_battle_index`. El guardado de Teams
+   vuelve a buscar ese documento en el job antes de derivar sus estadísticas.
+
+`ledger-report.json` relaciona los índices originales con los números de
+replay y detalla qué batallas están listas o bloqueadas. Una batalla bloqueada
+no impide exportar las siguientes. Si ninguna pasa, el job termina en error
+con su diagnóstico disponible; nunca recurre automáticamente al generador
+anterior. No hay relectura densa automática.
+
+**Descargar diagnóstico** conserva `job.json`, la traza, los Ledger JSON/MD,
+el informe, los errores y los replays JSON/LOG/HTML. Incluye también las
+corridas archivadas en `output/history/`; nunca incluye el vídeo. Antes de
+reanálisis se archivan todos los archivos de la corrida actual. Para reproducir
+un problema descargado se siguen usando los dos comandos independientes:
+
+```bash
+python backend/pkmn_vgc/champions_replay/prototype/champions_automaton.py --diagnostic champions-diagnostics-JOB.zip --out revision
+python backend/pkmn_vgc/champions_replay/prototype/ledger_replay.py --ledger revision/battle-01.json --diagnostic champions-diagnostics-JOB.zip --out revision/replay
+```
+
+Los módulos anteriores se conservan como referencia: `pipeline.py`,
+`showdown.py`, `reconcile.py` y `_legacy_processor` en `champions_jobs.py`.
+La escritura de archivos y el visor de `showdown.py` siguen reutilizándose;
+su ensamblador anterior ya no genera los replays del job web. Los subcomandos
+históricos del CLI (`video`, `live`, `trace`, `events`, `verify`, `reconcile`)
+siguen disponibles para investigación y comparación. Los replays guardados
+de COL-102 r11/r12 mantienen su compatibilidad, sin atribuirles una corrida
+de Ledger. La corrección de identidad Mega se aplica al importar partidas.
+
+Tras actualizar `desarrollo`, reinicia `npm.cmd run dev` y el servicio Python
+si lo ejecutas por separado. Los jobs ya terminados conservan sus salidas;
+**Reanalizar vídeo** usa el motor nuevo sin volver a subir la grabación.
+
+### Arquitectura anterior conservada como referencia
+
+Los detalles siguientes describen la captura y ensamblado original de COL-102
+y sus herramientas CLI. Para la generación web vigente aplica la ruta de
+Ledger indicada arriba.
+
 - `ChampionsOcrDetector` usa RapidOCR y ONNX Runtime localmente. Lee el HUD y
   los mensajes en inglés, corrige errores comunes de HP, reconcilia nombres con
   el Pokédex incluido y produce eventos deterministas.
