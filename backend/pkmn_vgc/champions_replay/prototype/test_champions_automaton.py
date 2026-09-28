@@ -893,6 +893,55 @@ class TemporalAutomatonTests(unittest.TestCase):
                          ["ui_text", "ui_text"])
         self.assertFalse(any(x["code"] == "unclassified_text" for x in ledger["issues"]))
 
+    def test_move_info_label_needs_panel_position_and_repeated_ocr(self):
+        trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "177/177"),
+                           event("turn", turn=1)]), frame(2),
+                 frame(3, [event("message", value="Torrain Pulse")]),
+                 frame(4), frame(5),
+                 frame(6, [event("move", "p1a", "Indeedee-F", move="Terrain Pulse")],
+                       texts=["Indeedee-F used Terrain Pulse!"])]
+        trace[1]["ocr"].append({"text": "Move Info", "confidence": .999})
+        for row in trace[2:5]:
+            row["ocr"].extend({"text": text, "confidence": .999}
+                              for text in ("Battle Info", "MOVE TIME", "Close"))
+            row["ocr"].append({"text": "Torrain Pulse" if row["frame"] == 3 else "Terrain Pulse",
+                               "confidence": .99, "top": .484, "left": .576})
+        ledger = BattleAutomaton(0, trace).run()
+        fragment = next(item for item in ledger["events"] if item["value"] == "Torrain Pulse")
+        self.assertEqual((fragment["kind"], fragment["status"]), ("ui_text", "suppressed"))
+        self.assertEqual([e["frame"] for e in fragment["ui_support"]["ocr"]], [3, 4, 5])
+        self.assertEqual(sum(e["kind"] == "move" for e in ledger["events"]), 1)
+        self.assertFalse(ledger["issues"])
+
+        for change in ("no_prior_panel", "missing_menu_cue", "single_reading", "narration_position"):
+            with self.subTest(change=change):
+                broken = copy.deepcopy(trace)
+                if change == "no_prior_panel":
+                    broken[1]["ocr"] = []
+                elif change == "missing_menu_cue":
+                    broken[2]["ocr"] = [o for o in broken[2]["ocr"] if o["text"] != "MOVE TIME"]
+                elif change == "single_reading":
+                    broken[4]["ocr"] = [o for o in broken[4]["ocr"] if o["text"] != "Terrain Pulse"]
+                else:
+                    next(o for o in broken[2]["ocr"] if o["text"] == "Torrain Pulse")["top"] = .75
+                unresolved = BattleAutomaton(0, broken).run()
+                self.assertIn("unclassified_text", {i["code"] for i in unresolved["issues"]})
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_44FF"),
+                         "requiere diagnóstico real 44ff")
+    def test_menu_terrain_pulse_del_diagnostico_44ff(self):
+        frames, context = read_diagnostic(Path(os.environ["CHAMPIONS_DIAGNOSTIC_44FF"]))
+        battle = BattleAutomaton(0, frames, context).run()
+        self.assertEqual(battle["issues"], [])
+        self.assertEqual(sum(e["kind"] in ("damage", "heal") and e["status"] == "consistent"
+                             for e in battle["events"]), 10)
+        fragment = next(e for e in battle["events"] if e["value"] == "Torrain Pulse")
+        self.assertEqual((fragment["kind"], fragment["status"], fragment["frame"]),
+                         ("ui_text", "suppressed", 539))
+        self.assertEqual([e["frame"] for e in fragment["ui_support"]["ocr"]], [539, 540, 541, 542])
+        self.assertEqual(sum(e["kind"] == "move" and e["move"] == "Terrain Pulse"
+                             for e in battle["events"]), 1)
+
     def test_status_panel_excludes_all_candidates_and_resumes_real_battle(self):
         for heading in ("Active Statuses & Effects", " ACTIVE   STATUSES & EFFECTS ",
                         "Active Statuses and Effects"):
