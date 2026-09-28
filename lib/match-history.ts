@@ -1,6 +1,7 @@
 import type { MatchRecord, MatchSource } from "./types";
 
 export type MatchOrigin = "all" | MatchSource;
+export const MAX_MATCH_NOTES_LENGTH = 5000;
 
 type MatchOriginFields = Pick<MatchRecord, "replayUrl"> & Partial<Pick<MatchRecord, "origin">>;
 type MatchReplayFields = Pick<MatchRecord, "id" | "replayUrl"> & Partial<Pick<MatchRecord, "hasReplayArtifact">>;
