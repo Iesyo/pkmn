@@ -140,6 +140,28 @@ def pending_hp_trace(zero=False):
     return trace
 
 
+def sliding_hp_trace():
+    trace = [frame(n) for n in range(1, 9)]
+    trace[0] = frame(1, [event("switch", "p2a", "Excadrill", "100/100"), event("turn", turn=1)])
+    for row in trace:
+        row["resolved_aliases"]["p2"]["excadrill"] = "Excadrill"
+    for row in trace[:3]:
+        row["ocr"].append({"text": "Excadrill", "left": .625, "right": .688,
+                           "top": .05, "bottom": .084, "confidence": .999})
+    for row in trace[1:3]:
+        row["ocr"].append({"text": "100%", "left": .689, "right": .756,
+                           "top": .108, "bottom": .162, "confidence": .999})
+    trace[3] = frame(4, [event("damage", "p2a", "Excadrill", "0/100")])
+    trace[3]["ocr"] = [{"text": "adrill", "left": .722, "right": .766,
+                         "top": .045, "bottom": .086, "confidence": .999},
+                        {"text": "00%", "left": .785, "right": .829,
+                         "top": .118, "bottom": .154, "confidence": .999}]
+    trace[4] = frame(5, [event("move", "p2a", "Excadrill", move="Protect")])
+    trace[5] = frame(6, [event("heal", "p2a", "Excadrill", "100/100")])
+    trace[6] = frame(7, [event("damage", "p2a", "Excadrill", "68/100")])
+    return trace
+
+
 def transient_mega_text_trace():
     bad = "The opposing Delphox's Delphoxite is racting to Rival's Omni Ring!"
     clean = "The opposing Delphox's Delphoxite is reacting to Rival's Omni Ring!"
@@ -2488,6 +2510,52 @@ class TemporalAutomatonTests(unittest.TestCase):
                          [("p2b", "consistent"), ("p2a", "suppressed"), ("p2a", "suppressed")])
         self.assertEqual([issue["code"] for issue in ledger["resolved_issues"]],
                          ["faint_text_unconfirmed", "faint_text_unconfirmed"])
+
+    def test_sliding_hud_keeps_confirmed_hp_without_inventing_a_heal(self):
+        trace = sliding_hp_trace()
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertFalse(ledger["issues"])
+        reading = next(e for e in ledger["events"] if e["frame"] == 4)
+        self.assertEqual((reading["kind"], reading["status"], reading["before"], reading["after"]),
+                         ("hp_rejected_reading", "suppressed", "100/100", "100/100"))
+        self.assertEqual([e["frame"] for e in reading["hp_support"]["evidence"]], [2, 3, 4])
+        self.assertEqual((ledger["events"][4]["kind"], ledger["events"][4]["status"]),
+                         ("heal", "suppressed"))
+        self.assertEqual((ledger["events"][5]["before"], ledger["events"][5]["after"]),
+                         ("100/100", "68/100"))
+
+        without_prior = copy.deepcopy(trace)
+        without_prior[1]["ocr"] = [line for line in without_prior[1]["ocr"]
+                                     if line["text"] != "100%"]
+        self.assertIn("hp_unconfirmed", {issue["code"] for issue in
+                                         BattleAutomaton(0, without_prior).run()["issues"]})
+        without_name = copy.deepcopy(trace)
+        without_name[3]["ocr"] = [line for line in without_name[3]["ocr"]
+                                    if line["text"] != "adrill"]
+        self.assertIn("hp_unconfirmed", {issue["code"] for issue in
+                                         BattleAutomaton(0, without_name).run()["issues"]})
+        real_zero = copy.deepcopy(trace)
+        real_zero[3]["ocr"][1]["text"] = "0%"
+        real_zero[3]["ocr"][1]["left"] = .689
+        self.assertFalse(any(e["frame"] == 4 and e["status"] == "suppressed"
+                             for e in BattleAutomaton(0, real_zero).run()["events"]))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_472247"), "Requiere diagnóstico 472247")
+    def test_sliding_excadrill_real_trace_keeps_damage_after_hyper_voice(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_472247"])
+        frames, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        shifted = next(e for e in ledger["events"] if e["frame"] == 454)
+        self.assertEqual((shifted["kind"], shifted["status"], shifted["before"], shifted["after"]),
+                         ("hp_rejected_reading", "suppressed", "100/100", "100/100"))
+        self.assertEqual([line["frame"] for line in shifted["hp_support"]["evidence"]],
+                         [452, 453, 454])
+        repeat = next(e for e in ledger["events"] if e["frame"] == 497)
+        damage = next(e for e in ledger["events"] if e["frame"] == 499 and e["slot"] == "p2a")
+        self.assertEqual((repeat["kind"], repeat["status"]), ("heal", "suppressed"))
+        self.assertEqual((damage["before"], damage["after"], damage["cause"]),
+                         ("100/100", "68/100", 36))
 
 
 if __name__ == "__main__":
