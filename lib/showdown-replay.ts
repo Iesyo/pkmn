@@ -32,12 +32,13 @@ export interface ShowdownReplayDocument {
   // exige esto explícitamente: ausencia de `issues` nunca se lee como
   // "revisado, sin hallazgos".
   reconciliation_version?: string | null;
+  source_battle_index?: number | null;
+  ledger_source?: Record<string, unknown> | null;
 }
 
-// Roku, revisión del quinto corte, 26 sep: debe coincidir exactamente con
-// `RECONCILE_VERSION` en backend/pkmn_vgc/champions_replay/reconcile.py.
-// Subir los dos juntos cuando la lógica de análisis cambie de forma que
-// invalide una revisión anterior.
+// Historia de la validación COL-102 conservada para sus replays archivados.
+// El motor vigente usa LEDGER_VERSION en champions_replay/ledger_pipeline.py;
+// actualizar esa marca y CHAMPIONS_RECONCILIATION_VERSION juntas.
 //
 // r6, reapertura estructural del 26 sep: `_state_findings` (reconcile.py)
 // ahora detecta la reentrada al slot donde la misma especie se acaba de
@@ -100,11 +101,15 @@ export interface ShowdownReplayDocument {
 // r12: la selección propia incompleta tampoco bloquea por sí sola. Los
 // documentos r11 ya verificaron las demás incidencias: se admite esa versión
 // reclasificando exclusivamente su mensaje exacto de selección propia.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r12";
+// El job nuevo certifica ambos autómatas. Los replays anteriores mantienen
+// su validación histórica; no se les atribuye una ejecución de Ledger.
+export const CHAMPIONS_RECONCILIATION_VERSION = "champions-ledger-v1";
+const LEGACY_RECONCILIATION_VERSION = "col102-r12";
 const PREVIOUS_SELECTION_RECONCILIATION_VERSION = "col102-r11";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
   return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION
+    || document?.reconciliation_version === LEGACY_RECONCILIATION_VERSION
     || document?.reconciliation_version === PREVIOUS_SELECTION_RECONCILIATION_VERSION;
 }
 
@@ -269,6 +274,13 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     format: replayText(rawReplay.format, 100),
     issues: normalizeReplayIssues(rawReplay.issues, reconciliationVersion),
     reconciliation_version: reconciliationVersion,
+    source_battle_index: typeof rawReplay.source_battle_index === "number"
+      && Number.isInteger(rawReplay.source_battle_index) && rawReplay.source_battle_index >= 0
+      ? rawReplay.source_battle_index : null,
+    ledger_source: rawReplay.ledger_source && typeof rawReplay.ledger_source === "object"
+      && !Array.isArray(rawReplay.ledger_source)
+      ? rawReplay.ledger_source as Record<string, unknown>
+      : null,
   };
 }
 
