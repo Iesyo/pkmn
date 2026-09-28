@@ -199,6 +199,76 @@ class LedgerReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ReplayEvidenceError, "cambio 1 no tiene PS completos"):
                 build_replay(battle, context)
 
+    def test_trainer_generico_en_el_anuncio_del_resultado(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            with zipfile.ZipFile(zip_path) as source:
+                job = source.read("job.json")
+                rows = [json.loads(raw) for raw in source.read("output/ocr.trace.jsonl").splitlines()]
+            for row in rows:
+                row["detections"]["players"]["p2"] = "Trainer"
+            rows[-1]["ocr"] = [{"text": "You lost to the Trainer!", "confidence": .999}]
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            context = load_trace_context(zip_path, battle)
+            self.assertEqual(context.winner, "Trainer")
+            self.assertTrue(build_replay(battle, context)["log"].endswith("|win|Trainer"))
+            rows[-1]["ocr"][0]["text"] = "You lost to the Rival!"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            with self.assertRaisesRegex(ReplayEvidenceError, "ganador único"):
+                load_trace_context(zip_path, battle)
+
+    def test_alias_corrobora_hud_intermedio_del_primer_golpe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            with zipfile.ZipFile(zip_path) as source:
+                job = source.read("job.json")
+                rows = [json.loads(raw) for raw in source.read("output/ocr.trace.jsonl").splitlines()]
+            for row in rows:
+                row["resolved_aliases"] = {"p1": {"hotbird": "Blaziken"}, "p2": {}}
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            battle["events"][0].update(health=None, hp_state="inferred", frame=1, logical_frame=1)
+            battle["events"][5].update(slot="p2a", actor_id="p2-one", target_slot="p1a", frame=6)
+            battle["events"][6].update(
+                slot="p1a", actor_id="p1-one", species="Blaziken", health="81/156",
+                before="92/156", after="81/156", frame=8, hp_state="confirmed",
+                hp_baseline={"state": "confirmed", "evidence": [
+                    {"frame": 7, "text": "92/156", "nickname": "hotbird"}]})
+            battle["events"].pop(7)
+            battle["events"][-1]["seq"] = 8
+            context = load_trace_context(zip_path, battle)
+            document = build_replay(battle, context)
+            self.assertEqual(document["ledger_source"]["inferred_entry_health"][0]["health"], "156/156")
+            self.assertEqual(document["ledger_source"]["intermediate_baselines"][0]["hud_frame"], 7)
+            self.assertIn("|-damage|p1a: Blaziken|81/156", document["log"])
+
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(json.dumps({
+                    **row, "resolved_aliases": {"p1": {}, "p2": {}}}) for row in rows))
+            without_alias = load_trace_context(zip_path, battle)
+            with self.assertRaisesRegex(ReplayEvidenceError, "cambio 1 no tiene PS completos"):
+                build_replay(battle, without_alias)
+
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_AD28") and os.getenv("CHAMPIONS_LEDGER_AD28"),
+                         "requiere el diagnóstico y Ledger real de ad28")
+    def test_floette_real_no_depende_del_replay_archivado(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_AD28"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_AD28"]), battle)
+        document = build_replay(battle, context)
+        lines = document["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(document["ledger_source"]["consistent_events"], 103)
+        self.assertIn("|detailschange|p2b: Floette-Eternal|Floette-Mega, L50|100/100", lines)
+        self.assertEqual(document["ledger_source"]["winner_evidence"]["text"],
+                         "You lost to the Trainer!")
+        self.assertEqual(lines[-1], "|win|Trainer")
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
                          "requiere el diagnóstico y el JSON real de f7af/01")
     def test_partida_real_f7af_01(self):
