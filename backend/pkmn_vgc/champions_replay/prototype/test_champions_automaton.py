@@ -2,6 +2,7 @@
 
 import os
 import json
+import copy
 import unittest
 import zipfile
 from pathlib import Path
@@ -2401,6 +2402,41 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((gardevoir["before"], gardevoir["after"],
                           gardevoir["hp_baseline"]["evidence"][0]["frame"]),
                          ("168/171", "113/171", 2525))
+
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_AD28"), "Requiere diagnóstico Floette")
+    def test_floette_mega_y_reentradas_necesitan_evidencia(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_AD28"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        battle = BattleAutomaton(0, frames, context).run()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(sum(x["code"] == "unclassified_text" for x in battle["resolved_issues"]), 4)
+        mega = next(e for e in battle["events"] if e["kind"] == "mega" and e["slot"] == "p2b")
+        self.assertEqual((mega["species"], mega["value"]), ("Floette-Mega", "Floettite"))
+        reentries = [e for e in battle["events"] if e.get("reentry_health_support")]
+        self.assertEqual([(e["seq"], e["health"]) for e in reentries],
+                         [(35, "100/100"), (40, "100/100"), (49, "100/100"), (75, "74/100")])
+        self.assertEqual((battle["events"][36]["before"], battle["events"][36]["after"]),
+                         ("100/100", "68/100"))
+
+        missing_reaction = copy.deepcopy(frames)
+        for row in missing_reaction:
+            if row["frame"] == 443:
+                row["ocr"] = [line for line in row["ocr"] if
+                              "reacting to Trainer's Omni Ring!" not in line.get("text", "")]
+        uncertain = BattleAutomaton(0, missing_reaction, context).run()
+        self.assertIn(442, [x["frame"] for x in uncertain["issues"]])
+
+        missing_move = copy.deepcopy(frames)
+        for row in missing_move:
+            if row["frame"] in (599, 600):
+                row["detections"]["events"] = [e for e in row["detections"]["events"]
+                                                    if e["kind"] != "move"]
+        uncertain = BattleAutomaton(0, missing_move, context).run()
+        self.assertFalse(any(e.get("reentry_health_support") for e in uncertain["events"]
+                             if e["frame"] == 604))
+        self.assertIn("unparsed_action_text", {x["code"] for x in uncertain["issues"]})
 
 
 if __name__ == "__main__":
