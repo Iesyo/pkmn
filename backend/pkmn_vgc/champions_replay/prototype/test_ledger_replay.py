@@ -57,6 +57,46 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    def test_tailwind_exige_origen_y_cierre_del_mismo_lado(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            for event in battle["events"][5:]:
+                event["seq"] += 2
+                if isinstance(event.get("cause"), int):
+                    event["cause"] += 2
+            battle["events"][5:5] = [
+                {"seq": 6, "kind": "move", "status": "consistent", "slot": "p2a",
+                 "actor_id": "p2-one", "move": "Tailwind", "frame": 6, "turn": 1},
+                {"seq": 7, "kind": "sidestart", "status": "consistent", "slot": "p2a",
+                 "actor_id": "p2-one", "value": "move: Tailwind", "frame": 7, "turn": 1},
+            ]
+            battle["events"][-1]["seq"] = 12
+            battle["events"][-1:-1] = [
+                {"seq": 11, "kind": "sideend", "status": "consistent", "slot": "p2b",
+                 "actor_id": None, "value": "move: Tailwind", "frame": 9, "turn": 1},
+            ]
+            lines = build_replay(battle, context)["log"].splitlines()
+            self.assertLess(lines.index("|move|p2a: Garchomp|Tailwind|"),
+                            lines.index("|-sidestart|p2: Benji|move: Tailwind"))
+            self.assertIn("|-sideend|p2: Benji|move: Tailwind", lines)
+
+            for field, value, message in [
+                ("move", "Reflect", "sin movimiento acreditado"),
+                ("slot", "p1a", "Actor fuera de su slot"),
+                ("frame", 5, "sin movimiento acreditado"),
+            ]:
+                broken = copy.deepcopy(battle)
+                broken["events"][5 if field == "move" else 6][field] = value
+                with self.assertRaisesRegex(ReplayEvidenceError, message):
+                    build_replay(broken, context)
+            for slot, value in [("p1a", "move: Tailwind"),
+                                ("p2b", "move: Reflect")]:
+                broken = copy.deepcopy(battle)
+                broken["events"][-2].update(slot=slot, value=value)
+                with self.assertRaisesRegex(ReplayEvidenceError, "sin inicio acreditado"):
+                    build_replay(broken, context)
+
     def test_illusion_replace_preserves_actor_and_hp_without_a_switch(self):
         with tempfile.TemporaryDirectory() as temp:
             battle, zip_path = _pilot_fixture(Path(temp))
@@ -285,6 +325,26 @@ class LedgerReplayTest(unittest.TestCase):
             without_alias = load_trace_context(zip_path, battle)
             with self.assertRaisesRegex(ReplayEvidenceError, "cambio 1 no tiene PS completos"):
                 build_replay(battle, without_alias)
+
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_8499") and os.getenv("CHAMPIONS_LEDGER_8499"),
+                         "requiere diagnóstico y Ledger 8499")
+    def test_tailwind_del_diagnostico_real(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_8499"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_8499"]), battle)
+        document = build_replay(battle, context)
+        lines = document["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(document["ledger_source"]["consistent_events"], 96)
+        self.assertEqual((sum(line.startswith("|poke|p1|") for line in lines),
+                          sum(line.startswith("|poke|p2|") for line in lines)), (6, 6))
+        self.assertEqual((sum(line.startswith("|turn|") for line in lines),
+                          sum(line.startswith("|move|") for line in lines),
+                          sum(line.startswith("|faint|") for line in lines)), (9, 26, 7))
+        self.assertLess(lines.index("|move|p2a: Pelipper|Tailwind|"),
+                        lines.index("|-sidestart|p2: 3st|move: Tailwind"))
+        self.assertLess(lines.index("|-sidestart|p2: 3st|move: Tailwind"),
+                        lines.index("|-sideend|p2: 3st|move: Tailwind"))
+        self.assertEqual(lines[-1], "|win|Roku")
 
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_AD28") and os.getenv("CHAMPIONS_LEDGER_AD28"),
                          "requiere el diagnóstico y Ledger real de ad28")
