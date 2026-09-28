@@ -114,8 +114,8 @@ export function MatchupAttendance({ matches }: { matches: MatchRecord[] }) {
         <span className="text-[9px] uppercase tracking-wider text-slate-700">{gamesWithPicks} de {matches.length} partidas con picks rivales</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <StatPanel title="Best Matchups" stats={byBest} kind="best" totalGames={matches.length} emptyLabel={emptyLabel} icon={TrendingUp} />
-        <StatPanel title="Worst Matchups" stats={byWorst} kind="worst" totalGames={matches.length} emptyLabel={emptyLabel} icon={TrendingDown} />
+        <StatPanel title="Best Matchups" stats={byBest} kind="best" totalGames={matches.length} emptyLabel={gamesWithPicks ? "Sin más matchups favorables" : emptyLabel} icon={TrendingUp} />
+        <StatPanel title="Worst Matchups" stats={byWorst} kind="worst" totalGames={matches.length} emptyLabel={gamesWithPicks ? "Sin más matchups desfavorables" : emptyLabel} icon={TrendingDown} />
         <StatPanel title="Highest Attendance" stats={byHighest} kind="highest" totalGames={matches.length} emptyLabel="Registra partidas para calcularlo" icon={Eye} />
         <StatPanel title="Lowest Attendance" stats={byLowest} kind="lowest" totalGames={matches.length} emptyLabel="Registra partidas para calcularlo" icon={Eye} />
       </div>
