@@ -513,17 +513,16 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         elif kind == "sidestart":
             slot, _ = actor_at(event)
             effect = _atom(event.get("value"), f"condición lateral {seq}")
-            # Only Tailwind is corroborated for this bridge. Other conditions
-            # can affect the opposing side and need separate target evidence.
+            # The parser may attach a side condition to either active slot.
+            # Corroborate the same side with the immediately preceding move.
             if (effect != "move: Tailwind" or previous_event is None
                     or previous_event.get("kind") != "move"
-                    or previous_event.get("actor_id") != event.get("actor_id")
-                    or previous_event.get("slot") != slot
+                    or previous_event.get("slot", "")[:2] != slot[:2]
                     or previous_event.get("move") != "Tailwind"
                     or previous_event.get("turn") != event.get("turn")
                     or not isinstance(event.get("frame"), int)
                     or not isinstance(previous_event.get("frame"), int)
-                    or event["frame"] < previous_event["frame"]):
+                    or not 0 <= event["frame"] - previous_event["frame"] <= 20):
                 raise ReplayEvidenceError(f"Inicio de condición lateral sin movimiento acreditado en {seq}.")
             side = slot[:2]
             key = (side, effect)
@@ -532,12 +531,12 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             side_conditions[key] = event
             lines.append(f"|-sidestart|{side}: {context.p1 if side == 'p1' else context.p2}|{effect}")
         elif kind == "sideend":
-            slot = _slot(event.get("slot"))
+            slot = (actor_at(event)[0] if event.get("actor_id") is not None
+                    else _slot(event.get("slot")))
             side = slot[:2]
             effect = _atom(event.get("value"), f"condición lateral {seq}")
             started = side_conditions.get((side, effect))
-            if (started is None or event.get("actor_id") is not None
-                    or not isinstance(event.get("frame"), int)
+            if (started is None or not isinstance(event.get("frame"), int)
                     or event["frame"] < started["frame"]):
                 raise ReplayEvidenceError(f"Fin de condición lateral sin inicio acreditado en {seq}.")
             del side_conditions[(side, effect)]
