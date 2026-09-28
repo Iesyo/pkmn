@@ -144,7 +144,7 @@ test("counts the same two leads together and ranks the best by win percentage", 
   assert.deepEqual(rankLeadsByWinRate(leads)[0], { species: ["Blaziken", "Gardevoir"], games: 1, wins: 1 });
 });
 
-test("ranks rival picks by win or loss percentage, using appearances to break ties", async () => {
+test("ranks rival picks by victories or defeats, using appearances to break ties", async () => {
   const { calculateOpponentPokemonStats, rankOpponentMatchups } = await vite.ssrLoadModule("/lib/team-stats.ts");
   const matches = [
     ...Array.from({ length: 5 }, (_, index) => ({ result: "win", opponentPicks: index === 0
@@ -159,9 +159,9 @@ test("ranks rival picks by win or loss percentage, using appearances to break ti
   const stats = calculateOpponentPokemonStats(matches, "opponentPicks");
 
   assert.deepEqual(rankOpponentMatchups(stats, "best").map((entry) => entry.species),
-    ["Basculegion", "Gardevoir", "Kingambit", "Sneasler"]);
+    ["Kingambit", "Basculegion", "Sneasler", "Gardevoir"]);
   assert.deepEqual(rankOpponentMatchups(stats, "worst").map((entry) => entry.species),
-    ["Gholdengo", "Sneasler", "Kingambit"]);
+    ["Gholdengo", "Kingambit", "Sneasler"]);
   assert.equal(stats.find((entry) => entry.species === "Gardevoir").winRate, 100);
   assert.equal(stats.find((entry) => entry.species === "Kingambit").wins, 5);
 });
