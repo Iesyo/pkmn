@@ -206,6 +206,31 @@ class LedgerReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ReplayEvidenceError, "ganador único"):
                 load_trace_context(zip_path, battle)
 
+    def test_result_name_resolves_repeated_i_l_ocr_ambiguity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            with zipfile.ZipFile(zip_path) as source:
+                job = source.read("job.json")
+                rows = [json.loads(raw) for raw in source.read("output/ocr.trace.jsonl").splitlines()]
+            for row in rows:
+                row["detections"]["players"]["p2"] = "lvannn"
+            for row in rows[1:4]:
+                row["detections"]["players"]["p2"] = "Ivannn"
+            rows[-1]["ocr"][0]["text"] = "You defeated Ivannn!"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            context = load_trace_context(zip_path, battle)
+            self.assertEqual((context.p2, context.winner), ("Ivannn", "Roku"))
+
+            for row in rows[2:4]:
+                row["detections"]["players"]["p2"] = "lvannn"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            with self.assertRaisesRegex(ReplayEvidenceError, "ganador único"):
+                load_trace_context(zip_path, battle)
+
     def test_rechaza_ps_discontinuos_y_avisos_abiertos(self):
         with tempfile.TemporaryDirectory() as temp:
             battle, zip_path = _pilot_fixture(Path(temp))
@@ -522,6 +547,22 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertLess(lines.index("|move|p2b: Pelipper|Tailwind|"),
                         lines.index(f"|-sidestart|p2: {context.p2}|move: Tailwind"))
         self.assertEqual(lines[-1], "|win|Roku")
+
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_7F41") and os.getenv("CHAMPIONS_LEDGER_7F41"),
+                         "requiere diagnóstico y Ledger 7f41")
+    def test_replay_7f41_preserves_lethal_damage_status_and_miss(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_7F41"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_7F41"]), battle)
+        lines = build_replay(battle, context)["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(context.p2, "Ivannn")
+        self.assertLess(lines.index("|-damage|p2b: Indeedee|0/100"),
+                        lines.index("|faint|p2b: Indeedee"))
+        self.assertIn("|-status|p1a: Indeedee-F|slp", lines)
+        self.assertIn("|-curestatus|p1a: Indeedee-F|slp", lines)
+        self.assertIn("|move|p2a: Tyranitar|Rock Slide|p1b: Rillaboom", lines)
+        self.assertIn("|-miss|p2a: Tyranitar|p1b: Rillaboom", lines)
+        self.assertEqual(lines[-1], "|win|Ivannn")
 
 
 if __name__ == "__main__":
