@@ -42,6 +42,25 @@ test("replay import keeps rival Team Preview separate from the four rival picks"
   assert.deepEqual(match.opponentPicks, ["Miraidon", "Amoonguss", "Incineroar", "Rillaboom"]);
 });
 
+test("an imported replay keeps only Pokémon observed in a short battle", async () => {
+  const { importShowdownReplay } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const match = importShowdownReplay({
+    log: "|player|p1|IesYo|1|1400\n|player|p2|Rival|2|1400\n|poke|p1|Blaziken, L50\n|poke|p1|Kingambit, L50\n|poke|p2|Gholdengo, L50\n|poke|p2|Milotic, L50\n|start\n|switch|p1a: Blaziken|Blaziken, L50|100/100\n|switch|p1b: Kingambit|Kingambit, L50|100/100\n|switch|p2a: Gholdengo|Gholdengo, L50|100/100\n|switch|p2b: Milotic|Milotic, L50|100/100\n|turn|1\n|win|IesYo",
+    inputlog: ">p1 team 12",
+  }, {
+    replayUrl: "",
+    showdownNames: ["IesYo"],
+    teamSpecies: ["Blaziken", "Kingambit", "Gardevoir", "Indeedee-F", "Basculegion", "Dragapult"],
+    origin: "champions",
+  });
+
+  assert.deepEqual(match.selected, ["Blaziken", "Kingambit"]);
+  assert.deepEqual(match.lead, ["Blaziken", "Kingambit"]);
+  assert.deepEqual(match.opponentPicks, ["Gholdengo", "Milotic"]);
+  assert.match(match.warnings.join(" "), /2\/4 picks propios/);
+  assert.match(match.warnings.join(" "), /2\/4 picks rivales/);
+});
+
 test("recent history renders rival picks between rival preview and own picks", async () => {
   const source = await readFile(new URL("../components/vgc/match-history.tsx", import.meta.url), "utf8");
   const previewHeader = source.indexOf('isChampions ? "Pokémon rival" : "Equipo rival"');
@@ -54,11 +73,12 @@ test("recent history renders rival picks between rival preview and own picks", a
 });
 
 test("persistence adds an independent rival-picks column and backfills only evidence-backed history", async () => {
-  const [migration, backfill, teamsRoute, matchRoute] = await Promise.all([
+  const [migration, backfill, teamsRoute, matchRoute, matchQueries] = await Promise.all([
     readFile(new URL("../drizzle/0007_opponent_picks.sql", import.meta.url), "utf8"),
     readFile(new URL("../app/api/replays/backfill/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teams/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/matches/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/queries.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(migration, /ADD COLUMN opponent_picks_json TEXT NOT NULL DEFAULT '\[\]'/);
@@ -69,5 +89,5 @@ test("persistence adds an independent rival-picks column and backfills only evid
   assert.match(backfill, /opponentPicks: match\.opponentPicks/);
   assert.match(teamsRoute, /enrichTeamsWithOpponentPicks/);
   assert.match(matchRoute, /saveOpponentPicks/);
-  assert.match(matchRoute, /payload\.opponentSelected\?\.length === 4/);
+  assert.match(matchQueries, /input\.opponentSelected\?\.length === 4/);
 });
