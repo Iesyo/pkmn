@@ -27,6 +27,7 @@ _LOSS = re.compile(r"^You (?:lost to|were defeated by) (.+)!$", re.IGNORECASE)
 _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
     "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
+    "illusion_reveal",
 }
 
 
@@ -286,6 +287,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     hp_source: dict[str, str] = {}
     known_species: dict[str, str] = {}
     known_formes: dict[str, str] = {}
+    disguises: dict[str, str] = {}
     fainted: set[str] = set()
     moves_target = _observed_targets(events)
     moves_by_seq = {e["seq"]: e for e in events if e["kind"] == "move"}
@@ -317,6 +319,17 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 raise ReplayEvidenceError(f"Identidad o estado inválido en cambio {seq}.")
             if actor in active.values() and active.get(slot) != actor:
                 raise ReplayEvidenceError(f"El actor {actor} ocupa dos slots en cambio {seq}.")
+            apparent = event.get("display_species")
+            if apparent is not None:
+                apparent = _atom(apparent, f"apariencia de Ilusión {seq}")
+                if (not re.fullmatch(r"Zoroark(?:-Hisui)?", canonical) or apparent == canonical or
+                    canonical not in context.teams[slot[:2]] or apparent not in context.teams[slot[:2]]):
+                    raise ReplayEvidenceError(f"Ilusión no acreditada por el equipo en cambio {seq}.")
+                disguises[actor] = apparent
+            elif actor in disguises:
+                # A new entrance can show the true species after a previous
+                # reveal; the old disguise never leaks into this appearance.
+                disguises.pop(actor)
             hp_value = event.get("health")
             if hp_value is None and actor in known_hp:
                 ledger_health = event.get("last_confirmed_health")
@@ -373,11 +386,26 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             hp = _health(hp_value, f"cambio {seq}")
             if actor in known_hp and known_hp[actor] != hp:
                 raise ReplayEvidenceError(f"PS contradictorios en reentrada {seq}.")
-            active[slot], known_hp[actor], known_species[actor] = actor, hp, canonical
+            active[slot], known_hp[actor], known_species[actor] = actor, hp, apparent or canonical
             hp_source[actor] = ("inferred_entry" if event.get("hp_state") == "inferred"
                                 else hp_source.get(actor, "confirmed") if event.get("health") is None
                                 else "confirmed")
-            lines.append(f"|switch|{slot}: {canonical}|{species}, L50|{hp}")
+            lines.append(f"|switch|{slot}: {known_species[actor]}|{apparent or species}, L50|{hp}")
+        elif kind == "illusion_reveal":
+            slot, _ = actor_at(event)
+            actor = active[slot]
+            canonical = _atom((actors.get(actor) or {}).get("species"), f"especie real {seq}")
+            if (disguises.get(actor) != known_species[actor] or
+                event.get("species") != canonical or event.get("hp_state") != "confirmed" or
+                any(_health(event.get(field), f"PS de Ilusión {field} {seq}") != known_hp[actor]
+                    for field in ("health", "before", "after"))):
+                raise ReplayEvidenceError(f"Revelación de Ilusión contradictoria en suceso {seq}.")
+            known_species[actor] = canonical
+            disguises.pop(actor)
+            lines.append(f"|replace|{slot}: {canonical}|{canonical}, L50|{known_hp[actor]}")
+            narration = event.get("narration") or []
+            if len(narration) == 1 and re.search(r"\billusion wore off!$", narration[0], re.I):
+                lines.append(f"|-message|{_atom(narration[0], f'narración de Ilusión {seq}')}")
         elif kind == "turn":
             next_turn = event.get("turn")
             if not isinstance(next_turn, int) or next_turn != turn + 1:
