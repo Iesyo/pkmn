@@ -800,6 +800,23 @@ def ordered_candidates(frames: list[dict[str, Any]],
         for index, event in enumerate(row.get("detections", {}).get("events", ())):
             candidates.append({"event": event, "observed_frame": row["frame"],
                                "observed_ms": row["timestamp_ms"], "ordinal": index})
+        # The terminal card sometimes has a battle_complete detection and
+        # legible result OCR but no generic message event. Keep the same
+        # strict screen/OCR gate used by _handle for ordinary result messages.
+        if (row.get("detections", {}).get("battle_complete") and
+            not any(e["kind"] == "message" and RESULT_NARRATION.fullmatch(str(e.get("value") or ""))
+                    for e in row.get("detections", {}).get("events", ()))):
+            result = next((line for line in row.get("ocr", ())
+                           if RESULT_NARRATION.fullmatch(line.get("text", "").strip()) and
+                           line.get("confidence", 0) >= .9 and line.get("top", 0) >= .55), None)
+            if result:
+                candidates.append({"event": {"kind": "message", "value": result["text"],
+                                             "timestamp_ms": row["timestamp_ms"],
+                                             "source_frame": row["frame"],
+                                             "confidence": result["confidence"]},
+                                   "observed_frame": row["frame"], "observed_ms": row["timestamp_ms"],
+                                   "ordinal": len(row.get("detections", {}).get("events", ())),
+                                   "result_reconstruction": "OCR de resultado y bandera de fin en el mismo fotograma"})
     # A provisional detector ID can be reused when another slot appears.
     # Keep the first established nickname association, and resolve the ID
     # against the nickname actually displayed for this *appearance*.
@@ -3613,6 +3630,80 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_voicing_faint_text(self) -> None:
+        """Confirm a repeated Japanese faint despite one b/p kana OCR error.
+
+        The faint's actor and zero HP already exist in Ledger. A named zero
+        HUD immediately before it and a unique alias with one voicing mark
+        difference are required; similarity by itself never resolves a faint.
+        """
+        voiced = dict(zip("ばびぶべぼバビブベボ", "ぱぴぷぺぽパピプペポ"))
+        voiced.update({right: left for left, right in list(voiced.items())})
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "faint_text_unconfirmed":
+                unresolved.append(issue)
+                continue
+            faint = self.events[issue["event_seq"] - 1]
+            slot, actor_id = faint.get("slot"), faint.get("actor_id")
+            if (faint["kind"] != "faint" or faint["status"] != "review" or
+                slot not in {"p2a", "p2b"} or not actor_id or self.active.get(slot) != actor_id or
+                any(e["slot"] == slot and e["status"] == "consistent" and
+                    e["kind"] in ACTIVITY | {"faint"} for e in self.events[faint["seq"]:])):
+                unresolved.append(issue)
+                continue
+            hp = next((e for e in reversed(self.events[:faint["seq"] - 1]) if
+                       e["actor_id"] == actor_id and e["kind"] in HP_KINDS and
+                       e["status"] == "consistent"), None)
+            if (not hp or hp["kind"] != "damage" or hp.get("hp_state") != "confirmed" or
+                health_ratio(hp["after"]) != 0 or faint["frame"] - hp["frame"] > 12):
+                unresolved.append(issue)
+                continue
+            match = FAINT_NARRATION.fullmatch(faint.get("value") or "")
+            name = match[2].casefold() if match and match[1] else ""
+            aliases = [alias for alias, species in self.nickname_species["p2"].items() if
+                       len(alias) == len(name) and len(name) >= 4 and
+                       identity_species(species).casefold() ==
+                       identity_species(self.actors[actor_id]["species"]).casefold() and
+                       sum(a != b for a, b in zip(alias, name)) == 1 and
+                       all(a == b or voiced.get(a) == b for a, b in zip(alias, name))]
+            if not aliases or any(
+                len(alias) == len(name) and sum(a != b for a, b in zip(alias, name)) == 1 and
+                all(a == b or voiced.get(a) == b for a, b in zip(alias, name)) and
+                identity_species(species).casefold() != identity_species(
+                    self.actors[actor_id]["species"]).casefold()
+                for alias, species in self.nickname_species["p2"].items()):
+                unresolved.append(issue)
+                continue
+            hud = []
+            for number in range(hp["frame"], faint["frame"]):
+                row = self.frame_lookup.get(number, {})
+                nickname = hud_nickname(row, slot)
+                if nickname in aliases and any(value == "0/100" for value, _ in complete_hud_health(row, slot)):
+                    hud.append({"frame": number, "text": nickname, "confidence": .9,
+                                "kind": "named_zero_hud"})
+            narration = []
+            for number in range(faint["frame"], faint["frame"] + 3):
+                for line in self.frame_lookup.get(number, {}).get("ocr", ()):
+                    if (line.get("text", "").strip() == faint["value"] and
+                        line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95):
+                        narration.append({"frame": number, "text": line["text"],
+                                          "confidence": line["confidence"], "kind": "faint_narration"})
+            if not hud or len({e["frame"] for e in narration}) < 2:
+                unresolved.append(issue)
+                continue
+            resolution = {"state": "resolved", "event_seq": faint["seq"], "slot": slot,
+                          "actor_id": actor_id, "hp_event_seq": hp["seq"],
+                          "reason": "Mote japonés con una marca de sonoridad OCR distinta; HUD a cero y anuncio repetido del mismo actor.",
+                          "evidence": hud + narration}
+            faint["status"] = "consistent"
+            faint["resolution"] = resolution
+            faint["text_support"]["state"] = "confirmed"
+            self.actors[actor_id]["fainted"] = True
+            del self.active[slot]
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def _reconcile_switch_and_mega_context(self) -> None:
         """Link repeated withdrawal/stone text to the actual entry or Mega.
 
@@ -3983,6 +4074,7 @@ class BattleAutomaton:
         self._reconcile_partner_hud_entries()
         self._reconcile_intermediate_hp_entries()
         self._reconcile_transient_text()
+        self._reconcile_voicing_faint_text()
         self._reconcile_switch_and_mega_context()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
