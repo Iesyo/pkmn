@@ -2671,6 +2671,41 @@ class TemporalAutomatonTests(unittest.TestCase):
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_DA3F"), "Requiere diagnóstico da3f")
+    def test_da3f_separates_partner_hud_and_confirms_late_zero(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_DA3F"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        battle = [row for row in frames if row["battle_index"] == 0]
+        ledger = BattleAutomaton(0, battle, context).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual([(x["code"], x["frame"]) for x in ledger["resolved_issues"]],
+                         [("hp_unconfirmed", 296), ("hp_transition", 297)])
+        indeedee = next(e for e in ledger["events"] if e["frame"] == 296 and e["slot"] == "p2a")
+        self.assertEqual((indeedee["kind"], indeedee["status"], indeedee["before"],
+                          indeedee["after"], indeedee["cause"]),
+                         ("damage", "consistent", "100/100", "77/100", 12))
+        self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 297 and
+                              e["slot"] == "p2a")["status"], "suppressed")
+        last = next(e for e in ledger["events"] if e["frame"] == 826 and e["kind"] == "damage")
+        self.assertEqual((last["before"], last["after"],
+                          last["endpoint_reconstruction"]["faint_seq"]),
+                         ("6/100", "0/100", 75))
+
+        no_partner = copy.deepcopy(battle)
+        for row in no_partner:
+            if 294 <= row["frame"] <= 299:
+                row["ocr"] = [l for l in row["ocr"] if
+                              not (l.get("text") == "1%" and l.get("left", 0) > .89)]
+        self.assertIn("hp_unconfirmed", {x["code"] for x in
+                                         BattleAutomaton(0, no_partner, context).run()["issues"]})
+        no_zero = copy.deepcopy(battle)
+        for row in no_zero:
+            if row["frame"] == 830:
+                row["ocr"] = [l for l in row["ocr"] if l.get("text") != "0%"]
+        uncertain = BattleAutomaton(0, no_zero, context).run()
+        self.assertFalse(any(e.get("endpoint_reconstruction") for e in uncertain["events"]))
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_A026"), "Requiere diagnóstico a026")
     def test_a026_rejects_ghost_hud_and_links_malformed_mega_announcement(self):
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_A026"])
