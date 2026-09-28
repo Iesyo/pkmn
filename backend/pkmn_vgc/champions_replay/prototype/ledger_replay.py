@@ -27,7 +27,7 @@ _LOSS = re.compile(r"^You (?:lost to|were defeated by) (.+)!$", re.IGNORECASE)
 _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
     "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
-    "illusion_reveal",
+    "illusion_reveal", "sidestart", "sideend",
 }
 
 
@@ -327,6 +327,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     turn = 0
     end_seen = False
     event_lines: list[dict[str, int]] = []
+    side_conditions: dict[tuple[str, str], dict[str, Any]] = {}
+    previous_event: dict[str, Any] | None = None
 
     def actor_at(event: dict[str, Any]) -> tuple[str, str]:
         slot = _slot(event.get("slot"))
@@ -508,10 +510,43 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             lines.append(f"|cant|{identifier}|{_atom(event.get('value'), f'causa de inmovilidad {seq}')}")
         elif kind in ("fieldstart", "fieldend", "weather"):
             lines.append(f"|-{kind}|{_atom(event.get('value'), f'efecto {seq}')}")
+        elif kind == "sidestart":
+            slot, _ = actor_at(event)
+            effect = _atom(event.get("value"), f"condición lateral {seq}")
+            # Only Tailwind is corroborated for this bridge. Other conditions
+            # can affect the opposing side and need separate target evidence.
+            if (effect != "move: Tailwind" or previous_event is None
+                    or previous_event.get("kind") != "move"
+                    or previous_event.get("actor_id") != event.get("actor_id")
+                    or previous_event.get("slot") != slot
+                    or previous_event.get("move") != "Tailwind"
+                    or previous_event.get("turn") != event.get("turn")
+                    or not isinstance(event.get("frame"), int)
+                    or not isinstance(previous_event.get("frame"), int)
+                    or event["frame"] < previous_event["frame"]):
+                raise ReplayEvidenceError(f"Inicio de condición lateral sin movimiento acreditado en {seq}.")
+            side = slot[:2]
+            key = (side, effect)
+            if key in side_conditions:
+                raise ReplayEvidenceError(f"Condición lateral duplicada en {seq}.")
+            side_conditions[key] = event
+            lines.append(f"|-sidestart|{side}: {context.p1 if side == 'p1' else context.p2}|{effect}")
+        elif kind == "sideend":
+            slot = _slot(event.get("slot"))
+            side = slot[:2]
+            effect = _atom(event.get("value"), f"condición lateral {seq}")
+            started = side_conditions.get((side, effect))
+            if (started is None or event.get("actor_id") is not None
+                    or not isinstance(event.get("frame"), int)
+                    or event["frame"] < started["frame"]):
+                raise ReplayEvidenceError(f"Fin de condición lateral sin inicio acreditado en {seq}.")
+            del side_conditions[(side, effect)]
+            lines.append(f"|-sideend|{side}: {context.p1 if side == 'p1' else context.p2}|{effect}")
         elif kind == "battle_end":
             end_seen = True
             lines.append(f"|-message|{_atom(event.get('value'), f'cierre {seq}')}")
         event_lines.append({"ledger_seq": seq, "protocol_line": start_line})
+        previous_event = event
     if not end_seen or not turn:
         raise ReplayEvidenceError("No hay partida completa con turnos y cierre.")
     lines.append(f"|win|{context.winner}")
