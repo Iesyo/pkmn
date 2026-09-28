@@ -27,8 +27,9 @@ _LOSS = re.compile(r"^You (?:lost to|were defeated by) (.+)!$", re.IGNORECASE)
 _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
     "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
-    "illusion_reveal", "sidestart", "sideend",
+    "illusion_reveal", "sidestart", "sideend", "status", "curestatus", "miss",
 }
+_STATUS_CODES = {"brn", "par", "slp", "frz", "psn", "tox"}
 
 
 class ReplayEvidenceError(ValueError):
@@ -67,6 +68,17 @@ def _one_vote(votes: Counter[str], label: str) -> str:
     if len(top) > 1 and top[0][1] == top[1][1]:
         raise ReplayEvidenceError(f"La traza no distingue {label}: {top!r}.")
     return top[0][0]
+
+
+def _ocr_player_variant(observed: str, confirmed: str) -> bool:
+    """Allow one I/l/1 OCR ambiguity only when the result names a seen player."""
+    left, right = observed.casefold(), confirmed.casefold()
+    if left == right:
+        return True
+    if len(left) != len(right):
+        return False
+    changes = [(a, b) for a, b in zip(left, right) if a != b]
+    return len(changes) == 1 and set(changes[0]) <= {"i", "l", "1"}
 
 
 @dataclass(frozen=True)
@@ -156,6 +168,12 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
             if isinstance(confidence, (int, float)) and confidence >= 0.9 and (_WIN.fullmatch(text) or _LOSS.fullmatch(text)):
                 outcomes.append((frame, text, float(confidence)))
     p1, p2 = (_one_vote(players[side], side) for side in ("p1", "p2"))
+    result_names = {(_WIN.fullmatch(text) or _LOSS.fullmatch(text)).group(1)
+                    for _, text, _ in outcomes}
+    confirmed_opponents = [name for name in result_names if players["p2"][name] >= 2 and
+                           all(_ocr_player_variant(candidate, name) for candidate in players["p2"])]
+    if len(confirmed_opponents) == 1:
+        p2 = confirmed_opponents[0]
     if p1.casefold() == p2.casefold():
         raise ReplayEvidenceError("Los dos jugadores no pueden tener el mismo nombre.")
     winners: set[str] = set()
@@ -196,7 +214,7 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
 
 
 def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
-    """Un solo daño al bando contrario permite recuperar el objetivo del golpe."""
+    """Un solo daño o fallo inmediato acredita el objetivo de un movimiento."""
     moves = {e["seq"]: e for e in events if e["kind"] == "move"}
     targets: dict[int, set[str]] = {seq: set() for seq in moves}
     for event in events:
@@ -205,6 +223,14 @@ def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
         if move and event["kind"] == "damage" and isinstance(event.get("slot"), str):
             if event["slot"][:2] != move["slot"][:2]:
                 targets[cause].add(event["slot"])
+    for previous, event in zip(events, events[1:]):
+        slot = event.get("target_slot")
+        if (event["kind"] == "miss" and previous["kind"] == "move" and
+            isinstance(slot, str) and slot in ("p1a", "p1b", "p2a", "p2b") and
+            slot[:2] != previous["slot"][:2] and event.get("turn") == previous.get("turn") and
+            isinstance(event.get("frame"), int) and isinstance(previous.get("frame"), int) and
+            0 <= event["frame"] - previous["frame"] <= 20):
+            targets[previous["seq"]].add(slot)
     return {seq: next(iter(slots)) for seq, slots in targets.items() if len(slots) == 1}
 
 
@@ -317,6 +343,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     hp_source: dict[str, str] = {}
     known_species: dict[str, str] = {}
     known_formes: dict[str, str] = {}
+    known_status: dict[str, str] = {}
     disguises: dict[str, str] = {}
     fainted: set[str] = set()
     moves_target = _observed_targets(events)
@@ -508,6 +535,33 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         elif kind == "cant":
             _, identifier = actor_at(event)
             lines.append(f"|cant|{identifier}|{_atom(event.get('value'), f'causa de inmovilidad {seq}')}")
+        elif kind == "status":
+            slot, identifier = actor_at(event)
+            condition = _atom(event.get("value"), f"estado {seq}")
+            if condition not in _STATUS_CODES or active[slot] in known_status:
+                raise ReplayEvidenceError(f"Estado incompatible en suceso {seq}.")
+            known_status[active[slot]] = condition
+            lines.append(f"|-status|{identifier}|{condition}")
+        elif kind == "curestatus":
+            slot, identifier = actor_at(event)
+            condition = known_status.get(active[slot])
+            reported = _atom(event.get("value"), f"estado curado {seq}")
+            if condition is None or reported not in ("status", condition):
+                raise ReplayEvidenceError(f"Curación de estado sin estado previo en suceso {seq}.")
+            del known_status[active[slot]]
+            lines.append(f"|-curestatus|{identifier}|{condition}")
+        elif kind == "miss":
+            target = _slot(event.get("target_slot"))
+            move = previous_event
+            if (move is None or move.get("kind") != "move" or
+                move.get("turn") != event.get("turn") or
+                not isinstance(move.get("frame"), int) or not isinstance(event.get("frame"), int) or
+                not 0 <= event["frame"] - move["frame"] <= 20 or target not in active):
+                raise ReplayEvidenceError(f"Fallo sin movimiento y objetivo acreditados en suceso {seq}.")
+            source_slot, source = actor_at(move)
+            if source_slot[:2] == target[:2]:
+                raise ReplayEvidenceError(f"Fallo con objetivo del mismo bando en suceso {seq}.")
+            lines.append(f"|-miss|{source}|{target}: {known_species[active[target]]}")
         elif kind in ("fieldstart", "fieldend", "weather"):
             lines.append(f"|-{kind}|{_atom(event.get('value'), f'efecto {seq}')}")
         elif kind == "sidestart":
