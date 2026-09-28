@@ -2671,6 +2671,36 @@ class TemporalAutomatonTests(unittest.TestCase):
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_A026"), "Requiere diagnóstico a026")
+    def test_a026_rejects_ghost_hud_and_links_malformed_mega_announcement(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_A026"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        battle = [row for row in frames if row["battle_index"] == 0]
+        ledger = BattleAutomaton(0, battle, context).run()
+        self.assertEqual(ledger["issues"], [])
+        ghost = next(e for e in ledger["events"] if e["frame"] == 344)
+        self.assertEqual((ghost["kind"], ghost["status"],
+                          ghost["resolution"]["event_seq"]), ("switch", "suppressed", 17))
+        self.assertEqual([i["frame"] for i in ledger["resolved_issues"]], [258])
+        mega = next(e for e in ledger["events"] if e["kind"] == "mega" and e["frame"] == 278)
+        self.assertEqual(ledger["resolved_issues"][0]["resolution"]["event_seq"], mega["seq"])
+
+        no_clean_stone = copy.deepcopy(battle)
+        for row in no_clean_stone:
+            if row["frame"] in (259, 260):
+                row["ocr"] = [l for l in row["ocr"] if
+                              "Gardevoirite is reacting" not in l.get("text", "")]
+        self.assertIn("unclassified_text", {i["code"] for i in
+                                         BattleAutomaton(0, no_clean_stone, context).run()["issues"]})
+        no_faint_repeat = copy.deepcopy(battle)
+        for row in no_faint_repeat:
+            if row["frame"] in (344, 345, 346):
+                row["ocr"] = [l for l in row["ocr"] if
+                              l.get("text") != "The opposing Garchomp fainted!"]
+        self.assertIn("unresolved_identity", {i["code"] for i in
+                                          BattleAutomaton(0, no_faint_repeat, context).run()["issues"]})
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_3432"), "Requiere diagnóstico 3432")
     def test_3432_dates_opponent_switch_and_merges_partner_hud_damage(self):
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_3432"])
