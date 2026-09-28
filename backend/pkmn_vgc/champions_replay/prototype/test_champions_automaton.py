@@ -2671,6 +2671,43 @@ class TemporalAutomatonTests(unittest.TestCase):
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_3432"), "Requiere diagnóstico 3432")
+    def test_3432_dates_opponent_switch_and_merges_partner_hud_damage(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_3432"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        battle = [row for row in frames if row["battle_index"] == 0]
+        ledger = BattleAutomaton(0, battle, context).run()
+        self.assertEqual(ledger["issues"], [])
+        switch = next(e for e in ledger["events"] if e["kind"] == "switch" and
+                      e["slot"] == "p2a" and e["species"] == "Camerupt")
+        self.assertEqual((switch["logical_frame"], switch["frame"], switch["hp_state"]),
+                         (337, 419, "inferred"))
+        self.assertEqual([(i["code"], i["frame"]) for i in ledger["resolved_issues"]],
+                         [("hp_unconfirmed", 800), ("hp_transition", 804),
+                          ("unclassified_text", 329)])
+        impact = next(e for e in ledger["events"] if e["kind"] == "damage" and e["frame"] == 796)
+        self.assertEqual((impact["before"], impact["after"], impact["cause"]),
+                         ("28/100", "4/100", 68))
+        self.assertEqual(ledger["events"][impact["cause"] - 1]["move"], "Hyper Voice")
+        self.assertEqual([(e["frame"], e["status"]) for e in ledger["events"]
+                          if e["frame"] in (800, 804) and e["slot"] == "p2a"],
+                         [(800, "suppressed"), (804, "suppressed")])
+
+        missing_departure = copy.deepcopy(battle)
+        for row in missing_departure:
+            if row["frame"] in (330, 331):
+                row["ocr"] = [line for line in row["ocr"] if
+                              line.get("text") != "The Trainer withdrew Maushold!"]
+        self.assertIn("unclassified_text", {i["code"] for i in
+                                       BattleAutomaton(0, missing_departure, context).run()["issues"]})
+        missing_final = copy.deepcopy(battle)
+        for row in missing_final:
+            if row["frame"] == 804:
+                row["ocr"] = [line for line in row["ocr"] if line.get("text") != "4%"]
+        self.assertTrue(any(i["code"] in {"hp_unconfirmed", "hp_transition"} for i in
+                            BattleAutomaton(0, missing_final, context).run()["issues"]))
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_433C"), "Requiere diagnóstico 433c")
     def test_433c_resolves_voicing_faint_and_recovers_terminal_card(self):
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_433C"])
