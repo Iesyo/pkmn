@@ -321,6 +321,30 @@ class TemporalAutomatonTests(unittest.TestCase):
         ledger = BattleAutomaton(0, trace).run()
         self.assertEqual(len([item for item in ledger["events"] if item["kind"] == "battle_end"]), 1)
 
+    def test_terminal_card_without_detector_message_closes_only_with_ocr_and_flag(self):
+        trace = [frame(1, [event("switch", "p1a", "Basculegion", "54/219"),
+                           event("turn", turn=1),
+                           event("move", "p1a", "Basculegion", move="Protect")]),
+                 frame(2, texts=["You lost to Chinos!"])]
+        trace[1]["detections"]["battle_complete"] = True
+        ledger = BattleAutomaton(0, trace).run()
+        ends = [item for item in ledger["events"] if item["kind"] == "battle_end"]
+        self.assertEqual([(item["frame"], item["value"]) for item in ends],
+                         [(2, "You lost to Chinos!")])
+        self.assertEqual(ends[0]["evidence"],
+                         [{"frame": 2, "text": "You lost to Chinos!", "confidence": 1}])
+        for defect in ("flag", "weak", "menu"):
+            altered = copy.deepcopy(trace)
+            if defect == "flag":
+                altered[1]["detections"]["battle_complete"] = False
+            elif defect == "weak":
+                altered[1]["ocr"][0]["confidence"] = .89
+            else:
+                altered[1]["ocr"][0]["top"] = .2
+            with self.subTest(defect=defect):
+                self.assertFalse(any(item["kind"] == "battle_end" for item in
+                                     BattleAutomaton(0, altered).run()["events"]))
+
     def test_partial_high_confidence_faint_cannot_change_actor_state(self):
         for side, name, species in (("p1", "Tomoe", "Kingambit"), ("p2", "Alpha", "Pelipper")):
             with self.subTest(side=side):
@@ -2646,6 +2670,34 @@ class TemporalAutomatonTests(unittest.TestCase):
                                        "confidence": .999, "left": .15, "top": .75})
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_433C"), "Requiere diagnóstico 433c")
+    def test_433c_resolves_voicing_faint_and_recovers_terminal_card(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_433C"])
+        frames, _ = read_diagnostic(path)
+        context = read_diagnostic_context(path)
+        battle = [row for row in frames if row["battle_index"] == 0]
+        ledger = BattleAutomaton(0, battle, context).run()
+        self.assertEqual(ledger["issues"], [])
+        faint = next(item for item in ledger["events"] if item["frame"] == 864)
+        self.assertEqual((faint["kind"], faint["status"], faint["slot"]),
+                         ("faint", "consistent", "p2a"))
+        self.assertEqual({proof["frame"] for proof in faint["resolution"]["evidence"]},
+                         {863, 864, 865, 866})
+        self.assertEqual([(e["frame"], e["value"]) for e in ledger["events"]
+                          if e["kind"] == "battle_end"], [(885, "You lost to トグロチチ!")])
+
+        missing_hud = copy.deepcopy(battle)
+        for row in missing_hud:
+            if row["frame"] == 863:
+                row["ocr"] = [line for line in row["ocr"] if line.get("text") != "ぼるつくす"]
+        unresolved = BattleAutomaton(0, missing_hud, context).run()
+        self.assertIn("faint_text_unconfirmed", {issue["code"] for issue in unresolved["issues"]})
+
+        no_end = copy.deepcopy(battle)
+        next(row for row in no_end if row["frame"] == 885)["detections"]["battle_complete"] = False
+        self.assertFalse(any(e["kind"] == "battle_end" for e in
+                             BattleAutomaton(0, no_end, context).run()["events"]))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_7F41"), "Requiere diagnóstico 7f41")
     def test_7f41_recovers_named_lethal_hp_and_nickname_withdrawals(self):
