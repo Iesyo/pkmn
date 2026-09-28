@@ -404,6 +404,12 @@ function detailsSpecies(details: string) {
   return (details.split(",", 1)[0]?.trim() ?? "").replace(/-\*$/, "");
 }
 
+function teamSpeciesFromDetails(details: string) {
+  // A Mega reentry is the same team member. Normalize before collecting
+  // picks and moves, preserving regional/gender forms and the replay log.
+  return detailsSpecies(details).replace(/-Mega(?:-[XYZ])?$/i, "");
+}
+
 function playerSlot(value: string): PlayerSlot | null {
   const slot = value.slice(0, 2);
   return slot === "p1" || slot === "p2" ? slot : null;
@@ -485,7 +491,7 @@ function parseReplay(document: ShowdownReplayDocument) {
     }
     if (command === "poke") {
       const slot = playerSlot(parts[2] ?? "");
-      const species = detailsSpecies(parts[3] ?? "");
+      const species = teamSpeciesFromDetails(parts[3] ?? "");
       if (slot && species) addUnique(sides[slot].team, species);
       continue;
     }
@@ -500,7 +506,7 @@ function parseReplay(document: ShowdownReplayDocument) {
     if (command === "switch" || command === "drag" || command === "replace") {
       const identifier = parts[2] ?? "";
       const slot = playerSlot(identifier);
-      const species = detailsSpecies(parts[3] ?? "");
+      const species = teamSpeciesFromDetails(parts[3] ?? "");
       if (!slot || !species) continue;
       const position = identifier.split(":", 1)[0];
       const previous = activeSpecies.get(position);
