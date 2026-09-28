@@ -336,6 +336,42 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertNotIn("|-damage|p2a: Excadrill|0/100\n|-heal|p2a: Excadrill|100/100", document["log"])
         self.assertEqual(lines[-1], "|win|Roku")
 
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_0F4F") and os.getenv("CHAMPIONS_LEDGER_0F4F"),
+                         "requiere diagnóstico y Ledger 0f4f")
+    def test_toxtricity_forme_requires_unique_team_and_preimpact_hud(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_0F4F"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_0F4F"]), battle)
+        document = build_replay(battle, context)
+        self.assertFalse(battle["issues"])
+        self.assertEqual(document["ledger_source"]["intermediate_baselines"], [{
+            "ledger_seq": 24, "causing_move_seq": 22, "inferred_entry": "100/100",
+            "intermediate": "94/100", "final": "81/100", "hud_frame": 390,
+            "identity_support": {"source": "unique_team_form", "hud_name": "toxtricity",
+                                 "species": "Toxtricity-Low-Key"},
+        }])
+        lines = document["log"].splitlines()
+        self.assertEqual((sum(s.startswith("|poke|p1|") for s in lines),
+                          sum(s.startswith("|poke|p2|") for s in lines)), (6, 6))
+        self.assertEqual((sum(s.startswith("|turn|") for s in lines),
+                          sum(s.startswith("|move|") for s in lines),
+                          sum(s.startswith("|faint|") for s in lines)), (7, 22, 7))
+        self.assertIn("|-damage|p2a: Toxtricity-Low-Key|81/100", lines)
+        self.assertFalse(any(s == "|-damage|p2a: Toxtricity-Low-Key|94/100" for s in lines))
+        self.assertEqual(lines[-1], "|win|Roku")
+
+        ambiguous = replace(context, teams={**context.teams, "p2":
+                             context.teams["p2"][:-1] + ("Toxtricity-Amped",)})
+        with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos en suceso 24"):
+            build_replay(battle, ambiguous)
+        bad_hud = copy.deepcopy(battle)
+        bad_hud["events"][23]["hp_baseline"]["evidence"][0]["text"] = "95%"
+        with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos en suceso 24"):
+            build_replay(bad_hud, context)
+        late_action = copy.deepcopy(battle)
+        late_action["events"][21]["frame"] = 391
+        with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos en suceso 24"):
+            build_replay(late_action, context)
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
                          "requiere el diagnóstico y el JSON real de f7af/01")
     def test_partida_real_f7af_01(self):
