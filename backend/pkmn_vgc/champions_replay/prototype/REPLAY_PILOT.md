@@ -155,4 +155,32 @@ registra como lectura intermedia, nunca como daño extra. Exporta nueve turnos,
 24 movimientos, 15 entradas, siete debilitamientos y dos Megas; estas cinco
 cuentas coinciden con el replay archivado. El replay nuevo contiene ambos
 equipos completos y conserva el ganador corroborado por OCR en frame 1424.
-El HTML de este caso requiere revisión visual independiente.
+Ies revisó visualmente el HTML de este caso y confirmó que se ve bien.
+
+## Diagnóstico cc5298b5ccb1421c · motes japoneses
+
+El job productivo terminó en error: «Faltan especies para identidades
+observadas: __champions_actor_p2_0002__» y «La fuente terminó sin una batalla
+completa». El ZIP contiene sólo `job.json` y la traza OCR, sin replay archivado.
+Team Preview repite seis especies por lado; la pantalla de resultado confirma
+«You defeated ゆぐりか!» en frame 322, después del abandono en 318.
+
+Primer pase conservado: 25 candidatos, 19 sucesos, un episodio de PS y siete
+avisos abiertos: identidad y PS iniciales de un rival, Mega y movimiento
+atribuidos al ocupante erróneo, tres lecturas de debilitamiento sin sujeto
+fiable. El HUD de Incineroar dice «わ5びくん» y la narración repetida
+«わらびくん»; Ledger sólo relaciona ambas cadenas si el mote con un único
+dígito OCR permanece en el mismo HUD dos fotogramas seguidos y el anuncio
+completo de debilitamiento se repite. El mismo vínculo permite recuperar el
+panel de Intimidate en 207 y asignar los titulares Gengar e Incineroar a
+slots distintos. Los PS iniciales de Gengar se confirman en el HUD posterior.
+
+Los OCR de 302 y 303 repiten el debilitamiento de Incineroar; en 302 hay una
+`h` intrusa en el mote. Sólo se descartan con PS cero confirmados de
+Incineroar, PS positivos confirmados de Gengar y el anuncio idéntico en
+300–301 sin acción intermedia. Ledger final: 25 candidatos, 20 sucesos,
+16 consistentes, cuatro lecturas duplicadas suprimidas, cero avisos.
+El replay tiene un turno, cuatro titulares, Mega Gengar, tres movimientos,
+un debilitamiento, Intimidate y los dos equipos completos. El ganador Roku
+procede exclusivamente del resultado OCR. La revisión visual de este HTML
+queda pendiente.
