@@ -346,6 +346,25 @@ class LedgerReplayTest(unittest.TestCase):
                         lines.index("|-sideend|p2: 3st|move: Tailwind"))
         self.assertEqual(lines[-1], "|win|Roku")
 
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_44FF") and os.getenv("CHAMPIONS_LEDGER_44FF"),
+                         "requiere diagnóstico y Ledger 44ff")
+    def test_replay_real_con_texto_de_menu_terrain_pulse(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_44FF"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_44FF"]), battle)
+        document = build_replay(battle, context)
+        lines = document["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(document["ledger_source"]["consistent_events"], 44)
+        self.assertEqual((sum(line.startswith("|poke|p1|") for line in lines),
+                          sum(line.startswith("|poke|p2|") for line in lines)), (6, 6))
+        self.assertEqual((sum(line.startswith("|turn|") for line in lines),
+                          sum(line.startswith("|move|") for line in lines),
+                          sum(line.startswith("|faint|") for line in lines)), (5, 15, 1))
+        self.assertNotIn("Torrain Pulse", document["log"])
+        self.assertEqual(sum("|Terrain Pulse|" in line for line in lines), 1)
+        self.assertEqual(document["ledger_source"]["winner_evidence"]["frame"], 611)
+        self.assertEqual(lines[-1], "|win|Roku")
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_AD28") and os.getenv("CHAMPIONS_LEDGER_AD28"),
                          "requiere el diagnóstico y Ledger real de ad28")
     def test_floette_real_no_depende_del_replay_archivado(self):
