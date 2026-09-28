@@ -3868,6 +3868,140 @@ class BattleAutomaton:
                     resolved.add(pending["event_seq"])
         self.issues = [issue for issue in self.issues if issue.get("event_seq") not in resolved]
 
+    def _reconcile_partner_hp_label(self) -> None:
+        """Reject a partner's low percentage copied onto the other target."""
+        resolved = set()
+        for issue in self.issues:
+            if issue["code"] != "hp_unconfirmed":
+                continue
+            bad = self.events[issue["event_seq"] - 1]
+            slot, actor_id = bad.get("slot"), bad.get("actor_id")
+            if (bad["kind"] != "hp_unconfirmed" or bad["status"] != "review" or
+                slot not in {"p2a", "p2b"} or not actor_id or
+                not re.fullmatch(r"\d+/100", str(bad.get("health") or ""))):
+                continue
+            partner = "p2b" if slot == "p2a" else "p2a"
+            last = next((e for e in reversed(self.events[:bad["seq"] - 1]) if
+                         e["actor_id"] == actor_id and e["status"] == "consistent" and
+                         e["kind"] in HP_KINDS | {"switch", "drag"}), None)
+            other = next((e for e in self.events[bad["seq"]:] if e["kind"] in HP_KINDS and
+                          e["actor_id"] == actor_id), None)
+            partner_damage = next((e for e in self.events if
+                                   e["kind"] == "damage" and e["slot"] == partner and
+                                   e["status"] == "consistent" and e.get("hp_state") == "confirmed" and
+                                   e.get("after") == bad["health"] and e["turn"] == bad["turn"] and
+                                   0 <= bad["frame"] - e["frame"] <= 4), None)
+            if (not last or not last.get("health") and not last.get("after") or
+                not other or other["kind"] != "heal" or other["status"] != "review" or
+                other.get("hp_state") != "confirmed" or not partner_damage or
+                not 0 < other["frame"] - bad["frame"] <= 4 or
+                not 0 <= bad["frame"] - partner_damage["frame"] <= 4 or
+                last["turn"] > bad["turn"] or bad["turn"] != other["turn"] or
+                not (0 < (health_ratio(bad["health"]) or 0) <
+                     (health_ratio(other["after"]) or 0) <
+                     (health_ratio(last.get("after") or last.get("health")) or 0))):
+                continue
+            move = self.events[partner_damage["cause"] - 1] if isinstance(partner_damage["cause"], int) else None
+            if (not move or move["kind"] != "move" or not (move.get("slot") or "").startswith("p1") or
+                not 0 < bad["frame"] - move["frame"] <= 15 or
+                any(e["kind"] in ACTIVITY | {"mega", "faint"} and e["slot"] == slot
+                    for e in self.events[move["seq"]:other["seq"] - 1])):
+                continue
+            name = hud_nickname(self.frame_lookup.get(bad["frame"], {}), slot)
+            species = identity_species(self.actors[actor_id]["species"]).casefold()
+            if not name or not (species == name or species.startswith(name + "-")):
+                continue
+            own, wrong = [], []
+            for n in range(partner_damage["frame"], other["frame"] + 3):
+                row = self.frame_lookup.get(n, {})
+                if hud_nickname(row, slot) == name:
+                    own.extend({"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                               for value, line in complete_hud_health(row, slot)
+                               if value == other["after"] and line["confidence"] >= .97)
+                wrong.extend({"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                             for value, line in complete_hud_health(row, partner)
+                             if value == bad["health"] and line["confidence"] >= .95)
+            if (len({x["frame"] for x in own}) < 2 or len({x["frame"] for x in wrong}) < 2 or
+                not any(observation.get("health") == other["after"] for observation in bad["observations"])):
+                continue
+            narrated = [{"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                        for n in range(other["frame"], other["frame"] + 3)
+                        for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                        if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                        re.fullmatch(r"It's (?:not very|super) effective on the opposing (.+)\.",
+                                     line.get("text", ""), re.I) and
+                        line["text"].casefold().endswith("on the opposing " + name + ".")]
+            if len({x["frame"] for x in narrated}) < 2:
+                continue
+            evidence = own + wrong + narrated
+            resolution = {"state": "resolved", "event_seq": bad["seq"],
+                          "actor_id": actor_id, "slot": slot,
+                          "reason": "El porcentaje bajo pertenece al HUD del compañero; el HUD nombrado acredita el daño de este objetivo.",
+                          "evidence": evidence}
+            bad.update(kind="damage", status="consistent", health=other["after"],
+                       after=other["after"], cause=move["seq"], hp_state="confirmed",
+                       hp_support={"state": "confirmed", "reason": resolution["reason"],
+                                   "evidence": own}, note=resolution["reason"], resolution=resolution)
+            other.update(status="suppressed", hp_state="merged", resolution=resolution)
+            self.actors[actor_id]["health"] = bad["after"]
+            self.actors[actor_id]["health_state"] = "confirmed"
+            for pending in self.issues:
+                if pending["event_seq"] in {bad["seq"], other["seq"]} and pending["code"] in {
+                    "hp_unconfirmed", "hp_transition"}:
+                    self.resolved_issues.append({**pending, "resolution": resolution})
+                    resolved.add(pending["event_seq"])
+        self.issues = [issue for issue in self.issues if issue.get("event_seq") not in resolved]
+
+    def _reconcile_late_lethal_endpoint(self) -> None:
+        """Complete one impact when its final zero appears with the faint HUD."""
+        for faint in self.events:
+            if faint["kind"] != "faint" or faint["status"] != "consistent" or not faint.get("actor_id"):
+                continue
+            damage = next((e for e in reversed(self.events[:faint["seq"] - 1]) if
+                           e["actor_id"] == faint["actor_id"] and e["status"] == "consistent" and
+                           e["kind"] in HP_KINDS | {"switch", "drag"}), None)
+            if (not damage or damage["kind"] != "damage" or damage.get("hp_state") != "confirmed" or
+                not 0 < (health_ratio(damage.get("after")) or 0) < 1 or
+                not isinstance(damage.get("cause"), int) or
+                faint["slot"] != damage["slot"] or faint["turn"] != damage["turn"] or
+                not 0 < faint["frame"] - damage["frame"] <= 6 or
+                any(e["status"] == "consistent" and e["kind"] in ACTIVITY | {"mega", "faint"} and
+                    e["slot"] == faint["slot"] for e in self.events[damage["seq"]:faint["seq"] - 1])):
+                continue
+            move = self.events[damage["cause"] - 1]
+            if move["kind"] != "move" or not 0 < damage["frame"] - move["frame"] <= 10:
+                continue
+            row = self.frame_lookup.get(faint["frame"], {})
+            name = hud_nickname(row, faint["slot"])
+            species = identity_species(self.actors[faint["actor_id"]]["species"]).casefold()
+            if (not name or identity_species(self.nickname_species[faint["slot"][:2]].get(
+                    name, name)).casefold() != species):
+                continue
+            support = self._hp_support(faint["slot"], "0/100", faint["frame"])
+            if support["state"] != "confirmed" or not any(
+                e["frame"] == faint["frame"] and e["text"] == "0%" for e in support["evidence"]):
+                continue
+            narration = []
+            for number in range(faint["frame"], faint["frame"] + 3):
+                for line in self.frame_lookup.get(number, {}).get("ocr", ()):
+                    match = FAINT_NARRATION.fullmatch(line.get("text", "").strip())
+                    if (match and match[1] and match[2].casefold() == name and
+                        line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95):
+                        narration.append({"frame": number, "text": line["text"],
+                                          "confidence": line["confidence"]})
+            if len({x["frame"] for x in narration}) < 2:
+                continue
+            proof = support["evidence"] + narration
+            damage["observations"].append({"frame": faint["frame"], "health": "0/100",
+                                           "reason": "Extremo final del mismo impacto acreditado por HUD y desmayo"})
+            damage["after"] = damage["health"] = "0/100"
+            damage["hp_support"] = {"state": "confirmed", "reason": "HUD cero junto al desmayo",
+                                    "evidence": damage["hp_support"]["evidence"] + proof}
+            damage["note"] = "PS cero observados al finalizar la animación y repetirse el desmayo."
+            damage["endpoint_reconstruction"] = {"state": "confirmed", "faint_seq": faint["seq"],
+                                                 "move_seq": move["seq"], "evidence": proof}
+            self.actors[faint["actor_id"]]["health"] = "0/100"
+
     def _reconcile_switch_and_mega_context(self) -> None:
         """Link repeated withdrawal/stone text to the actual entry or Mega.
 
@@ -4342,6 +4476,8 @@ class BattleAutomaton:
         self._reconcile_transient_text()
         self._reconcile_voicing_faint_text()
         self._reconcile_spread_damage_hud()
+        self._reconcile_partner_hp_label()
+        self._reconcile_late_lethal_endpoint()
         self._reconcile_switch_and_mega_context()
         self._reconcile_malformed_mega_text()
         for actor_id, actor in self.actors.items():
