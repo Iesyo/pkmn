@@ -299,3 +299,12 @@ origen sin respaldo en el registro. Las 133 pruebas de ambos autómatas pasan
 (8 casos opcionales omitidos). Ledger y los replays JSON de 97c1, ad28,
 cc5298, 472247, 0f4f y 8499 permanecen idénticos. Pendiente la revisión
 visual del HTML 44ff/01 por Ies.
+
+Ies confirmó visualmente que el replay HTML de 44ff/01 se ve bien. El
+adjunto `champions-diagnostics-472247f7de7e45bf(1).zip` resultó idéntico
+byte por byte al ZIP 472247 previamente archivado (SHA-256
+`f49f5ebf937ec67f3938be32fb6eea90d99ade0d01ca42a658cded37c06efcfe`).
+Al correr ambos autómatas de nuevo, Ledger produjo el mismo JSON y Markdown
+de 75 sucesos, 18 cambios de PS y cero avisos; replay LOG, JSON y HTML
+idénticos. Sólo difiere el nombre del ZIP en `report.json`. No es una nueva
+partida ni requiere otra revisión visual.
