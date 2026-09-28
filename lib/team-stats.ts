@@ -87,12 +87,8 @@ export function rankOpponentMatchups(
     ? entry.wins
     : entry.games - entry.wins;
 
-  const percentage = (entry: OpponentPokemonStat) => outcome === "best"
-    ? entry.winRate
-    : winRate(entry.games - entry.wins, entry.games);
-
   return stats.filter((entry) => count(entry) > 0).sort((a, b) =>
-    percentage(b) - percentage(a)
+    count(b) - count(a)
     || b.games - a.games
     || a.species.localeCompare(b.species),
   );
