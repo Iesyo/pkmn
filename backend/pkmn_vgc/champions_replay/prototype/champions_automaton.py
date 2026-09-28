@@ -1163,11 +1163,59 @@ class HpEpisode:
         return int(self.candidates[-1]["observed_ms"])
 
 
+def confirmed_transition_prefix(frames: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """A detector reset may put the previous result card in the next index.
+
+    Exclude only an inactive prefix followed by a repeated team preview and
+    a new battle start. Never discard an earlier battle's actions or make a
+    result-only/truncated clip look complete. The raw trace remains intact.
+    """
+    for index, (first, second) in enumerate(zip(frames, frames[1:])):
+        if not (second["frame"] == first["frame"] + 1 and
+                0 < second["timestamp_ms"] - first["timestamp_ms"] <= 1_500 and
+                all(row.get("detections", {}).get("team_preview") and
+                    not row["detections"].get("battle_started") and
+                    not row["detections"].get("battle_complete") for row in (first, second))):
+            continue
+        prefix = frames[:index]
+        if not prefix:
+            return None
+        # Events and unparsed narration both protect real earlier activity.
+        if any(row.get("detections", {}).get("battle_started") or
+               any(e["kind"] != "message" for e in row.get("detections", {}).get("events", ())) or
+               any(line.get("confidence", 0) >= .9 and line.get("top", 0) >= .55 and
+                   (RAW_ACTION.search(line.get("text", "")) or
+                    ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                    MEGA_NARRATION.fullmatch(line.get("text", "")))
+                   for line in row.get("ocr", ())) for row in prefix):
+            return None
+        results = [{"frame": row["frame"], "observed_ms": row["timestamp_ms"],
+                    "text": line["text"], "confidence": line["confidence"]}
+                   for row in prefix if row.get("detections", {}).get("battle_complete")
+                   for line in row.get("ocr", ())
+                   if RESULT_NARRATION.fullmatch(line.get("text", "").strip()) and
+                   line.get("confidence", 0) >= .9 and line.get("top", 0) >= .55]
+        started = next((row for row in frames[index + 2:] if
+                        row.get("detections", {}).get("battle_started") and
+                        not row["detections"].get("battle_complete")), None)
+        if not results or started is None:
+            return None
+        return {"first_frame": prefix[0]["frame"], "last_frame": prefix[-1]["frame"],
+                "frame_count": len(prefix), "preview_frames": [first["frame"], second["frame"]],
+                "battle_start_frame": started["frame"], "result_evidence": results,
+                "reason": "Resultado anterior a la selección repetida y al inicio de esta batalla; "
+                          "sin actividad de combate en el tramo excluido."}
+    return None
+
+
 class BattleAutomaton:
     def __init__(self, battle_index: int, frames: list[dict[str, Any]], context: dict[str, Any] | None = None):
         self.battle_index = battle_index
         self.context = context or {}
         self.raw_frames = frames
+        self.transition_prefix = confirmed_transition_prefix(frames)
+        if self.transition_prefix:
+            frames = [row for row in frames if row["frame"] > self.transition_prefix["last_frame"]]
         self.ignored_ui_frames = [proof for row in frames if (proof := status_panel_evidence(row))]
         ignored = {proof["frame"] for proof in self.ignored_ui_frames}
         # Keep timestamps so temporal windows still measure real elapsed
@@ -4578,6 +4626,7 @@ class BattleAutomaton:
                 "events": self.events, "issues": self.issues, "resolved_issues": self.resolved_issues,
                 "narration_links": self.narration_links,
                 "counts": dict(counts), "actors": self.actors,
+                **({"transition_prefix": self.transition_prefix} if self.transition_prefix else {}),
                 **({"alias_reconstructions": self.alias_reconstructions} if self.alias_reconstructions else {}),
                 **({"ignored_ui_frames": self.ignored_ui_frames} if self.ignored_ui_frames else {})}
 
@@ -4715,6 +4764,12 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
              "p1 = equipo propio; p2 = rival. Los PS del rival son porcentajes normalizados del HUD "
              "(100/100 = 100 %), no puntos absolutos. Un aviso abierto indica que el autómata necesita revisión; "
              "cero avisos no equivale a validar visualmente el vídeo.", ""]
+    if ledger.get("transition_prefix"):
+        prefix = ledger["transition_prefix"]
+        lines += [f"Transición de la partida anterior excluida (fotogramas {prefix['first_frame']}–"
+                  f"{prefix['last_frame']}); selección corroborada en {prefix['preview_frames']} "
+                  f"e inicio nuevo en {prefix['battle_start_frame']}. "
+                  "El resultado anterior y sus pruebas permanecen en el JSON y la traza OCR.", ""]
     if ledger.get("ignored_ui_frames"):
         ignored = ledger["ignored_ui_frames"]
         excluded = sum(len(row["detections"].get("events", ())) for row in ignored)
