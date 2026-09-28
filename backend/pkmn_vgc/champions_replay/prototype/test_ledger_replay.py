@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from ledger_replay import ReplayEvidenceError, build_replay, export, load_trace_context
@@ -56,6 +57,36 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    def test_illusion_replace_preserves_actor_and_hp_without_a_switch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            context = replace(context, teams={**context.teams, "p2": (
+                "Zoroark-Hisui", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Excadrill")})
+            battle["actors"]["p2-one"]["species"] = "Zoroark-Hisui"
+            battle["events"][2].update(species="Zoroark-Hisui", display_species="Excadrill")
+            battle["events"][5].update(slot="p2a", actor_id="p2-one", move="Shadow Ball", target_slot="p1a")
+            battle["events"][6].update(slot="p2a", actor_id="p2-one", health="1/100",
+                                       before="100/100", after="1/100")
+            battle["events"][7].update(kind="illusion_reveal", slot="p2a", actor_id="p2-one",
+                                       species="Zoroark-Hisui", health="1/100", before="1/100",
+                                       after="1/100", hp_state="confirmed",
+                                       narration=["The opposing Zoroark's illusion wore off!"])
+            lines = build_replay(battle, context)["log"].splitlines()
+            self.assertIn("|switch|p2a: Excadrill|Excadrill, L50|100/100", lines)
+            self.assertIn("|-damage|p2a: Excadrill|1/100", lines)
+            self.assertIn("|replace|p2a: Zoroark-Hisui|Zoroark-Hisui, L50|1/100", lines)
+            self.assertEqual(sum(line.startswith("|switch|p2a:") for line in lines), 1)
+
+            broken = copy.deepcopy(battle)
+            broken["events"][7]["before"] = "100/100"
+            with self.assertRaisesRegex(ReplayEvidenceError, "Revelación de Ilusión contradictoria"):
+                build_replay(broken, context)
+            broken = copy.deepcopy(battle)
+            broken["events"][2]["display_species"] = "Garchomp"
+            with self.assertRaisesRegex(ReplayEvidenceError, "Ilusión no acreditada"):
+                build_replay(broken, context)
+
     def test_exporta_secuencia_y_resultado_con_evidencia(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -285,6 +316,24 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertEqual(sum(line.startswith("|faint|") for line in lines), 1)
         self.assertEqual(document["ledger_source"]["winner_evidence"]["text"],
                          "You defeated ゆぐりか!")
+        self.assertEqual(lines[-1], "|win|Roku")
+
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_472247") and os.getenv("CHAMPIONS_LEDGER_472247"),
+                         "requiere diagnóstico y Ledger 472247")
+    def test_replay_real_con_ilusion_y_hud_desplazado(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_472247"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_472247"]), battle)
+        document = build_replay(battle, context)
+        lines = document["log"].splitlines()
+        self.assertEqual(battle["issues"], [])
+        self.assertEqual((document["log"].count("|poke|p1|"),
+                          document["log"].count("|poke|p2|")), (6, 6))
+        self.assertIn("|switch|p2a: Excadrill|Excadrill, L50|100/100", lines)
+        self.assertIn("|replace|p2a: Zoroark-Hisui|Zoroark-Hisui, L50|1/100", lines)
+        self.assertLess(lines.index("|-damage|p2a: Excadrill|1/100"),
+                        lines.index("|replace|p2a: Zoroark-Hisui|Zoroark-Hisui, L50|1/100"))
+        self.assertIn("|-damage|p2a: Excadrill|68/100", lines)
+        self.assertNotIn("|-damage|p2a: Excadrill|0/100\n|-heal|p2a: Excadrill|100/100", document["log"])
         self.assertEqual(lines[-1], "|win|Roku")
 
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
