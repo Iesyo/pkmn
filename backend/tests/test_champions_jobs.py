@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from pkmn_vgc.champions_jobs import ChampionsJobManager, _default_processor, _documents_with_reconcile_issues
+from pkmn_vgc.champions_jobs import ChampionsJobManager, _legacy_processor, _documents_with_reconcile_issues
 from pkmn_vgc.champions_replay import reconcile
 from pkmn_vgc.champions_replay.models import (
     BattleEvent,
@@ -64,7 +64,7 @@ class ChampionsJobTests(unittest.TestCase):
         pipeline_type.return_value.capture.return_value = ()
 
         with tempfile.TemporaryDirectory() as directory:
-            documents = _default_processor(
+            documents = _legacy_processor(
                 Path(directory) / "video.mp4",
                 {},
                 Path(directory),
@@ -114,7 +114,7 @@ class ChampionsJobTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            documents = _default_processor(
+            documents = _legacy_processor(
                 output / "video.mp4",
                 {},
                 output,
@@ -172,7 +172,7 @@ class ChampionsJobTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            documents = _default_processor(
+            documents = _legacy_processor(
                 output / "video.mp4", {}, output, 2.0, 0, MagicMock(), MagicMock(),
                 enable_dense_rescan=True,
             )
@@ -230,7 +230,7 @@ class ChampionsJobTests(unittest.TestCase):
         warnings: list[str] = []
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            documents = _default_processor(
+            documents = _legacy_processor(
                 output / "video.mp4", {}, output, 2.0, 0, MagicMock(), warnings.append,
             )
 
@@ -286,7 +286,7 @@ class ChampionsJobTests(unittest.TestCase):
         warnings: list[str] = []
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            documents = _default_processor(
+            documents = _legacy_processor(
                 output / "video.mp4", {}, output, 2.0, 0, MagicMock(), warnings.append,
                 enable_dense_rescan=True,
             )
