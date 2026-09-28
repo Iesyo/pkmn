@@ -96,10 +96,16 @@ export interface ShowdownReplayDocument {
 // Cualquier replay marcado `col102-r10` -o antes- puede llevar una
 // incidencia `blocking` por selección rival incompleta que ya no aplica;
 // hay que pasarlo otra vez por esta versión.
-export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r11";
+//
+// r12: la selección propia incompleta tampoco bloquea por sí sola. Los
+// documentos r11 ya verificaron las demás incidencias: se admite esa versión
+// reclasificando exclusivamente su mensaje exacto de selección propia.
+export const CHAMPIONS_RECONCILIATION_VERSION = "col102-r12";
+const PREVIOUS_SELECTION_RECONCILIATION_VERSION = "col102-r11";
 
 export function hasCurrentReconciliation(document: ShowdownReplayDocument | null | undefined): boolean {
-  return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION;
+  return document?.reconciliation_version === CHAMPIONS_RECONCILIATION_VERSION
+    || document?.reconciliation_version === PREVIOUS_SELECTION_RECONCILIATION_VERSION;
 }
 
 interface ReplaySide {
@@ -206,7 +212,7 @@ function replayText(value: unknown, limit: number) {
   return normalized ? normalized.slice(0, limit) : undefined;
 }
 
-function normalizeReplayIssues(value: unknown): ReplayCaptureIssue[] {
+function normalizeReplayIssues(value: unknown, reconciliationVersion: string | null): ReplayCaptureIssue[] {
   if (!Array.isArray(value)) return [];
   const issues: ReplayCaptureIssue[] = [];
   for (const entry of value) {
@@ -215,7 +221,11 @@ function normalizeReplayIssues(value: unknown): ReplayCaptureIssue[] {
     const message = replayText(raw.message, 400);
     if (!message) continue;
     issues.push({
-      severity: replayText(raw.severity, 40) ?? "warning",
+      severity: reconciliationVersion === PREVIOUS_SELECTION_RECONCILIATION_VERSION
+        && /^La selección del jugador contiene [0-3]\/4 Pokémon\.$/.test(message)
+        && raw.severity === "blocking"
+        ? "warning"
+        : replayText(raw.severity, 40) ?? "warning",
       message,
       frame: typeof raw.frame === "number" ? raw.frame : null,
       alternatives: Array.isArray(raw.alternatives)
@@ -245,6 +255,7 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     throw new ReplayValidationError("El replay reconstruido no contiene un registro de batalla.", 422);
   }
 
+  const reconciliationVersion = replayText(rawReplay.reconciliation_version, 40) ?? null;
   return {
     log,
     inputlog: replayText(rawReplay.inputlog, 10_000) ?? null,
@@ -256,8 +267,8 @@ export function normalizeShowdownReplayDocument(value: unknown): ShowdownReplayD
     p1rating: rawReplay.p1rating,
     p2rating: rawReplay.p2rating,
     format: replayText(rawReplay.format, 100),
-    issues: normalizeReplayIssues(rawReplay.issues),
-    reconciliation_version: replayText(rawReplay.reconciliation_version, 40) ?? null,
+    issues: normalizeReplayIssues(rawReplay.issues, reconciliationVersion),
+    reconciliation_version: reconciliationVersion,
   };
 }
 
@@ -653,9 +664,9 @@ export function importShowdownReplay(
   const opponentPicks = opponent.selected.slice(0, 4);
   const warnings: string[] = [];
 
-  if (selected.length !== 4) warnings.push("El log público no reveló los cuatro picks; completa únicamente los que falten.");
-  if (lead.length !== 2) warnings.push("El log público no reveló ambos leads; completa únicamente los que falten.");
-  if (opponentPicks.length !== 4) warnings.push("El log público no reveló los cuatro picks del rival; completa únicamente los que falten.");
+  if (selected.length !== 4) warnings.push(`El replay confirmó ${selected.length}/4 picks propios. Puedes guardar únicamente los conocidos.`);
+  if (lead.length !== 2) warnings.push(`El replay confirmó ${lead.length}/2 leads propios. Completa sólo si conoces el dato.`);
+  if (opponentPicks.length !== 4) warnings.push(`El replay confirmó ${opponentPicks.length}/4 picks rivales. Puedes guardar únicamente los conocidos.`);
   if (own.finalRating === null) warnings.push("Showdown no publicó el rating final para esta partida.");
 
   return {
