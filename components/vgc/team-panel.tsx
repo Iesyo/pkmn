@@ -13,7 +13,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { rankLeadsByWinRate, winRate } from "@/lib/team-stats";
+import { rankBestLeads, winRate } from "@/lib/team-stats";
 import type { TeamVersion } from "@/lib/types";
 import { DEFAULT_BATTLE_FORMAT, formatVersion } from "@/lib/team-builder";
 import { cn } from "@/lib/utils";
@@ -78,7 +78,7 @@ export function TeamPanel({
 }) {
   const style = accentStyles[accent];
   const rate = winRate(version.wins, version.games);
-  const bestLead = rankLeadsByWinRate(version.leads)[0];
+  const bestLead = rankBestLeads(version.leads)[0];
   const mostUsed = version.games
     ? [...version.pokemon].sort((a, b) => b.performance.selectionRate - a.performance.selectionRate)[0]
     : undefined;
@@ -115,7 +115,7 @@ export function TeamPanel({
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <SummaryMetric icon={Gauge} label="Win rate" value={`${rate}%`} detail={`${version.wins} victorias`} className={style.metric} />
           <SummaryMetric icon={Activity} label="Muestra" value={`${version.games}`} detail="partidas registradas" className="border-white/8 bg-white/[0.025]" />
-          <SummaryMetric icon={Trophy} label="Mejor lead" value={bestLead ? `${winRate(bestLead.wins, bestLead.games)}%` : "—"} detail={bestLead ? `${bestLead.species.join(" + ")} · ${bestLead.games} partidas` : "sin datos"} className="border-white/8 bg-white/[0.025]" />
+          <SummaryMetric icon={Trophy} label="Mejor lead" value={bestLead ? `${winRate(bestLead.wins, bestLead.games)}%` : "—"} detail={bestLead ? `${bestLead.species.join(" + ")} · ${bestLead.games} partidas` : "muestra insuficiente"} className="border-white/8 bg-white/[0.025]" />
           <SummaryMetric icon={Layers3} label="Más usado" value={mostUsed ? `${mostUsed.performance.selectionRate}%` : "—"} detail={mostUsed?.species ?? "sin datos"} className="border-white/8 bg-white/[0.025]" />
         </div>
       </div>
