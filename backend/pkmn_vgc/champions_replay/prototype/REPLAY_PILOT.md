@@ -268,3 +268,34 @@ y ganador coinciden exactamente con el replay productivo archivado. Las 130
 pruebas de ambos autómatas pasan (8 diagnósticos opcionales omitidos); los
 cinco replays JSON anteriores, 97c1, ad28, cc5298, 472247 y 0f4f,
 permanecen idénticos. Pendiente la revisión visual del HTML 8499/01 por Ies.
+
+Ies confirmó visualmente que el replay HTML de 8499/01 se ve bien.
+
+## Diagnóstico 44ff1da980a14f5a · ficha de Terrain Pulse
+
+El parser productivo archivó una batalla de cinco turnos con tres tramos de
+riesgo orientativos. Primer pase conservado de Ledger: 77 candidatos, 45
+sucesos (44 consistentes y un mensaje a revisar), diez episodios de PS
+confirmados y un aviso `unclassified_text`. En el frame 539 (04:29.0), el
+OCR leyó «Torrain Pulse» en la ficha Move Info, no en la narración de batalla.
+En 540–542, el mismo rótulo y posición se leen «Terrain Pulse». Están
+visibles «Battle Info», «MOVE TIME» y «Close» y, justo antes, «Move Info».
+El anuncio de uso «Dee Dee used Terrain Pulse!» llega en 584–585.
+
+Ledger ahora clasifica como `ui_text` suprimido sólo un fragmento corto en
+esa zona del panel, con las marcas de interfaz presentes y dos fotogramas
+posteriores con la misma etiqueta legible en la misma posición. Conserva el
+OCR y fotogramas como `ui_support`; sin el panel, la posición o las lecturas
+repetidas, el aviso queda abierto. Pase final: 45 sucesos (44 consistentes y
+uno suprimido), diez episodios de PS y cero avisos. Terrain Pulse cuenta
+una sola vez como movimiento al observar el anuncio real.
+
+Replay generado desde Ledger y OCR: equipos completos de seis, cinco turnos,
+15 movimientos, un debilitamiento y ganador Roku corroborado en frame 611.
+Las 37 líneas de turnos, cambios, movimientos, PS, faint y ganador coinciden
+con el replay productivo después de quitar una etiqueta `[from] item:
+Leftovers` que no consta en Ledger para la primera cura; no se atribuye ese
+origen sin respaldo en el registro. Las 133 pruebas de ambos autómatas pasan
+(8 casos opcionales omitidos). Ledger y los replays JSON de 97c1, ad28,
+cc5298, 472247, 0f4f y 8499 permanecen idénticos. Pendiente la revisión
+visual del HTML 44ff/01 por Ies.
