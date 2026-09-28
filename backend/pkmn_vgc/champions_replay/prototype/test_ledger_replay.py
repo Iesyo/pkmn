@@ -96,6 +96,23 @@ class LedgerReplayTest(unittest.TestCase):
                 broken["events"][-2].update(slot=slot, value=value)
                 with self.assertRaisesRegex(ReplayEvidenceError, "sin inicio acreditado"):
                     build_replay(broken, context)
+            partner_slot = copy.deepcopy(battle)
+            partner_slot["events"][5].update(slot="p2b", actor_id="p2-two")
+            partner_slot["events"][6]["frame"] = 14
+            partner_slot["events"][-2].update(slot="p2a", actor_id="p2-one", frame=15)
+            partner_lines = build_replay(partner_slot, context)["log"].splitlines()
+            self.assertLess(partner_lines.index("|move|p2b: Sneasler|Tailwind|"),
+                            partner_lines.index("|-sidestart|p2: Benji|move: Tailwind"))
+            self.assertIn("|-sideend|p2: Benji|move: Tailwind", partner_lines)
+            broken = copy.deepcopy(partner_slot)
+            broken["events"][6]["frame"] = 27
+            with self.assertRaisesRegex(ReplayEvidenceError, "sin movimiento acreditado"):
+                build_replay(broken, context)
+            broken = copy.deepcopy(partner_slot)
+            broken["events"][-2]["actor_id"] = "p2-two"
+            with self.assertRaisesRegex(ReplayEvidenceError, "Actor fuera de su slot"):
+                build_replay(broken, context)
+
 
     def test_illusion_replace_preserves_actor_and_hp_without_a_switch(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -485,6 +502,26 @@ class LedgerReplayTest(unittest.TestCase):
             "intermediate": "92/100", "final": "81/100", "hud_frame": 1235,
         }])
         self.assertEqual(document["log"].splitlines()[-1], "|win|Denton")
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_B3F7") and os.getenv("CHAMPIONS_LEDGER_B3F7"),
+                         "requiere diagnóstico y Ledger b3f7")
+    def test_replay_b3f7_sin_entrada_falsa_y_con_tailwind(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_B3F7"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_B3F7"]), battle)
+        document = build_replay(battle, context)
+        lines = document["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual(document["ledger_source"]["consistent_events"], 102)
+        self.assertEqual((sum(line.startswith("|poke|p1|") for line in lines),
+                          sum(line.startswith("|poke|p2|") for line in lines)), (6, 6))
+        self.assertEqual((sum(line.startswith("|turn|") for line in lines),
+                          sum(line.startswith("|move|") for line in lines),
+                          sum(line.startswith("|faint|") for line in lines)), (9, 27, 7))
+        self.assertEqual(sum(line.startswith("|switch|p2a: Archaludon|") for line in lines), 1)
+        self.assertIn("|-heal|p2a: Archaludon|12/100", lines)
+        self.assertLess(lines.index("|move|p2b: Pelipper|Tailwind|"),
+                        lines.index(f"|-sidestart|p2: {context.p2}|move: Tailwind"))
+        self.assertEqual(lines[-1], "|win|Roku")
+
 
 
 if __name__ == "__main__":
