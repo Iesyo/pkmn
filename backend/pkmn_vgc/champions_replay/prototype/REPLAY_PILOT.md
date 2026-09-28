@@ -184,3 +184,34 @@ El replay tiene un turno, cuatro titulares, Mega Gengar, tres movimientos,
 un debilitamiento, Intimidate y los dos equipos completos. El ganador Roku
 procede exclusivamente del resultado OCR. Ies confirmó visualmente que este
 HTML se ve bien.
+
+## Diagnóstico 472247f7de7e45bf · Ilusión y HUD desplazado
+
+El ZIP archiva una batalla productiva de seis turnos y un replay, que se
+conserva sólo como comparación. Ledger hizo un primer pase inmutable:
+125 candidatos, 75 sucesos, 19 episodios de PS y dos avisos abiertos.
+El detector leyó `0/100` para Excadrill en frame 454 porque el HUD se mueve
+hacia la derecha y el OCR sólo conserva `00%`; el nombre se recorta a
+`adrill`. En frames 452–453, nombre y `100%` aparecen completos y quietos.
+Por eso el supuesto `heal` de 100 % en 497 era el mismo estado, visible antes
+del daño real de Hyper Voice en 498–501.
+
+Ledger final conserva el evento candidato 454 como lectura rechazada con
+evidencia de desplazamiento, mantiene 100/100 y suprime la repetición de 497.
+El daño posterior queda 100/100 → 68/100; hay 18 episodios de PS
+confirmados, 72 sucesos consistentes, tres suprimidos y cero avisos abiertos.
+La prueba negativa mantiene el aviso cuando falta el nombre recortado o
+una de las dos lecturas completas, y un `0%` completo no se descarta.
+
+Al inicio, el mismo actor Zoroark-Hisui aparece con la apariencia de
+Excadrill. El puente emite `|switch|` con la apariencia y, al terminar la
+Ilusión con PS 1/100 confirmados, emite `|replace|` para el actor real según
+el protocolo de Showdown. El Excadrill verdadero entra después como otro
+actor. El replay nuevo incluye seis Pokémon por lado, seis turnos, 23
+movimientos, seis debilitamientos y el ganador Roku confirmado por OCR.
+La comparación con el replay archivado no se usa para imponer transiciones:
+el archivado tenía el 0 % falso y un cambio para la revelación.
+
+Las 127 pruebas del autómata y puente pasan (8 diagnósticos opcionales no
+disponibles); los JSON de Ledger de seis casos anteriores permanecen
+idénticos. Pendiente la revisión visual del HTML por Ies.
