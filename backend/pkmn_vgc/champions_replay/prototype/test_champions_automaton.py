@@ -2605,6 +2605,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual((repeat["kind"], repeat["status"]), ("heal", "suppressed"))
         self.assertEqual((damage["before"], damage["after"], damage["cause"]),
                          ("100/100", "68/100", 36))
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_B3F7"), "Requiere diagnóstico b3f7")
     def test_pelipper_y_archaludon_conservan_actor_y_ps(self):
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_B3F7"])
@@ -2645,7 +2646,6 @@ class TemporalAutomatonTests(unittest.TestCase):
                                        "confidence": .999, "left": .15, "top": .75})
             uncertain = BattleAutomaton(0, altered, context).run()
             self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
-
 
 
 if __name__ == "__main__":
