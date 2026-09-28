@@ -164,6 +164,34 @@ test("createMatch proceeds past validation when the canonical replay has no bloc
   );
 });
 
+test("an r11 replay with only an incomplete player selection remains saveable, but other blockers remain", async (t) => {
+  const { createMatch, DomainError } = await vite.ssrLoadModule("/db/queries.ts");
+  const { normalizeShowdownReplayDocument, hasCurrentReconciliation, hasBlockingIssues } = await vite.ssrLoadModule("/lib/showdown-replay.ts");
+  const oldIssue = { severity: "blocking", message: "La selección del jugador contiene 2/4 Pokémon." };
+  let issues = [oldIssue];
+  mockChampionsJobsLoopback(t, () => jsonResponse({ replay: {
+    log: "|start\n|win|IesYo",
+    reconciliation_version: "col102-r11",
+    issues,
+  } }));
+
+  const normalized = normalizeShowdownReplayDocument({ log: "|start\n|win|IesYo", reconciliation_version: "col102-r11", issues });
+  assert.equal(normalized.issues[0].severity, "warning");
+  assert.equal(hasCurrentReconciliation(normalized), true);
+  assert.equal(hasBlockingIssues(normalized), false);
+  await assert.rejects(() => createMatch(baseInput), (error) => {
+    assert.doesNotMatch(String(error?.message ?? error), /bloqueantes|revisión vigente/);
+    return true;
+  });
+
+  issues = [...issues, { severity: "blocking", message: "Reentrada tras debilitamiento confirmado." }];
+  await assert.rejects(() => createMatch(baseInput), (error) => {
+    assert.ok(error instanceof DomainError);
+    assert.match(error.message, /bloqueantes/);
+    return true;
+  });
+});
+
 test("createMatch rejects a canonical replay without a current reconciliation marker", async (t) => {
   // Roku, revisión del quinto corte, 26 sep: los tres jobs protegidos son
   // del 25 sep, de antes de que este campo existiera -un replay canónico
