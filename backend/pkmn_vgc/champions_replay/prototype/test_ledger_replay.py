@@ -57,6 +57,29 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    def test_hp_checkpoint_verifies_current_state_without_protocol_line(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            for item in battle["events"][4:]:
+                item["seq"] += 1
+                if isinstance(item.get("cause"), int):
+                    item["cause"] += 1
+            battle["events"].insert(4, {
+                "seq": 5, "kind": "hp_checkpoint", "status": "consistent", "slot": "p2a",
+                "actor_id": "p2-one", "health": "100/100", "hp_state": "confirmed", "frame": 4,
+                "hp_support": {"state": "confirmed", "evidence": [{"frame": 4, "text": "100%"}]},
+            })
+            result = build_replay(battle, context)
+            self.assertNotIn(5, [entry["ledger_seq"] for entry in
+                                 result["ledger_source"]["protocol_lines"]])
+            self.assertEqual(sum(line.startswith("|-damage|") for line in result["log"].splitlines()), 1)
+            for field, value in (("health", "80/100"), ("hp_support", {"evidence": []})):
+                broken = copy.deepcopy(battle)
+                broken["events"][4][field] = value
+                with self.assertRaisesRegex(ReplayEvidenceError, "Comprobación de PS contradictoria"):
+                    build_replay(broken, context)
+
     def test_tailwind_exige_origen_y_cierre_del_mismo_lado(self):
         with tempfile.TemporaryDirectory() as temp:
             battle, zip_path = _pilot_fixture(Path(temp))
