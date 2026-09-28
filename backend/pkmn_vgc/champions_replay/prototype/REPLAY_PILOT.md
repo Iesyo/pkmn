@@ -243,3 +243,28 @@ etiquetas de origen auxiliares; el orden de habilidades y terrenos difiere.
 Las 128 pruebas del autómata y puente pasan (8 diagnósticos opcionales
 omitidos); los replays JSON de 97c1, ad28, cc5298 y 472247 son idénticos.
 Pendiente la revisión visual del nuevo HTML por Ies.
+
+Ies confirmó visualmente que el replay HTML de 0f4f/01 se ve bien.
+
+## Diagnóstico 8499d37df0064393 · Tailwind
+
+El parser productivo archivó una batalla de nueve turnos; sus 17 segmentos de
+riesgo son avisos orientativos. Primer pase de Ledger conservado: 161
+candidatos, 96 sucesos consistentes, 24 episodios de PS confirmados y cero
+avisos abiertos. El puente se detenía ante los sucesos `sidestart` y
+`sideend`. Ledger observa Tailwind de Pelipper en p2a (suceso 33), su inicio
+en p2 (34) y su final en el mismo bando (69), después de varios cambios de
+Pokémon. El puente emite `|-sidestart|p2: 3st|move: Tailwind` sólo después
+del movimiento inmediato del actor activo, y `|-sideend|p2: 3st|move:
+Tailwind` sólo si la condición sigue abierta en ese lado. No asume que el
+Pokémon del slot al final sea el que inició Tailwind; rechaza un movimiento,
+lado, efecto o cierre contradictorio. Otros tipos de condición lateral
+requieren su propia evidencia para determinar el bando afectado.
+
+Replay generado desde Ledger y OCR con ambos equipos de seis, nueve turnos,
+26 movimientos, siete debilitamientos y ganador Roku corroborado por OCR.
+Las 81 líneas de turnos, cambios, movimientos, PS, debilitamientos, Tailwind
+y ganador coinciden exactamente con el replay productivo archivado. Las 130
+pruebas de ambos autómatas pasan (8 diagnósticos opcionales omitidos); los
+cinco replays JSON anteriores, 97c1, ad28, cc5298, 472247 y 0f4f,
+permanecen idénticos. Pendiente la revisión visual del HTML 8499/01 por Ies.
