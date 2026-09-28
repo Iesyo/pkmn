@@ -2145,8 +2145,9 @@ class TemporalAutomatonTests(unittest.TestCase):
         resurfaced = next(e for e in first_ledger["events"] if e["kind"] == "switch" and
                           e["slot"] == "p2a" and e["frame"] == 714)
         self.assertEqual((repeated["status"], resurfaced["status"]), ("suppressed", "suppressed"))
-        self.assertEqual((repeated["resolution"]["slot"], repeated["resolution"]["hp_event_seq"]),
-                         ("p2b", 49))
+        hp_proof = next(e for e in first_ledger["events"] if e["seq"] == repeated["resolution"]["hp_event_seq"])
+        self.assertEqual((repeated["resolution"]["slot"], hp_proof["kind"], hp_proof["slot"], hp_proof["after"]),
+                         ("p2b", "damage", "p2b", "0/100"))
         self.assertEqual({e["frame"] for e in resurfaced["resolution"]["evidence"]},
                          {640, 641, 714, 715})
         self.assertEqual([i["code"] for i in first_ledger["resolved_issues"]],
@@ -2816,9 +2817,9 @@ class TemporalAutomatonTests(unittest.TestCase):
                          [("hp_unconfirmed", 800), ("hp_transition", 804),
                           ("unclassified_text", 329)])
         impact = next(e for e in ledger["events"] if e["kind"] == "damage" and e["frame"] == 796)
-        self.assertEqual((impact["before"], impact["after"], impact["cause"]),
-                         ("28/100", "4/100", 68))
-        self.assertEqual(ledger["events"][impact["cause"] - 1]["move"], "Hyper Voice")
+        cause = next(e for e in ledger["events"] if e["seq"] == impact["cause"])
+        self.assertEqual((impact["before"], impact["after"], cause["kind"], cause["move"]),
+                         ("28/100", "4/100", "move", "Hyper Voice"))
         self.assertEqual([(e["frame"], e["status"]) for e in ledger["events"]
                           if e["frame"] in (800, 804) and e["slot"] == "p2a"],
                          [(800, "suppressed"), (804, "suppressed")])
