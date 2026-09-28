@@ -54,7 +54,13 @@ ganador ausente aun cuando el replay archivado diga `|win|Roku`.
   que nombre al rival como ganador o perdedor. Si falta, **no fabrica `|win|`**:
   la exportación falla indicando la evidencia faltante.
 - En esta primera etapa se traducen entradas, turnos, habilidades, campo,
-  clima, megaevoluciones, movimientos, daños, curas, debilitamientos y cierre.
+  clima, megaevoluciones, movimientos, daños, curas, debilitamientos,
+  retrocesos (`cant`), pérdida de objeto (`enditem`) y cierre. En reentradas
+  sin PS propios, se reutiliza el último valor seguido por el puente y se
+  contrasta con `last_confirmed_health` de Ledger cuando existe. En un primer
+  avistamiento con máximo inferido, sólo se completa el valor desde la primera
+  lectura de HUD confirmada al máximo antes de un cambio de PS. Ambas rutas
+  quedan anotadas en `ledger_source.inferred_entry_health`.
   Los demás tipos de Ledger deben recibir traductor y pruebas antes de usar
   otra partida. No hay integración automática con el generador de producción.
 
@@ -104,3 +110,20 @@ del Team Preview; no se copian del replay archivado. Las 7 pruebas del puente
 pasaron con los dos ZIP reales, y en los tres pilotos todas las líneas desde
 `|start|` son idénticas a las anteriores. Los HTML nuevos requieren revisión
 visual de la pantalla inicial por Ies.
+
+## Diagnóstico 97c1ea4bb7954632 · 28 de septiembre de 2026
+
+Primer pase inmutable de Ledger: una batalla, 261 candidatos, 134 sucesos
+(132 consistentes, dos suprimidos), 57 episodios de PS, cero avisos abiertos.
+El puente inicial se detuvo ante `cant` y `enditem`; tras traducirlos, exigió
+PS en los cambios. Se completaron cinco reentradas desde el último PS conocido
+del mismo actor, cotejados con `last_confirmed_health` si estaba presente, y
+la primera entrada de Blaziken desde el HUD 156/156 confirmado en frame 623
+antes de su primer daño. Dos HUD intermedios durante golpes, frames 360 y 811,
+quedan registrados sin fabricar daños adicionales.
+
+Replay resultante: 132 sucesos mapeados, once turnos, siete debilitamientos,
+seis especies por equipo y ganador Anshul respaldado por OCR del frame 1843.
+El replay de producción archivado sirve sólo para cotejo: los equipos y las
+acciones principales coinciden; el piloto omite narraciones auxiliares que
+Ledger no convierte en sucesos. Queda pendiente la revisión visual del HTML.
