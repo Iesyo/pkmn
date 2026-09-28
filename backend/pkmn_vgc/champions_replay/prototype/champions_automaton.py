@@ -43,6 +43,7 @@ HP_NARRATION_AMBIGUITY_MS = 500
 MEGA_NARRATION = re.compile(
     r"(The opposing )?(.+?)[’']s (\S+) is reacting to .+?[’']s Omni Ring!", re.I)
 FAINT_NARRATION = re.compile(r"(The opposing )?(.+?) fainted!", re.I)
+RESULT_NARRATION = re.compile(r"You (?:defeated|lost to|were defeated by) .+!", re.I)
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
 ANNOUNCED_ENTRY = re.compile(r"\bsent out\s+(.+?)!$|^Go!\s+(.+?)!$", re.IGNORECASE)
@@ -2243,6 +2244,23 @@ class BattleAutomaton:
                 self._flush_hp()
                 self._append(candidate, kind="battle_end", note="Fin de la batalla observado en la pantalla.")
                 return
+            # Some battles end directly on the result card. The detector emits
+            # it as a generic message, without a preceding forfeit/end event.
+            # Require the terminal-screen flag and the exact, high-confidence
+            # narration in the same frame; a stray message alone cannot close.
+            if RESULT_NARRATION.fullmatch(value) and row.get("detections", {}).get("battle_complete"):
+                result_line = next((line for line in row.get("ocr", ())
+                                    if line.get("text", "").strip() == value and
+                                    line.get("confidence", 0) >= .9 and
+                                    line.get("top", 0) >= .55), None)
+                if result_line and not any(item["kind"] == "battle_end" and
+                                           item["status"] == "consistent" for item in self.events):
+                    self._flush_hp()
+                    item = self._append(candidate, kind="battle_end",
+                                        note="Resultado corroborado por OCR en la pantalla de fin de batalla.")
+                    item["evidence"] = [{"frame": candidate["observed_frame"],
+                                         "text": value, "confidence": result_line["confidence"]}]
+                    return
             hp_message = HP_NARRATION.fullmatch(value)
             if hp_message:
                 hp_actor = self._hp_message_actor(value, candidate["observed_ms"])

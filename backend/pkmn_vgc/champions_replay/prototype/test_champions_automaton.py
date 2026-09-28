@@ -224,6 +224,52 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_result_screen_closes_battle_only_with_matching_ocr(self):
+        for result in ("You defeated Chinos!", "You lost to Chinos!",
+                       "You were defeated by Chinos!"):
+            with self.subTest(result=result):
+                trace = [frame(1, [event("switch", "p1a", "Basculegion", "54/219"),
+                                   event("turn", turn=1),
+                                   event("move", "p1a", "Basculegion", move="Protect")]),
+                         frame(2, [event("message", value=result)], texts=[result])]
+                trace[1]["detections"]["battle_complete"] = True
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertEqual(ledger["issues"], [])
+                ends = [item for item in ledger["events"] if item["kind"] == "battle_end"]
+                self.assertEqual(len(ends), 1)
+                self.assertEqual((ends[0]["frame"], ends[0]["value"]), (2, result))
+                self.assertEqual(ends[0]["evidence"],
+                                 [{"frame": 2, "text": result, "confidence": 1}])
+
+                # A terminal flag alone or an OCR result without that flag
+                # cannot turn an unrelated message into a battle ending.
+                for defect in ("flag", "missing", "weak", "mismatch", "menu"):
+                    altered = json.loads(json.dumps(trace))
+                    if defect == "flag":
+                        altered[1]["detections"]["battle_complete"] = False
+                    elif defect == "missing":
+                        altered[1]["ocr"] = []
+                    elif defect == "weak":
+                        altered[1]["ocr"][0]["confidence"] = .89
+                    elif defect == "mismatch":
+                        altered[1]["ocr"][0]["text"] = "You defeated someone else!"
+                    else:
+                        altered[1]["ocr"][0]["top"] = .2
+                    with self.subTest(defect=defect):
+                        self.assertFalse(any(item["kind"] == "battle_end" for item in
+                                             BattleAutomaton(0, altered).run()["events"]))
+
+    def test_result_after_forfeit_does_not_duplicate_battle_end(self):
+        trace = [frame(1, [event("switch", "p1a", "Basculegion", "54/219"),
+                           event("turn", turn=1),
+                           event("move", "p1a", "Basculegion", move="Protect")]),
+                 frame(2, [event("message", value="The battle has ended due to a forfeit.")]),
+                 frame(3, [event("message", value="You lost to Chinos!")],
+                       texts=["You lost to Chinos!"])]
+        trace[2]["detections"]["battle_complete"] = True
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(len([item for item in ledger["events"] if item["kind"] == "battle_end"]), 1)
+
     def test_partial_high_confidence_faint_cannot_change_actor_state(self):
         for side, name, species in (("p1", "Tomoe", "Kingambit"), ("p2", "Alpha", "Pelipper")):
             with self.subTest(side=side):
