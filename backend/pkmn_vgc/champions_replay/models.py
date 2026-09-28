@@ -388,6 +388,11 @@ class ReplayDocument:
     # artefacto viejo en disco, y el servidor lo trata como no revisado,
     # nunca como "revisado sin hallazgos". Ver `reconcile.RECONCILE_VERSION`.
     reconciliation_version: str | None = None
+    # Proveniencia y evidencia del puente Ledger; ausente en COL-102.
+    ledger_source: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        value = asdict(self)
+        if self.ledger_source is None:
+            value.pop("ledger_source")
+        return value
