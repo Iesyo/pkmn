@@ -29,7 +29,7 @@ _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
     "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
     "illusion_reveal", "sidestart", "sideend", "status", "curestatus", "miss",
-    "hp_checkpoint",
+    "hp_checkpoint", "drag", "crit", "item", "message",
 }
 _STATUS_CODES = {"brn", "par", "slp", "frz", "psn", "tox"}
 
@@ -222,6 +222,22 @@ def build_trace_context(
     )
 
 
+def _miss_moves(events: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Several targets can avoid the same move; a switch or turn ends the action."""
+    sources = {}
+    move = None
+    for event in events:
+        if event["kind"] in {"turn", "switch", "drag"}:
+            move = None
+        elif event["kind"] == "move":
+            move = event
+        elif (event["kind"] == "miss" and move is not None and event.get("turn") == move.get("turn") and
+              isinstance(event.get("frame"), int) and isinstance(move.get("frame"), int) and
+              0 <= event["frame"] - move["frame"] <= 20):
+            sources[event["seq"]] = move
+    return sources
+
+
 def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
     """Un solo daño o fallo inmediato acredita el objetivo de un movimiento."""
     moves = {e["seq"]: e for e in events if e["kind"] == "move"}
@@ -232,9 +248,11 @@ def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
         if move and event["kind"] == "damage" and isinstance(event.get("slot"), str):
             if event["slot"][:2] != move["slot"][:2]:
                 targets[cause].add(event["slot"])
-    for previous, event in zip(events, events[1:]):
+    miss_moves = _miss_moves(events)
+    for event in events:
+        previous = miss_moves.get(event["seq"])
         slot = event.get("target_slot")
-        if (event["kind"] == "miss" and previous["kind"] == "move" and
+        if (previous is not None and
             isinstance(slot, str) and slot in ("p1a", "p1b", "p2a", "p2b") and
             slot[:2] != previous["slot"][:2] and event.get("turn") == previous.get("turn") and
             isinstance(event.get("frame"), int) and isinstance(previous.get("frame"), int) and
@@ -321,6 +339,29 @@ def _intermediate_baseline(
     return None
 
 
+def _critical_targets(events: list[dict[str, Any]]) -> dict[int, tuple[str, str]]:
+    """A generic critical notice names a target only within one observed action."""
+    targets: dict[int, tuple[str, str]] = {}
+    boundaries = {"move", "turn", "switch", "drag"}
+    for index, notice in enumerate(events):
+        if notice["kind"] != "message" or str(notice.get("value", "")).casefold() != "a critical hit!":
+            continue
+        start = next((i for i in range(index - 1, -1, -1) if events[i]["kind"] in boundaries), None)
+        if start is None or events[start]["kind"] != "move":
+            continue
+        end = next((i for i in range(index + 1, len(events)) if events[i]["kind"] in boundaries), len(events))
+        action = events[start + 1:end]
+        damage = [hit for hit in action if hit["kind"] == "damage" and hit.get("cause") == events[start]["seq"]]
+        hits = {(hit.get("slot"), hit.get("actor_id")) for hit in damage}
+        nearby = any(isinstance(hit.get("frame"), int) and isinstance(notice.get("frame"), int) and
+                     abs(hit["frame"] - notice["frame"]) <= 20 for hit in damage)
+        if len(hits) == 1 and nearby and not any(hit["kind"] == "crit" for hit in action):
+            slot, actor = next(iter(hits))
+            if isinstance(slot, str) and isinstance(actor, str):
+                targets[notice["seq"]] = (slot, actor)
+    return targets
+
+
 def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any]:
     if battle.get("issues"):
         raise ReplayEvidenceError("Ledger tiene avisos abiertos; no se exporta un replay.")
@@ -356,6 +397,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     disguises: dict[str, str] = {}
     fainted: set[str] = set()
     moves_target = _observed_targets(events)
+    miss_moves = _miss_moves(events)
+    critical_targets = _critical_targets(events)
     moves_by_seq = {e["seq"]: e for e in events if e["kind"] == "move"}
     missing_targets: list[int] = []
     intermediate_baselines: list[dict[str, Any]] = []
@@ -374,12 +417,43 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             raise ReplayEvidenceError(f"Actor fuera de su slot en suceso {event.get('seq')} ({slot}).")
         return slot, f"{slot}: {known_species[actor]}"
 
+    def hp_condition(actor: str) -> str:
+        hp = known_hp[actor]
+        status = known_status.get(actor)
+        return f"{hp} {status}" if status and int(hp.split("/", 1)[0]) > 0 else hp
+
+    def source_tags(event: dict[str, Any]) -> str:
+        if event.get("tag_conflicts"):
+            raise ReplayEvidenceError(f"Causas incompatibles en las lecturas de PS del suceso {event['seq']}.")
+        values = event.get("tags") or []
+        if not isinstance(values, (list, tuple)):
+            raise ReplayEvidenceError(f"Etiquetas inválidas en suceso {event['seq']}.")
+        result: list[str] = []
+        for value in values:
+            tag = _atom(value, f"etiqueta {event['seq']}")
+            reference = re.fullmatch(r"\[of\] (p[12][ab]): (.+)", tag)
+            if reference:
+                slot, named = reference.groups()
+                actor = active.get(slot)
+                canonical = (actors.get(actor) or {}).get("species")
+                if (not actor or not isinstance(canonical, str) or not (
+                        named in {known_species[actor], known_formes.get(actor)} or
+                        _hud_identity(named, canonical, context.aliases[slot[:2]], context.teams[slot[:2]]))):
+                    raise ReplayEvidenceError(f"Origen de efecto incompatible con el ocupante en suceso {event['seq']}.")
+                tag = f"[of] {slot}: {known_species[actor]}"
+            elif not (tag in {"[eat]", "[upkeep]", "[silent]"} or
+                      re.fullmatch(r"\[from\] (?:(?:ability|item|move): .+|brn|psn|recoil)", tag)):
+                raise ReplayEvidenceError(f"Etiqueta no soportada en suceso {event['seq']}: {tag}.")
+            if tag not in result:
+                result.append(tag)
+        return "".join("|" + tag for tag in result)
+
     for event in events:
         seq, kind = event["seq"], event["kind"]
         if end_seen:
             raise ReplayEvidenceError(f"Suceso {seq} después del cierre.")
         start_line = len(lines) + 1
-        if kind == "switch":
+        if kind in ("switch", "drag"):
             slot = _slot(event.get("slot"))
             actor = _atom(event.get("actor_id"), f"actor en suceso {seq}")
             canonical = _atom((actors.get(actor) or {}).get("species"), f"especie del actor {actor}")
@@ -413,7 +487,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 for following in events:
                     if following["seq"] <= seq or following.get("actor_id") != actor:
                         continue
-                    if following["kind"] in ("switch", "faint"):
+                    if following["kind"] in ("switch", "drag", "faint"):
                         break
                     if following["kind"] not in ("damage", "heal"):
                         continue
@@ -458,7 +532,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             hp_source[actor] = ("inferred_entry" if event.get("hp_state") == "inferred"
                                 else hp_source.get(actor, "confirmed") if event.get("health") is None
                                 else "confirmed")
-            lines.append(f"|switch|{slot}: {known_species[actor]}|{apparent or species}, L50|{hp}")
+            lines.append(f"|{kind}|{slot}: {known_species[actor]}|{apparent or species}, L50|{hp_condition(actor)}")
         elif kind == "hp_checkpoint":
             slot, _ = actor_at(event)
             actor = active[slot]
@@ -483,7 +557,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 raise ReplayEvidenceError(f"Revelación de Ilusión contradictoria en suceso {seq}.")
             known_species[actor] = canonical
             disguises.pop(actor)
-            lines.append(f"|replace|{slot}: {canonical}|{canonical}, L50|{known_hp[actor]}")
+            lines.append(f"|replace|{slot}: {canonical}|{canonical}, L50|{hp_condition(actor)}")
             narration = event.get("narration") or []
             if len(narration) == 1 and re.search(r"\billusion wore off!$", narration[0], re.I):
                 lines.append(f"|-message|{_atom(narration[0], f'narración de Ilusión {seq}')}")
@@ -505,7 +579,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             stone = _atom(event.get("value"), f"piedra de la Mega {seq}")
             known_formes[active[slot]] = form
             lines.extend([
-                f"|detailschange|{identifier}|{form}, L50|{known_hp[active[slot]]}",
+                f"|detailschange|{identifier}|{form}, L50|{hp_condition(active[slot])}",
                 f"|-mega|{identifier}|{stone}",
             ])
         elif kind == "move":
@@ -541,7 +615,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 raise ReplayEvidenceError(f"Sentido de PS contradictorio en suceso {seq}.")
             known_hp[actor] = result
             hp_source[actor] = "confirmed"
-            lines.append(f"|-{kind}|{identifier}|{result}")
+            lines.append(f"|-{kind}|{identifier}|{hp_condition(actor)}{source_tags(event)}")
         elif kind == "faint":
             slot, identifier = actor_at(event)
             actor = active[slot]
@@ -551,10 +625,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             lines.append(f"|faint|{identifier}")
         elif kind == "ability":
             _, identifier = actor_at(event)
-            lines.append(f"|-ability|{identifier}|{_atom(event.get('value'), f'habilidad {seq}')}")
-        elif kind == "enditem":
+            lines.append(f"|-ability|{identifier}|{_atom(event.get('value'), f'habilidad {seq}')}{source_tags(event)}")
+        elif kind in ("item", "enditem"):
             _, identifier = actor_at(event)
-            lines.append(f"|-enditem|{identifier}|{_atom(event.get('value'), f'objeto consumido {seq}')}")
+            lines.append(f"|-{kind}|{identifier}|{_atom(event.get('value'), f'objeto {seq}')}{source_tags(event)}")
+        elif kind == "crit":
+            _, identifier = actor_at(event)
+            lines.append(f"|-crit|{identifier}")
         elif kind == "cant":
             _, identifier = actor_at(event)
             lines.append(f"|cant|{identifier}|{_atom(event.get('value'), f'causa de inmovilidad {seq}')}")
@@ -564,7 +641,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             if condition not in _STATUS_CODES or active[slot] in known_status:
                 raise ReplayEvidenceError(f"Estado incompatible en suceso {seq}.")
             known_status[active[slot]] = condition
-            lines.append(f"|-status|{identifier}|{condition}")
+            lines.append(f"|-status|{identifier}|{condition}{source_tags(event)}")
         elif kind == "curestatus":
             slot, identifier = actor_at(event)
             condition = known_status.get(active[slot])
@@ -572,10 +649,10 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             if condition is None or reported not in ("status", condition):
                 raise ReplayEvidenceError(f"Curación de estado sin estado previo en suceso {seq}.")
             del known_status[active[slot]]
-            lines.append(f"|-curestatus|{identifier}|{condition}")
+            lines.append(f"|-curestatus|{identifier}|{condition}{source_tags(event)}")
         elif kind == "miss":
             target = _slot(event.get("target_slot"))
-            move = previous_event
+            move = miss_moves.get(seq)
             if (move is None or move.get("kind") != "move" or
                 move.get("turn") != event.get("turn") or
                 not isinstance(move.get("frame"), int) or not isinstance(event.get("frame"), int) or
@@ -594,7 +671,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                     raise ReplayEvidenceError(f"Fin de Trick Room sin inicio activo en suceso {seq}.")
                 trick_room_active = kind == "fieldstart"
                 effect = "move: Trick Room"
-            lines.append(f"|-{kind}|{effect}")
+            lines.append(f"|-{kind}|{effect}{source_tags(event)}")
         elif kind == "sidestart":
             slot, _ = actor_at(event)
             effect = _atom(event.get("value"), f"condición lateral {seq}")
@@ -629,6 +706,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         elif kind == "battle_end":
             end_seen = True
             lines.append(f"|-message|{_atom(event.get('value'), f'cierre {seq}')}")
+        elif kind == "message":
+            value = _atom(event.get("value"), f"mensaje {seq}")
+            target = critical_targets.get(seq)
+            if target and active.get(target[0]) == target[1]:
+                lines.append(f"|-crit|{target[0]}: {known_species[target[1]]}")
+            else:
+                lines.append(f"|-message|{value}")
         if kind != "hp_checkpoint":
             event_lines.append({"ledger_seq": seq, "protocol_line": start_line})
         previous_event = event
