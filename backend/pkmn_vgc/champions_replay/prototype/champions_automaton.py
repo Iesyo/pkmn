@@ -83,8 +83,52 @@ def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
                if left <= line.get("left", -1) <= right and
                top <= line.get("top", -1) <= bottom and
                line.get("confidence", 0) >= .9 and
-               re.search(r"[A-Za-z]{3}", line.get("text", ""))]
+               sum(char.isalpha() for char in line.get("text", "")) >= 2]
     return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
+
+
+def corroborated_digit_aliases(frames: list[dict[str, Any]],
+                               aliases: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Join a CJK nickname with one OCR digit to repeated faint narration.
+
+    The same alias must be stationary in one HUD for two consecutive samples,
+    the complete faint sentence must repeat, and no second alias may fit.
+    Do not guess from arbitrary similar names or from an unlocated sentence.
+    """
+    narrated: dict[tuple[str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+    for row in frames:
+        for line in row.get("ocr", ()):
+            match = FAINT_NARRATION.fullmatch(line.get("text", "").strip())
+            if match and line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95:
+                side = "p2" if match[1] else "p1"
+                narrated[(side, match[2].casefold())].append(
+                    {"frame": row["frame"], "text": line["text"],
+                     "confidence": line["confidence"]})
+    proofs = []
+    for (side, name), sentence in narrated.items():
+        if name in aliases[side] or len({e["frame"] for e in sentence}) < 2:
+            continue
+        fits = []
+        for alias, species in aliases[side].items():
+            if (len(name) < 4 or len(name) != len(alias) or
+                sum(a != b for a, b in zip(alias, name)) != 1 or
+                not any(a.isdigit() and b.isalpha() and not b.isascii()
+                        for a, b in zip(alias, name) if a != b)):
+                continue
+            hud = [(row["frame"], slot) for row in frames
+                   for slot in SLOTS if slot.startswith(side) and hud_nickname(row, slot) == alias]
+            consecutive = next(((a, b) for a, b in zip(hud, hud[1:])
+                                if a[1] == b[1] and b[0] == a[0] + 1), None)
+            if consecutive:
+                fits.append((alias, species, consecutive))
+        if len(fits) != 1:
+            continue
+        alias, species, hud = fits[0]
+        proofs.append({"side": side, "nickname": name, "hud_nickname": alias,
+                       "species": species, "slot": hud[0][1],
+                       "evidence": [{"frame": f, "text": alias, "kind": "hud_name"} for f, _ in hud] +
+                       [{**e, "kind": "faint_narration"} for e in sentence]})
+    return proofs
 
 
 def status_panel_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -684,13 +728,19 @@ def recover_opening_ability_panels(candidates: list[dict[str, Any]],
             panel = [line for line in row.get("ocr", ()) if
                      area[0] <= line.get("left", -1) <= area[1] and
                      .30 <= line.get("top", -1) <= .55 and line.get("confidence", 0) >= .95]
-            named = [line for line in panel if re.sub(r"[’']s$", "", line["text"].casefold()) == name]
+            named = [line for line in panel
+                     if (owner := re.sub(r"[’']s$", "", line["text"].casefold())) == name or
+                     (aliases[side].get(owner) == species and
+                      sum(identity_species(other_species) == identity_species(species)
+                          for (other_side, _), (_, other_species, _) in owners.items()
+                          if other_side == side) == 1)]
             abilities = [line for line in panel if line["text"] in catalog.get(species, ())]
             if len(named) != 1 or len(abilities) != 1:
                 continue
             ability = abilities[0]["text"]
+            owner = re.sub(r"[’']s$", "", named[0]["text"].casefold())
             hits[(slot, ability)].append({"frame": row["frame"], "text": ability,
-                                          "owner": name, "confidence": min(named[0]["confidence"],
+                                          "owner": owner, "confidence": min(named[0]["confidence"],
                                                                            abilities[0]["confidence"])})
     for (slot, ability), evidence in hits.items():
         episodes: list[list[dict[str, Any]]] = []
@@ -743,7 +793,8 @@ def recover_opening_ability_panels(candidates: list[dict[str, Any]],
                                                           "reason": "Panel inicial de habilidad repetido, especie y slot confirmados por HUD"}})
 
 
-def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def ordered_candidates(frames: list[dict[str, Any]],
+                       alias_reconstructions: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for row in frames:
         for index, event in enumerate(row.get("detections", {}).get("events", ())):
@@ -761,6 +812,8 @@ def ordered_candidates(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 aliases[side].setdefault(name.casefold(), species)
         for raw, species in (row.get("resolved_identities") or {}).items():
             resolutions[raw].add(species)
+    for proof in alias_reconstructions if alias_reconstructions is not None else corroborated_digit_aliases(frames, aliases):
+        aliases[proof["side"]][proof["nickname"]] = proof["species"]
     unambiguous = {raw: next(iter(species)) for raw, species in resolutions.items()
                    if len(species) == 1}
     for item in candidates:
@@ -1059,6 +1112,9 @@ class BattleAutomaton:
             for side in self.nickname_species:
                 for nickname, species in (row.get("resolved_aliases", {}).get(side) or {}).items():
                     self.nickname_species[side].setdefault(nickname.casefold(), species)
+        self.alias_reconstructions = corroborated_digit_aliases(frames, self.nickname_species)
+        for proof in self.alias_reconstructions:
+            self.nickname_species[proof["side"]][proof["nickname"]] = proof["species"]
         self.events: list[dict[str, Any]] = []
         self.issues: list[dict[str, Any]] = []
         self.resolved_issues: list[dict[str, Any]] = []
@@ -2923,7 +2979,21 @@ class BattleAutomaton:
                     continue
                 named = signature[2].casefold()
                 named_species = self.nickname_species[signature[1]].get(named, named)
-                if identity_species(named_species).casefold() != identity_species(faint["species"]).casefold():
+                expected_species = identity_species(faint["species"]).casefold()
+                clean_names = [name for name, species in self.nickname_species[signature[1]].items()
+                               if identity_species(species).casefold() == expected_species]
+
+                def inserted_ascii_noise(clean: str) -> bool:
+                    if (len(clean) < 4 or len(named) != len(clean) + 1 or
+                        not any(c.isalpha() and not c.isascii() for c in clean)):
+                        return False
+                    return any(named[:i] + named[i + 1:] == clean and named[i].isascii() and
+                               named[i].isalnum() for i in range(len(named)))
+
+                noisy_name = (identity_species(named_species).casefold() != expected_species and
+                              named not in self.nickname_species[signature[1]] and
+                              sum(inserted_ascii_noise(clean) for clean in clean_names) == 1)
+                if identity_species(named_species).casefold() != expected_species and not noisy_name:
                     continue
                 hp = next((e for e in reversed(self.events[:faint["seq"] - 1])
                            if e["actor_id"] == faint["actor_id"] and e["status"] != "suppressed" and
@@ -2955,8 +3025,16 @@ class BattleAutomaton:
                         if identity_species(species).casefold() == identity_species(faint["species"]).casefold():
                             evidence.append({"frame": row["frame"], "text": text,
                                              "confidence": line["confidence"], "kind": "faint_narration"})
-                if (not blocked and len({e["frame"] for e in evidence}) >= 2 and
-                    any(e["frame"] == rejected["frame"] for e in evidence)):
+                preceding = sorted({e["frame"] for e in evidence})
+                supported_noise = (noisy_name and len(preceding) >= 2 and
+                                   preceding[-2:] == [rejected["frame"] - 2, rejected["frame"] - 1] and
+                                   any(e["frame"] == rejected["frame"] for e in
+                                       rejected["text_support"]["evidence"]))
+                if (not blocked and len(preceding) >= 2 and
+                    (any(e["frame"] == rejected["frame"] for e in evidence) or supported_noise)):
+                    if supported_noise:
+                        evidence += [{**e, "kind": "suspect_faint_ocr"} for e in
+                                     rejected["text_support"]["evidence"] if e["frame"] == rejected["frame"]]
                     matches.append((faint, hp, evidence))
             if len(matches) != 1:
                 unresolved.append(issue)
@@ -3559,7 +3637,7 @@ class BattleAutomaton:
         return merge_recovered_candidates(candidates, recovered)
 
     def run(self) -> dict[str, Any]:
-        candidates = self._recover_withdrawn_entries(ordered_candidates(self.frames))
+        candidates = self._recover_withdrawn_entries(ordered_candidates(self.frames, self.alias_reconstructions))
         for candidate in self._complete_hp_candidates(candidates):
             self._handle(candidate)
         self._flush_hp()
@@ -3591,6 +3669,7 @@ class BattleAutomaton:
                 "events": self.events, "issues": self.issues, "resolved_issues": self.resolved_issues,
                 "narration_links": self.narration_links,
                 "counts": dict(counts), "actors": self.actors,
+                **({"alias_reconstructions": self.alias_reconstructions} if self.alias_reconstructions else {}),
                 **({"ignored_ui_frames": self.ignored_ui_frames} if self.ignored_ui_frames else {})}
 
 
