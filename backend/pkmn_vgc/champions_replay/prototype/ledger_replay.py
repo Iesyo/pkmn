@@ -28,6 +28,7 @@ _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
     "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
     "illusion_reveal", "sidestart", "sideend", "status", "curestatus", "miss",
+    "hp_checkpoint",
 }
 _STATUS_CODES = {"brn", "par", "slp", "frz", "psn", "tox"}
 
@@ -449,6 +450,19 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                                 else hp_source.get(actor, "confirmed") if event.get("health") is None
                                 else "confirmed")
             lines.append(f"|switch|{slot}: {known_species[actor]}|{apparent or species}, L50|{hp}")
+        elif kind == "hp_checkpoint":
+            slot, _ = actor_at(event)
+            actor = active[slot]
+            health = _health(event.get("health"), f"comprobación de PS {seq}")
+            evidence = (event.get("hp_support") or {}).get("evidence") or []
+            label = health.split("/", 1)[0] + "%" if slot.startswith("p2") else health
+            if (event.get("hp_state") != "confirmed" or health != known_hp[actor] or
+                not any(proof.get("text") == label and
+                        isinstance(proof.get("frame"), int) and
+                        event.get("frame", 0) <= proof["frame"] <= event.get("frame", 0) + 2
+                        for proof in evidence)):
+                raise ReplayEvidenceError(f"Comprobación de PS contradictoria en suceso {seq}.")
+            hp_source[actor] = "confirmed"
         elif kind == "illusion_reveal":
             slot, _ = actor_at(event)
             actor = active[slot]
@@ -598,7 +612,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         elif kind == "battle_end":
             end_seen = True
             lines.append(f"|-message|{_atom(event.get('value'), f'cierre {seq}')}")
-        event_lines.append({"ledger_seq": seq, "protocol_line": start_line})
+        if kind != "hp_checkpoint":
+            event_lines.append({"ledger_seq": seq, "protocol_line": start_line})
         previous_event = event
     if not end_seen or not turn:
         raise ReplayEvidenceError("No hay partida completa con turnos y cierre.")
