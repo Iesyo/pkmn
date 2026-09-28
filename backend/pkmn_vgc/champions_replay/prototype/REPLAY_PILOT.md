@@ -307,6 +307,7 @@ byte por byte al ZIP 472247 previamente archivado (SHA-256
 Al correr ambos autómatas de nuevo, Ledger produjo el mismo JSON y Markdown
 de 75 sucesos, 18 cambios de PS y cero avisos; replay LOG, JSON y HTML
 idénticos. Sólo difiere el nombre del ZIP en `report.json`. No es una nueva
+partida ni requiere otra revisión visual.
 
 ## Diagnóstico b3f702719f2941f9 · debilitamiento repetido y HUD intermedio
 
@@ -340,4 +341,3 @@ siete debilitamientos y ganador Roku confirmado en el frame 1383. Las 135
 pruebas de ambos autómatas pasan (ocho diagnósticos opcionales omitidos); los
 Ledger y replays JSON de siete casos anteriores permanecen idénticos.
 Pendiente la revisión visual del HTML b3f7/01 por Ies.
-partida ni requiere otra revisión visual.
