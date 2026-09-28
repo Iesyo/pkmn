@@ -3138,13 +3138,13 @@ class BattleAutomaton:
                         return False
                     return any(named[:i] + named[i + 1:] == clean and named[i].isascii() and
                                named[i].isalnum() for i in range(len(named)))
+
                 def missing_ascii_letters(clean: str) -> bool:
                     return (len(clean) >= 6 and clean.isascii() and named.isascii() and
                             1 <= len(clean) - len(named) <= 2 and
                             any(clean[:i] + clean[i + len(clean) - len(named):] == named and
                                 clean[i:i + len(clean) - len(named)].isalpha()
                                 for i in range(len(named) + 1)))
-
 
                 noisy_name = (identity_species(named_species).casefold() != expected_species and
                               named not in self.nickname_species[signature[1]] and
@@ -3310,6 +3310,7 @@ class BattleAutomaton:
             rejected["resolution"] = resolution
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
+
     def _reconcile_intermediate_hp_entries(self) -> None:
         """A changing HUD can be mistaken for an entry during an HP animation.
 
@@ -3402,7 +3403,6 @@ class BattleAutomaton:
             rejected["resolution"] = resolution
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
-
 
     def _reconcile_hud_identity_entries(self) -> None:
         """Join a provisional HUD identity to its corroborated living occupant.
@@ -3897,8 +3897,8 @@ class BattleAutomaton:
         self._reconcile_faint_hud_entries()
         self._reconcile_hud_identity_entries()
         self._reconcile_repeated_faint_text()
-        self._reconcile_intermediate_hp_entries()
         self._reconcile_partner_hud_entries()
+        self._reconcile_intermediate_hp_entries()
         self._reconcile_transient_text()
         self._reconcile_switch_and_mega_context()
         for actor_id, actor in self.actors.items():
