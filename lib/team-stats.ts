@@ -71,9 +71,23 @@ export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
   );
 }
 
-export function rankLeadsByWinRate(leads: LeadStat[]): LeadStat[] {
-  return [...leads].sort((a, b) =>
-    winRate(b.wins, b.games) - winRate(a.wins, a.games)
+export const MIN_BEST_LEAD_GAMES = 3;
+
+// Lower bound of the 95% Wilson interval: an isolated win has much less
+// evidence than a sustained record, while the displayed win rate stays raw.
+function leadConfidenceScore({ wins, games }: LeadStat) {
+  const z = 1.96;
+  const zSquared = z * z;
+  const rate = wins / games;
+  return (rate + zSquared / (2 * games)
+    - z * Math.sqrt(rate * (1 - rate) / games + zSquared / (4 * games * games)))
+    / (1 + zSquared / games);
+}
+
+export function rankBestLeads(leads: LeadStat[]): LeadStat[] {
+  return leads.filter((lead) => lead.games >= MIN_BEST_LEAD_GAMES).sort((a, b) =>
+    leadConfidenceScore(b) - leadConfidenceScore(a)
+    || b.wins / b.games - a.wins / a.games
     || b.games - a.games
     || a.species.join("|").localeCompare(b.species.join("|")),
   );
