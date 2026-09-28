@@ -7,7 +7,9 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from champions_automaton import BattleAutomaton, compare_baseline, health_ratio, read_diagnostic, read_diagnostic_context, render_markdown, strip_pokemon_title
+from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases,
+                                 health_ratio, hud_nickname, read_diagnostic,
+                                 read_diagnostic_context, render_markdown, strip_pokemon_title)
 
 
 def event(kind, slot=None, species=None, health=None, move=None, value=None, turn=None):
@@ -225,6 +227,32 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_cjk_hud_alias_requires_stationary_name_and_repeated_faint(self):
+        rows = [frame(n) for n in range(1, 5)]
+        for row in rows[:2]:
+            row["ocr"].append({"text": "わ5びくん", "left": .83, "right": .89,
+                               "top": .05, "bottom": .09, "confidence": .98})
+        for row in rows[2:]:
+            row["ocr"].append({"text": "The opposing わらびくん fainted!",
+                               "top": .73, "confidence": .98})
+        aliases = {"p1": {}, "p2": {"わ5びくん": "Incineroar"}}
+        self.assertEqual(hud_nickname(rows[0], "p2b"), "わ5びくん")
+        proof = corroborated_digit_aliases(rows, aliases)
+        self.assertEqual([(x["nickname"], x["species"], x["slot"]) for x in proof],
+                         [("わらびくん", "Incineroar", "p2b")])
+        one_reading = copy.deepcopy(rows)
+        one_reading[3]["ocr"] = []
+        self.assertEqual(corroborated_digit_aliases(one_reading, aliases), [])
+        unstable_hud = copy.deepcopy(rows)
+        unstable_hud[1]["ocr"] = []
+        self.assertEqual(corroborated_digit_aliases(unstable_hud, aliases), [])
+        ambiguous = {"p1": {}, "p2": {**aliases["p2"], "わ8びくん": "Gengar"}}
+        two_huds = copy.deepcopy(rows)
+        for row in two_huds[:2]:
+            row["ocr"].append({"text": "わ8びくん", "left": .63, "right": .69,
+                               "top": .05, "bottom": .09, "confidence": .98})
+        self.assertEqual(corroborated_digit_aliases(two_huds, ambiguous), [])
+
     def test_result_screen_closes_battle_only_with_matching_ocr(self):
         for result in ("You defeated Chinos!", "You lost to Chinos!",
                        "You were defeated by Chinos!"):
@@ -2437,6 +2465,29 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertFalse(any(e.get("reentry_health_support") for e in uncertain["events"]
                              if e["frame"] == 604))
         self.assertIn("unparsed_action_text", {x["code"] for x in uncertain["issues"]})
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_CC5298"), "Requiere diagnóstico de mención japonesa")
+    def test_motes_japoneses_y_ocr_repetido_no_duplican_actores(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_CC5298"])
+        frames, baseline = read_diagnostic(path)
+        self.assertFalse(baseline)  # Producción rechazó esta batalla.
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(ledger["alias_reconstructions"][0]["nickname"], "わらびくん")
+        opening = [(e["kind"], e["slot"], e["species"]) for e in ledger["events"]
+                   if e["kind"] == "switch" and e["status"] == "consistent"]
+        self.assertEqual(opening, [("switch", "p1a", "Kingambit"),
+                                   ("switch", "p1b", "Indeedee-F"),
+                                   ("switch", "p2a", "Gengar"),
+                                   ("switch", "p2b", "Incineroar")])
+        self.assertIn(("p2b", "Intimidate", 207),
+                      [(e["slot"], e["value"], e["frame"]) for e in ledger["events"]
+                       if e["kind"] == "ability"])
+        self.assertEqual([(e["slot"], e["status"]) for e in ledger["events"]
+                          if e["kind"] == "faint"],
+                         [("p2b", "consistent"), ("p2a", "suppressed"), ("p2a", "suppressed")])
+        self.assertEqual([issue["code"] for issue in ledger["resolved_issues"]],
+                         ["faint_text_unconfirmed", "faint_text_unconfirmed"])
 
 
 if __name__ == "__main__":
