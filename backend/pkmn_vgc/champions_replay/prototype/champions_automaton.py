@@ -1709,6 +1709,90 @@ class BattleAutomaton:
         return {"state": "confirmed", "reason": "PS completos repetidos antes del fragmento OCR",
                 "evidence": list(reversed(evidence))}
 
+    def _sliding_hud_hp_fragment(self, episode: HpEpisode, before: str | None,
+                                 support: dict[str, Any]) -> dict[str, Any] | None:
+        """Reject a shifted HUD's clipped suffix when its name and HP move together.
+
+        A truncated percentage alone cannot establish a transition. Two stable
+        complete readings and matching displacement of the occupant's name
+        distinguish a moving panel from a real zero or a different occupant.
+        """
+        if (len(episode.candidates) != 1 or episode.kind != "damage" or
+            support["state"] == "confirmed" or not episode.slot or
+            not episode.slot.startswith("p2") or not before or
+            not episode.actor_id or self.actors[episode.actor_id]["health_state"] != "confirmed"):
+            return None
+        candidate = episode.candidates[0]
+        frame = candidate["observed_frame"]
+        after = candidate["event"].get("health")
+        old, new = health_ratio(before), health_ratio(after)
+        if old is None or new is None or not old > new:
+            return None
+        slot = episode.slot
+        rows = [self.frame_lookup.get(number) for number in (frame - 2, frame - 1, frame)]
+        if any(row is None for row in rows):
+            return None
+        earlier, prior, current = rows
+        if (current["timestamp_ms"] - earlier["timestamp_ms"] > 1_500 or
+            any(event["kind"] in ACTIVITY | {"faint", "switch", "drag"} for row in (prior, current)
+                for event in row.get("detections", {}).get("events", ()) if event is not candidate["event"] and
+                event["kind"] not in HP_KINDS)):
+            return None
+        hp_left, hp_right, hp_top, hp_bottom = HP_HUD_AREAS[slot]
+        name_left, name_right, name_top, name_bottom = NAME_HUD_AREAS[slot]
+        full_hp = before.split("/", 1)[0] + "%"
+        prior_hp = []
+        prior_names = []
+        for row in (earlier, prior):
+            hp = next((line for line in row["ocr"] if line.get("text", "").replace(" ", "") == full_hp
+                       and line.get("confidence", 0) >= .97 and
+                       hp_left <= line.get("left", -1) <= hp_right and
+                       hp_top <= line.get("top", -1) <= hp_bottom), None)
+            name = next((line for line in row["ocr"] if line.get("confidence", 0) >= .97 and
+                         name_left <= line.get("left", -1) <= name_right and
+                         name_top <= line.get("top", -1) <= name_bottom and
+                         line.get("text", "").isalpha()), None)
+            if not hp or not name or (prior_names and name["text"] != prior_names[0]["text"]):
+                return None
+            prior_hp.append(hp)
+            prior_names.append(name)
+        if abs(prior_hp[0]["left"] - prior_hp[1]["left"]) > .015 or \
+                abs(prior_names[0]["left"] - prior_names[1]["left"]) > .015:
+            return None
+        actor_species = identity_species(self.actors[episode.actor_id]["species"]).casefold()
+        name = prior_names[-1]["text"]
+        if identity_species(self.nickname_species[slot[:2]].get(name.casefold(), name)).casefold() != actor_species:
+            return None
+        for line in current["ocr"]:
+            fragment = line.get("text", "").replace(" ", "")
+            if (fragment == full_hp or len(fragment) < 2 or not full_hp.endswith(fragment) or
+                not fragment.endswith("%") or not fragment[:-1].isdigit() or
+                int(fragment[:-1]) != int(after.split("/", 1)[0]) or
+                line.get("confidence", 0) < .97 or
+                not hp_left <= line.get("left", -1) <= hp_right or
+                not hp_top <= line.get("top", -1) <= hp_bottom):
+                continue
+            hp_shift = line["left"] - prior_hp[-1]["left"]
+            if hp_shift < .05:
+                continue
+            for partial_name in current["ocr"]:
+                clipped = partial_name.get("text", "")
+                if (not clipped or clipped == name or not name.endswith(clipped) or
+                    partial_name.get("confidence", 0) < .97 or
+                    not name_left <= partial_name.get("left", -1) <= name_right or
+                    not name_top <= partial_name.get("top", -1) <= name_bottom):
+                    continue
+                name_shift = partial_name["left"] - prior_names[-1]["left"]
+                if abs(name_shift - hp_shift) > .025:
+                    continue
+                return {"state": "rejected", "reason": "nombre y PS recortados por desplazamiento del HUD",
+                        "evidence": [{"frame": row["frame"], "text": hp["text"],
+                                      "confidence": hp["confidence"], "name": nm["text"]}
+                                     for row, hp, nm in zip((earlier, prior), prior_hp, prior_names)] +
+                                    [{"frame": frame, "text": fragment, "confidence": line["confidence"],
+                                      "name": clipped, "shift": round(hp_shift, 4)}]}
+        return None
+
     def _terrain_restoration_context(self, slot: str | None, actor_id: str | None,
                                      before: str | None, partial: dict[str, Any],
                                      healing: dict[str, Any]) -> dict[str, Any] | None:
@@ -1974,6 +2058,16 @@ class BattleAutomaton:
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
             support = self._confirm_pending_hp(episode, support)
+            sliding = self._sliding_hud_hp_fragment(episode, before, support)
+            if sliding:
+                note = (f"HUD desplazado: {sliding['evidence'][-1]['text']} es un fragmento "
+                        f"de {before}; el nombre se desplaza junto con los PS.")
+                item = self._append(last, kind="hp_rejected_reading", actor_id=episode.actor_id,
+                                    status="suppressed", before=before, after=before,
+                                    note=note, observations=observations)
+                item["narration"].extend(episode.narration)
+                item["hp_state"], item["hp_support"] = "rejected", sliding
+                continue
             baseline = (self._pre_impact_baseline(episode, actor)
                         if actor and (before is None or actor["health_state"] == "inferred")
                         and support["state"] == "confirmed" else None)
