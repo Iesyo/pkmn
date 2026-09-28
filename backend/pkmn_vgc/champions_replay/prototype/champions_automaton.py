@@ -2369,8 +2369,43 @@ class BattleAutomaton:
             if entry_conflict:
                 support = {"state": "unconfirmed", "reason": "OCR numérico contradictorio en el mismo HUD",
                            "evidence": [entry_conflict]}
+            reentry = None
+            previous_health = self.actors[actor_id]["health"]
+            previous_state = self.actors[actor_id]["health_state"]
+            if (late_health and not first_appearance and not baseline and not entry_conflict and
+                    previous_health and previous_state in {"confirmed", "inferred"} and
+                    support and support["state"] == "confirmed"):
+                previous = next((e for e in reversed(self.events) if e["actor_id"] == actor_id and
+                                 e["status"] == "consistent" and e["kind"] in HP_KINDS | {"switch", "drag"}
+                                 and (e["after"] or e["health"]) == previous_health), None)
+                if previous and not any(e["actor_id"] == actor_id and e["status"] == "review" and
+                                        e["kind"] in HP_KINDS | {"switch", "drag"}
+                                        for e in self.events[previous["seq"]:]):
+                    previous_proof = (previous.get("hp_support") or {}).get("evidence") or previous["evidence"]
+                    if event["health"] == previous_health:
+                        reentry = {"previous_seq": previous["seq"], "health": previous_health,
+                                   "state": previous_state, "evidence": previous_proof + support["evidence"],
+                                   "reason": "PS anteriores del mismo actor y HUD posterior idéntico"}
+                    elif candidate.get("anchor") and (health_ratio(previous_health) or 0) > (
+                            health_ratio(event["health"]) or 1):
+                        start, end = candidate["anchor"]["frame"], candidate["observed_frame"]
+                        attacks = [(row["frame"], hit) for row in self.frames if start <= row["frame"] < end
+                                   for hit in row.get("detections", {}).get("events", ())
+                                   if hit["kind"] == "move" and hit.get("slot", "")[:2] != slot[:2]]
+                        impacts = [(row["frame"], hit) for row in self.frames if end < row["frame"] <= end + 3
+                                   for hit in row.get("detections", {}).get("events", ())
+                                   if hit["kind"] == "damage" and hit.get("slot") == slot and
+                                   (health_ratio(hit.get("health")) or 1) < (health_ratio(event["health"]) or 0)]
+                        if len(attacks) == len(impacts) == 1:
+                            final_proof = self._hp_support(slot, impacts[0][1]["health"], impacts[0][0])
+                            if final_proof["state"] == "confirmed":
+                                reentry = {"previous_seq": previous["seq"], "health": previous_health,
+                                           "state": previous_state, "evidence": previous_proof + final_proof["evidence"],
+                                           "intermediate_hud": support["evidence"],
+                                           "causing_move_frame": attacks[0][0], "final_hp_frame": impacts[0][0],
+                                           "reason": "PS anteriores del mismo actor; HUD posterior intermedio durante un golpe corroborado"}
             initial_health = (baseline[0] if baseline else event.get("health") if not late_health and support and
-                              support["state"] == "confirmed" else None)
+                              support["state"] == "confirmed" else reentry["health"] if reentry else None)
             assume_full = first_appearance and not baseline and (
                 not event.get("health") or late_health) and initial_health is None
             if assume_full and slot.startswith("p2"):
@@ -2378,14 +2413,20 @@ class BattleAutomaton:
             if event.get("health") or baseline:
                 self.actors[actor_id]["health"] = initial_health
                 self.actors[actor_id]["health_state"] = (
+                    reentry["state"] if reentry else
                     "confirmed" if initial_health else "unknown" if late_health else "unconfirmed")
             if assume_full:
                 self.actors[actor_id]["health"] = initial_health
                 self.actors[actor_id]["health_state"] = "inferred"
             item = self._append(candidate, actor_id=actor_id,
-                                status="review" if not baseline and not assume_full and
+                                status="review" if not baseline and not reentry and not assume_full and
                                 (late_health or (support and support["state"] != "confirmed"))
                                 else "consistent")
+            if reentry:
+                item["health"], item["hp_state"] = reentry["health"], reentry["state"]
+                item["reentry_health_support"] = reentry
+                item["hp_support"] = {"state": reentry["state"], "reason": reentry["reason"],
+                                      "evidence": reentry["evidence"]}
             if assume_full:
                 item["health"] = initial_health
                 item["hp_state"] = "inferred"
@@ -2401,13 +2442,13 @@ class BattleAutomaton:
                                              "health": baseline[0], "reason": baseline[1]["reason"]})
             if not event.get("health") and self.actors[actor_id]["health_state"] == "confirmed":
                 item["last_confirmed_health"] = self.actors[actor_id]["health"]
-            if support and not assume_full and not reconstruction and not baseline:
+            if support and not reentry and not assume_full and not reconstruction and not baseline:
                 item["hp_state"], item["hp_support"] = (
                     "unknown" if late_health else support["state"]), support
             if late_health and not baseline:
                 item["observations"].append({"frame": item["frame"], "health": event["health"],
                                               "reason": "HUD después de comenzar una acción; lectura transitoria"})
-                if not assume_full:
+                if not assume_full and not reentry:
                     item["health"] = None
                     self._issue("late_switch_health", "El PS leído al confirmar la entrada ya estaba en animación; PS de entrada desconocido.",
                                 item["frame"], item["seq"])
@@ -2422,6 +2463,8 @@ class BattleAutomaton:
                 item["note"] = f"Entrada anunciada en frame {candidate['anchor']['frame']}; HUD confirmó el slot en {confirmed}."
             if late_health and not baseline:
                 item["note"] = (item["note"] or "") + (
+                    " " + reentry["reason"] + "."
+                    if reentry else
                     " PS iniciales al máximo inferidos; el HUD posterior no confirma la entrada."
                     if candidate.get("delayed_voluntary_entry") and assume_full else
                     " PS iniciales al máximo inferidos; el HUD ya cambiaba." if assume_full else
@@ -3242,6 +3285,102 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_switch_and_mega_context(self) -> None:
+        """Link repeated withdrawal/stone text to the actual entry or Mega.
+
+        These lines explain an action, but are not additional battle actions.
+        A mere resemblance to an event does not resolve the warning: both the
+        subject and the later accepted action must agree with repeated OCR.
+        """
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "unclassified_text":
+                unresolved.append(issue)
+                continue
+            message = self.events[issue["event_seq"] - 1]
+            value = message.get("value") or ""
+            withdrawal = re.fullmatch(r"The Trainer withdrew (.+)!", value)
+            stone = re.fullmatch(r"The opposing (.+?)'s .+?reacting to Trainer's Omni Ring!", value)
+            matches = []
+            for slot in ("p2a", "p2b"):
+                previous = next((e for e in reversed(self.events[:message["seq"] - 1])
+                                 if e.get("slot") == slot and e["kind"] in {"switch", "drag"} and
+                                 e["status"] == "consistent"), None)
+                if not previous or any(e.get("actor_id") == previous["actor_id"] and e["kind"] == "faint"
+                                       for e in self.events[previous["seq"]:message["seq"] - 1]):
+                    continue
+                actor = self.actors[previous["actor_id"]]
+                if withdrawal and actor["species"].casefold() == withdrawal[1].casefold():
+                    upcoming = [e for e in self.events[message["seq"]:] if
+                                e["kind"] in {"switch", "drag"} and e["status"] == "consistent" and
+                                e.get("slot") == slot and e["actor_id"] != previous["actor_id"] and
+                                message["frame"] < e["logical_frame"] <= message["frame"] + 20]
+                    if len(upcoming) != 1:
+                        continue
+                    action = upcoming[0]
+                    withdraw_proof, entry_proof = [], []
+                    for row in self.frames:
+                        if not message["frame"] <= row["frame"] <= action["logical_frame"] + 3:
+                            continue
+                        for line in row.get("ocr", ()):
+                            text = line.get("text", "").strip()
+                            if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                                continue
+                            old = re.fullmatch(r"The Trainer withdrew (.+)!", text)
+                            new = ANNOUNCED_ENTRY.search(text)
+                            proof = {"frame": row["frame"], "text": text, "confidence": line["confidence"]}
+                            if (old and row["frame"] <= message["frame"] + 3 and
+                                    self.nickname_species["p2"].get(old[1].casefold()) == actor["species"]):
+                                withdraw_proof.append(proof)
+                            if (new and action["logical_frame"] - 3 <= row["frame"] <=
+                                    action["logical_frame"] + 3 and
+                                    self.nickname_species["p2"].get((new[1] or "").casefold()) ==
+                                    self.actors[action["actor_id"]]["species"]):
+                                entry_proof.append(proof)
+                    if (len({x["frame"] for x in withdraw_proof}) >= 2 and
+                            len({x["frame"] for x in entry_proof}) >= 2):
+                        matches.append((action, withdraw_proof + entry_proof, "Retirada y nueva entrada del mismo slot corroboradas por OCR repetido."))
+                elif stone and actor["species"].casefold() == stone[1].casefold():
+                    upcoming = [e for e in self.events[message["seq"]:] if
+                                e["kind"] == "mega" and e["status"] == "consistent" and
+                                e.get("actor_id") == previous["actor_id"] and e.get("slot") == slot and
+                                0 < e["frame"] - message["frame"] <= 40]
+                    if len(upcoming) != 1:
+                        continue
+                    action = upcoming[0]
+                    reaction_proof, mega_proof = [], []
+                    for row in self.frames:
+                        if not message["frame"] <= row["frame"] <= action["frame"] + 3:
+                            continue
+                        for line in row.get("ocr", ()):
+                            text = line.get("text", "").strip()
+                            if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                                continue
+                            name = re.match(r"The opposing (.+?)'s ", text)
+                            evolved = re.fullmatch(r"The opposing (.+?) has Mega Evolved into Mega (.+)!", text)
+                            proof = {"frame": row["frame"], "text": text, "confidence": line["confidence"]}
+                            if (name and row["frame"] <= message["frame"] + 3 and
+                                    "reacting to Trainer's Omni Ring!" in text and
+                                    self.nickname_species["p2"].get(name[1].casefold()) == actor["species"]):
+                                reaction_proof.append(proof)
+                            if (evolved and action["frame"] <= row["frame"] <= action["frame"] + 3 and
+                                    self.nickname_species["p2"].get(evolved[1].casefold()) == actor["species"] and
+                                    action["species"].casefold() == (evolved[2] + "-Mega").casefold()):
+                                mega_proof.append(proof)
+                    if (len({x["frame"] for x in reaction_proof}) >= 2 and
+                            len({x["frame"] for x in mega_proof}) >= 2):
+                        matches.append((action, reaction_proof + mega_proof, "Preparación y megaevolución del mismo actor corroboradas por OCR repetido."))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            action, proof, reason = matches[0]
+            resolution = {"state": "resolved", "event_seq": action["seq"],
+                          "actor_id": action["actor_id"], "slot": action["slot"],
+                          "reason": reason, "evidence": proof}
+            message["status"], message["resolution"] = "suppressed", resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def _recover_withdrawn_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Recover a missed voluntary replacement from independent evidence.
 
@@ -3432,6 +3571,7 @@ class BattleAutomaton:
         self._reconcile_repeated_faint_text()
         self._reconcile_partner_hud_entries()
         self._reconcile_transient_text()
+        self._reconcile_switch_and_mega_context()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)
