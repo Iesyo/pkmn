@@ -2102,6 +2102,18 @@ class BattleAutomaton:
             "evidence": evidence,
             "narration": [], "observations": observations or [],
         }
+        if event.get("tags"):
+            item["tags"] = []
+            for tag in event["tags"]:
+                reference = re.fullmatch(r"\[of\] (p[12][ab]): (.+)", tag) if isinstance(tag, str) else None
+                if reference:
+                    slot, named = reference.groups()
+                    resolved = self.id_resolution.get(named) or self.nickname_species[slot[:2]].get(named.casefold())
+                    if resolved:
+                        tag = f"[of] {slot}: {resolved}"
+                item["tags"].append(tag)
+            if item["tags"] != list(event["tags"]):
+                item["raw_tags"] = list(event["tags"])
         if candidate.get("slot_correction"):
             item["original_slot"] = candidate["slot_correction"]
             item["note"] = ((item["note"] + " ") if item["note"] else "") + (
@@ -2276,9 +2288,18 @@ class BattleAutomaton:
                 cause = self.last_action["seq"]
             elif episode.kind == "heal":
                 notes.append("Curación sin causa asignada en esta ventana.")
-            item = self._append(last, kind=episode.kind, actor_id=episode.actor_id,
+            # Item attribution can appear only on the first intermediate HP
+            # reading. Preserve it when all attributed readings agree.
+            tag_sets = {tuple(c["event"]["tags"]) for c in episode.candidates if c["event"].get("tags")}
+            tagged_last = ({**last, "event": {**last["event"], "tags": list(next(iter(tag_sets)))}}
+                           if len(tag_sets) == 1 else last)
+            item = self._append(tagged_last, kind=episode.kind, actor_id=episode.actor_id,
                                 status=result, note=" ".join(notes) or None, before=before,
                                 after=after, cause=cause, observations=observations)
+            if len(tag_sets) > 1:
+                item.pop("tags", None)
+                item.pop("raw_tags", None)
+                item["tag_conflicts"] = [list(tags) for tags in sorted(tag_sets)]
             item["narration"].extend(episode.narration)
             item["hp_state"], item["hp_support"] = support["state"], support
             narrated = support.get("narrated_partial") if result == "consistent" else None
@@ -2535,6 +2556,12 @@ class BattleAutomaton:
             if re.fullmatch(r"Are you sure you wish to forfeit\?", value, re.I):
                 self._append(candidate, kind="ui_text", status="suppressed",
                              note="Confirmación del menú de abandono; aún no terminó la batalla.")
+                return
+            if value.casefold() == "a critical hit!":
+                # Do not interrupt an HP animation or guess which spread-move
+                # target was hit. The bridge can resolve the complete action.
+                self._append(candidate, kind="message",
+                             note="Crítico observado; el objetivo se comprueba con la acción completa.")
                 return
             if "battle has ended" in value.casefold():
                 self._flush_hp()
@@ -2860,12 +2887,28 @@ class BattleAutomaton:
                 self._issue("status_transition", item["note"], item["frame"], item["seq"])
                 return
             self.actors[actor_id]["status"] = None
+        if kind in {"crit", "item"} and (not actor_id or (event.get("species") and
+                identity_species(self._resolve(event["species"]) or "") !=
+                identity_species(self.actors[actor_id]["species"]))):
+            item = self._append(candidate, actor_id=actor_id, status="review",
+                                note="El suceso nombra un Pokémon distinto del ocupante activo.")
+            self._issue("actor_mismatch", item["note"], item["frame"], item["seq"])
+            return
+        if kind == "item" and actor_id:
+            actor = self.actors[actor_id]
+            if actor.get("item") == event.get("value") and not actor["item_lost"]:
+                self._append(candidate, actor_id=actor_id, status="suppressed",
+                             note="El mismo objeto ya estaba revelado para este Pokémon.")
+                return
+            actor["item"] = event.get("value")
+            actor["item_lost"] = False
         if kind == "enditem" and actor_id:
             if self.actors[actor_id]["item_lost"]:
                 self._append(candidate, actor_id=actor_id, status="suppressed",
                              note="El objeto ya se había consumido/perdido.")
                 return
             self.actors[actor_id]["item_lost"] = True
+            self.actors[actor_id]["item"] = None
         if kind == "mega":
             observed = self._resolve(event.get("species"))
             occupant = self.actors[actor_id]["species"] if actor_id else None
