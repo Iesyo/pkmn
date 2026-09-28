@@ -96,6 +96,7 @@ class LedgerReplayTest(unittest.TestCase):
                 broken["events"][-2].update(slot=slot, value=value)
                 with self.assertRaisesRegex(ReplayEvidenceError, "sin inicio acreditado"):
                     build_replay(broken, context)
+
             partner_slot = copy.deepcopy(battle)
             partner_slot["events"][5].update(slot="p2b", actor_id="p2-two")
             partner_slot["events"][6]["frame"] = 14
@@ -112,7 +113,6 @@ class LedgerReplayTest(unittest.TestCase):
             broken["events"][-2]["actor_id"] = "p2-two"
             with self.assertRaisesRegex(ReplayEvidenceError, "Actor fuera de su slot"):
                 build_replay(broken, context)
-
 
     def test_illusion_replace_preserves_actor_and_hp_without_a_switch(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -502,6 +502,7 @@ class LedgerReplayTest(unittest.TestCase):
             "intermediate": "92/100", "final": "81/100", "hud_frame": 1235,
         }])
         self.assertEqual(document["log"].splitlines()[-1], "|win|Denton")
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_B3F7") and os.getenv("CHAMPIONS_LEDGER_B3F7"),
                          "requiere diagnóstico y Ledger b3f7")
     def test_replay_b3f7_sin_entrada_falsa_y_con_tailwind(self):
@@ -521,7 +522,6 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertLess(lines.index("|move|p2b: Pelipper|Tailwind|"),
                         lines.index(f"|-sidestart|p2: {context.p2}|move: Tailwind"))
         self.assertEqual(lines[-1], "|win|Roku")
-
 
 
 if __name__ == "__main__":
