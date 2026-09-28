@@ -130,8 +130,8 @@ test("uses rival picks for matchups and Team Preview for attendance without infe
   assert.equal(matchups.some((entry) => entry.species === "Calyrex-Ice"), false);
 });
 
-test("counts the same two leads together and ranks the best by win percentage", async () => {
-  const { calculateLeads, rankLeadsByWinRate } = await vite.ssrLoadModule("/lib/team-stats.ts");
+test("counts unordered leads together and ranks sustained wins above a single perfect game", async () => {
+  const { calculateLeads, rankBestLeads } = await vite.ssrLoadModule("/lib/team-stats.ts");
   const leads = calculateLeads([
     { lead: ["Blaziken", "Kingambit"], result: "win" },
     { lead: ["Kingambit", "Blaziken"], result: "loss" },
@@ -141,7 +141,17 @@ test("counts the same two leads together and ranks the best by win percentage", 
 
   assert.deepEqual(leads[0], { species: ["Blaziken", "Kingambit"], games: 3, wins: 2 });
   assert.equal(leads.length, 2);
-  assert.deepEqual(rankLeadsByWinRate(leads)[0], { species: ["Blaziken", "Gardevoir"], games: 1, wins: 1 });
+  assert.deepEqual(rankBestLeads(leads), [{ species: ["Blaziken", "Kingambit"], games: 3, wins: 2 }]);
+  const sample = [
+    { species: ["Gardevoir", "Kingambit"], games: 1, wins: 1 },
+    { species: ["Blaziken", "Kingambit"], games: 8, wins: 6 },
+    { species: ["Blaziken", "Indeedee-F"], games: 7, wins: 5 },
+    { species: ["Gardevoir", "Indeedee-F"], games: 4, wins: 2 },
+  ];
+  assert.deepEqual(rankBestLeads(sample).map((lead) => lead.species.join(" + ")), [
+    "Blaziken + Kingambit", "Blaziken + Indeedee-F", "Gardevoir + Indeedee-F",
+  ]);
+  assert.deepEqual(rankBestLeads([{ species: ["Gardevoir", "Kingambit"], games: 1, wins: 1 }]), []);
 });
 
 test("ranks rival picks in exactly one matchup list by prevailing result", async () => {
