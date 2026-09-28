@@ -67,7 +67,15 @@ export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
   }
 
   return [...grouped.values()].sort(
-    (a, b) => b.games - a.games || b.wins - a.wins,
+    (a, b) => b.games - a.games || b.wins - a.wins || a.species.join("|").localeCompare(b.species.join("|")),
+  );
+}
+
+export function rankLeadsByWinRate(leads: LeadStat[]): LeadStat[] {
+  return [...leads].sort((a, b) =>
+    winRate(b.wins, b.games) - winRate(a.wins, a.games)
+    || b.games - a.games
+    || a.species.join("|").localeCompare(b.species.join("|")),
   );
 }
 
@@ -79,8 +87,12 @@ export function rankOpponentMatchups(
     ? entry.wins
     : entry.games - entry.wins;
 
+  const percentage = (entry: OpponentPokemonStat) => outcome === "best"
+    ? entry.winRate
+    : winRate(entry.games - entry.wins, entry.games);
+
   return stats.filter((entry) => count(entry) > 0).sort((a, b) =>
-    count(b) - count(a)
+    percentage(b) - percentage(a)
     || b.games - a.games
     || a.species.localeCompare(b.species),
   );
