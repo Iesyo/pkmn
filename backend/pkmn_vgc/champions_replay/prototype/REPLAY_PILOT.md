@@ -182,5 +182,5 @@ Incineroar, PS positivos confirmados de Gengar y el anuncio idéntico en
 16 consistentes, cuatro lecturas duplicadas suprimidas, cero avisos.
 El replay tiene un turno, cuatro titulares, Mega Gengar, tres movimientos,
 un debilitamiento, Intimidate y los dos equipos completos. El ganador Roku
-procede exclusivamente del resultado OCR. La revisión visual de este HTML
-queda pendiente.
+procede exclusivamente del resultado OCR. Ies confirmó visualmente que este
+HTML se ve bien.
