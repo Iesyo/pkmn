@@ -1,6 +1,7 @@
 import { getMoveData, getStoredSpeciesTypes } from "@/lib/pokemon-data";
 import { hashPaste, parseShowdownPaste } from "@/lib/paste";
 import { DEFAULT_BATTLE_FORMAT, DEFAULT_BATTLE_MECHANICS, formatVersion, normalizeMechanics } from "@/lib/team-builder";
+import { MAX_MATCH_NOTES_LENGTH } from "@/lib/match-history";
 import { calculateLeads, decoratePokemonPerformance } from "@/lib/team-stats";
 import { analyzeScoutingEvidence } from "@/lib/scouting-analysis";
 import { fetchCanonicalChampionsReplay } from "@/lib/champions-jobs";
@@ -451,6 +452,10 @@ export async function createMatch(input: CreateMatchInput) {
   if (input.result !== "win" && input.result !== "loss") {
     throw new DomainError("El resultado debe ser victoria o derrota.");
   }
+  const notes = input.notes ?? "";
+  if (typeof notes !== "string" || notes.length > MAX_MATCH_NOTES_LENGTH) {
+    throw new DomainError(`Las notas deben ser texto de hasta ${MAX_MATCH_NOTES_LENGTH} caracteres.`);
+  }
   const replayUrl = input.replayUrl?.trim() || "";
   if (replayUrl && !replayUrl.startsWith("https://replay.pokemonshowdown.com/")) {
     throw new DomainError("El replay debe pertenecer a replay.pokemonshowdown.com.");
@@ -590,7 +595,7 @@ export async function createMatch(input: CreateMatchInput) {
     lead: derived?.lead ?? input.lead ?? [],
     movesUsed,
     rating: derived?.rating ?? input.rating ?? null,
-    notes: input.notes?.trim() || "",
+    notes: notes.trim(),
     playedAt: derived?.playedAt ?? input.playedAt ?? new Date().toISOString(),
   };
 
