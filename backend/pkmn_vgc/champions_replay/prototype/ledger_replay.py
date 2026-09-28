@@ -26,7 +26,7 @@ _WIN = re.compile(r"^You defeated (.+)!$", re.IGNORECASE)
 _LOSS = re.compile(r"^You (?:lost to|were defeated by) (.+)!$", re.IGNORECASE)
 _SUPPORTED = {
     "switch", "turn", "ability", "fieldstart", "fieldend", "mega", "move",
-    "damage", "heal", "faint", "weather", "battle_end",
+    "damage", "heal", "faint", "weather", "cant", "enditem", "battle_end",
 }
 
 
@@ -273,11 +273,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     known_hp: dict[str, str] = {}
     hp_source: dict[str, str] = {}
     known_species: dict[str, str] = {}
+    known_formes: dict[str, str] = {}
     fainted: set[str] = set()
     moves_target = _observed_targets(events)
     moves_by_seq = {e["seq"]: e for e in events if e["kind"] == "move"}
     missing_targets: list[int] = []
     intermediate_baselines: list[dict[str, Any]] = []
+    inferred_entry_health: list[dict[str, Any]] = []
     turn = 0
     end_seen = False
     event_lines: list[dict[str, int]] = []
@@ -299,16 +301,54 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             actor = _atom(event.get("actor_id"), f"actor en suceso {seq}")
             canonical = _atom((actors.get(actor) or {}).get("species"), f"especie del actor {actor}")
             species = _atom(event.get("species"), f"especie del cambio {seq}")
-            if species != canonical or actor in fainted:
+            if species not in {canonical, known_formes.get(actor)} or actor in fainted:
                 raise ReplayEvidenceError(f"Identidad o estado inválido en cambio {seq}.")
             if actor in active.values() and active.get(slot) != actor:
                 raise ReplayEvidenceError(f"El actor {actor} ocupa dos slots en cambio {seq}.")
-            hp = _health(event.get("health"), f"cambio {seq}")
+            hp_value = event.get("health")
+            if hp_value is None and actor in known_hp:
+                ledger_health = event.get("last_confirmed_health")
+                if ledger_health is not None and _health(ledger_health, f"últimos PS {seq}") != known_hp[actor]:
+                    raise ReplayEvidenceError(f"PS contradictorios en reentrada {seq}.")
+                hp_value = known_hp[actor]
+                inferred_entry_health.append({"ledger_seq": seq, "source": "last_known_health", "health": hp_value,
+                                              "ledger_last_confirmed_health": ledger_health})
+            elif hp_value is None and event.get("hp_state") == "inferred":
+                # El primer avistamiento propio puede preceder al HUD numérico.
+                # Aceptar sólo el máximo leído antes del primer cambio de PS.
+                for following in events:
+                    if following["seq"] <= seq or following.get("actor_id") != actor:
+                        continue
+                    if following["kind"] in ("switch", "faint"):
+                        break
+                    if following["kind"] not in ("damage", "heal"):
+                        continue
+                    baseline = following.get("hp_baseline") or {}
+                    prior = following.get("before")
+                    if (baseline.get("state") == "confirmed" and following.get("hp_state") == "confirmed"
+                            and isinstance(prior, str)):
+                        observed = _health(prior, f"PS previos {following['seq']}")
+                        current, maximum = map(int, observed.split("/"))
+                        proof = [reading for reading in baseline.get("evidence") or ()
+                                 if (isinstance(reading.get("frame"), int)
+                                     and event.get("frame", 0) <= reading["frame"] < following.get("frame", 0)
+                                     and reading.get("text") == observed)]
+                        if current == maximum and proof:
+                            hp_value = observed
+                            inferred_entry_health.append({
+                                "ledger_seq": seq, "source": "first_confirmed_full_baseline",
+                                "health": observed, "hp_ledger_seq": following["seq"],
+                                "evidence": proof,
+                            })
+                    break
+            hp = _health(hp_value, f"cambio {seq}")
             if actor in known_hp and known_hp[actor] != hp:
                 raise ReplayEvidenceError(f"PS contradictorios en reentrada {seq}.")
-            active[slot], known_hp[actor], known_species[actor] = actor, hp, species
-            hp_source[actor] = "inferred_entry" if event.get("hp_state") == "inferred" else "confirmed"
-            lines.append(f"|switch|{slot}: {species}|{species}, L50|{hp}")
+            active[slot], known_hp[actor], known_species[actor] = actor, hp, canonical
+            hp_source[actor] = ("inferred_entry" if event.get("hp_state") == "inferred"
+                                else hp_source.get(actor, "confirmed") if event.get("health") is None
+                                else "confirmed")
+            lines.append(f"|switch|{slot}: {canonical}|{species}, L50|{hp}")
         elif kind == "turn":
             next_turn = event.get("turn")
             if not isinstance(next_turn, int) or next_turn != turn + 1:
@@ -322,6 +362,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             if not form.startswith(base + "-Mega"):
                 raise ReplayEvidenceError(f"La Mega en {seq} no pertenece al actor activo.")
             stone = _atom(event.get("value"), f"piedra de la Mega {seq}")
+            known_formes[active[slot]] = form
             lines.extend([
                 f"|detailschange|{identifier}|{form}, L50|{known_hp[active[slot]]}",
                 f"|-mega|{identifier}|{stone}",
@@ -369,6 +410,12 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         elif kind == "ability":
             _, identifier = actor_at(event)
             lines.append(f"|-ability|{identifier}|{_atom(event.get('value'), f'habilidad {seq}')}")
+        elif kind == "enditem":
+            _, identifier = actor_at(event)
+            lines.append(f"|-enditem|{identifier}|{_atom(event.get('value'), f'objeto consumido {seq}')}")
+        elif kind == "cant":
+            _, identifier = actor_at(event)
+            lines.append(f"|cant|{identifier}|{_atom(event.get('value'), f'causa de inmovilidad {seq}')}")
         elif kind in ("fieldstart", "fieldend", "weather"):
             lines.append(f"|-{kind}|{_atom(event.get('value'), f'efecto {seq}')}")
         elif kind == "battle_end":
@@ -387,6 +434,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             "consistent_events": len(events), "winner_evidence": context.winner_evidence,
             "protocol_lines": event_lines, "target_unknown_at_seq": missing_targets,
             "intermediate_baselines": intermediate_baselines,
+            "inferred_entry_health": inferred_entry_health,
             "team_preview": context.team_evidence,
             "hp_units": "p1: observed actual/max; p2: normalized percent/100",
         },
