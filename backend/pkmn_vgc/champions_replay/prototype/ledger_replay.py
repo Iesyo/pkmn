@@ -1,8 +1,9 @@
 """Primer puente verificable entre un battle-XX.json de Ledger y Showdown.
 
-El JSON de Ledger determina todas las acciones. La traza original sólo aporta
-los nombres de los jugadores y el resultado, que todavía no son campos de
-Ledger. Un resultado sin evidencia OCR hace fallar la exportación.
+El JSON de Ledger determina todas las acciones. El diagnóstico aporta los
+nombres de los jugadores, los equipos del Team Preview y el resultado, que
+todavía no son campos de Ledger. Un resultado sin evidencia OCR o un equipo
+incompleto hace fallar la exportación.
 """
 
 from __future__ import annotations
@@ -76,10 +77,34 @@ class TraceContext:
     uploadtime: int
     winner: str
     winner_evidence: dict[str, Any]
+    teams: dict[str, tuple[str, ...]]
+    team_evidence: dict[str, Any]
+
+
+def _team(value: object, label: str) -> tuple[str, ...] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 6:
+        return None
+    team = tuple(_atom(species, f"especie de {label}") for species in value)
+    keys = [re.sub(r"[^a-z0-9]", "", species.casefold()) for species in team]
+    if not all(keys) or len(set(keys)) != 6:
+        raise ReplayEvidenceError(f"El equipo de {label} tiene especies repetidas o inválidas.")
+    return team
+
+
+def _confirmed_team(
+    votes: dict[tuple[str, ...], list[int]], side: str,
+) -> tuple[tuple[str, ...] | None, dict[str, Any] | None]:
+    if not votes:
+        return None, None
+    ranked = sorted(votes.items(), key=lambda item: len(item[1]), reverse=True)
+    roster, frames = ranked[0]
+    if len(frames) < 2 or (len(ranked) > 1 and len(frames) <= len(ranked[1][1])):
+        raise ReplayEvidenceError(f"La traza no confirma un equipo único de seis para {side}.")
+    return roster, {"source": "team_preview", "frames": frames, "votes": len(frames)}
 
 
 def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext:
-    """Lee sólo identidad y resultado de la batalla indicada, nunca el replay viejo."""
+    """Lee identidad, rosters y resultado de esta batalla, nunca el replay viejo."""
     with zipfile.ZipFile(diagnostic) as archive:
         job = json.loads(archive.read("job.json"))
         rows = archive.read("output/ocr.trace.jsonl").splitlines()
@@ -97,6 +122,7 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     if len(ends) != 1:
         raise ReplayEvidenceError("Hace falta un único cierre confirmado por Ledger.")
     players: dict[str, Counter[str]] = {"p1": Counter(), "p2": Counter()}
+    team_votes: dict[str, dict[tuple[str, ...], list[int]]] = {"p1": {}, "p2": {}}
     outcomes: list[tuple[int, str, float]] = []
     for raw in rows:
         row = json.loads(raw)
@@ -108,6 +134,13 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
             name = detected.get(side)
             if isinstance(name, str) and name.strip() and name not in ("Player", "Rival"):
                 players[side][_atom(name, f"jugador {side}")] += 1
+        detections = row.get("detections") or {}
+        if detections.get("team_preview"):
+            detected_teams = detections.get("teams") or {}
+            for side in ("p1", "p2"):
+                roster = _team(detected_teams.get(side), side)
+                if roster:
+                    team_votes[side].setdefault(roster, []).append(frame)
         if frame < ends[0]:
             continue
         for part in row.get("ocr") or ():
@@ -129,12 +162,26 @@ def load_trace_context(diagnostic: Path, battle: dict[str, Any]) -> TraceContext
     if len(winners) != 1:
         raise ReplayEvidenceError("El resultado OCR no confirma un ganador único para esta batalla.")
     source_frame, source_text, source_confidence = min(valid)
+    teams: dict[str, tuple[str, ...]] = {}
+    team_evidence: dict[str, Any] = {}
+    configured = (job.get("context") or {}).get("teams") or {}
+    for side in ("p1", "p2"):
+        observed, evidence = _confirmed_team(team_votes[side], side)
+        seeded = _team(configured.get(side), side)
+        if seeded and observed and set(seeded) != set(observed):
+            raise ReplayEvidenceError(f"El equipo de {side} en el diagnóstico contradice el Team Preview.")
+        roster = (seeded if side == "p1" else observed) or observed or seeded
+        if not roster:
+            raise ReplayEvidenceError(f"Falta el equipo completo de seis Pokémon para {side}.")
+        teams[side] = roster
+        team_evidence[side] = evidence or {"source": "job.context.teams", "votes": 0, "frames": []}
     fmt = _atom((job.get("context") or {}).get("format"), "formato del diagnóstico")
     stamp = datetime.fromisoformat(_atom(job.get("created_at"), "fecha del diagnóstico"))
     return TraceContext(
         job_id=job_id, p1=p1, p2=p2, format=fmt, uploadtime=int(stamp.timestamp()),
         winner=p1 if "p1" in winners else p2,
         winner_evidence={"frame": source_frame, "text": source_text, "confidence": source_confidence},
+        teams=teams, team_evidence=team_evidence,
     )
 
 
@@ -213,8 +260,15 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         raise ReplayEvidenceError("Ledger no proporciona identidades persistentes.")
     lines = [
         f"|player|p1|{context.p1}||", f"|player|p2|{context.p2}||",
-        "|gametype|doubles", "|gen|9", f"|tier|{context.format}", "|start",
+        "|gametype|doubles", "|gen|9", f"|tier|{context.format}",
     ]
+    for side in ("p1", "p2"):
+        roster = context.teams[side]
+        if len(roster) != 6:
+            raise ReplayEvidenceError(f"Falta el equipo completo de {side}.")
+        lines.append(f"|teamsize|{side}|6")
+        lines.extend(f"|poke|{side}|{species}, L50|" for species in roster)
+    lines.extend(["|teampreview", "|start"])
     active: dict[str, str] = {}
     known_hp: dict[str, str] = {}
     hp_source: dict[str, str] = {}
@@ -333,7 +387,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             "consistent_events": len(events), "winner_evidence": context.winner_evidence,
             "protocol_lines": event_lines, "target_unknown_at_seq": missing_targets,
             "intermediate_baselines": intermediate_baselines,
-            "team_preview": "omitted: not confirmed by Ledger",
+            "team_preview": context.team_evidence,
             "hp_units": "p1: observed actual/max; p2: normalized percent/100",
         },
     }
