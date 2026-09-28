@@ -58,8 +58,8 @@ export function decoratePokemonPerformance(
 export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
   const grouped = new Map<string, LeadStat>();
   for (const match of matches.filter((entry) => entry.lead.length >= 2)) {
-    const species = match.lead.slice(0, 2);
-    const key = species.join("|");
+    const species = match.lead.slice(0, 2).sort((a, b) => toId(a).localeCompare(toId(b)));
+    const key = species.map(toId).join("|");
     const current = grouped.get(key) ?? { species, games: 0, wins: 0 };
     current.games += 1;
     if (match.result === "win") current.wins += 1;
@@ -68,6 +68,21 @@ export function calculateLeads(matches: MatchRecord[]): LeadStat[] {
 
   return [...grouped.values()].sort(
     (a, b) => b.games - a.games || b.wins - a.wins,
+  );
+}
+
+export function rankOpponentMatchups(
+  stats: OpponentPokemonStat[],
+  outcome: "best" | "worst",
+): OpponentPokemonStat[] {
+  const count = (entry: OpponentPokemonStat) => outcome === "best"
+    ? entry.wins
+    : entry.games - entry.wins;
+
+  return stats.filter((entry) => count(entry) > 0).sort((a, b) =>
+    count(b) - count(a)
+    || b.games - a.games
+    || a.species.localeCompare(b.species),
   );
 }
 
