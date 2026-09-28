@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases,
-                                 health_ratio, hud_nickname, read_diagnostic,
+                                 health_ratio, hud_nickname, narration_signature, read_diagnostic,
                                  read_diagnostic_context, render_markdown, strip_pokemon_title)
 
 
@@ -202,11 +202,11 @@ def sliding_hp_trace():
     return trace
 
 
-def transient_mega_text_trace():
-    bad = "The opposing Delphox's Delphoxite is racting to Rival's Omni Ring!"
-    clean = "The opposing Delphox's Delphoxite is reacting to Rival's Omni Ring!"
-    mega = {**event("mega", "p2a", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
-    return [frame(1, [event("switch", "p2a", "Delphox", "100/100"), event("turn", turn=1)]),
+def transient_mega_text_trace(species="Delphox", stone="Delphoxite", forme="Delphox-Mega"):
+    bad = f"The opposing {species}'s {stone} is racting to Rival's Omni Ring!"
+    clean = f"The opposing {species}'s {stone} is reacting to Rival's Omni Ring!"
+    mega = {**event("mega", "p2a", species, value=stone), "forme": forme}
+    return [frame(1, [event("switch", "p2a", species, "100/100"), event("turn", turn=1)]),
             frame(2, [event("message", value=bad)], texts=[bad]), frame(3), frame(4, [mega], texts=[clean])]
 
 
@@ -812,6 +812,20 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertIn("racting", text["value"])
         self.assertEqual(sum(e["kind"] == "mega" and e["status"] == "consistent" for e in ledger["events"]), 1)
         self.assertIn("Avisos resueltos", render_markdown(ledger, None))
+
+    def test_multiword_mega_stone_resolves_transient_ocr_against_same_event(self):
+        trace = transient_mega_text_trace("Raichu", "Raichunite Y", "Raichu-Mega-Y")
+        self.assertEqual(narration_signature(trace[-1]["ocr"][0]["text"]),
+                         ("mega", "p2", "Raichu", "Raichunite Y"))
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertNotIn("unclassified_text", {issue["code"] for issue in ledger["issues"]})
+        message = next(e for e in ledger["events"] if e["kind"] == "unclassified_text")
+        mega = next(e for e in ledger["events"] if e["kind"] == "mega")
+        self.assertEqual(message["resolution"]["event_seq"], mega["seq"])
+        self.assertEqual(message["resolution"]["slot"], "p2a")
+
+        trace[-1]["detections"]["events"][0]["value"] = "Raichunite X"
+        self.assertIn("unclassified_text", {issue["code"] for issue in BattleAutomaton(0, trace).run()["issues"]})
 
     def test_transient_text_preserves_unexplained_or_different_events(self):
         for missing in ("event", "legible", "confidence", "time", "action", "turn", "species", "stone", "side", "meaningful", "unrelated"):
