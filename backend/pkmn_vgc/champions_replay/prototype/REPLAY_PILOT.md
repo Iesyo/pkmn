@@ -55,3 +55,32 @@ ganador ausente aun cuando el replay archivado diga `|win|Roku`.
 El HTML carga el visor oficial mediante su script público; necesita conexión
 al abrirse. La comprobación estructural y contra OCR no sustituye una
 revisión visual del reproductor.
+
+## Segunda partida: 79dd2e3de412450e / 02
+
+```bash
+python3 ledger_replay.py \
+  --ledger /ruta/ledger/79dd2e3de412450e/battle-02.json \
+  --diagnostic /ruta/champions-diagnostics-79dd2e3de412450e.zip \
+  --out /ruta/salida/79dd-ledger-replay-battle-02
+```
+
+El segundo replay contiene 32 sucesos consistentes y dos turnos. En el
+fotograma **1314**, posterior al cierre por rendición, «You lost to Denton!»
+confirma `|win|Denton`. El verificador de COL-102 empareja **11/11 sucesos**
+(siete movimientos, dos megas, dos debilitamientos), sin diferencias ni fallos
+de orden, ocupantes o PS cero.
+
+Una entrada de Politoed lleva 100/100 **inferidos**. Tras comenzar Flare Blitz
+en el fotograma 1229, el HUD de Politoed confirma 92 % en 1235 y después 81 %
+en 1236. El exportador conserva 100 % como valor inicial inferido, registra
+el 92 % como lectura **intermedia de esa misma animación** en
+`ledger_source.intermediate_baselines` y escribe el único daño confirmado en
+81 %. Sólo permite esa continuidad cuando el actor, el mote, el valor del HUD
+y la posición temporal respecto al movimiento están corroborados. Si el 92 %
+estuviera antes de la acción, faltara el mote o hubiera avisos abiertos,
+rechazaría la exportación. No agrega un daño ficticio de 100 a 92 %.
+
+Seis pruebas del puente, incluidos los dos diagnósticos reales y los casos
+negativos del HUD intermedio, pasan. La reproducción visual del HTML sigue
+pendiente; la integración de COL-102 continúa separada.

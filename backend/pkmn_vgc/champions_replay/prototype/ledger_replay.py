@@ -151,6 +151,51 @@ def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
     return {seq: next(iter(slots)) for seq, slots in targets.items() if len(slots) == 1}
 
 
+def _intermediate_baseline(
+    event: dict[str, Any], move: dict[str, Any] | None, inferred: str,
+) -> dict[str, Any] | None:
+    """Reconoce un HUD tomado durante el golpe, posterior al comienzo del movimiento.
+
+    En la primera entrada se infiere el máximo. Si el primer HUD confirmado
+    aparece después de la acción que causa el daño y antes de su valor final,
+    el HUD es una lectura intermedia; no se fabrica una acción entre la entrada
+    y ese fotograma.
+    """
+    baseline = event.get("hp_baseline") or {}
+    if not move or baseline.get("state") != "confirmed" or event.get("hp_state") != "confirmed":
+        return None
+    prior, result = event.get("before"), event.get("after")
+    if not isinstance(prior, str) or not isinstance(result, str):
+        return None
+    a, b, c = [int(hp.split("/")[0]) for hp in (inferred, prior, result)]
+    maxima = [hp.split("/")[1] for hp in (inferred, prior, result)]
+    if len(set(maxima)) != 1 or not (
+        (event["kind"] == "damage" and a > b > c)
+        or (event["kind"] == "heal" and a < b < c)
+    ):
+        return None
+    move_frame, end_frame = move.get("frame"), event.get("frame")
+    if not isinstance(move_frame, int) or not isinstance(end_frame, int):
+        return None
+    slot = _slot(event.get("slot"))
+    literal = f"{b}%" if slot.startswith("p2") else prior
+    # En esta primera regla sólo resolvemos motes que el mismo Ledger vincula
+    # sin ambigüedad a la especie. Una abreviatura o un apodo ajeno no valida
+    # el HUD del slot por el mero hecho de tener texto.
+    species_key = re.sub(r"[^a-z0-9]", "", str(event.get("species") or "").casefold())
+    for evidence in baseline.get("evidence") or ():
+        frame = evidence.get("frame")
+        nickname_key = re.sub(r"[^a-z0-9]", "", str(evidence.get("nickname") or "").casefold())
+        if (isinstance(frame, int) and move_frame <= frame < end_frame
+                and evidence.get("text") == literal and nickname_key == species_key and species_key):
+            return {
+                "ledger_seq": event["seq"], "causing_move_seq": move["seq"],
+                "inferred_entry": inferred, "intermediate": prior,
+                "final": result, "hud_frame": frame,
+            }
+    return None
+
+
 def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any]:
     if battle.get("issues"):
         raise ReplayEvidenceError("Ledger tiene avisos abiertos; no se exporta un replay.")
@@ -172,10 +217,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     ]
     active: dict[str, str] = {}
     known_hp: dict[str, str] = {}
+    hp_source: dict[str, str] = {}
     known_species: dict[str, str] = {}
     fainted: set[str] = set()
     moves_target = _observed_targets(events)
+    moves_by_seq = {e["seq"]: e for e in events if e["kind"] == "move"}
     missing_targets: list[int] = []
+    intermediate_baselines: list[dict[str, Any]] = []
     turn = 0
     end_seen = False
     event_lines: list[dict[str, int]] = []
@@ -205,6 +253,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             if actor in known_hp and known_hp[actor] != hp:
                 raise ReplayEvidenceError(f"PS contradictorios en reentrada {seq}.")
             active[slot], known_hp[actor], known_species[actor] = actor, hp, species
+            hp_source[actor] = "inferred_entry" if event.get("hp_state") == "inferred" else "confirmed"
             lines.append(f"|switch|{slot}: {species}|{species}, L50|{hp}")
         elif kind == "turn":
             next_turn = event.get("turn")
@@ -241,12 +290,20 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             actor = active[slot]
             prior = _health(event.get("before"), f"PS previos {seq}")
             result = _health(event.get("after"), f"PS finales {seq}")
-            if prior != known_hp[actor] or event.get("health") != result:
-                raise ReplayEvidenceError(f"PS no continuos en suceso {seq}: {known_hp[actor]} -> {prior}.")
-            n0, n1 = int(prior.split("/")[0]), int(result.split("/")[0])
+            if prior != known_hp[actor]:
+                bridge = (_intermediate_baseline(event, moves_by_seq.get(event.get("cause")), known_hp[actor])
+                          if hp_source[actor] == "inferred_entry" else None)
+                if bridge:
+                    intermediate_baselines.append(bridge)
+                else:
+                    raise ReplayEvidenceError(f"PS no continuos en suceso {seq}: {known_hp[actor]} -> {prior}.")
+            if event.get("health") != result:
+                raise ReplayEvidenceError(f"PS finales contradictorios en suceso {seq}.")
+            n0, n1 = int(known_hp[actor].split("/")[0]), int(result.split("/")[0])
             if (kind == "damage" and n1 >= n0) or (kind == "heal" and n1 <= n0):
                 raise ReplayEvidenceError(f"Sentido de PS contradictorio en suceso {seq}.")
             known_hp[actor] = result
+            hp_source[actor] = "confirmed"
             lines.append(f"|-{kind}|{identifier}|{result}")
         elif kind == "faint":
             slot, identifier = actor_at(event)
@@ -275,6 +332,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             "job_id": context.job_id, "battle_index": battle["battle_index"],
             "consistent_events": len(events), "winner_evidence": context.winner_evidence,
             "protocol_lines": event_lines, "target_unknown_at_seq": missing_targets,
+            "intermediate_baselines": intermediate_baselines,
             "team_preview": "omitted: not confirmed by Ledger",
             "hp_units": "p1: observed actual/max; p2: normalized percent/100",
         },

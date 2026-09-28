@@ -97,6 +97,26 @@ class LedgerReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ReplayEvidenceError, "avisos abiertos"):
                 build_replay(broken, context)
 
+    def test_hud_intermedio_exige_accion_previa_y_mote(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            battle["events"][3]["hp_state"] = "inferred"
+            battle["events"][5]["frame"] = 6
+            damage = battle["events"][6]
+            damage.update({"before": "92/100", "frame": 8, "hp_state": "confirmed", "species": "Sneasler",
+                           "hp_baseline": {"state": "confirmed", "evidence": [
+                               {"frame": 7, "text": "92%", "nickname": "sneasler"}]}})
+            result = build_replay(battle, context)
+            self.assertEqual(result["ledger_source"]["intermediate_baselines"][0]["hud_frame"], 7)
+            self.assertIn("|-damage|p2b: Sneasler|0/100", result["log"])
+            damage["hp_baseline"]["evidence"][0]["frame"] = 5
+            with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos"):
+                build_replay(battle, context)
+            damage["hp_baseline"]["evidence"][0].update(frame=7, nickname="garchomp")
+            with self.assertRaisesRegex(ReplayEvidenceError, "PS no continuos"):
+                build_replay(battle, context)
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
                          "requiere el diagnóstico y el JSON real de f7af/01")
     def test_partida_real_f7af_01(self):
@@ -110,6 +130,21 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertEqual(sum(line.startswith("|faint|") for line in lines), 2)
         self.assertIn("|detailschange|p2b: Charizard|Charizard-Mega-Y, L50|100/100", lines)
         self.assertEqual(lines[-1], "|win|Roku")
+
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_TENTH") and os.getenv("CHAMPIONS_LEDGER_SECOND"),
+                         "requiere el diagnóstico y el JSON real de 79dd/02")
+    def test_partida_real_79dd_02(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_SECOND"]).read_text())
+        context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_TENTH"]), battle)
+        document = build_replay(battle, context)
+        self.assertEqual(document["ledger_source"]["consistent_events"], 32)
+        self.assertEqual(document["ledger_source"]["winner_evidence"], {
+            "frame": 1314, "text": "You lost to Denton!", "confidence": .99995})
+        self.assertEqual(document["ledger_source"]["intermediate_baselines"], [{
+            "ledger_seq": 25, "causing_move_seq": 24, "inferred_entry": "100/100",
+            "intermediate": "92/100", "final": "81/100", "hud_frame": 1235,
+        }])
+        self.assertEqual(document["log"].splitlines()[-1], "|win|Denton")
 
 
 if __name__ == "__main__":
