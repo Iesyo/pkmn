@@ -249,6 +249,70 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_trick_room_repeated_ocr_has_one_start_and_one_end(self):
+        trace = [frame(1, [event("fieldstart", value="move: Psychic Terrain")]),
+                 frame(2, [event("fieldstart", value="move: Trick Room")],
+                       texts=["Dee Dee twisted the dimensions!"]),
+                 frame(4, [event("fieldstart", value="Trick Room")],
+                       texts=["Dee ee twisted the dimensions!"]),
+                 frame(5, [event("fieldstart", value="move: Trick Room")],
+                       texts=["Dee Dee twisted the dimensions!"]),
+                 frame(30, [event("fieldend", value="move: Trick Room")],
+                       texts=["The twisted dimensions returned to normal!"]),
+                 frame(31, [event("fieldend", value="Trick Room")],
+                       texts=["The twisted dimensions returned to normal!"])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        room = [e for e in ledger["events"] if "Trick Room" in str(e.get("value"))]
+        self.assertEqual([(e["kind"], e["frame"]) for e in room if e["status"] == "consistent"],
+                         [("fieldstart", 2), ("fieldend", 30)])
+        self.assertTrue(all(e["evidence"] for e in room))
+        self.assertEqual([e["frame"] for e in room[0]["observations"]], [4, 5])
+        self.assertEqual([e["field_state_seq"] for e in room if e["status"] == "suppressed"], [2, 2, 5])
+        self.assertEqual(ledger["events"][0]["status"], "consistent")
+
+    def test_trick_room_can_end_early_and_restart_without_erasing_moves(self):
+        trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "177/177"),
+                          event("turn", turn=1), event("move", "p1a", "Indeedee-F", move="Trick Room")]),
+                 frame(2, [event("fieldstart", value="move: Trick Room")]),
+                 frame(10, [event("move", "p1a", "Indeedee-F", move="Trick Room")]),
+                 frame(11, [event("fieldend", value="Trick Room")]),
+                 frame(20, [event("move", "p1a", "Indeedee-F", move="Trick Room")]),
+                 frame(21, [event("fieldstart", value="Trick Room")])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual([e["kind"] for e in ledger["events"] if e["status"] == "consistent"],
+                         ["switch", "turn", "move", "fieldstart", "move", "fieldend", "move", "fieldstart"])
+        # No inferred closure: a battle can finish while Trick Room is active.
+        self.assertEqual(ledger["counts"]["fieldend"], 1)
+
+    def test_trick_room_end_without_start_remains_an_issue(self):
+        ledger = BattleAutomaton(0, [frame(1, [event("fieldend", value="move: Trick Room")])]).run()
+        self.assertEqual(ledger["events"][0]["status"], "review")
+        self.assertEqual(ledger["issues"][0]["code"], "field_transition")
+
+    def test_trick_room_new_cast_without_closure_is_not_hidden_as_repeated_ocr(self):
+        trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "177/177"),
+                          event("move", "p1a", "Indeedee-F", move="Trick Room")]),
+                 frame(2, [event("fieldstart", value="move: Trick Room")]),
+                 frame(10, [event("move", "p1a", "Indeedee-F", move="Trick Room")]),
+                 frame(11, [event("fieldstart", value="move: Trick Room")])]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["events"][-1]["status"], "review")
+        self.assertEqual(ledger["issues"][0]["code"], "field_transition")
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"), "Requiere ZIP de Trick Room")
+    def test_trick_room_from_reprocessed_137129(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"])
+        frames, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, [r for r in frames if r["battle_index"] == 0],
+                                 read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        room = [e for e in ledger["events"] if e.get("value") == "move: Trick Room"]
+        self.assertEqual([(e["kind"], e["turn"], e["frame"]) for e in room if e["status"] == "consistent"],
+                         [("fieldstart", 2, 474), ("fieldend", 6, 956)])
+        self.assertEqual([e["frame"] for e in room if e["status"] == "suppressed"], [476, 477])
+
     def test_cjk_hud_alias_requires_stationary_name_and_repeated_faint(self):
         rows = [frame(n) for n in range(1, 5)]
         for row in rows[:2]:
@@ -2088,7 +2152,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual([i["code"] for i in first_ledger["resolved_issues"]],
                          ["faint_text_unconfirmed", "reentry_without_exit"])
         first_log = render_markdown(first_ledger, compare_baseline(first_ledger, baselines[0]))
-        self.assertIn("Trick Room · fotograma 473 · 3 lecturas seguidas (fotogramas 473, 475, 476)", first_log)
+        self.assertIn("Trick Room · fotograma 473 · 3 lecturas del mismo estado (fotogramas 473, 475, 476)", first_log)
         self.assertIn("Avisos resueltos con evidencia", first_log)
 
         # A single faint reading cannot discard the detector's other-slot
