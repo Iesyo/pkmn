@@ -3620,6 +3620,10 @@ class BattleAutomaton:
         A mere resemblance to an event does not resolve the warning: both the
         subject and the later accepted action must agree with repeated OCR.
         """
+        def opponent_species(name: str) -> str:
+            nickname = strip_pokemon_title(name).casefold()
+            return identity_species(self.nickname_species["p2"].get(nickname, nickname)).casefold()
+
         unresolved = []
         for issue in self.issues:
             if issue["code"] != "unclassified_text":
@@ -3627,7 +3631,7 @@ class BattleAutomaton:
                 continue
             message = self.events[issue["event_seq"] - 1]
             value = message.get("value") or ""
-            withdrawal = re.fullmatch(r"The Trainer withdrew (.+)!", value)
+            withdrawal = re.fullmatch(r"(.+?) withdrew (.+)!", value, re.I)
             stone = re.fullmatch(r"The opposing (.+?)'s .+?reacting to Trainer's Omni Ring!", value)
             matches = []
             for slot in ("p2a", "p2b"):
@@ -3638,7 +3642,7 @@ class BattleAutomaton:
                                        for e in self.events[previous["seq"]:message["seq"] - 1]):
                     continue
                 actor = self.actors[previous["actor_id"]]
-                if withdrawal and actor["species"].casefold() == withdrawal[1].casefold():
+                if withdrawal and opponent_species(withdrawal[2]) == identity_species(actor["species"]).casefold():
                     upcoming = [e for e in self.events[message["seq"]:] if
                                 e["kind"] in {"switch", "drag"} and e["status"] == "consistent" and
                                 e.get("slot") == slot and e["actor_id"] != previous["actor_id"] and
@@ -3654,16 +3658,18 @@ class BattleAutomaton:
                             text = line.get("text", "").strip()
                             if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
                                 continue
-                            old = re.fullmatch(r"The Trainer withdrew (.+)!", text)
-                            new = ANNOUNCED_ENTRY.search(text)
+                            old = re.fullmatch(r"(.+?) withdrew (.+)!", text, re.I)
+                            new = re.fullmatch(r"(.+?) sent out (.+)!", text, re.I)
                             proof = {"frame": row["frame"], "text": text, "confidence": line["confidence"]}
                             if (old and row["frame"] <= message["frame"] + 3 and
-                                    self.nickname_species["p2"].get(old[1].casefold()) == actor["species"]):
+                                    old[1].casefold() == withdrawal[1].casefold() and
+                                    opponent_species(old[2]) == identity_species(actor["species"]).casefold()):
                                 withdraw_proof.append(proof)
                             if (new and action["logical_frame"] - 3 <= row["frame"] <=
                                     action["logical_frame"] + 3 and
-                                    self.nickname_species["p2"].get((new[1] or "").casefold()) ==
-                                    self.actors[action["actor_id"]]["species"]):
+                                    new[1].casefold() == withdrawal[1].casefold() and
+                                    opponent_species(new[2]) == identity_species(
+                                        self.actors[action["actor_id"]]["species"]).casefold()):
                                 entry_proof.append(proof)
                     if (len({x["frame"] for x in withdraw_proof}) >= 2 and
                             len({x["frame"] for x in entry_proof}) >= 2):
@@ -3886,8 +3892,85 @@ class BattleAutomaton:
                 break
         return merge_recovered_candidates(candidates, recovered)
 
+    def _recover_late_lethal_hp(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Recover a zero HP observation hidden inside a delayed switch event.
+
+        The detector sometimes reports only the late HUD switch, even when an
+        intervening attack has already taken that new occupant to zero. A
+        repeated named zero HUD and repeated faint text establish the endpoint;
+        one opposing attack establishes the cause. Otherwise leave it alone.
+        """
+        recovered = []
+        for entry in candidates:
+            event = entry["event"]
+            slot = event.get("slot")
+            anchor = entry.get("anchor")
+            if (event["kind"] != "switch" or slot not in {"p2a", "p2b"} or
+                not entry.get("late_health") or event.get("health") != "0/100" or not anchor):
+                continue
+            start, end = anchor["frame"], entry["observed_frame"]
+            species = identity_species(entry.get("canonical_species") or event.get("species") or "").casefold()
+            if not species or not start < end:
+                continue
+            zero = []
+            nickname = None
+            for number in (end, end + 1, end + 2):
+                row = self.frame_lookup.get(number)
+                if not row:
+                    break
+                name = hud_nickname(row, slot)
+                readings = complete_hud_health(row, slot)
+                actual = identity_species(self.nickname_species["p2"].get(name or "", name or "")).casefold()
+                if (not name or actual != species or len(readings) != 1 or
+                    readings[0][0] != "0/100" or readings[0][1]["confidence"] < .95 or
+                    (nickname and nickname != name)):
+                    break
+                nickname = name
+                zero.append({"frame": number, "text": readings[0][1]["text"],
+                             "nickname": name, "confidence": readings[0][1]["confidence"]})
+            if len(zero) < 2:
+                continue
+            opposing_moves = [c for c in candidates if c["event"]["kind"] == "move" and
+                              c["event"].get("slot", "").startswith("p1") and
+                              start < c["logical_frame"] < end and
+                              end - c["observed_frame"] <= 20]
+            if len(opposing_moves) != 1 or any(
+                c is not entry and c["event"].get("slot") == slot and
+                c["event"]["kind"] in HP_KINDS | {"switch", "drag", "faint"} and
+                start < c["logical_frame"] <= end for c in candidates):
+                continue
+            faint = [c for c in candidates if c["event"]["kind"] == "faint" and
+                     c["event"].get("slot") == slot and
+                     end < c["observed_frame"] <= end + 12]
+            if len(faint) != 1:
+                continue
+            faint_text = []
+            for number in range(faint[0]["observed_frame"], faint[0]["observed_frame"] + 3):
+                row = self.frame_lookup.get(number, {})
+                for line in row.get("ocr", ()):
+                    match = FAINT_NARRATION.fullmatch(line.get("text", "").strip())
+                    if (match and match[1] and line.get("top", 0) >= .55 and
+                        line.get("confidence", 0) >= .95 and
+                        strip_pokemon_title(match[2]).casefold() == nickname):
+                        faint_text.append({"frame": number, "text": line["text"],
+                                           "confidence": line["confidence"]})
+            if len({proof["frame"] for proof in faint_text}) < 2:
+                continue
+            row = self.frame_lookup[end]
+            recovered.append({"event": {"kind": "damage", "slot": slot,
+                                        "species": event.get("species"), "health": "0/100",
+                                        "source_frame": end, "timestamp_ms": row["timestamp_ms"],
+                                        "confidence": zero[0]["confidence"]},
+                              "observed_frame": end, "observed_ms": row["timestamp_ms"],
+                              "logical_frame": end, "ordinal": 1,
+                              "hp_reconstruction": {"reason": "HUD cero tras el único ataque rival, antes del debilitamiento repetido",
+                                                    "entry_frame": start, "move_frame": opposing_moves[0]["observed_frame"],
+                                                    "zero_hud": zero, "faint_text": faint_text}})
+        return merge_recovered_candidates(candidates, recovered)
+
     def run(self) -> dict[str, Any]:
         candidates = self._recover_withdrawn_entries(ordered_candidates(self.frames, self.alias_reconstructions))
+        candidates = self._recover_late_lethal_hp(candidates)
         for candidate in self._complete_hp_candidates(candidates):
             self._handle(candidate)
         self._flush_hp()
