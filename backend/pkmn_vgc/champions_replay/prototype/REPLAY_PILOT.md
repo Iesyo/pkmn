@@ -3,8 +3,8 @@
 `ledger_replay.py` transforma **una partida cerrada** de `battle-XX.json` en
 `.log`, `.json` y `.html` para el visor de Pokémon Showdown. Se ejecuta fuera
 del pipeline de COL-102. Los eventos y su orden vienen exclusivamente de
-Ledger; el ZIP original aporta los nombres de los jugadores, el formato y
-el resultado OCR. No lee `output/replay-*.log` ni usa el replay archivado como
+Ledger; el ZIP original aporta los nombres de los jugadores, los equipos,
+el formato y el resultado OCR. No lee `output/replay-*.log` ni usa el replay archivado como
 autoridad.
 
 ## Ejemplo reproducible
@@ -43,7 +43,13 @@ ganador ausente aun cuando el replay archivado diga `|win|Roku`.
   (secuencia 10) y el último Terrain Pulse (28) conservan el objetivo vacío.
 - Los PS de `p1` usan fracciones observadas actual/máximo. Los de `p2`
   permanecen normalizados como porcentaje/100; no se atribuyen PS absolutos
-  al rival. No emite Team Preview ni decisiones `inputlog` sin evidencia.
+  al rival. No emite decisiones `inputlog` sin evidencia.
+- Escribe `|teamsize|`, seis `|poke|` por lado y `|teampreview|` antes de
+  `|start|`. El equipo propio viene del contexto configurado o de la lectura
+  visual, y el rival de un Team Preview repetido o del contexto si fue
+  configurado explícitamente. Si falta un equipo de seis, las lecturas visuales
+  empatan o contradicen el contexto, no exporta un replay con equipo parcial.
+  `ledger_source.team_preview` conserva los fotogramas de corroboración.
 - Exige un único anuncio OCR posterior al fin y dentro de la misma batalla
   que nombre al rival como ganador o perdedor. Si falta, **no fabrica `|win|`**:
   la exportación falla indicando la evidencia faltante.
@@ -88,3 +94,13 @@ rechazaría la exportación. No agrega un daño ficticio de 100 a 92 %.
 Seis pruebas del puente, incluidos los dos diagnósticos reales y los casos
 negativos del HUD intermedio, pasan. La integración de COL-102 continúa
 separada.
+
+## Equipos completos · 28 de septiembre de 2026
+
+Los tres pilotos (`f7af`/01, `79dd`/02 y `92e07d`/01) ahora muestran ambos
+equipos completos en la apertura, como el generador productivo. Los doce
+`|poke|` se obtienen del contexto del diagnóstico y de las lecturas repetidas
+del Team Preview; no se copian del replay archivado. Las 7 pruebas del puente
+pasaron con los dos ZIP reales, y en los tres pilotos todas las líneas desde
+`|start|` son idénticas a las anteriores. Los HTML nuevos requieren revisión
+visual de la pantalla inicial por Ies.
