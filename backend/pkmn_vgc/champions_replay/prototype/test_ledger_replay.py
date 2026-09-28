@@ -58,7 +58,7 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 class LedgerReplayTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"), "Requiere ZIP de Trick Room")
-    def test_137129_replay_only_removes_two_duplicate_room_starts(self):
+    def test_137129_replay_preserves_room_and_observed_sources(self):
         from champions_automaton import BattleAutomaton, read_diagnostic, read_diagnostic_context
 
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"])
@@ -74,12 +74,20 @@ class LedgerReplayTest(unittest.TestCase):
             build_replay(old_ledger, context)
         expected = []
         starts = 0
+        sources = {
+            "|-fieldstart|move: Psychic Terrain": "|[from] ability: Psychic Surge|[of] p1a: Indeedee-F",
+            "|-fieldstart|move: Trick Room": "|[of] p1a: Indeedee-F",
+            "|-enditem|p1a: Indeedee-F|Sitrus Berry": "|[eat]",
+            "|-heal|p1a: Indeedee-F|76/177": "|[from] item: Sitrus Berry",
+        }
         for line in old:
             if line == "|-fieldstart|move: Trick Room":
                 starts += 1
                 if starts > 1:
                     continue
-            expected.append(line)
+            if line == "|-damage|p1b: Kingambit|1/177":
+                expected.append("|-crit|p1b: Kingambit")
+            expected.append(line + sources.get(line, ""))
         self.assertEqual(starts, 3)
         self.assertEqual(replay["log"].splitlines(), expected)
 
