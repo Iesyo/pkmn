@@ -56,6 +56,10 @@ El HTML carga el visor oficial mediante su script público; necesita conexión
 al abrirse. La comprobación estructural y contra OCR no sustituye una
 revisión visual del reproductor.
 
+Ies revisó los dos HTML localmente y confirmó el 28 de septiembre de 2026
+que ambos replays quedaron bien. Esta confirmación corresponde a `f7af`/01 y
+`79dd`/02; las partidas nuevas requieren su propia revisión visual.
+
 ## Segunda partida: 79dd2e3de412450e / 02
 
 ```bash
@@ -82,5 +86,5 @@ estuviera antes de la acción, faltara el mote o hubiera avisos abiertos,
 rechazaría la exportación. No agrega un daño ficticio de 100 a 92 %.
 
 Seis pruebas del puente, incluidos los dos diagnósticos reales y los casos
-negativos del HUD intermedio, pasan. La reproducción visual del HTML sigue
-pendiente; la integración de COL-102 continúa separada.
+negativos del HUD intermedio, pasan. La integración de COL-102 continúa
+separada.
