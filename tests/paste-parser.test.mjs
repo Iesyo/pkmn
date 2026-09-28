@@ -144,14 +144,14 @@ test("counts the same two leads together and ranks the best by win percentage", 
   assert.deepEqual(rankLeadsByWinRate(leads)[0], { species: ["Blaziken", "Gardevoir"], games: 1, wins: 1 });
 });
 
-test("ranks rival picks by victories or defeats, using appearances to break ties", async () => {
+test("ranks rival picks in exactly one matchup list by prevailing result", async () => {
   const { calculateOpponentPokemonStats, rankOpponentMatchups } = await vite.ssrLoadModule("/lib/team-stats.ts");
   const matches = [
     ...Array.from({ length: 5 }, (_, index) => ({ result: "win", opponentPicks: index === 0
-      ? ["Basculegion", "Kingambit", "Sneasler"]
+      ? ["Basculegion", "Kingambit", "Sneasler", "Torkoal"]
       : ["Basculegion", "Kingambit"] })),
     ...Array.from({ length: 4 }, (_, index) => ({ result: "loss", opponentPicks: index < 3
-      ? ["Kingambit", "Gholdengo", "Sneasler"]
+      ? ["Kingambit", "Gholdengo", "Sneasler", ...(index === 0 ? ["Torkoal"] : [])]
       : ["Kingambit", "Gholdengo"] })),
     { result: "win", opponentPicks: ["Gardevoir"] },
     { result: "loss", opponentPicks: ["Gholdengo"] },
@@ -159,9 +159,10 @@ test("ranks rival picks by victories or defeats, using appearances to break ties
   const stats = calculateOpponentPokemonStats(matches, "opponentPicks");
 
   assert.deepEqual(rankOpponentMatchups(stats, "best").map((entry) => entry.species),
-    ["Kingambit", "Basculegion", "Sneasler", "Gardevoir"]);
+    ["Kingambit", "Basculegion", "Gardevoir"]);
   assert.deepEqual(rankOpponentMatchups(stats, "worst").map((entry) => entry.species),
-    ["Gholdengo", "Kingambit", "Sneasler"]);
+    ["Gholdengo", "Sneasler"]);
+  assert.equal(stats.find((entry) => entry.species === "Torkoal").winRate, 50);
   assert.equal(stats.find((entry) => entry.species === "Gardevoir").winRate, 100);
   assert.equal(stats.find((entry) => entry.species === "Kingambit").wins, 5);
 });
