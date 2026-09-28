@@ -1,5 +1,12 @@
 # Champions Ledger · Autómata temporal de batalla
 
+> **Integración web, 28 sep 2026:** estos dos autómatas son ahora el motor de
+> generación de los jobs de vídeo mediante `champions_replay/ledger_pipeline.py`.
+> Conservan sus comandos independientes y sus pruebas. La descripción del
+> prototipo y los cortes históricos de abajo se mantienen como referencia.
+> La ruta vigente y el contenido del ZIP de diagnóstico están documentados en
+> `docs/champions-replay.md`.
+
 **Champions Ledger** es un proyecto independiente nacido de los diagnósticos
 de COL-102. Lee `ocr.trace.jsonl` y produce un registro intermedio por batalla.
 Con `--diagnostic` también lee el equipo de `job.json`; para corroborar una
