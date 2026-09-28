@@ -130,6 +130,37 @@ test("uses rival picks for matchups and Team Preview for attendance without infe
   assert.equal(matchups.some((entry) => entry.species === "Calyrex-Ice"), false);
 });
 
+test("counts the same two leads together regardless of which one is listed first", async () => {
+  const { calculateLeads } = await vite.ssrLoadModule("/lib/team-stats.ts");
+  const leads = calculateLeads([
+    { lead: ["Blaziken", "Kingambit"], result: "win" },
+    { lead: ["Kingambit", "Blaziken"], result: "loss" },
+    { lead: ["Blaziken", "Kingambit"], result: "win" },
+    { lead: ["Gardevoir", "Blaziken"], result: "win" },
+  ]);
+
+  assert.deepEqual(leads[0], { species: ["Blaziken", "Kingambit"], games: 3, wins: 2 });
+  assert.equal(leads.length, 2);
+});
+
+test("ranks rival picks by victories or defeats, using appearances to break ties", async () => {
+  const { calculateOpponentPokemonStats, rankOpponentMatchups } = await vite.ssrLoadModule("/lib/team-stats.ts");
+  const matches = [
+    ...Array.from({ length: 5 }, () => ({ result: "win", opponentPicks: ["Basculegion", "Kingambit"] })),
+    ...Array.from({ length: 4 }, () => ({ result: "loss", opponentPicks: ["Kingambit", "Gholdengo"] })),
+    { result: "win", opponentPicks: ["Gardevoir"] },
+    { result: "loss", opponentPicks: ["Gholdengo"] },
+  ];
+  const stats = calculateOpponentPokemonStats(matches, "opponentPicks");
+
+  assert.deepEqual(rankOpponentMatchups(stats, "best").map((entry) => entry.species),
+    ["Kingambit", "Basculegion", "Gardevoir"]);
+  assert.deepEqual(rankOpponentMatchups(stats, "worst").map((entry) => entry.species),
+    ["Gholdengo", "Kingambit"]);
+  assert.equal(stats.find((entry) => entry.species === "Gardevoir").winRate, 100);
+  assert.equal(stats.find((entry) => entry.species === "Kingambit").wins, 5);
+});
+
 test("computes move usage from replay telemetry instead of dividing 100 by four", async () => {
   const { parseShowdownPaste } = await vite.ssrLoadModule("/lib/paste.ts");
   const { decoratePokemonPerformance } = await vite.ssrLoadModule("/lib/team-stats.ts");
