@@ -4,6 +4,8 @@ import { BarChart3, Eye, TrendingDown, TrendingUp } from "lucide-react";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import {
   calculateOpponentPokemonStats,
+  rankOpponentMatchups,
+  winRate,
   type OpponentPokemonStat,
 } from "@/lib/team-stats";
 import type { MatchRecord } from "@/lib/types";
@@ -75,11 +77,15 @@ function StatPanel({
             <div className="min-w-0">
               <p className="truncate text-[10px] font-semibold text-slate-300">{stat?.species ?? "Sin datos"}</p>
               <p className="text-[9px] text-slate-600">
-                {stat ? (isAttendance ? `visto en ${stat.games} de ${totalGames}` : `${stat.wins} de ${stat.games} ganadas`) : emptyLabel}
+                {stat ? (isAttendance
+                  ? `visto en ${stat.games} de ${totalGames}`
+                  : kind === "worst"
+                    ? `${stat.games - stat.wins} derrotas en ${stat.games} partidas`
+                    : `${stat.wins} victorias en ${stat.games} partidas`) : emptyLabel}
               </p>
             </div>
             <span className={cn("font-mono text-[10px] font-bold tabular-nums", stat ? style.metric : "text-slate-700")}>
-              {stat ? `${isAttendance ? stat.attendanceRate : stat.winRate}%` : "—"}
+              {stat ? `${isAttendance ? stat.attendanceRate : kind === "worst" ? winRate(stat.games - stat.wins, stat.games) : stat.winRate}%` : "—"}
             </span>
           </div>
         ))}
@@ -93,8 +99,8 @@ export function MatchupAttendance({ matches }: { matches: MatchRecord[] }) {
   const previewStats = calculateOpponentPokemonStats(matches, "opponentSelected");
   const gamesWithPicks = matches.filter((match) => match.opponentPicks?.length).length;
   const emptyLabel = matches.length ? "Sin picks rivales registrados" : "Registra partidas para calcularlo";
-  const byBest = [...pickStats].sort((a, b) => b.winRate - a.winRate || b.games - a.games || a.species.localeCompare(b.species));
-  const byWorst = [...pickStats].sort((a, b) => a.winRate - b.winRate || b.games - a.games || a.species.localeCompare(b.species));
+  const byBest = rankOpponentMatchups(pickStats, "best");
+  const byWorst = rankOpponentMatchups(pickStats, "worst");
   const byHighest = [...previewStats].sort((a, b) => b.attendanceRate - a.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
   const byLowest = [...previewStats].sort((a, b) => a.attendanceRate - b.attendanceRate || b.games - a.games || a.species.localeCompare(b.species));
 
@@ -103,7 +109,7 @@ export function MatchupAttendance({ matches }: { matches: MatchRecord[] }) {
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h3 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><BarChart3 className="size-3.5 text-cyan-300" />Matchups & Attendance</h3>
-          <p className="mt-1 text-[10px] text-slate-600">Matchups según picks rivales; asistencia según Team Preview.</p>
+          <p className="mt-1 text-[10px] text-slate-600">Matchups ordenados por victorias o derrotas frente a los picks rivales; asistencia según Team Preview.</p>
         </div>
         <span className="text-[9px] uppercase tracking-wider text-slate-700">{gamesWithPicks} de {matches.length} partidas con picks rivales</span>
       </div>
