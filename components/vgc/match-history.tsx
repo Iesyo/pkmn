@@ -117,7 +117,6 @@ function MatchHistoryTable({
           <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">{isChampions ? "Pokémon rival" : "Equipo rival"}</TableHead>
           <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Picks rival</TableHead>
           <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
-          <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tu lead</TableHead>
           <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
           <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
         </TableRow>
@@ -141,7 +140,6 @@ function MatchHistoryTable({
             </TableCell>
             <TableCell><PokemonSpriteStrip species={match.opponentPicks ?? []} label="Picks rival" limit={4} /></TableCell>
             <TableCell><PokemonSpriteStrip species={match.selected} label="Tus picks" tone="cyan" limit={4} /></TableCell>
-            <TableCell><PokemonSpriteStrip species={match.lead.length === 2 ? match.lead : []} label="Tu lead" tone="cyan" limit={2} /></TableCell>
             <TableCell className="text-right font-mono tabular-nums text-slate-400">{match.rating ?? "—"}</TableCell>
             <TableCell className="text-right">
               <div className="flex min-w-max items-center justify-end gap-1.5">
