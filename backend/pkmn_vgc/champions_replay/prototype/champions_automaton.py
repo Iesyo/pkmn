@@ -3128,8 +3128,9 @@ class BattleAutomaton:
                 named = signature[2].casefold()
                 named_species = self.nickname_species[signature[1]].get(named, named)
                 expected_species = identity_species(faint["species"]).casefold()
-                clean_names = [name for name, species in self.nickname_species[signature[1]].items()
-                               if identity_species(species).casefold() == expected_species]
+                clean_names = {faint["species"].casefold()} | {
+                    name for name, species in self.nickname_species[signature[1]].items()
+                    if identity_species(species).casefold() == expected_species}
 
                 def inserted_ascii_noise(clean: str) -> bool:
                     if (len(clean) < 4 or len(named) != len(clean) + 1 or
@@ -3137,10 +3138,18 @@ class BattleAutomaton:
                         return False
                     return any(named[:i] + named[i + 1:] == clean and named[i].isascii() and
                                named[i].isalnum() for i in range(len(named)))
+                def missing_ascii_letters(clean: str) -> bool:
+                    return (len(clean) >= 6 and clean.isascii() and named.isascii() and
+                            1 <= len(clean) - len(named) <= 2 and
+                            any(clean[:i] + clean[i + len(clean) - len(named):] == named and
+                                clean[i:i + len(clean) - len(named)].isalpha()
+                                for i in range(len(named) + 1)))
+
 
                 noisy_name = (identity_species(named_species).casefold() != expected_species and
                               named not in self.nickname_species[signature[1]] and
-                              sum(inserted_ascii_noise(clean) for clean in clean_names) == 1)
+                              sum(inserted_ascii_noise(clean) or missing_ascii_letters(clean)
+                                  for clean in clean_names) == 1)
                 if identity_species(named_species).casefold() != expected_species and not noisy_name:
                     continue
                 hp = next((e for e in reversed(self.events[:faint["seq"] - 1])
@@ -3301,6 +3310,99 @@ class BattleAutomaton:
             rejected["resolution"] = resolution
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
+    def _reconcile_intermediate_hp_entries(self) -> None:
+        """A changing HUD can be mistaken for an entry during an HP animation.
+
+        Require the same named occupant, a literal intermediate HUD value, and
+        a confirmed next HP event whose before/after values bracket that value.
+        An actual withdrawal or announced entry keeps the warning open.
+        """
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "reentry_without_exit":
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            slot, actor_id = rejected["slot"], rejected["actor_id"]
+            following = self.events[rejected["seq"]:rejected["seq"] + 1]
+            next_hp = following[0] if following else None
+            prior = next((e for e in reversed(self.events[:rejected["seq"] - 1])
+                          if e["actor_id"] == actor_id and e["slot"] == slot and
+                          e["status"] == "consistent" and e["kind"] in HP_KINDS | {"switch", "drag"}), None)
+            before = (prior["after"] or prior["health"]) if prior else None
+            middle = rejected["health"]
+            after = next_hp["after"] if next_hp else None
+            values = [health_ratio(value) for value in (before, middle, after)]
+            if (rejected["status"] != "suppressed" or rejected["kind"] != "switch" or
+                not actor_id or not prior or prior.get("hp_state") != "confirmed" or
+                not next_hp or next_hp["kind"] not in HP_KINDS or
+                next_hp["status"] != "consistent" or next_hp.get("hp_state") != "confirmed" or
+                next_hp["slot"] != slot or next_hp["actor_id"] != actor_id or
+                next_hp["turn"] != rejected["turn"] or next_hp["before"] != before or
+                not 0 < next_hp["observed_ms"] - rejected["observed_ms"] <= 1_000 or
+                any(value is None for value in values) or not 0 < values[1] < 1 or
+                not (values[0] < values[1] < values[2] if next_hp["kind"] == "heal"
+                     else values[0] > values[1] > values[2])):
+                unresolved.append(issue)
+                continue
+            if any(e["status"] == "consistent" and e["slot"] == slot and
+                   e["kind"] in {"switch", "drag", "faint"} for e in
+                   self.events[prior["seq"]:next_hp["seq"] - 1]):
+                unresolved.append(issue)
+                continue
+
+            expected = identity_species(rejected["species"]).casefold()
+            hp_label = middle.split("/", 1)[0] + "%" if slot.startswith("p2") else middle
+            hp_box = HP_HUD_AREAS[slot]
+            name_box = NAME_HUD_AREAS[slot]
+
+            def hud_lines(row: dict[str, Any], box: tuple[float, ...], minimum: float) -> list[dict[str, Any]]:
+                left, right, top, bottom = box
+                return [line for line in row.get("ocr", ())
+                        if line.get("confidence", 0) >= minimum and
+                        left <= line.get("left", -1) <= right and
+                        top <= line.get("top", -1) <= bottom and
+                        line.get("right", right) <= right + .02 and
+                        line.get("bottom", bottom) <= bottom + .02]
+
+            current = self.frame_lookup[rejected["frame"]]
+            next_row = self.frame_lookup[next_hp["frame"]]
+            hp_readings = [line for line in hud_lines(current, hp_box, .85)
+                           if HP_TEXT.fullmatch(line.get("text", "").strip())]
+            names = [[line for line in hud_lines(row, name_box, .95)
+                      if re.search(r"[A-Za-z]{3}", line.get("text", ""))]
+                     for row in (current, next_row)]
+            if (len(hp_readings) != 1 or
+                re.sub(r"\s+", "", hp_readings[0]["text"]) != hp_label or
+                any(len(readings) != 1 or
+                    identity_species(self.nickname_species[slot[:2]].get(
+                        readings[0]["text"].casefold(), readings[0]["text"])).casefold() != expected
+                    for readings in names)):
+                unresolved.append(issue)
+                continue
+            window = [row for row in self.frames
+                      if rejected["observed_ms"] - 1_000 <= row["timestamp_ms"] <= next_hp["observed_ms"]]
+            if any(line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                   (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                    re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                   for row in window for line in row.get("ocr", ())):
+                unresolved.append(issue)
+                continue
+            evidence = (prior["hp_support"]["evidence"] +
+                        [{"frame": current["frame"], "text": hp_readings[0]["text"],
+                          "confidence": hp_readings[0]["confidence"], "kind": "intermediate_hp"}] +
+                        [{"frame": row["frame"], "text": readings[0]["text"],
+                          "confidence": readings[0]["confidence"], "kind": "hud_name"}
+                         for row, readings in zip((current, next_row), names)] +
+                        next_hp["hp_support"]["evidence"])
+            resolution = {"state": "resolved", "event_seq": next_hp["seq"],
+                          "actor_id": actor_id, "slot": slot,
+                          "reason": "HUD intermedio durante un cambio de PS confirmado, con el mismo nombre antes y después y sin anuncio de entrada o salida.",
+                          "evidence": evidence}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
 
     def _reconcile_hud_identity_entries(self) -> None:
         """Join a provisional HUD identity to its corroborated living occupant.
@@ -3795,6 +3897,7 @@ class BattleAutomaton:
         self._reconcile_faint_hud_entries()
         self._reconcile_hud_identity_entries()
         self._reconcile_repeated_faint_text()
+        self._reconcile_intermediate_hp_entries()
         self._reconcile_partner_hud_entries()
         self._reconcile_transient_text()
         self._reconcile_switch_and_mega_context()
