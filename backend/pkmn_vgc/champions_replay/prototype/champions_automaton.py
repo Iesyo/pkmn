@@ -2578,6 +2578,11 @@ class BattleAutomaton:
             return
         self._flush_hp()
         if kind in {"switch", "drag"} and slot in SLOTS:
+            if kind == "switch" and (ghost := self._ghost_placeholder_after_faint(candidate)):
+                item = self._append(candidate, status="suppressed", actor_id=ghost["actor_id"],
+                                    note=ghost["reason"])
+                item["resolution"] = ghost
+                return
             if candidate.get("identity_support", {}).get("state") == "unconfirmed":
                 item = self._append(candidate, status="suppressed",
                                     note="Motes contradictorios durante la entrada del HUD; identidad pendiente.")
@@ -3969,6 +3974,104 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_malformed_mega_text(self) -> None:
+        """Link a missing space in the stone announcement to a confirmed Mega."""
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "unclassified_text":
+                unresolved.append(issue)
+                continue
+            message = self.events[issue["event_seq"] - 1]
+            malformed = re.fullmatch(r"(.+?)['’]s (\S+?)is reacting to (.+?)['’]s Omni Ring!",
+                                     str(message.get("value") or ""), re.I)
+            if not malformed:
+                unresolved.append(issue)
+                continue
+            species, stone, trainer = malformed.groups()
+            matches = []
+            for action in self.events[message["seq"]:]:
+                if (action["kind"] != "mega" or action["status"] != "consistent" or
+                    not (action.get("slot") or "").startswith("p1") or
+                    action["value"].casefold() != stone.casefold() or
+                    identity_species(action["species"]).casefold() != species.casefold() or
+                    not 0 < action["frame"] - message["frame"] <= 30):
+                    continue
+                clean, evolved = [], []
+                for number in range(message["frame"], action["frame"] + 4):
+                    row = self.frame_lookup.get(number, {})
+                    for line in row.get("ocr", ()):
+                        if line.get("confidence", 0) < .95 or line.get("top", 0) < .55:
+                            continue
+                        text = line.get("text", "").strip()
+                        fixed = MEGA_NARRATION.fullmatch(text)
+                        later = re.fullmatch(r"(.+?) has Mega Evolved into Mega (.+)!", text, re.I)
+                        proof = {"frame": number, "text": text, "confidence": line["confidence"]}
+                        if (fixed and not fixed[1] and number <= message["frame"] + 4 and
+                            fixed[3].casefold() == stone.casefold() and
+                            text.casefold().endswith("reacting to " + trainer.casefold() + "'s omni ring!") and
+                            identity_species(self.nickname_species["p1"].get(
+                                fixed[2].casefold(), fixed[2])).casefold() == species.casefold()):
+                            clean.append(proof)
+                        if (later and action["frame"] <= number <= action["frame"] + 3 and
+                            later[2].casefold() == species.casefold() and
+                            identity_species(self.nickname_species["p1"].get(
+                                later[1].casefold(), later[1])).casefold() == species.casefold()):
+                            evolved.append(proof)
+                if len({e["frame"] for e in clean}) >= 2 and len({e["frame"] for e in evolved}) >= 2:
+                    matches.append((action, clean + evolved))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            action, evidence = matches[0]
+            resolution = {"state": "resolved", "event_seq": action["seq"],
+                          "actor_id": action["actor_id"], "slot": action["slot"],
+                          "reason": "Espacio perdido en la lectura de la piedra; anuncio correcto repetido y megaevolución del mismo actor.",
+                          "evidence": evidence}
+            message["status"], message["resolution"] = "suppressed", resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
+    def _ghost_placeholder_after_faint(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Identify a transient clipped HUD as the old fainted occupant."""
+        event = candidate["event"]
+        slot, number = event.get("slot"), candidate["observed_frame"]
+        if (event["kind"] != "switch" or slot not in {"p2a", "p2b"} or event.get("health") or
+            not PLACEHOLDER.match(event.get("species") or "") or slot in self.active):
+            return None
+        faint = next((e for e in reversed(self.events) if e["kind"] == "faint" and
+                      e["slot"] == slot and e["status"] == "consistent"), None)
+        if not faint or not 0 < number - faint["frame"] <= 3:
+            return None
+        hp = next((e for e in reversed(self.events[:faint["seq"] - 1]) if
+                   e["actor_id"] == faint["actor_id"] and e["kind"] in HP_KINDS and
+                   e["status"] == "consistent"), None)
+        if not hp or hp.get("hp_state") != "confirmed" or health_ratio(hp.get("after")) != 0:
+            return None
+        fragment = hud_nickname(self.frame_lookup.get(number, {}), slot)
+        old = identity_species(self.actors[faint["actor_id"]]["species"]).casefold()
+        if (not fragment or len(fragment) < 3 or not old.endswith(fragment) or
+            complete_hud_health(self.frame_lookup[number], slot)):
+            return None
+        narration = []
+        for n in range(faint["frame"], number + 3):
+            for line in self.frame_lookup.get(n, {}).get("ocr", ()):
+                if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
+                    continue
+                text = line.get("text", "").strip()
+                match = FAINT_NARRATION.fullmatch(text)
+                if match and match[1] and identity_species(self.nickname_species["p2"].get(
+                        match[2].casefold(), match[2])).casefold() == old:
+                    narration.append({"frame": n, "text": text, "confidence": line["confidence"]})
+                if ANNOUNCED_ENTRY.search(text):
+                    return None
+        if len({e["frame"] for e in narration}) < 2 or not any(e["frame"] >= number for e in narration):
+            return None
+        return {"state": "resolved", "event_seq": faint["seq"],
+                "actor_id": faint["actor_id"], "slot": slot,
+                "reason": "HUD recortado del rival debilitado durante el anuncio repetido; no entró un actor nuevo.",
+                "evidence": (hp["hp_support"]["evidence"] + narration +
+                             [{"frame": number, "text": fragment, "kind": "clipped_hud"}])}
+
     def _recover_withdrawn_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Recover a missed voluntary replacement from independent evidence.
 
@@ -4240,6 +4343,7 @@ class BattleAutomaton:
         self._reconcile_voicing_faint_text()
         self._reconcile_spread_damage_hud()
         self._reconcile_switch_and_mega_context()
+        self._reconcile_malformed_mega_text()
         for actor_id, actor in self.actors.items():
             if actor["species"] == "unknown" or PLACEHOLDER.match(actor["species"]):
                 first = next((item for item in self.events if item["actor_id"] == actor_id), None)
