@@ -215,3 +215,31 @@ el archivado tenía el 0 % falso y un cambio para la revelación.
 Las 127 pruebas del autómata y puente pasan (8 diagnósticos opcionales no
 disponibles); los JSON de Ledger de seis casos anteriores permanecen
 idénticos. Pendiente la revisión visual del HTML por Ies.
+
+Ies confirmó visualmente que el replay HTML de 472247/01 se ve bien.
+
+## Diagnóstico 0f4f21a3e8b04bd5 · Toxtricity-Low-Key
+
+El parser productivo archivó una batalla de siete turnos. Primer pase de
+Ledger conservado: 150 candidatos, 86 sucesos (84 consistentes y dos entradas
+fantasma tras debilitamiento suprimidas), 26 episodios de PS confirmados y
+cero avisos. Los dos supuestos reingresos conservan sus lecturas y la
+evidencia del debilitamiento repetido.
+
+El puente se detenía en el daño inicial de Toxtricity-Low-Key: entrada con
+100/100 inferidos, primer HUD 94 % en frame 390 y PS finales 81 % en 391.
+Hyper Voice comienza en 386, por lo que 94 % es una lectura intermedia del
+mismo golpe. El HUD muestra «Toxtricity» y Team Preview contiene una única
+forma con esa base, Toxtricity-Low-Key. El puente exige esa unicidad, el
+fotograma del HUD entre movimiento y valor final y la continuidad de PS;
+emite un solo daño 100 → 81 % y anota el 94 % como evidencia, no como golpe.
+Una segunda forma ambigua o un HUD equivocado mantienen el bloqueo.
+
+Replay generado desde Ledger y OCR: ambos equipos de seis, siete turnos,
+22 movimientos, siete debilitamientos y ganador Roku corroborado en el
+resultado. Las 73 líneas de turnos, entradas, movimientos, PS,
+debilitamientos y ganador coinciden con el replay archivado tras quitar
+etiquetas de origen auxiliares; el orden de habilidades y terrenos difiere.
+Las 128 pruebas del autómata y puente pasan (8 diagnósticos opcionales
+omitidos); los replays JSON de 97c1, ad28, cc5298 y 472247 son idénticos.
+Pendiente la revisión visual del nuevo HTML por Ies.
