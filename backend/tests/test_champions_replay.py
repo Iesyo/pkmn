@@ -109,11 +109,9 @@ class ChampionsReplayTests(unittest.TestCase):
         self.assertEqual(document.issues, tuple(asdict(issue) for issue in review_capture(incomplete)))
         self.assertEqual(document.log, build_replay_document(battle).log)
 
-    def test_an_incomplete_player_selection_still_blocks(self) -> None:
-        # La pantalla "Select 4 Pokémon to send into battle" numera del 1
-        # al 4 las filas propias con un marcador real en pantalla -si
-        # `p1.selected` no llega a 4, es una lectura fallida de esa
-        # pantalla, no una ausencia de evidencia. Sigue bloqueando.
+    def test_an_incomplete_player_selection_is_only_a_warning(self) -> None:
+        # Un vídeo puede confirmar menos de cuatro picks sin invalidar los
+        # eventos y el resultado que sí quedaron observados.
         battle = self.capture()
         incomplete = replace(battle, p1=replace(battle.p1, selected=battle.p1.selected[:2]))
 
@@ -121,7 +119,8 @@ class ChampionsReplayTests(unittest.TestCase):
 
         matching = [issue for issue in issues if "selección del jugador" in issue.message]
         self.assertEqual(len(matching), 1)
-        self.assertEqual(matching[0].severity, "blocking")
+        self.assertEqual(matching[0].severity, "warning")
+        self.assertFalse(any(issue.severity == "blocking" for issue in matching))
 
     def test_an_incomplete_rival_selection_is_only_a_warning(self) -> None:
         # COL-102, sexta vuelta, job real `10a7fba6fda04585`, partida 3
