@@ -109,7 +109,7 @@ export function MatchupAttendance({ matches }: { matches: MatchRecord[] }) {
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h3 className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><BarChart3 className="size-3.5 text-cyan-300" />Matchups & Attendance</h3>
-          <p className="mt-1 text-[10px] text-slate-600">Matchups ordenados por victorias o derrotas frente a los picks rivales; asistencia según Team Preview.</p>
+          <p className="mt-1 text-[10px] text-slate-600">Best: más victorias que derrotas; Worst: más derrotas que victorias. Empates fuera de ambas listas. Orden por cantidad frente a los picks rivales; asistencia según Team Preview.</p>
         </div>
         <span className="text-[9px] uppercase tracking-wider text-slate-700">{gamesWithPicks} de {matches.length} partidas con picks rivales</span>
       </div>
