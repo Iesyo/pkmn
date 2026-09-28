@@ -307,4 +307,37 @@ byte por byte al ZIP 472247 previamente archivado (SHA-256
 Al correr ambos autómatas de nuevo, Ledger produjo el mismo JSON y Markdown
 de 75 sucesos, 18 cambios de PS y cero avisos; replay LOG, JSON y HTML
 idénticos. Sólo difiere el nombre del ZIP en `report.json`. No es una nueva
+
+## Diagnóstico b3f702719f2941f9 · debilitamiento repetido y HUD intermedio
+
+El parser productivo archivó una batalla de nueve turnos; los 19 segmentos de
+riesgo son orientativos. Primer pase conservado de Ledger: 1412 fotogramas,
+179 candidatos, 107 sucesos (102 consistentes, cuatro suprimidos y uno a
+revisar), 29 episodios de PS confirmados y dos avisos abiertos. En el frame
+475, Pelipper de p2b llega a 0 % y su debilitamiento se anuncia completo en
+475–476. La lectura «The opposing Pelipr fainted!» de 477 fue atribuida por
+el detector a p2a, que sigue ocupado por Archaludon con PS positivos.
+Ledger suprime esa segunda lectura sólo si hay dos anuncios completos del
+mismo debilitamiento inmediatamente antes, el nombre OCR perdió una o dos
+letras contiguas, el daño hasta 0 % está confirmado y el compañero conserva
+PS positivos confirmados. Sin el segundo anuncio completo queda el aviso.
+
+En el frame 488, el detector interpreta el HUD de Archaludon al 9 % como
+otra entrada al mismo slot. El actor tenía 6 % confirmados y en 489 alcanza
+12 % con una cura confirmada; su nombre figura en ambos HUD. Ledger conserva
+el `switch` suprimido y resuelve el aviso con la lectura literal 9 % como
+valor intermedio de 6→12 %, siempre que no exista anuncio de salida o
+entrada. Si falta el 9 % o aparece un anuncio de entrada, sigue abierto.
+Pase final: 107 sucesos (102 consistentes, cinco suprimidos), 29 episodios
+de PS, tres avisos resueltos con evidencia y cero abiertos.
+
+El puente reconoce Tailwind de Pelipper en p2b inmediatamente antes de
+`sidestart` asignado por el parser al compañero Archaludon en p2a: ambos
+pertenecen a p2 y el efecto es de ese bando. `sideend` puede conservar el
+actor activo del slot y se valida contra el inicio previo. Replay generado
+desde Ledger y OCR: equipos completos de seis, nueve turnos, 27 movimientos,
+siete debilitamientos y ganador Roku confirmado en el frame 1383. Las 135
+pruebas de ambos autómatas pasan (ocho diagnósticos opcionales omitidos); los
+Ledger y replays JSON de siete casos anteriores permanecen idénticos.
+Pendiente la revisión visual del HTML b3f7/01 por Ies.
 partida ni requiere otra revisión visual.
