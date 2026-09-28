@@ -269,6 +269,24 @@ class LedgerReplayTest(unittest.TestCase):
                          "You lost to the Trainer!")
         self.assertEqual(lines[-1], "|win|Trainer")
 
+    @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_CC5298") and os.getenv("CHAMPIONS_LEDGER_CC5298"),
+                         "requiere el diagnóstico rechazado por producción y Ledger cc5298")
+    def test_replay_de_batalla_rechazada_por_parser_productivo(self):
+        battle = json.loads(Path(os.environ["CHAMPIONS_LEDGER_CC5298"]).read_text())
+        diagnostic = Path(os.environ["CHAMPIONS_DIAGNOSTIC_CC5298"])
+        with zipfile.ZipFile(diagnostic) as archive:
+            self.assertFalse(any(name.startswith("output/replay-") for name in archive.namelist()))
+        document = build_replay(battle, load_trace_context(diagnostic, battle))
+        lines = document["log"].splitlines()
+        self.assertFalse(battle["issues"])
+        self.assertEqual((document["log"].count("|poke|p1|"),
+                          document["log"].count("|poke|p2|")), (6, 6))
+        self.assertIn("|-ability|p2b: Incineroar|Intimidate", lines)
+        self.assertEqual(sum(line.startswith("|faint|") for line in lines), 1)
+        self.assertEqual(document["ledger_source"]["winner_evidence"]["text"],
+                         "You defeated ゆぐりか!")
+        self.assertEqual(lines[-1], "|win|Roku")
+
     @unittest.skipUnless(os.getenv("CHAMPIONS_DIAGNOSTIC_SIXTH") and os.getenv("CHAMPIONS_LEDGER_PILOT"),
                          "requiere el diagnóstico y el JSON real de f7af/01")
     def test_partida_real_f7af_01(self):
