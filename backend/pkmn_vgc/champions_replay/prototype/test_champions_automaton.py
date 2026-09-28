@@ -38,6 +38,28 @@ def frame(n, events=(), texts=()):
             "detections": {"events": list(events)}}
 
 
+def delayed_terrain_heal_trace():
+    """The detector notices an earlier Rillaboom heal on a later menu redraw."""
+    trace = [frame(n) for n in range(1, 31)]
+    trace[0] = frame(1, [event("switch", "p2a", "Rillaboom", "100/100"),
+                          event("fieldstart", value="move: Grassy Terrain"), event("turn", turn=1)])
+    trace[3] = frame(4, [event("damage", "p2a", "Rillaboom", "76/100")])
+    trace[9] = frame(10, [event("message", value="The opposing Rillaboom had its HP restored.")],
+                      texts=["The opposing Rillaboom had its HP restored."])
+    trace[10] = frame(11, texts=["The opposing Rillaboom had its HP restored."])
+    trace[11] = frame(12, [event("turn", turn=2)])
+    trace[14] = frame(15, [event("move", "p2a", "Rillaboom", move="Protect")],
+                      texts=["The opposing Rillaboom used Protect!"])
+    trace[29] = frame(30, [event("heal", "p2a", "Rillaboom", "82/100")])
+    for n in (6, 7, 8, 27, 28, 30):
+        trace[n - 1]["ocr"].append({"text": "Rillaboom", "left": .625, "right": .70,
+                                     "top": .05, "bottom": .09, "confidence": .999})
+    for n, value in ((6, "76%"), (7, "79"), (8, "82"), (27, "82%"), (28, "82%")):
+        trace[n - 1]["ocr"].append({"text": value, "left": .70, "right": .75,
+                                     "top": .12, "bottom": .16, "confidence": .999})
+    return trace
+
+
 def voluntary_entry_trace():
     trace = [frame(n) for n in range(1, 20)]
     trace[0] = frame(1, [event("switch", "p1a", "Indeedee-F", "177/177"),
@@ -289,6 +311,34 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_delayed_terrain_heal_requires_animation_narration_and_stable_hud(self):
+        trace = delayed_terrain_heal_trace()
+        ledger = BattleAutomaton(0, trace).run()
+        heal = next(e for e in ledger["events"] if e["kind"] == "heal")
+        self.assertEqual((heal["frame"], heal["turn"], heal["before"], heal["after"],
+                          heal["hp_state"]), (8, 1, "76/100", "82/100", "confirmed"))
+        self.assertEqual(heal["terrain_restoration_support"]["reported_frame"], 30)
+        self.assertEqual(heal["cause"], "Grassy Terrain corroborado por HUD y mensaje")
+        self.assertEqual([(l["frame"], l["event_seq"], l["status"]) for l in ledger["narration_links"]],
+                         [(10, heal["seq"], "linked")])
+
+        for variant in ("no_second_message", "no_stable_hud", "wrong_actor", "changed_terrain"):
+            with self.subTest(variant=variant):
+                changed = copy.deepcopy(trace)
+                if variant == "no_second_message":
+                    changed[10]["ocr"] = []
+                elif variant == "no_stable_hud":
+                    changed[27]["ocr"] = [line for line in changed[27]["ocr"] if line["text"] != "82%"]
+                elif variant == "wrong_actor":
+                    changed[7]["ocr"] = [{**line, "text": "Salamence"} if line["text"] == "Rillaboom"
+                                          else line for line in changed[7]["ocr"]]
+                else:
+                    changed[6]["detections"]["events"].append(event("fieldend", value="Grassy Terrain"))
+                rejected = BattleAutomaton(0, changed).run()
+                late = next(e for e in rejected["events"] if e["kind"] == "heal")
+                self.assertEqual(late["frame"], 30)
+                self.assertNotIn("terrain_restoration_support", late)
+
     def test_trick_room_repeated_ocr_has_one_start_and_one_end(self):
         trace = [frame(1, [event("fieldstart", value="move: Psychic Terrain")]),
                  frame(2, [event("fieldstart", value="move: Trick Room")],
@@ -2999,6 +3049,34 @@ class TemporalAutomatonTests(unittest.TestCase):
                 row["ocr"] = [line for line in row["ocr"] if "withdrew Kaiju!" not in line.get("text", "")]
         uncertain = BattleAutomaton(0, no_withdrawal_repeat, context).run()
         self.assertIn(543, [i["frame"] for i in uncertain["issues"] if i["code"] == "unclassified_text"])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_BC6"), "Requiere diagnóstico bc6")
+    def test_bc6_replays_timed_damage_faint_terrain_and_helmet(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_BC6"])
+        frames, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        by_frame = {item["frame"]: item for item in ledger["events"]}
+        self.assertEqual((by_frame[645]["turn"], by_frame[645]["before"], by_frame[645]["after"]),
+                         (3, "76/100", "82/100"))
+        self.assertEqual(by_frame[645]["terrain_restoration_support"]["reported_frame"], 823)
+        self.assertEqual((by_frame[738]["slot"], by_frame[738]["status"],
+                          by_frame[739]["status"]), ("p1b", "consistent", "suppressed"))
+        self.assertEqual((by_frame[1096]["before"], by_frame[1096]["after"],
+                          by_frame[1096]["detection_lag"]["reported_frame"]),
+                         ("55/100", "0/100", 1119))
+        self.assertEqual((by_frame[1496]["before"], by_frame[1496]["after"],
+                          by_frame[1496]["hp_state"]), ("100/100", "83/100", "confirmed"))
+        self.assertIn("rocky_helmet_support", by_frame[1496])
+        self.assertEqual((by_frame[508]["kind"], by_frame[508]["status"]), ("ui_text", "suppressed"))
+
+        no_helmet = copy.deepcopy(frames)
+        for row in no_helmet:
+            if 1494 <= row["frame"] <= 1497:
+                row["ocr"] = [line for line in row["ocr"] if line["text"] != "Rocky Helmet"]
+        uncertain = BattleAutomaton(0, no_helmet, read_diagnostic_context(path)).run()
+        self.assertNotIn("rocky_helmet_support", next(e for e in uncertain["events"] if e["frame"] == 1496))
+        self.assertTrue(any(i["code"] in {"hp_unconfirmed", "hp_transition"} for i in uncertain["issues"]))
 
 
 if __name__ == "__main__":
