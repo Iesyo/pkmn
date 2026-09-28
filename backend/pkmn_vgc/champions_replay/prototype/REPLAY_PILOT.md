@@ -126,4 +126,33 @@ Replay resultante: 132 sucesos mapeados, once turnos, siete debilitamientos,
 seis especies por equipo y ganador Anshul respaldado por OCR del frame 1843.
 El replay de producción archivado sirve sólo para cotejo: los equipos y las
 acciones principales coinciden; el piloto omite narraciones auxiliares que
-Ledger no convierte en sucesos. Queda pendiente la revisión visual del HTML.
+Ledger no convierte en sucesos. Ies confirmó visualmente este HTML.
+
+## Diagnóstico ad28b939f8d84c83 · caso Floette
+
+El parser productivo archivó dos incidencias bloqueantes para la Mega de
+Floette-Eternal: un supuesto anuncio sin respaldo de Floette-Eternal y otro
+anuncio faltante de «Mega Floette». Ledger mantiene el mismo actor desde el
+Team Preview (Floette-Eternal) hasta el anuncio repetido de Mega Floette y
+lo convierte en Floette-Mega, sin separar ambas formas como rivales distintos.
+
+El primer pase de Ledger se conserva: 193 candidatos, 107 sucesos, 32
+episodios de PS y 12 avisos (cuatro textos no clasificados, cuatro entradas
+tardías y cuatro transiciones de PS). Las reentradas tardías reutilizan PS
+del mismo actor sólo si la lectura posterior coincide con ellos o, cuando el
+HUD ya está animando el golpe, una acción rival y el PS final corroboran la
+transición. Los tres mensajes de retirada se vinculan al mismo slot con
+retirada y entrada repetidas; la preparación de Mega se vincula a la Mega
+confirmada del mismo actor con OCR repetido. Si falta alguna prueba, el aviso
+permanece. El segundo pase cierra los 12 avisos con 103 sucesos consistentes
+y cuatro mensajes de contexto suprimidos con evidencia.
+
+El puente reconoce «You lost to the Trainer!» cuando el rival se llama
+Trainer, valida Floette-Eternal → Floette-Mega con la identidad persistente
+de Ledger y recupera la entrada inferida al máximo de Basculegion (219/219)
+desde el primer HUD 185/219 leído durante Dazzling Gleam. El 185/219 se
+registra como lectura intermedia, nunca como daño extra. Exporta nueve turnos,
+24 movimientos, 15 entradas, siete debilitamientos y dos Megas; estas cinco
+cuentas coinciden con el replay archivado. El replay nuevo contiene ambos
+equipos completos y conserva el ganador corroborado por OCR en frame 1424.
+El HTML de este caso requiere revisión visual independiente.
