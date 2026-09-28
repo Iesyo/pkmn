@@ -897,6 +897,47 @@ def ordered_candidates(frames: list[dict[str, Any]],
             resolutions[raw].add(species)
     for proof in alias_reconstructions if alias_reconstructions is not None else corroborated_digit_aliases(frames, aliases):
         aliases[proof["side"]][proof["nickname"]] = proof["species"]
+    # The detector may flush an animation's events together at a later frame.
+    # Its saved source time is only a hint: the original OCR must confirm the
+    # move, literal HP or repeated faint before restoring chronological order.
+    for item in candidates:
+        event = item["event"]
+        slot, source_frame = event.get("slot"), event.get("source_frame")
+        source = frame_lookup.get(source_frame + 1) if isinstance(source_frame, int) else None
+        if (event["kind"] not in {"move", "damage", "heal", "faint"} or slot not in SLOTS or
+            not source or source["timestamp_ms"] != event.get("timestamp_ms") or
+            item["observed_ms"] - source["timestamp_ms"] <= 1_500 or
+            source.get("battle_index") != frame_lookup[item["observed_frame"]].get("battle_index")):
+            continue
+        name = hud_nickname(source, slot)
+        expected = identity_species(event.get("species") or "").casefold()
+        named = identity_species(aliases[slot[:2]].get(name or "", name or "")).casefold()
+        proof = []
+        if event["kind"] in HP_KINDS and expected == named:
+            proof = [{"frame": source["frame"], "text": line["text"],
+                      "confidence": line["confidence"]}
+                     for health, line in complete_hud_health(source, slot)
+                     if health == event.get("health") and line["confidence"] >= .95]
+        elif event["kind"] in {"move", "faint"}:
+            for row in (source, frame_lookup.get(source["frame"] + 1, {})):
+                for line in row.get("ocr", ()):
+                    if line.get("confidence", 0) < .95 or line.get("top", 0) < .55:
+                        continue
+                    signature = narration_signature(line.get("text", "").strip())
+                    if not signature or signature[0] != event["kind"] or signature[1] != slot[:2]:
+                        continue
+                    species = identity_species(aliases[slot[:2]].get(signature[2].casefold(), signature[2])).casefold()
+                    if species == expected and (event["kind"] == "faint" or
+                                                signature[3].casefold() == str(event.get("move") or "").casefold()):
+                        proof.append({"frame": row["frame"], "text": line["text"],
+                                      "confidence": line["confidence"]})
+            if event["kind"] == "faint" and len({line["frame"] for line in proof}) < 2:
+                proof = []
+        if proof:
+            item["detection_lag"] = {"reported_frame": item["observed_frame"],
+                                     "source_frame": source["frame"], "evidence": proof}
+            item["observed_frame"] = source["frame"]
+            item["observed_ms"] = source["timestamp_ms"]
     unambiguous = {raw: next(iter(species)) for raw, species in resolutions.items()
                    if len(species) == 1}
     for item in candidates:
@@ -1422,6 +1463,45 @@ class BattleAutomaton:
                              "subject": named, "resolved_species": species})
         if not readings:
             return None
+        # A weak first reading can be the real faint while the detector's
+        # clean repeat is assigned to the living partner. Confirm the first
+        # slot only with its zero HUD and repeated named narration; the other
+        # slot must still have positive confirmed HP.
+        number = candidate["observed_frame"]
+        actor = self.actors[actor_id]
+        name = hud_nickname(self.frame_lookup[number], slot)
+        hp = next((e for e in reversed(self.events) if e["actor_id"] == actor_id and
+                   e["kind"] == "damage" and e["status"] == "consistent"), None)
+        other = next((s for s in SLOTS if s[:2] == slot[:2] and s != slot), None)
+        partner = self.actors.get(self.active.get(other, "")) if other else None
+        zero = self._hp_support(slot, actor.get("health"), number, [number])
+        if (hp and hp["slot"] == slot and hp.get("hp_state") == "confirmed" and
+            health_ratio(hp.get("after")) == 0 and actor.get("health_state") == "confirmed" and
+            zero["state"] == "confirmed" and name and
+            identity_species(self.nickname_species[slot[:2]].get(name, name)).casefold() == expected and
+            partner and partner.get("health_state") == "confirmed" and
+            0 < (health_ratio(partner.get("health")) or 0)):
+            clean = ("The opposing " if slot.startswith("p2") else "") + name + " fainted!"
+            if any(difflib.SequenceMatcher(a=clean.casefold(), b=r["text"].casefold()).ratio() >= .8
+                   for r in readings):
+                rows = [self.frame_lookup.get(n, {}) for n in range(number + 1, number + 4)]
+                wrong_slot = any(e["kind"] == "faint" and e.get("slot") == other and
+                                 identity_species(e.get("species") or "").casefold() == expected
+                                 for row in rows[:2] for e in row.get("detections", {}).get("events", ()))
+                evidence = [{"frame": row["frame"], "text": line["text"],
+                             "confidence": line["confidence"]}
+                            for row in rows if row and row["timestamp_ms"] - candidate["observed_ms"] <= 1_500
+                            for line in row.get("ocr", ()) if line.get("text", "").strip().casefold() == clean.casefold()
+                            and line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95]
+                blocked = any(e["kind"] in ACTIVITY | {"turn", "battle_end"} or
+                              (e["kind"] == "faint" and e.get("slot") != other)
+                              for row in rows if row for e in row.get("detections", {}).get("events", ()))
+                if wrong_slot and not blocked and len({line["frame"] for line in evidence}) >= 2:
+                    candidate["faint_reconstruction"] = {
+                        "state": "confirmed", "slot": slot, "actor_id": actor_id,
+                        "reason": "PS cero y mote del slot corroborados por anuncio legible repetido; el detector duplicó el faint en el compañero.",
+                        "evidence": hp["hp_support"]["evidence"] + zero["evidence"] + evidence}
+                    return None
         return {"state": "unconfirmed", "from": "provisional", "evidence": readings,
                 "raw_event": dict(candidate["event"]),
                 "reason": "Narración de debilitamiento sin sujeto fiable del actor; confianza OCR insuficiente por sí sola."}
@@ -1537,6 +1617,38 @@ class BattleAutomaton:
                         "suspect": {"text": suspect["text"], "confidence": suspect["confidence"]},
                         "stronger": {"text": stronger["text"], "confidence": stronger["confidence"]}}
         return None
+
+    def _already_battling_menu_evidence(self, frame: int, value: str) -> dict[str, Any] | None:
+        """A rejected party choice is UI only with repeated, named menu OCR."""
+        parsed = re.fullmatch(r"(.+?) is already battling!", value, re.I)
+        if not parsed:
+            return None
+        expected = identity_species(parsed[1]).casefold()
+        active = [(slot, actor_id) for slot, actor_id in self.active.items()
+                  if slot.startswith("p1") and
+                  identity_species(self.actors[actor_id]["species"]).casefold() == expected]
+        if len(active) != 1:
+            return None
+        slot, actor_id = active[0]
+        evidence = []
+        for number in (frame, frame + 1):
+            row = self.frame_lookup.get(number, {})
+            labels = {line.get("text", "").strip().casefold() for line in row.get("ocr", ())
+                      if line.get("confidence", 0) >= .9}
+            if not {"battle info", "move time"} <= labels or any(
+                event["kind"] in ACTIVITY | {"faint", "turn"}
+                for event in row.get("detections", {}).get("events", ())):
+                return None
+            matched = [line for line in row.get("ocr", ())
+                       if line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55 and
+                       (m := re.fullmatch(r"(.+?) is already battling!", line.get("text", "").strip(), re.I)) and
+                       identity_species(self.nickname_species["p1"].get(m[1].casefold(), m[1])).casefold() == expected]
+            if len(matched) != 1:
+                return None
+            evidence.append({"frame": number, "text": matched[0]["text"],
+                             "confidence": matched[0]["confidence"]})
+        return {"state": "confirmed", "slot": slot, "actor_id": actor_id, "evidence": evidence,
+                "reason": "Aviso repetido del menú Battle Info para un actor que ya ocupaba el campo."}
 
     def _confirmation_rows(self, frame: int, *, include_boundary: bool = False,
                            faint_slot: str | None = None) -> list[dict[str, Any]]:
@@ -1735,6 +1847,91 @@ class BattleAutomaton:
                                      "reason": "corroboración temporal sin cruzar otra acción"}
             return proof
         return support
+
+    def _rocky_helmet_recoil_support(self, episode: HpEpisode, actor: dict[str, Any] | None,
+                                     support: dict[str, Any]) -> dict[str, Any]:
+        """Confirm a cropped rival percent only with the holder's item panel.
+
+        The named attacker loses about one sixth after hitting the named item
+        holder. A strong bare final number, its intermediate full percent,
+        the prior full HUD, and two item panels must all agree.
+        """
+        if (support["state"] == "confirmed" or episode.kind != "damage" or
+            not episode.slot.startswith("p2") or not actor or
+            actor.get("health_state") != "confirmed" or not self.last_action or
+            self.last_action["kind"] != "move" or self.last_action["actor_id"] != episode.actor_id):
+            return support
+        first, last = episode.candidates[0], episode.candidates[-1]
+        before, after = actor.get("health"), last["event"].get("health")
+        old, new = health_ratio(before), health_ratio(after)
+        if (old is None or new is None or not .16 <= old - new <= .18 or
+            len(episode.candidates) < 2 or
+            not 0 < last["observed_frame"] - self.last_action["frame"] <= 16):
+            return support
+        values = [health_ratio(c["event"].get("health")) for c in episode.candidates]
+        if (any(v is None for v in values) or not all(a > b for a, b in zip([old] + values, values))):
+            return support
+        prior_frame = first["observed_frame"] - 1
+        prior = self._hp_support(episode.slot, before, prior_frame, [prior_frame])
+        intermediate = self._hp_support(episode.slot, first["event"]["health"], first["observed_frame"],
+                                        [first["observed_frame"]])
+        rows = [self.frame_lookup.get(n, {}) for n in (prior_frame, first["observed_frame"],
+                                                        last["observed_frame"])]
+        species = identity_species(actor["species"]).casefold()
+        if (prior["state"] != "confirmed" or intermediate["state"] != "confirmed" or
+            any(identity_species(self.nickname_species["p2"].get(
+                hud_nickname(row, episode.slot) or "", hud_nickname(row, episode.slot) or "")).casefold() != species
+                for row in rows)):
+            return support
+        bare = [line for line in rows[-1].get("ocr", ())
+                if line.get("text", "").strip() == after.split("/", 1)[0] and
+                line.get("confidence", 0) >= .99 and
+                HP_HUD_AREAS[episode.slot][0] <= line.get("left", -1) <= HP_HUD_AREAS[episode.slot][1] and
+                HP_HUD_AREAS[episode.slot][2] <= line.get("top", -1) <= HP_HUD_AREAS[episode.slot][3]]
+        if len(bare) != 1:
+            return support
+        # A nearby clipped suffix is not a second, conflicting HP value.
+        other = [line for line in rows[-1].get("ocr", ())
+                 if line is not bare[0] and HP_TEXT.fullmatch(line.get("text", "").strip()) and
+                 HP_HUD_AREAS[episode.slot][0] <= line.get("left", -1) <= HP_HUD_AREAS[episode.slot][1] and
+                 HP_HUD_AREAS[episode.slot][2] <= line.get("top", -1) <= HP_HUD_AREAS[episode.slot][3]]
+        if any(not after.split("/", 1)[0].endswith(line["text"].rstrip("%")) or
+               line.get("confidence", 0) >= bare[0]["confidence"] or
+               line.get("left", 1) > bare[0].get("right", 0) + .02
+               for line in other):
+            return support
+        targets = [e for e in self.events[self.last_action["seq"]:] if
+                   e["kind"] == "damage" and e["status"] == "consistent" and
+                   e["cause"] == self.last_action["seq"] and e["slot"][:2] != episode.slot[:2] and
+                   e.get("hp_state") == "confirmed" and
+                   e["observed_ms"] <= last["observed_ms"]]
+        if len(targets) != 1:
+            return support
+        target = targets[0]
+        panels = []
+        for number in range(prior_frame, last["observed_frame"] + 2):
+            row = self.frame_lookup.get(number, {})
+            owners = [line for line in row.get("ocr", ()) if
+                      line.get("confidence", 0) >= .95 and .25 <= line.get("top", -1) <= .50 and
+                      line.get("text", "").strip().endswith(("'s", "’s")) and
+                      identity_species(self.nickname_species[target["slot"][:2]].get(
+                          line["text"][:-2].casefold(), line["text"][:-2])).casefold() ==
+                      identity_species(target["species"]).casefold()]
+            items = [line for line in row.get("ocr", ()) if
+                     line.get("text", "").strip() == "Rocky Helmet" and
+                     line.get("confidence", 0) >= .95 and .25 <= line.get("top", -1) <= .55]
+            if len(owners) == len(items) == 1:
+                panels.append({"frame": number, "text": owners[0]["text"] + " · " + items[0]["text"],
+                               "confidence": min(owners[0]["confidence"], items[0]["confidence"])})
+        if len({line["frame"] for line in panels}) < 2:
+            return support
+        reason = "Retroceso por Rocky Helmet corroborado por panel del objetivo, PS previos, lectura intermedia y cifra final."
+        return {"state": "confirmed", "reason": reason,
+                "evidence": prior["evidence"] + intermediate["evidence"] + [
+                    {"frame": last["observed_frame"], "text": bare[0]["text"],
+                     "confidence": bare[0]["confidence"], "kind": "bare_hp"}] + panels,
+                "rocky_helmet_recoil": {"move_seq": self.last_action["seq"],
+                                        "target_damage_seq": target["seq"], "holder_actor_id": target["actor_id"]}}
 
     def _narrated_partial_opponent_hp(self, episode: HpEpisode,
                                       actor: dict[str, Any]) -> dict[str, Any] | None:
@@ -2150,6 +2347,10 @@ class BattleAutomaton:
             "evidence": evidence,
             "narration": [], "observations": observations or [],
         }
+        if candidate.get("detection_lag"):
+            item["detection_lag"] = candidate["detection_lag"]
+        if candidate.get("faint_reconstruction"):
+            item["faint_reconstruction"] = candidate["faint_reconstruction"]
         if event.get("tags"):
             item["tags"] = []
             for tag in event["tags"]:
@@ -2220,6 +2421,9 @@ class BattleAutomaton:
                             for c in episode.candidates]
             support = self._hp_support(episode.slot, after, last["observed_frame"])
             support = self._confirm_pending_hp(episode, support)
+            if last.get("terrain_heal_confirmed"):
+                support = last["terrain_heal_confirmed"]
+            support = self._rocky_helmet_recoil_support(episode, actor, support)
             sliding = self._sliding_hud_hp_fragment(episode, before, support)
             if sliding:
                 note = (f"HUD desplazado: {sliding['evidence'][-1]['text']} es un fragmento "
@@ -2360,6 +2564,9 @@ class BattleAutomaton:
                 item["tag_conflicts"] = [list(tags) for tags in sorted(tag_sets)]
             item["narration"].extend(episode.narration)
             item["hp_state"], item["hp_support"] = support["state"], support
+            if support.get("rocky_helmet_recoil"):
+                item["cause"] = "Rocky Helmet corroborado por panel y cuantía"
+                item["rocky_helmet_support"] = support["rocky_helmet_recoil"]
             narrated = support.get("narrated_partial") if result == "consistent" else None
             if narrated:
                 row = self.frame_lookup[narrated["frame"]]
@@ -2598,6 +2805,11 @@ class BattleAutomaton:
             value = str(event.get("value") or "")
             row = self.frame_lookup.get(candidate["observed_frame"], {})
             menu_labels = {line.get("text", "").casefold() for line in row.get("ocr", ())}
+            if support := self._already_battling_menu_evidence(candidate["observed_frame"], value):
+                item = self._append(candidate, kind="ui_text", status="suppressed", note=support["reason"])
+                item["ui_support"] = support
+                item["evidence"] = support["evidence"]
+                return
             if support := self._move_menu_label_evidence(candidate):
                 item = self._append(candidate, kind="ui_text", status="suppressed",
                                     note="Etiqueta del menú de movimientos, confirmada por OCR posterior; no fue una acción.")
@@ -2775,9 +2987,14 @@ class BattleAutomaton:
                     elif candidate.get("anchor") and (health_ratio(previous_health) or 0) > (
                             health_ratio(event["health"]) or 1):
                         start, end = candidate["anchor"]["frame"], candidate["observed_frame"]
-                        attacks = [(row["frame"], hit) for row in self.frames if start <= row["frame"] < end
-                                   for hit in row.get("detections", {}).get("events", ())
-                                   if hit["kind"] == "move" and hit.get("slot", "")[:2] != slot[:2]]
+                        # The detector can flush an earlier move at the HUD
+                        # checkpoint. Use its OCR-verified time and require
+                        # the only nearby attack before the falling HP bar.
+                        attacks = [(move["observed_frame"], move["event"]) for move in self.candidates
+                                   if move["event"]["kind"] == "move" and
+                                   (move["event"].get("slot") or "")[:2] != slot[:2] and
+                                   start < move["observed_frame"] < end and
+                                   end - move["observed_frame"] <= 6]
                         impacts = [(row["frame"], hit) for row in self.frames if end < row["frame"] <= end + 3
                                    for hit in row.get("detections", {}).get("events", ())
                                    if hit["kind"] == "damage" and hit.get("slot") == slot and
@@ -3389,7 +3606,7 @@ class BattleAutomaton:
                     continue
                 evidence = []
                 rows = [row for row in self.frames
-                        if faint["observed_ms"] <= row["timestamp_ms"] <= rejected["observed_ms"]]
+                        if faint["observed_ms"] <= row["timestamp_ms"] <= rejected["observed_ms"] + 1_500]
                 if any(b["timestamp_ms"] - a["timestamp_ms"] > 1_000 for a, b in zip(rows, rows[1:])):
                     continue
                 blocked = False
@@ -4496,6 +4713,119 @@ class BattleAutomaton:
                 "evidence": (hp["hp_support"]["evidence"] + narration +
                              [{"frame": number, "text": fragment, "kind": "clipped_hud"}])}
 
+    def _recover_delayed_terrain_heals(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Date a delayed HP detection at its observed terrain animation.
+
+        A menu redraw can make the parser report an old heal in a later turn.
+        Require the earlier complete starting HP, consecutive intermediate and
+        final HUD numbers, repeated narration, and a later stable full value.
+        Leave the detector's original source frame in the event for audit.
+        """
+        relocated = []
+        for item in candidates:
+            event, reported = item["event"], item["observed_frame"]
+            slot, after = event.get("slot"), event.get("health")
+            if (event["kind"] != "heal" or slot not in {"p2a", "p2b"} or
+                not after or not re.fullmatch(r"\d{1,3}/100", after)):
+                continue
+            species = identity_species(item.get("canonical_species") or event.get("species") or "").casefold()
+            def named(frame: int) -> bool:
+                name = hud_nickname(self.frame_lookup.get(frame, {}), slot)
+                return bool(name and identity_species(
+                    self.nickname_species["p2"].get(name, name)).casefold() == species)
+
+            earlier = [c for c in candidates if c["logical_frame"] < reported and
+                       c["event"].get("slot") == slot and c["event"]["kind"] in HP_KINDS]
+            if not earlier:
+                continue
+            previous = earlier[-1]
+            before = previous["event"].get("health")
+            old, new = health_ratio(before), health_ratio(after)
+            if (old is None or new is None or not .045 <= new - old <= .075 or
+                previous["event"].get("species") != event.get("species") or
+                reported - previous["observed_frame"] < 12):
+                continue
+            start = previous["observed_frame"]
+            if any(c is not item and c["event"].get("slot") == slot and
+                   c["event"]["kind"] in HP_KINDS | {"switch", "drag", "faint"} and
+                   start < c["logical_frame"] < reported for c in candidates):
+                continue
+            # The last field change before the animation must be Grassy Terrain.
+            fields = [c for c in candidates if c["event"]["kind"] in {"fieldstart", "fieldend"} and
+                      c["logical_frame"] < reported]
+            messages = [c for c in candidates if c["event"]["kind"] == "message" and
+                        HP_NARRATION.fullmatch(str(c["event"].get("value") or "")) and
+                        c["event"]["value"].casefold().endswith("had its hp restored.") and
+                        c["observed_frame"] < reported]
+            for message in reversed(messages):
+                frame = message["observed_frame"]
+                match = HP_NARRATION.fullmatch(message["event"]["value"])
+                subject = self.nickname_species["p2"].get(match.group(2).casefold(), match.group(2))
+                if (not match.group(1) or identity_species(subject).casefold() != species or
+                    not start < frame < reported or frame - start > 50):
+                    continue
+                repeated = [{"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                            for n in range(frame, frame + 3)
+                            for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                            if line.get("text", "").casefold() == message["event"]["value"].casefold() and
+                            line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55]
+                if len({line["frame"] for line in repeated}) < 2:
+                    continue
+                for final in range(frame - 1, max(start + 2, frame - 5) - 1, -1):
+                    prior, middle = final - 2, final - 1
+                    if not all(named(n) for n in (prior, middle, final)):
+                        continue
+                    prior_full = [line for health, line in complete_hud_health(
+                        self.frame_lookup[prior], slot) if health == before and line["confidence"] >= .95]
+                    if not prior_full:
+                        continue
+                    terrain = next((c for c in reversed(fields) if c["logical_frame"] <= final), None)
+                    if (not terrain or terrain["event"]["kind"] != "fieldstart" or
+                        "Grassy Terrain" not in str(terrain["event"].get("value"))):
+                        continue
+                    left, right, top, bottom = HP_HUD_AREAS[slot]
+                    def bare(number: int, value: int) -> dict[str, Any] | None:
+                        rows = [line for line in self.frame_lookup[number].get("ocr", ())
+                                if left <= line.get("left", -1) <= right and
+                                top <= line.get("top", -1) <= bottom and
+                                line.get("confidence", 0) >= .99 and
+                                re.fullmatch(r"\d{1,3}%?", line.get("text", "").strip())]
+                        matching = [line for line in rows if line["text"].strip() == str(value)]
+                        return matching[0] if len(matching) == len(rows) == 1 else None
+                    middle_values = [n for n in range(int(before.split("/")[0]) + 1,
+                                                     int(after.split("/")[0])) if bare(middle, n)]
+                    if len(middle_values) != 1 or not (middle_line := bare(middle, middle_values[0])) or \
+                            not (final_line := bare(final, int(after.split("/")[0]))):
+                        continue
+                    checkpoints = [n for n in range(max(frame + 1, reported - 16), reported - 1)
+                                   if named(n) and named(n + 1) and
+                                   any(health == after and line["confidence"] >= .95
+                                       for health, line in complete_hud_health(self.frame_lookup[n], slot)) and
+                                   any(health == after and line["confidence"] >= .95
+                                       for health, line in complete_hud_health(self.frame_lookup[n + 1], slot))]
+                    if not checkpoints:
+                        continue
+                    proof = [{"frame": prior, "text": prior_full[0]["text"],
+                              "confidence": prior_full[0]["confidence"]}]
+                    proof += [{"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                              for n, line in ((middle, middle_line), (final, final_line))]
+                    proof += repeated
+                    proof += [{"frame": n, "text": line["text"], "confidence": line["confidence"]}
+                              for n in (checkpoints[0], checkpoints[0] + 1)
+                              for health, line in complete_hud_health(self.frame_lookup[n], slot)
+                              if health == after and line["confidence"] >= .95]
+                    item["terrain_heal_confirmed"] = {
+                        "state": "confirmed", "reason": "Cura temprana corroborada por animación, mensaje y HUD estable posterior",
+                        "evidence": proof, "reported_frame": reported,
+                        "message_frame": frame, "field_frame": terrain["logical_frame"]}
+                    item["observed_frame"] = item["logical_frame"] = final
+                    item["observed_ms"] = self.frame_lookup[final]["timestamp_ms"]
+                    relocated.append(item)
+                    break
+                if item in relocated:
+                    break
+        return merge_recovered_candidates([c for c in candidates if c not in relocated], relocated)
+
     def _recover_withdrawn_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Recover a missed voluntary replacement from independent evidence.
 
@@ -4750,9 +5080,11 @@ class BattleAutomaton:
         return merge_recovered_candidates(candidates, recovered)
 
     def run(self) -> dict[str, Any]:
-        candidates = self._recover_withdrawn_entries(ordered_candidates(self.frames, self.alias_reconstructions))
+        candidates = self._recover_delayed_terrain_heals(ordered_candidates(self.frames, self.alias_reconstructions))
+        candidates = self._recover_withdrawn_entries(candidates)
         candidates = self._recover_late_lethal_hp(candidates)
-        for candidate in self._complete_hp_candidates(candidates):
+        self.candidates = self._complete_hp_candidates(candidates)
+        for candidate in self.candidates:
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
