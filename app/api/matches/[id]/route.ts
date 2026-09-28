@@ -1,7 +1,21 @@
-import { deleteMatch } from "@/db/match-actions";
+import { deleteMatch, updateMatchNotes } from "@/db/match-actions";
 import { apiError } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
+
+export async function PATCH(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await context.params;
+    const payload = (await request.json()) as { notes?: unknown };
+    const notes = await updateMatchNotes(id, payload?.notes);
+    return Response.json({ notes });
+  } catch (error) {
+    return apiError(error);
+  }
+}
 
 export async function DELETE(
   _request: Request,
