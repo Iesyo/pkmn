@@ -17,6 +17,7 @@ from uuid import uuid4
 from .champions_replay import reconcile
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import BattleEvent, CapturedBattle, ReplayDocument
+from .champions_replay.ledger_pipeline import capture_ocr_trace, documents_from_trace
 from .champions_replay.ocr_detector import (
     ChampionsOcrDetector,
     OcrTraceDetector,
@@ -108,7 +109,7 @@ def _documents_with_reconcile_issues(
     return tuple(documents)
 
 
-def _default_processor(
+def _legacy_processor(
     video_path: Path,
     context: Mapping[str, Any],
     output_directory: Path,
@@ -251,6 +252,37 @@ def _default_processor(
         return _documents_with_reconcile_issues(draft_captures, trace_path, on_warning)
 
     return _documents_with_reconcile_issues(captures, dense_trace_path, on_warning)
+
+
+def _default_processor(
+    video_path: Path,
+    context: Mapping[str, Any],
+    output_directory: Path,
+    sample_fps: float,
+    max_battles: int,
+    on_progress: Callable[[CaptureProgress], None],
+    on_warning: Callable[[str], None],
+) -> tuple[ReplayDocument, ...]:
+    """OCR secuencial → Champions Ledger → puente Showdown, sin COL-102."""
+    _seed, detector_context = _seed_from_context(context, "video")
+    job = json.loads((output_directory.parent / "job.json").read_text(encoding="utf-8"))
+    trace_path = output_directory / "ocr.trace.jsonl"
+    trace_path.unlink(missing_ok=True)
+    catalog = load_champions_catalog()
+    preview_resolver = ChampionsTeamPreviewResolver(catalog.species_types)
+    detector = ChampionsOcrDetector(
+        context=detector_context,
+        trace_path=trace_path,
+        team_preview_resolver=preview_resolver,
+        alias_resolver=ChampionsHudIconResolver(preview_resolver),
+    )
+    source = VideoFrameSource(path=video_path, sample_fps=sample_fps)
+    capture_ocr_trace(
+        source, detector, max_battles=max_battles,
+        total_frames=source.estimated_frame_count(),
+        on_progress=on_progress, on_warning=on_warning,
+    )
+    return documents_from_trace(trace_path, job, output_directory, on_warning=on_warning)
 
 
 Processor = Callable[
@@ -552,7 +584,7 @@ class ChampionsJobManager:
                 candidates.extend(
                     path
                     for path in output.rglob("*")
-                    if path.is_file() and path.suffix.casefold() in {".jsonl", ".json", ".log"}
+                    if path.is_file() and path.suffix.casefold() in {".jsonl", ".json", ".log", ".md", ".html"}
                 )
             buffer = io.BytesIO()
             with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
