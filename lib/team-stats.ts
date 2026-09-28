@@ -86,8 +86,11 @@ export function rankOpponentMatchups(
   const count = (entry: OpponentPokemonStat) => outcome === "best"
     ? entry.wins
     : entry.games - entry.wins;
+  const oppositeCount = (entry: OpponentPokemonStat) => outcome === "best"
+    ? entry.games - entry.wins
+    : entry.wins;
 
-  return stats.filter((entry) => count(entry) > 0).sort((a, b) =>
+  return stats.filter((entry) => count(entry) > oppositeCount(entry)).sort((a, b) =>
     count(b) - count(a)
     || b.games - a.games
     || a.species.localeCompare(b.species),
