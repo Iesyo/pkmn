@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useMemo, useState } from "react";
-import { ExternalLink, History, ListFilter, LoaderCircle, Trash2, Trophy } from "lucide-react";
+import { ExternalLink, History, ListFilter, LoaderCircle, PencilLine, Save, Trash2, Trophy } from "lucide-react";
 
 import {
   AlertDialog,
@@ -21,10 +21,12 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -34,7 +36,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { MatchQuickEntry } from "@/components/vgc/match-quick-entry";
-import { countMatchesByOrigin, filterMatchesByOrigin, getMatchOrigin, getMatchReplayHref, type MatchOrigin } from "@/lib/match-history";
+import { countMatchesByOrigin, filterMatchesByOrigin, getMatchOrigin, getMatchReplayHref, MAX_MATCH_NOTES_LENGTH, type MatchOrigin } from "@/lib/match-history";
 import { getSpriteUrl } from "@/lib/pokemon-data";
 import type { MatchRecord, TeamVersion } from "@/lib/types";
 
@@ -89,11 +91,73 @@ function ReplayLink({ match }: { match: MatchRecord }) {
   );
 }
 
+function MatchNotesDialog({ match, onSaved }: { match: MatchRecord; onSaved?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(match.notes);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setDraft(match.notes);
+      setError("");
+    }
+    setOpen(nextOpen);
+  }
+
+  async function saveNotes(event: React.FormEvent) {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/matches/${encodeURIComponent(match.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ notes: draft }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error ?? "No pudimos guardar las notas.");
+      }
+      await onSaved?.();
+      setOpen(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos guardar las notas.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" title="Ver o editar notas" className="h-7 max-w-40 gap-1 px-1.5 text-[10px] text-slate-400 hover:text-cyan-200">
+          <PencilLine className="size-3 shrink-0" />
+          <span className="truncate">{match.notes || "Añadir nota"}</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="border-white/10 bg-slate-950 text-slate-100 sm:max-w-lg">
+        <form onSubmit={saveNotes}>
+          <DialogHeader>
+            <DialogTitle>Notas de la partida</DialogTitle>
+            <DialogDescription className="text-slate-400">{match.opponentName} · {fullDateFormatter.format(new Date(match.playedAt))}. Se conservan con este replay.</DialogDescription>
+          </DialogHeader>
+          <Textarea aria-label="Notas de la partida" value={draft} onChange={(event) => setDraft(event.target.value)} readOnly={!onSaved} maxLength={MAX_MATCH_NOTES_LENGTH} placeholder="Qué funcionó, qué revisar..." className="my-4 min-h-36 border-white/10 bg-white/5 text-slate-100" />
+          {error ? <p role="alert" className="mb-3 text-xs text-rose-300">{error}</p> : null}
+          {onSaved ? <DialogFooter><Button type="submit" disabled={saving || draft === match.notes} className="gap-1.5 bg-cyan-300 text-slate-950 hover:bg-cyan-200">{saving ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}Guardar notas</Button></DialogFooter> : null}
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MatchHistoryTable({
   matches,
   version,
   deletingMatchId,
   onDelete,
+  onNotesSaved,
   showOrigin = false,
   showFullDate = false,
 }: {
@@ -101,6 +165,7 @@ function MatchHistoryTable({
   version: TeamVersion;
   deletingMatchId: string | null;
   onDelete: (match: MatchRecord) => void;
+  onNotesSaved?: () => void;
   showOrigin?: boolean;
   showFullDate?: boolean;
 }) {
@@ -119,6 +184,7 @@ function MatchHistoryTable({
           <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Tus picks</TableHead>
           <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Rating</TableHead>
           <TableHead className="h-9 text-right text-[9px] uppercase tracking-wider text-slate-600">Replay</TableHead>
+          <TableHead className="h-9 text-[9px] uppercase tracking-wider text-slate-600">Notas</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -175,6 +241,7 @@ function MatchHistoryTable({
                 ) : null}
               </div>
             </TableCell>
+            <TableCell><MatchNotesDialog match={match} onSaved={!version.demo ? onNotesSaved : undefined} /></TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -278,6 +345,7 @@ export function MatchHistory({
                       version={version}
                       deletingMatchId={deletingMatchId}
                       onDelete={(match) => void removeMatch(match)}
+                      onNotesSaved={onMatchCreated}
                       showOrigin
                       showFullDate
                     />
@@ -313,6 +381,7 @@ export function MatchHistory({
             version={version}
             deletingMatchId={deletingMatchId}
             onDelete={(match) => void removeMatch(match)}
+            onNotesSaved={onMatchCreated}
           />
         </div>
       ) : (
