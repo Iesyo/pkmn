@@ -208,9 +208,38 @@ def _observed_targets(events: list[dict[str, Any]]) -> dict[int, str]:
     return {seq: next(iter(slots)) for seq, slots in targets.items() if len(slots) == 1}
 
 
+def _hud_identity(name: str, species: str, aliases: dict[str, str],
+                  roster: tuple[str, ...]) -> dict[str, str] | None:
+    """Match a HUD's base name to one roster forme, without guessing a nickname.
+
+    Champions can show "Toxtricity" for the preview's Toxtricity-Low-Key.
+    A shortened name only identifies a forme if that prefix has exactly one
+    possible species in the observed team. Resolved nicknames remain exact.
+    """
+    value = re.sub(r"[^a-z0-9]", "", name.casefold())
+    target = re.sub(r"[^a-z0-9]", "", species.casefold())
+    resolved = aliases.get(name.casefold())
+    if not value or not target:
+        return None
+    if resolved and re.sub(r"[^a-z0-9]", "", resolved.casefold()) == target:
+        return {"source": "resolved_alias", "hud_name": name, "species": species}
+    if value == target:
+        return {"source": "exact_species", "hud_name": name, "species": species}
+    prefix, hyphen, suffix = species.partition("-")
+    if (not hyphen or not suffix or len(prefix) < 5 or
+        name.casefold() != prefix.casefold() or species not in roster):
+        return None
+    matches = [member for member in roster if member.casefold() == prefix.casefold() or
+               member.casefold().startswith(prefix.casefold() + "-")]
+    if matches == [species]:
+        return {"source": "unique_team_form", "hud_name": name, "species": species}
+    return None
+
+
 def _intermediate_baseline(
     event: dict[str, Any], move: dict[str, Any] | None, inferred: str,
     aliases: dict[str, dict[str, str]],
+    teams: dict[str, tuple[str, ...]],
 ) -> dict[str, Any] | None:
     """Reconoce un HUD tomado durante el golpe, posterior al comienzo del movimiento.
 
@@ -239,20 +268,21 @@ def _intermediate_baseline(
     literal = f"{b}%" if slot.startswith("p2") else prior
     # El mote debe ser la especie o una identidad resuelta de modo único por
     # la traza. Un apodo ajeno no valida el HUD sólo por contener texto.
-    species_key = re.sub(r"[^a-z0-9]", "", str(event.get("species") or "").casefold())
+    species = str(event.get("species") or "")
     for evidence in baseline.get("evidence") or ():
         frame = evidence.get("frame")
         nickname = str(evidence.get("nickname") or "").casefold()
-        nickname_key = re.sub(r"[^a-z0-9]", "", nickname)
-        alias_key = re.sub(r"[^a-z0-9]", "", aliases[slot[:2]].get(nickname, "").casefold())
+        identity = _hud_identity(nickname, species, aliases[slot[:2]], teams[slot[:2]])
         if (isinstance(frame, int) and move_frame <= frame < end_frame
-                and evidence.get("text") == literal and species_key and
-                species_key in {nickname_key, alias_key}):
-            return {
+                and evidence.get("text") == literal and identity):
+            record = {
                 "ledger_seq": event["seq"], "causing_move_seq": move["seq"],
                 "inferred_entry": inferred, "intermediate": prior,
                 "final": result, "hud_frame": frame,
             }
+            if identity["source"] == "unique_team_form":
+                record["identity_support"] = identity
+            return record
     return None
 
 
@@ -359,9 +389,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                                      and event.get("frame", 0) <= reading["frame"] < following.get("frame", 0)
                                      and reading.get("text") == observed)]
                         nickname = str(proof[0].get("nickname") or "").casefold() if proof else ""
-                        observed_species = context.aliases[slot[:2]].get(nickname, nickname)
-                        same_actor = (re.sub(r"[^a-z0-9]", "", observed_species.casefold()) ==
-                                      re.sub(r"[^a-z0-9]", "", canonical.casefold()))
+                        same_actor = bool(_hud_identity(nickname, canonical, context.aliases[slot[:2]],
+                                                        context.teams[slot[:2]]))
                         if current == maximum and proof and same_actor:
                             hp_value = observed
                             inferred_entry_health.append({
@@ -446,7 +475,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             prior = _health(event.get("before"), f"PS previos {seq}")
             result = _health(event.get("after"), f"PS finales {seq}")
             if prior != known_hp[actor]:
-                bridge = (_intermediate_baseline(event, moves_by_seq.get(event.get("cause")), known_hp[actor], context.aliases)
+                bridge = (_intermediate_baseline(event, moves_by_seq.get(event.get("cause")), known_hp[actor],
+                                                 context.aliases, context.teams)
                           if hp_source[actor] == "inferred_entry" else None)
                 if bridge:
                     intermediate_baselines.append(bridge)
