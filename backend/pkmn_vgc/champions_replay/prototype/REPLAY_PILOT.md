@@ -28,7 +28,7 @@ observado en el 601.
 La partida piloto tiene dos turnos, cuatro entradas iniciales, dos cambios,
 dos megaevoluciones, seis movimientos, cuatro episodios de daño y dos
 debilitamientos. El verificador de COL-102 empareja **10/10 sucesos de
-movimiento/debilitamiento** observados y escritos, sin diferencias de orden,
+movimiento, megaevolución y debilitamiento** observados y escritos, sin diferencias de orden,
 PS cero sin faint ni ocupantes contradictorios. Cuatro pruebas del puente
 cubren el piloto real y el rechazo de PS discontinuos, avisos abiertos y
 ganador ausente aun cuando el replay archivado diga `|win|Roku`.
