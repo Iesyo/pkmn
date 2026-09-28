@@ -116,7 +116,10 @@ from .pipeline import ReviewIssue
 # `col102-r10` -o antes- puede llevar una incidencia `blocking` por
 # selección rival incompleta que ya no aplica; hay que pasarlo otra vez
 # por esta versión.
-RECONCILE_VERSION = "col102-r11"
+# r12: ambos lados con menos de cuatro picks observados generan un aviso.
+# Los demás hallazgos bloqueantes mantienen su clasificación. El cliente
+# puede reclasificar de forma exacta el único bloqueo de selección de r11.
+RECONCILE_VERSION = "col102-r12"
 
 
 _MOVE = re.compile(r"^(.*?) used (.+?)!$", re.IGNORECASE)
