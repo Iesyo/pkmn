@@ -41,7 +41,7 @@ HP_EFFECTS = {"was hurt by its burn!": "burn", "was damaged by the recoil!": "re
 HP_NARRATION_WINDOW_MS = 3_000
 HP_NARRATION_AMBIGUITY_MS = 500
 MEGA_NARRATION = re.compile(
-    r"(The opposing )?(.+?)[’']s (\S+) is reacting to .+?[’']s Omni Ring!", re.I)
+    r"(The opposing )?(.+?)[’']s (.+?) is reacting to .+?[’']s Omni Ring!", re.I)
 FAINT_NARRATION = re.compile(r"(The opposing )?(.+?) fainted!", re.I)
 RESULT_NARRATION = re.compile(r"You (?:defeated|lost to|were defeated by) .+!", re.I)
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
