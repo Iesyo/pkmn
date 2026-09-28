@@ -2157,6 +2157,16 @@ class BattleAutomaton:
                 if reference:
                     slot, named = reference.groups()
                     resolved = self.id_resolution.get(named) or self.nickname_species[slot[:2]].get(named.casefold())
+                    if not resolved and PLACEHOLDER.fullmatch(named):
+                        # A detector placeholder may be reused for another
+                        # Pokémon later in this battle. Its local resolution
+                        # is valid only while that species occupies this slot.
+                        local = self.frame_lookup.get(candidate["observed_frame"], {}).get(
+                            "resolved_identities", {}).get(named)
+                        active_id = self.active.get(slot)
+                        if (local and active_id and
+                            identity_species(local) == identity_species(self.actors[active_id]["species"])):
+                            resolved = local
                     if resolved:
                         tag = f"[of] {slot}: {resolved}"
                 item["tags"].append(tag)
@@ -3527,6 +3537,159 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_opponent_menu_hud_entries(self) -> None:
+        """Reject entries inferred from a stationary two-slot HUD after a menu redraw.
+
+        A provisional identity can carry the *other* slot's HP after the menu
+        closes. A named, unchanged occupant can also look like a fresh entry.
+        Both cases need repeated, located name/HP evidence; a real entry or
+        withdrawal announcement leaves the warning open.
+        """
+        def occupant(slot: str, seq: int) -> dict[str, Any] | None:
+            last = next((e for e in reversed(self.events[:seq - 1])
+                         if e["slot"] == slot and e["status"] == "consistent" and
+                         e["kind"] in {"switch", "drag", "faint"}), None)
+            return last if last and last["kind"] != "faint" else None
+
+        def health_event(slot: str, actor_id: str, seq: int) -> dict[str, Any] | None:
+            return next((e for e in reversed(self.events[:seq - 1])
+                         if e["slot"] == slot and e["actor_id"] == actor_id and
+                         e["status"] == "consistent" and e["kind"] in HP_KINDS | {"switch", "drag"}), None)
+
+        def named_hp(row: dict[str, Any], slot: str, species: str,
+                     health: str) -> list[dict[str, Any]] | None:
+            left, right, top, bottom = NAME_HUD_AREAS[slot]
+            names = [line for line in row.get("ocr", ())
+                     if line.get("confidence", 0) >= .95 and
+                     left <= line.get("left", -1) <= right and
+                     top <= line.get("top", -1) <= bottom and
+                     line.get("right", right) <= right + .02 and
+                     line.get("bottom", bottom) <= bottom + .02 and
+                     re.search(r"[A-Za-z]{3}", line.get("text", ""))]
+            values = [(value, line) for value, line in complete_hud_health(row, slot)
+                      if line["confidence"] >= .95]
+            expected = identity_species(species).casefold()
+            if (len(names) != 1 or not values or
+                identity_species(self.nickname_species[slot[:2]].get(
+                    names[0]["text"].casefold(), names[0]["text"])).casefold() != expected or
+                any(value != health for value, _ in values)):
+                return None
+            hp_line = max((line for _, line in values), key=lambda line: line["confidence"])
+            return [{"frame": row["frame"], "text": line["text"],
+                     "confidence": line["confidence"], "kind": kind}
+                    for kind, line in (("hud_name", names[0]), ("hud_hp", hp_line))]
+
+        def conflicting_hud(row: dict[str, Any], slot: str, species: str, health: str) -> bool:
+            readings = [value for value, line in complete_hud_health(row, slot)
+                        if line["confidence"] >= .95]
+            name = hud_nickname(row, slot)
+            if not readings or not name:
+                return False
+            actual = self.nickname_species[slot[:2]].get(name, name)
+            return (identity_species(actual).casefold() != identity_species(species).casefold() or
+                    any(value != health for value in readings))
+
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] not in {"ghost_reentry_after_faint", "reentry_without_exit"}:
+                unresolved.append(issue)
+                continue
+            rejected = self.events[issue["event_seq"] - 1]
+            slot, seq, frame = rejected["slot"], rejected["seq"], rejected["frame"]
+            if (rejected["status"] != "suppressed" or slot not in {"p2a", "p2b"} or
+                not rejected["health"] or frame not in self.frame_lookup):
+                unresolved.append(issue)
+                continue
+            current = self.frame_lookup[frame]
+            raw = [e for e in current.get("detections", {}).get("events", ())
+                   if e["kind"] == "switch" and e.get("slot") == slot]
+            if len(raw) != 1:
+                unresolved.append(issue)
+                continue
+            active = occupant(slot, seq)
+            if not active:
+                unresolved.append(issue)
+                continue
+            active_hp = health_event(slot, active["actor_id"], seq)
+            active_health = (active_hp["after"] or active_hp["health"]) if active_hp else None
+            if not active_health or not 0 < (health_ratio(active_health) or 0) <= 1:
+                unresolved.append(issue)
+                continue
+
+            # The candidate and nearby samples must show the living occupant
+            # in its slot. A false ghost copied the confirmed partner HP.
+            partner_slot = "p2b" if slot == "p2a" else "p2a"
+            partner = occupant(partner_slot, seq)
+            partner_hp = health_event(partner_slot, partner["actor_id"], seq) if partner else None
+            partner_health = (partner_hp["after"] or partner_hp["health"]) if partner_hp else None
+            ghost = (issue["code"] == "ghost_reentry_after_faint" and
+                     PLACEHOLDER.fullmatch(raw[0].get("species") or "") and
+                     partner_hp is not None and partner_hp.get("hp_state") == "confirmed" and
+                     partner_health == rejected["health"] and
+                     partner["actor_id"] != rejected["actor_id"] and
+                     active["actor_id"] != rejected["actor_id"])
+            duplicate = (issue["code"] == "reentry_without_exit" and
+                         active["actor_id"] == rejected["actor_id"] and
+                         active_hp.get("hp_state") == "confirmed" and
+                         active_health == rejected["health"] and
+                         any(re.search(r"MOVE[ -]TIME|Battle Info", line.get("text", ""), re.I)
+                             for line in current.get("ocr", ())))
+            if not ghost and not duplicate:
+                unresolved.append(issue)
+                continue
+
+            nearby = [row for row in self.frames if abs(row["timestamp_ms"] - rejected["observed_ms"]) <= 2_000]
+            if any(line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                   (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                    re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                   for row in nearby for line in row.get("ocr", ())):
+                unresolved.append(issue)
+                continue
+
+            evidence = []
+            if ghost:
+                for row in nearby:
+                    if not frame <= row["frame"] <= frame + 4:
+                        continue
+                    first = named_hp(row, partner_slot, partner["species"], partner_health)
+                    second = named_hp(row, slot, active["species"], active_health)
+                    if first and second:
+                        evidence.append((row, first + second))
+                valid = (len(evidence) >= 2 and evidence[0][0]["frame"] <= frame + 2 and
+                         evidence[1][0]["timestamp_ms"] - evidence[0][0]["timestamp_ms"] <= 1_000)
+            else:
+                for row in nearby:
+                    proof = named_hp(row, slot, active["species"], active_health)
+                    if proof:
+                        evidence.append((row, proof))
+                before = [row for row, _ in evidence if frame - 2 <= row["frame"] < frame]
+                after = [row for row, _ in evidence if frame < row["frame"] <= frame + 4]
+                valid = (len(before) >= 2 and len(after) >= 2 and
+                         after[0]["frame"] <= frame + 1 and
+                         any(row["frame"] == frame for row, _ in evidence))
+            if not valid:
+                unresolved.append(issue)
+                continue
+
+            start = evidence[0][0]["timestamp_ms"]
+            end = evidence[-1][0]["timestamp_ms"]
+            if any(conflicting_hud(row, slot, active["species"], active_health) or
+                   (ghost and conflicting_hud(row, partner_slot, partner["species"], partner_health))
+                   for row in nearby if start <= row["timestamp_ms"] <= end):
+                unresolved.append(issue)
+                continue
+
+            proof = [item for _, pair in evidence for item in pair]
+            previous = partner_hp if ghost else active_hp
+            resolution = {"state": "resolved", "event_seq": previous["seq"],
+                          "actor_id": previous["actor_id"], "slot": previous["slot"],
+                          "reason": ("El PS pertenece al HUD nombrado del compañero; el ocupante del slot continúa."
+                                     if ghost else "El HUD nombrado permanece estable durante el redibujado del menú."),
+                          "evidence": proof}
+            rejected["resolution"] = resolution
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def _reconcile_intermediate_hp_entries(self) -> None:
         """A changing HUD can be mistaken for an entry during an HP animation.
 
@@ -4599,6 +4762,7 @@ class BattleAutomaton:
         self._reconcile_hud_identity_entries()
         self._reconcile_repeated_faint_text()
         self._reconcile_partner_hud_entries()
+        self._reconcile_opponent_menu_hud_entries()
         self._reconcile_intermediate_hp_entries()
         self._reconcile_transient_text()
         self._reconcile_voicing_faint_text()
