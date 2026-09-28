@@ -1210,6 +1210,8 @@ class BattleAutomaton:
         self.turn_activity = 0
         self.last_action: dict[str, Any] | None = None
         self.terrain: str | None = None
+        self.trick_room_start: dict[str, Any] | None = None
+        self.trick_room_end: dict[str, Any] | None = None
         self.hp_pending: dict[str, HpEpisode] = {}
         self.hp_order: list[str] = []
         self.hp_messages: list[dict[str, Any]] = []
@@ -1434,6 +1436,12 @@ class BattleAutomaton:
                         score = 10 if re.fullmatch(rf"{re.escape(current)}\s*(?:%|/\s*\d+)", text) else 6
                     elif kind == "status" and any(s in low for s in ("paraly", "burn", "poison", "asleep", "froze")):
                         score = 8
+                    elif (kind in {"fieldstart", "fieldend"} and
+                          str(event.get("value") or "").removeprefix("move: ") == "Trick Room" and
+                          line.get("top", 0) >= .55 and
+                          ("twisted the dimensions" in low if kind == "fieldstart" else
+                           "twisted dimensions returned to normal" in low)):
+                        score = 9
                     elif kind in {"switch", "ability", "mega", "fieldstart"} and any(w in low for w in words):
                         score = 5
                     elif kind in {"cant", "message"} and len(text) > 12 and line.get("top", 1) > .60:
@@ -2871,6 +2879,34 @@ class BattleAutomaton:
                 return
             if event.get("forme"):
                 self.actors[actor_id]["forme"] = event["forme"]
+        if (kind in {"fieldstart", "fieldend"} and
+                str(event.get("value") or "").removeprefix("move: ") == "Trick Room"):
+            # A persistent effect is a state, not one instance per OCR reading.
+            # Keep each candidate and its evidence, but export each transition once.
+            previous = self.trick_room_start if kind == "fieldstart" else self.trick_room_end
+            if previous is not None:
+                if kind == "fieldstart" and any(
+                        item["kind"] == "move" and item["status"] == "consistent" and
+                        item.get("move") == "Trick Room" for item in self.events[previous["seq"]:]):
+                    item = self._append(candidate, status="review",
+                                        note="Otro uso de Trick Room sin cierre del estado activo.")
+                    self._issue("field_transition", item["note"], item["frame"], item["seq"])
+                    return
+                item = self._append(candidate, status="suppressed",
+                                    note="Lectura repetida del estado de Trick Room; no es otra transición.")
+                item["field_state_seq"] = previous["seq"]
+                previous["observations"].append({"frame": item["frame"], "source_frame": item["source_frame"],
+                                                 "event_seq": item["seq"], "evidence": item["evidence"]})
+            elif kind == "fieldend" and self.trick_room_start is None:
+                item = self._append(candidate, status="review", note="Fin de Trick Room sin inicio observado.")
+                self._issue("field_transition", item["note"], item["frame"], item["seq"])
+            elif kind == "fieldstart":
+                self.trick_room_start = self._append(candidate)
+                self.trick_room_end = None
+            else:
+                self.trick_room_end = self._append(candidate)
+                self.trick_room_start = None
+            return
         if kind == "fieldstart" and "Terrain" in str(event.get("value")):
             self.terrain = str(event.get("value"))
         if kind == "fieldend" and "Terrain" in str(event.get("value")):
@@ -4680,6 +4716,9 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
         if len(repetition) > 1:
             frames = ", ".join(str(e["source_frame"]) for e in repetition)
             detail += f" · {len(repetition)} lecturas seguidas (fotogramas {frames})"
+        if item["kind"] in {"fieldstart", "fieldend"} and item["observations"]:
+            frames = ", ".join(str(e["source_frame"]) for e in [item, *item["observations"]])
+            detail += f" · {1 + len(item['observations'])} lecturas del mismo estado (fotogramas {frames})"
         cause = item.get("cause")
         if isinstance(cause, int) and item["kind"] == "damage":
             action = by_seq.get(cause)
