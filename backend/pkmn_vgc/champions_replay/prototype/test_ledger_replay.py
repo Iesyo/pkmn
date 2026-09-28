@@ -35,19 +35,23 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
             event(9, "battle_end", frame=10, value="The battle has ended due to a forfeit."),
         ],
     }
+    p1_team = ["Blaziken", "Indeedee-F", "Gardevoir", "Kingambit", "Rillaboom", "Basculegion"]
+    p2_team = ["Garchomp", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Pelipper"]
     rows = []
     for frame in range(1, 13):
         rows.append({"battle_index": 0, "frame": frame,
-                     "detections": {"players": {"p1": "Roku", "p2": "Benji"}},
+                     "detections": {"players": {"p1": "Roku", "p2": "Benji"},
+                                    "team_preview": frame in (1, 2),
+                                    "teams": {"p1": p1_team, "p2": p2_team} if frame in (1, 2) else {}},
                      "ocr": [{"text": "You defeated Benji!", "confidence": .98}] if frame == 12 else []})
     diagnostic = directory / "champions-diagnostics-fixture.zip"
     with zipfile.ZipFile(diagnostic, "w") as archive:
         archive.writestr("job.json", json.dumps({
             "id": "fixture", "created_at": "2026-09-27T18:00:00+00:00",
-            "context": {"format": "gen9championsvgc2026regmc"}}))
+            "context": {"format": "gen9championsvgc2026regmc", "teams": {"p1": p1_team}}}))
         archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
         # A replay previo podría declarar ganador, pero nunca debe ser fuente.
-        archive.writestr("output/replay-001.log", "|win|Roku\n")
+        archive.writestr("output/replay-001.log", "|poke|p2|Inventado, L50|\n|win|Roku\n")
     return battle, diagnostic
 
 
@@ -61,12 +65,42 @@ class LedgerReplayTest(unittest.TestCase):
             log_path, json_path, html_path = export(ledger, zip_path, root / "replay-001")
             lines = log_path.read_text().splitlines()
             self.assertEqual(lines[-1], "|win|Roku")
+            self.assertEqual(sum(line.startswith("|poke|p1|") for line in lines), 6)
+            self.assertEqual(sum(line.startswith("|poke|p2|") for line in lines), 6)
+            self.assertEqual(lines[lines.index("|teamsize|p2|6") + 1], "|poke|p2|Garchomp, L50|")
+            self.assertLess(lines.index("|teampreview"), lines.index("|start"))
+            self.assertLess(lines.index("|start"), lines.index("|switch|p1a: Blaziken|Blaziken, L50|156/156"))
             self.assertLess(lines.index("|turn|1"), lines.index("|move|p1a: Blaziken|Rock Tomb|p2b: Sneasler"))
             self.assertLess(lines.index("|-damage|p2b: Sneasler|0/100"), lines.index("|faint|p2b: Sneasler"))
             result = json.loads(json_path.read_text())
             self.assertEqual(result["ledger_source"]["winner_evidence"]["frame"], 12)
             self.assertEqual(result["source_battle_index"], 0)
+            self.assertEqual(result["ledger_source"]["team_preview"]["p2"]["frames"], [1, 2])
             self.assertIn('class="battle-log-data"', html_path.read_text())
+
+    def test_no_inventa_seis_pokemon_sin_roster_estable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            with zipfile.ZipFile(zip_path) as source:
+                job = source.read("job.json")
+                rows = [json.loads(line) for line in source.read("output/ocr.trace.jsonl").splitlines()]
+            rows[0]["detections"]["teams"]["p2"] = []
+            rows[1]["detections"]["teams"]["p2"] = []
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            with self.assertRaisesRegex(ReplayEvidenceError, "equipo completo de seis"):
+                load_trace_context(zip_path, battle)
+
+            rows[0]["detections"]["teams"]["p2"] = [
+                "Garchomp", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Pelipper"]
+            rows[1]["detections"]["teams"]["p2"] = [
+                "Garchomp", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Kingambit"]
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("job.json", job)
+                archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
+            with self.assertRaisesRegex(ReplayEvidenceError, "equipo único de seis"):
+                load_trace_context(zip_path, battle)
 
     def test_replay_archivado_no_sustituye_prueba_del_ganador(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -126,6 +160,9 @@ class LedgerReplayTest(unittest.TestCase):
         lines = document["log"].splitlines()
         self.assertEqual(document["ledger_source"]["consistent_events"], 30)
         self.assertEqual(document["ledger_source"]["winner_evidence"]["frame"], 605)
+        self.assertEqual(document["log"].count("|poke|p1|"), 6)
+        self.assertEqual(document["log"].count("|poke|p2|"), 6)
+        self.assertIn("|poke|p2|Whimsicott, L50|", document["log"])
         self.assertEqual([line for line in lines if line.startswith("|turn|")], ["|turn|1", "|turn|2"])
         self.assertEqual(sum(line.startswith("|faint|") for line in lines), 2)
         self.assertIn("|detailschange|p2b: Charizard|Charizard-Mega-Y, L50|100/100", lines)
@@ -138,6 +175,9 @@ class LedgerReplayTest(unittest.TestCase):
         context = load_trace_context(Path(os.environ["CHAMPIONS_DIAGNOSTIC_TENTH"]), battle)
         document = build_replay(battle, context)
         self.assertEqual(document["ledger_source"]["consistent_events"], 32)
+        self.assertEqual(document["log"].count("|poke|p1|"), 6)
+        self.assertEqual(document["log"].count("|poke|p2|"), 6)
+        self.assertIn("|poke|p2|Gengar, L50|", document["log"])
         self.assertEqual(document["ledger_source"]["winner_evidence"], {
             "frame": 1314, "text": "You lost to Denton!", "confidence": .99995})
         self.assertEqual(document["ledger_source"]["intermediate_baselines"], [{
