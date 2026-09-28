@@ -2,7 +2,7 @@ import Image from "next/image";
 import { Crown, Route } from "lucide-react";
 
 import { getSpriteUrl } from "@/lib/pokemon-data";
-import { rankLeadsByWinRate, winRate } from "@/lib/team-stats";
+import { MIN_BEST_LEAD_GAMES, rankBestLeads, winRate } from "@/lib/team-stats";
 import type { LeadStat } from "@/lib/types";
 
 function LeadRow({ lead, totalGames, best = false }: { lead: LeadStat; totalGames: number; best?: boolean }) {
@@ -32,7 +32,7 @@ function LeadRow({ lead, totalGames, best = false }: { lead: LeadStat; totalGame
 
 export function LeadsPanel({ leads, totalGames }: { leads: LeadStat[]; totalGames: number }) {
   const common = leads.slice(0, 3);
-  const best = rankLeadsByWinRate(leads).slice(0, 3);
+  const best = rankBestLeads(leads).slice(0, 3);
   const coveredGames = leads.reduce((sum, lead) => sum + lead.games, 0);
 
   return (
@@ -59,6 +59,7 @@ export function LeadsPanel({ leads, totalGames }: { leads: LeadStat[]; totalGame
         </div>
         <div className="rounded-2xl border border-white/8 bg-slate-950/65 p-3">
           <h3 className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-400"><Crown className="size-3.5 text-amber-300" />Mejores leads</h3>
+          <p className="mb-2 text-[9px] text-slate-500">Mínimo {MIN_BEST_LEAD_GAMES} partidas; las muestras pequeñas reciben menos peso. El % muestra victorias reales.</p>
           <div className="space-y-2">
             {best.map((lead) => <LeadRow key={lead.species.join("-")} lead={lead} totalGames={totalGames} best />)}
             {!best.length ? <p className="rounded-xl border border-dashed border-white/10 p-4 text-center text-[10px] text-slate-500">Aún no hay muestra suficiente.</p> : null}
