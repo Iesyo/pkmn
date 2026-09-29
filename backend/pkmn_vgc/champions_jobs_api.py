@@ -98,6 +98,14 @@ def retry_job(job_id: str) -> dict[str, object]:
         raise _http_error(error) from error
 
 
+@app.post("/jobs/{job_id}/rebuild")
+def rebuild_from_trace(job_id: str) -> dict[str, object]:
+    try:
+        return {"job": jobs.rebuild_from_trace(job_id)}
+    except Exception as error:
+        raise _http_error(error) from error
+
+
 @app.post("/jobs/{job_id}/protect")
 def protect_job(job_id: str, body: ProtectJobBody) -> dict[str, object]:
     try:
