@@ -49,6 +49,8 @@ interface ChampionsVideoJob {
   archivedRunCount: number;
   sourceAvailable: boolean;
   canRetry: boolean;
+  canRebuildAutomata: boolean;
+  analysisMode: "video" | "trace";
   isProtected: boolean;
   compacted: boolean;
   sourceBytes: number;
@@ -271,6 +273,22 @@ export function ChampionsVideoUpload({
     }
   }
 
+  async function rebuildAutomata() {
+    if (!currentJob || !currentJob.canRebuildAutomata || retrying) return;
+    setRetrying(true);
+    setError("");
+    try {
+      const payload = await readJson<{ job: ChampionsVideoJob }>(
+        await fetch(`/api/champions-jobs/jobs/${currentJob.id}/rebuild`, { method: "POST" }),
+      );
+      mergeJob(payload.job);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No pudimos reevaluar los autómatas.");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   async function toggleProtection() {
     if (!currentJob || managingStorage) return;
     setManagingStorage("protect");
@@ -295,7 +313,7 @@ export function ChampionsVideoUpload({
   async function cleanupCurrentJob() {
     if (!currentJob || managingStorage || currentJob.reclaimableBytes <= 0 || currentJob.isProtected) return;
     const accepted = window.confirm(
-      `Liberar ${formatBytes(currentJob.reclaimableBytes)} borrando el vídeo original y los historiales de este job? El replay y la traza actuales se conservan, pero ya no podrás reanalizar el vídeo.`,
+      `Liberar ${formatBytes(currentJob.reclaimableBytes)} borrando el vídeo original y los historiales de este job? El replay y la traza OCR actuales se conservan; podrás reevaluar los autómatas, pero no repetir el OCR.`,
     );
     if (!accepted) return;
     setManagingStorage("cleanup");
@@ -470,6 +488,17 @@ export function ChampionsVideoUpload({
                       type="button"
                       size="sm"
                       variant="outline"
+                      onClick={() => void rebuildAutomata()}
+                      disabled={retrying || !currentJob.canRebuildAutomata}
+                      className="gap-1.5 border-violet-200/20 bg-violet-200/5 text-violet-100 hover:bg-violet-200/10"
+                    >
+                      {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                      Reevaluar autómatas
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
                       onClick={() => void retryAnalysis()}
                       disabled={retrying || !currentJob.canRetry}
                       className="gap-1.5 border-cyan-200/20 bg-cyan-200/5 text-cyan-100 hover:bg-cyan-200/10"
@@ -483,7 +512,7 @@ export function ChampionsVideoUpload({
                       </a>
                     </Button>
                   </div>
-                  <p className="text-[9px] text-slate-500">Revisar abre el registro existente; la partida sólo se guarda cuando confirmas sus datos.</p>
+                  <p className="text-[9px] text-slate-500">{currentJob.canRebuildAutomata ? "Reevaluar autómatas usa la traza OCR guardada; Reanalizar vídeo vuelve a leer la grabación." : "La traza OCR completa no está disponible; para rehacer el análisis se necesita el vídeo."} Revisar abre el replay para confirmar sus datos.</p>
                 </div>
               ) : null}
               {["ready", "error"].includes(currentJob.status) ? (
@@ -533,12 +562,23 @@ export function ChampionsVideoUpload({
                     </Button>
                   </div>
                   {currentJob.isProtected ? <p className="text-[9px] text-violet-200/80">Este job está protegido: no puede compactarse ni eliminarse hasta desprotegerlo.</p> : null}
-                  {!currentJob.sourceAvailable ? <p className="text-[9px] text-slate-500">El replay actual sigue disponible, pero este job ya no puede reanalizarse porque el vídeo fuente fue eliminado.</p> : null}
+                  {!currentJob.sourceAvailable ? <p className="text-[9px] text-slate-500">El vídeo fue eliminado. {currentJob.canRebuildAutomata ? "Puedes reevaluar Ledger y el generador con la traza OCR guardada." : "El replay actual sigue disponible."}</p> : null}
                 </div>
               ) : null}
               {currentJob.status === "error" ? (
                 <div className="grid gap-2 rounded-xl border border-rose-300/15 bg-rose-300/6 p-3 text-[10px] text-rose-200">
                   <p className="flex items-start gap-2"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{currentJob.error || "El procesamiento terminó con error."}</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void rebuildAutomata()}
+                    disabled={retrying || !currentJob.canRebuildAutomata}
+                    className="w-fit gap-1.5 border-violet-200/20 bg-violet-200/5 text-violet-100 hover:bg-violet-200/10"
+                  >
+                    {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                    Reevaluar autómatas
+                  </Button>
                   <Button
                     type="button"
                     size="sm"
@@ -555,7 +595,7 @@ export function ChampionsVideoUpload({
                       <Download className="size-3" />Descargar diagnóstico
                     </a>
                   </Button>
-                  <p className="text-[9px] text-slate-500">{currentJob.sourceAvailable ? "Usa el vídeo que ya está guardado en la ROG; no vuelve a subirlo." : "El vídeo fuente fue eliminado; conserva el diagnóstico disponible, pero ya no puede reanalizarse."}</p>
+                  <p className="text-[9px] text-slate-500">{currentJob.canRebuildAutomata ? "La traza OCR está completa: puedes reevaluar Ledger y el generador sin leer el vídeo." : "La traza OCR no está disponible o quedó incompleta; reanaliza el vídeo si lo conservas."}</p>
                 </div>
               ) : null}
             </section>
