@@ -902,6 +902,45 @@ def ordered_candidates(frames: list[dict[str, Any]],
     # move, literal HP or repeated faint before restoring chronological order.
     for item in candidates:
         event = item["event"]
+        if event["kind"] == "mega" and PLACEHOLDER.fullmatch(str(event.get("species") or "")):
+            number = item["observed_frame"]
+            proof = []
+            for n in (number, number + 1):
+                lines = [line for line in frame_lookup.get(n, {}).get("ocr", ())
+                         if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                         (match := MEGA_NARRATION.fullmatch(line.get("text", "").strip())) and
+                         bool(match.group(1)) == str(event.get("slot") or "").startswith("p2") and
+                         match.group(3) == event.get("value")]
+                if len(lines) != 1:
+                    break
+                proof.append(lines[0])
+            if len(proof) == 2:
+                subject = MEGA_NARRATION.fullmatch(proof[0]["text"]).group(2).casefold()
+                species = aliases[str(event.get("slot"))[:2]].get(subject)
+                if (species and identity_species(species) ==
+                    identity_species(event.get("forme") or "")):
+                    item["canonical_species"] = species
+                    item["mega_identity_support"] = {"frames": [number, number + 1],
+                                                     "nickname": subject}
+        if event["kind"] == "message" and (detected := HP_NARRATION.fullmatch(
+                str(event.get("value") or ""))):
+            number = item["observed_frame"]
+            corroborated = []
+            for n in (number, number + 1):
+                matches = [line for line in frame_lookup.get(n, {}).get("ocr", ())
+                           if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                           (read := HP_NARRATION.fullmatch(line.get("text", "").strip())) and
+                           bool(read.group(1)) == bool(detected.group(1)) and
+                           read.group(3).casefold() == detected.group(3).casefold()]
+                if len(matches) != 1:
+                    break
+                corroborated.append(matches[0])
+            if (len(corroborated) == 2 and
+                corroborated[0]["text"].strip() == corroborated[1]["text"].strip() and
+                corroborated[0]["text"].strip() != event["value"]):
+                item["message_correction"] = {"detector": event["value"],
+                                               "ocr_frames": [number, number + 1]}
+                item["event"] = event = {**event, "value": corroborated[0]["text"].strip()}
         slot, source_frame = event.get("slot"), event.get("source_frame")
         source = frame_lookup.get(source_frame + 1) if isinstance(source_frame, int) else None
         if (event["kind"] not in {"move", "damage", "heal", "faint"} or slot not in SLOTS or
@@ -968,6 +1007,24 @@ def ordered_candidates(frames: list[dict[str, Any]],
                 else:
                     continue
                 break
+        if event["kind"] in HP_KINDS and slot in {"p2a", "p2b"} and event.get("health"):
+            # The detector's provisional actor can survive a switch and point
+            # at the partner. A full percentage and the same named HUD on two
+            # consecutive samples establish the actual recipient's slot.
+            peer = "p2b" if slot == "p2a" else "p2a"
+            current = frame_lookup.get(frame, {})
+            name = hud_nickname(current, peer)
+            named_species = aliases["p2"].get(name or "")
+            neighbor = any(hud_nickname(frame_lookup.get(frame + offset, {}), peer) == name
+                           for offset in (-1, 1))
+            if (name and named_species and neighbor and
+                any(health == event["health"] and line["confidence"] >= .95
+                    for health, line in complete_hud_health(current, peer)) and
+                not any(health == event["health"] for health, _ in
+                        complete_hud_health(current, slot))):
+                item["event"] = event = {**event, "slot": peer}
+                item["canonical_species"] = named_species
+                item["slot_correction"] = slot
         slot = event.get("slot")
         raw = event.get("species")
         if slot in SLOTS and raw and PLACEHOLDER.match(raw):
@@ -1009,6 +1066,47 @@ def ordered_candidates(frames: list[dict[str, Any]],
                 if not any(a["frame"] == row["frame"] and a["side"] == side for a in announcements):
                     announcements.append({"frame": row["frame"], "side": side,
                                           "species": announced, "text": text})
+    # A narration-only switch can be emitted before the HUD establishes its
+    # slot. If the later HUD puts that same nickname in the *other* slot and
+    # shows a different nickname in the detector's slot, the later switch is
+    # the supported observation. Keep the premature event for the audit log,
+    # but let the HUD-backed candidate claim the announcement and actor.
+    for early in candidates:
+        event = early["event"]
+        slot = event.get("slot")
+        if (event["kind"] != "switch" or slot not in {"p2a", "p2b"} or
+            event.get("health") or early.get("superseded_switch")):
+            continue
+        species = identity_species(early.get("canonical_species") or
+                                   unambiguous.get(event.get("species"), event.get("species")) or "").casefold()
+        for later in candidates:
+            replacement = later["event"]
+            new_slot = replacement.get("slot")
+            if (later is early or replacement["kind"] != "switch" or
+                new_slot not in {"p2a", "p2b"} or new_slot == slot or
+                not 0 < later["observed_frame"] - early["observed_frame"] <= 80 or
+                identity_species(later.get("canonical_species") or
+                                 unambiguous.get(replacement.get("species"), replacement.get("species")) or "").casefold() != species):
+                continue
+            matching = [a for a in announcements if a["side"] == "p2" and
+                        identity_species(a["species"]).casefold() == species and
+                        abs(early["observed_frame"] - a["frame"]) <= 3]
+            if len({a["frame"] for a in matching}) < 2:
+                continue
+            names = [(hud_nickname(frame_lookup.get(n, {}), new_slot),
+                      hud_nickname(frame_lookup.get(n, {}), slot))
+                     for n in (later["observed_frame"], later["observed_frame"] + 1)]
+            if (not names[0][0] or names[0][0] != names[1][0] or
+                aliases["p2"].get(names[0][0]) !=
+                    (later.get("canonical_species") or unambiguous.get(replacement.get("species"), replacement.get("species"))) or
+                not names[0][1] or names[0][1] != names[1][1] or
+                names[0][1] == names[0][0]):
+                continue
+            early["superseded_switch"] = {"slot": new_slot,
+                                          "hud_frames": [later["observed_frame"],
+                                                         later["observed_frame"] + 1],
+                                          "nickname": names[0][0]}
+            break
     used_announcements: set[tuple[int, str, str]] = set()
     anchors: dict[tuple[int, str], int] = {}
     delayed_voluntary: dict[tuple[int, str], dict[str, Any]] = {}
@@ -1017,6 +1115,8 @@ def ordered_candidates(frames: list[dict[str, Any]],
         event = item["event"]
         item["logical_frame"] = item["observed_frame"]
         if event["kind"] not in {"switch", "drag"}:
+            continue
+        if item.get("superseded_switch"):
             continue
         slot = event.get("slot")
         if not slot:
@@ -2883,6 +2983,13 @@ class BattleAutomaton:
             return
         self._flush_hp()
         if kind in {"switch", "drag"} and slot in SLOTS:
+            if candidate.get("superseded_switch"):
+                proof = candidate["superseded_switch"]
+                item = self._append(candidate, status="suppressed",
+                                    note=f"Anuncio temprano: el HUD posterior confirma {proof['nickname']} "
+                                         f"en {proof['slot']}, no en {slot}.")
+                item["slot_resolution"] = proof
+                return
             if kind == "switch" and (ghost := self._ghost_placeholder_after_faint(candidate)):
                 item = self._append(candidate, status="suppressed", actor_id=ghost["actor_id"],
                                     note=ghost["reason"])
@@ -2942,7 +3049,25 @@ class BattleAutomaton:
                                                              "reason": "Confirmación posterior antes de la acción"})
                     item["note"] = "Segunda lectura de la misma entrada antes de actuar."
                 else:
-                    self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
+                    number = candidate["observed_frame"]
+                    nearby = [self.frame_lookup[n] for n in range(number - 8, number + 4)
+                              if n in self.frame_lookup]
+                    named = [row["frame"] for row in nearby
+                             if (name := hud_nickname(row, slot)) and
+                             identity_species(self.nickname_species[slot[:2]].get(name, name)) ==
+                             identity_species(self.actors[actor_id]["species"])]
+                    announced = any(line.get("top", 0) >= .55 and
+                                    (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                                     re.search(r"\b(come back|went back|withdrew)\b",
+                                               line.get("text", ""), re.I))
+                                    for row in nearby for line in row.get("ocr", ()))
+                    if (slot.startswith("p1") and not candidate.get("anchor") and
+                        not announced and len(named) >= 2 and
+                        any(n >= number for n in named)):
+                        item["note"] = "HUD del mismo ocupante durante una animación o redibujado; sin entrada anunciada."
+                        item["continuity_frames"] = named
+                    else:
+                        self._issue("reentry_without_exit", item["note"], item["frame"], item["seq"])
                 return
             actor_id = self._actor_for_entry(slot, candidate.get("canonical_species") or event.get("species"))
             first_appearance = not self.actors[actor_id].get("seen_entry", False)
@@ -3185,7 +3310,7 @@ class BattleAutomaton:
             self.actors[actor_id]["item_lost"] = True
             self.actors[actor_id]["item"] = None
         if kind == "mega":
-            observed = self._resolve(event.get("species"))
+            observed = candidate.get("canonical_species") or self._resolve(event.get("species"))
             occupant = self.actors[actor_id]["species"] if actor_id else None
             if (not occupant or not observed or
                 identity_species(observed) != identity_species(occupant)):
