@@ -39,9 +39,12 @@ export default defineConfig(async (): Promise<UserConfig> => {
     server: {
       host: "0.0.0.0",
       allowedHosts: ["terminal.local"],
-      ...(isCodexSeatbeltSandbox
-        ? { watch: { useFsEvents: false, usePolling: true } }
-        : {}),
+      watch: {
+        // The Python queue creates and moves temporary files here. Watching
+        // them on Windows can throw EBUSY and terminate the Vite server.
+        ignored: (path) => /(?:^|[/\\])data[/\\]champions-jobs(?:[/\\]|$)/i.test(path),
+        ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
+      },
     },
     preview: {
       host: "127.0.0.1",
