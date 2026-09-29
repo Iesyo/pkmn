@@ -201,6 +201,49 @@ class LedgerReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ReplayEvidenceError, "Actor fuera de su slot"):
                 build_replay(broken, context)
 
+    def test_tailwind_on_vacant_partner_slot_uses_side_of_confirmed_move(self):
+        with tempfile.TemporaryDirectory() as temp:
+            battle, zip_path = _pilot_fixture(Path(temp))
+            context = load_trace_context(zip_path, battle)
+            battle["events"][-1]["seq"] = 11
+            battle["events"][-1:-1] = [
+                {"seq": 9, "kind": "move", "status": "consistent", "slot": "p2a",
+                 "actor_id": "p2-one", "move": "Tailwind", "frame": 8, "turn": 1},
+                {"seq": 10, "kind": "sidestart", "status": "consistent", "slot": "p2b",
+                 "actor_id": None, "value": "move: Tailwind", "frame": 9, "turn": 1},
+            ]
+            log = build_replay(battle, context)["log"].splitlines()
+            self.assertIn("|-sidestart|p2: Benji|move: Tailwind", log)
+            self.assertEqual(sum(line.startswith("|switch|p2b:") for line in log), 1)
+
+            for field, value, expected in [
+                ("slot", "p1b", "sin movimiento acreditado"),
+                ("actor_id", "p2-one", "Actor fuera de su slot"),
+                ("frame", 29, "sin movimiento acreditado"),
+            ]:
+                with self.subTest(field=field):
+                    broken = copy.deepcopy(battle)
+                    broken["events"][-2][field] = value
+                    with self.assertRaisesRegex(ReplayEvidenceError, expected):
+                        build_replay(broken, context)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_9EE3"), "Requiere diagnóstico 9ee3")
+    def test_9ee3_tailwind_after_faint_exports_without_restoring_actor(self):
+        from champions_automaton import BattleAutomaton, read_diagnostic, read_diagnostic_context
+
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_9EE3"])
+        frames, _ = read_diagnostic(path)
+        battle = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(battle["issues"], [])
+        condition = next(e for e in battle["events"] if e["kind"] == "sidestart")
+        self.assertEqual((condition["seq"], condition["slot"], condition["actor_id"]),
+                         (22, "p2a", None))
+        log = build_replay(battle, load_trace_context(path, battle))["log"].splitlines()
+        self.assertIn("|move|p2b: Pelipper|Tailwind|", log)
+        self.assertIn("|-sidestart|p2: Angel|move: Tailwind", log)
+        self.assertIn("|-sideend|p2: Angel|move: Tailwind", log)
+        self.assertEqual(log[-1], "|win|Roku")
+
     def test_illusion_replace_preserves_actor_and_hp_without_a_switch(self):
         with tempfile.TemporaryDirectory() as temp:
             battle, zip_path = _pilot_fixture(Path(temp))
