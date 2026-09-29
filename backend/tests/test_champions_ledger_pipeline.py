@@ -320,6 +320,70 @@ class LedgerPipelineTests(unittest.TestCase):
                     self.assertIn("output/ledger-battle-001.md", archive.namelist())
                     self.assertNotIn("output/replay.json", archive.namelist())
                     self.assertNotIn("output/replay-001.json", archive.namelist())
+                self.assertTrue(manager.get_job(job["id"])["canRebuildAutomata"])
+                ocr_runs = len(detectors)
+                with patch.object(manager, "_enqueue"):
+                    manager.rebuild_from_trace(job["id"])
+                manager._process_job(job["id"])
+                self.assertEqual(manager.get_job(job["id"])["status"], "error")
+                self.assertEqual(len(detectors), ocr_runs)
+            finally:
+                manager.close(wait=True)
+
+    def test_rebuild_from_saved_trace_without_video_or_ocr(self):
+        rows = trace_battle(0)
+        source = MagicMock()
+        source.__iter__.side_effect = lambda: iter(
+            [FramePacket(index=i, timestamp_ms=i * 500, image=b"") for i in range(len(rows))]
+        )
+        source.estimated_frame_count.return_value = len(rows)
+        detectors = []
+
+        def detector_factory(**kwargs):
+            detector = RecordedDetector(rows, kwargs["trace_path"])
+            detectors.append(detector)
+            return detector
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("pkmn_vgc.champions_jobs.VideoFrameSource", return_value=source) as video_source, \
+                patch("pkmn_vgc.champions_jobs.ChampionsOcrDetector", side_effect=detector_factory):
+            manager = ChampionsJobManager(Path(directory))
+            try:
+                job = manager.create_job(filename="video.mp4", size_bytes=5, team_version_id="team", context=CONTEXT)
+                with patch.object(manager, "_enqueue"):
+                    manager.append_chunk(job["id"], offset=0, data=b"video")
+                manager._process_job(job["id"])
+                original = manager.replay_document(job["id"], 1)["log"]
+                self.assertTrue(manager.get_job(job["id"])["canRebuildAutomata"])
+                manager.set_protected(job["id"], False)
+                manager.compact_job(job["id"])
+                self.assertFalse(manager.get_job(job["id"])["canRetry"])
+                self.assertTrue(manager.get_job(job["id"])["canRebuildAutomata"])
+
+                with patch.object(manager, "_enqueue"):
+                    queued = manager.rebuild_from_trace(job["id"])
+                self.assertEqual((queued["status"], queued["analysisMode"]), ("queued", "trace"))
+                manager.close(wait=True)
+                resumed = ChampionsJobManager(Path(directory))
+                with patch.object(resumed, "_enqueue") as enqueue:
+                    resumed.resume_pending()
+                    enqueue.assert_called_once_with(job["id"])
+                resumed._process_job(job["id"])
+                self.assertEqual(resumed.get_job(job["id"])["status"], "ready")
+                self.assertEqual(resumed.replay_document(job["id"], 1)["log"], original)
+                self.assertEqual(video_source.call_count, 1)
+                self.assertEqual(len(detectors), 1)
+                with zipfile.ZipFile(io.BytesIO(resumed.diagnostics_archive(job["id"]))) as archive:
+                    self.assertIn("output/ocr.trace.jsonl", archive.namelist())
+                    self.assertTrue(any(name.startswith("output/history/") and
+                                        name.endswith("/ocr.trace.jsonl") for name in archive.namelist()))
+
+                (Path(directory) / job["id"] / "output" / "ledger-report.json").unlink()
+                self.assertFalse(resumed.get_job(job["id"])["canRebuildAutomata"])
+                with self.assertRaisesRegex(ValueError, "traza OCR completa"):
+                    resumed.rebuild_from_trace(job["id"])
+                self.assertEqual(resumed.replay_document(job["id"], 1)["log"], original)
+                resumed.close(wait=True)
             finally:
                 manager.close(wait=True)
 
