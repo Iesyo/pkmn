@@ -17,7 +17,7 @@ from uuid import uuid4
 from .champions_replay import reconcile
 from .champions_replay.cli import _seed_from_context
 from .champions_replay.models import BattleEvent, CapturedBattle, ReplayDocument
-from .champions_replay.ledger_pipeline import capture_ocr_trace, documents_from_trace
+from .champions_replay.ledger_pipeline import LEDGER_VERSION, capture_ocr_trace, documents_from_trace
 from .champions_replay.ocr_detector import (
     ChampionsOcrDetector,
     OcrTraceDetector,
@@ -344,7 +344,8 @@ class ChampionsJobManager:
                 job_id
                 for job_id, job in self._jobs.items()
                 if job.get("status") in {"queued", "analyzing"}
-                and self._source_path(job).is_file()
+                and (self._trace_path(job).is_file() if job.get("analysis_mode") == "trace"
+                     else self._source_path(job).is_file())
             ]
             for job_id in pending:
                 job = self._jobs[job_id]
@@ -404,6 +405,7 @@ class ChampionsJobManager:
             "warnings": [],
             "replay_files": [],
             "source_path": f"source{suffix}",
+            "analysis_mode": "video",
             "is_protected": True,
             "error": None,
             "created_at": created_at,
@@ -537,8 +539,49 @@ class ChampionsJobManager:
                 archives = list(job.get("analysis_archives") or [])
                 archives.append(str(archive.relative_to(self._job_directory(job_id))))
                 job["analysis_archives"] = archives
+            job["analysis_mode"] = "video"
             job["status"] = "queued"
             job["stage"] = "Esperando turno"
+            job["error"] = None
+            job["processed_frames"] = 0
+            job["total_frames"] = None
+            job["elapsed_seconds"] = 0.0
+            job["eta_seconds"] = None
+            job["events_detected"] = 0
+            job["battles_detected"] = 0
+            job["skipped_frames"] = 0
+            job["warnings"] = []
+            job["replay_files"] = []
+            job["updated_at"] = _now()
+            self._save_locked(job)
+            result = self._public(job)
+        self._enqueue(job_id)
+        return result
+
+    def rebuild_from_trace(self, job_id: str) -> dict[str, Any]:
+        """Regenera Ledger y los replays con la captura OCR ya terminada."""
+
+        with self._lock:
+            job = self._require(job_id)
+            if job["status"] not in {"error", "ready"}:
+                raise ValueError("Sólo se pueden reevaluar autómatas de un trabajo terminado.")
+            if not self._has_reusable_trace(job):
+                raise ValueError("La traza OCR completa de Ledger no está disponible; reanaliza el vídeo.")
+            staged_trace = self._job_directory(job_id) / f"ocr.trace.{uuid4().hex}.tmp"
+            shutil.copy2(self._trace_path(job), staged_trace)
+            try:
+                archive = self._archive_output(job_id)
+                if archive is None:
+                    raise ValueError("No se pudo conservar el análisis anterior.")
+                staged_trace.replace(self._trace_path(job))
+            finally:
+                staged_trace.unlink(missing_ok=True)
+            archives = list(job.get("analysis_archives") or [])
+            archives.append(str(archive.relative_to(self._job_directory(job_id))))
+            job["analysis_archives"] = archives
+            job["analysis_mode"] = "trace"
+            job["status"] = "queued"
+            job["stage"] = "Esperando autómatas"
             job["error"] = None
             job["processed_frames"] = 0
             job["total_frames"] = None
@@ -603,8 +646,9 @@ class ChampionsJobManager:
     def _process_job(self, job_id: str) -> None:
         with self._lock:
             job = self._require(job_id)
+            trace_mode = job.get("analysis_mode") == "trace"
             job["status"] = "analyzing"
-            job["stage"] = "Analizando vídeo"
+            job["stage"] = "Reevaluando Ledger y replays" if trace_mode else "Analizando vídeo"
             job["error"] = None
             job["processed_frames"] = 0
             job["total_frames"] = None
@@ -622,6 +666,7 @@ class ChampionsJobManager:
             max_battles = int(job["max_battles"])
             output_directory = self._job_directory(job_id) / "output"
             output_directory.mkdir(exist_ok=True)
+            job_snapshot = dict(job)
 
         def on_progress(progress: CaptureProgress) -> None:
             self._update_progress(job_id, progress)
@@ -634,15 +679,16 @@ class ChampionsJobManager:
                 current["warnings"] = warnings[-10:]
 
         try:
-            documents = self.processor(
-                video_path,
-                context,
-                output_directory,
-                sample_fps,
-                max_battles,
-                on_progress,
-                on_warning,
-            )
+            if trace_mode:
+                documents = documents_from_trace(
+                    output_directory / "ocr.trace.jsonl", job_snapshot, output_directory,
+                    on_warning=on_warning,
+                )
+            else:
+                documents = self.processor(
+                    video_path, context, output_directory, sample_fps, max_battles,
+                    on_progress, on_warning,
+                )
             replay_files: list[str] = []
             total = len(documents)
             for index, document in enumerate(documents, start=1):
@@ -652,6 +698,13 @@ class ChampionsJobManager:
                 replay_files.append(str(json_path.relative_to(self._job_directory(job_id))))
             with self._lock:
                 current = self._require(job_id)
+                if trace_mode:
+                    report = json.loads((output_directory / "ledger-report.json").read_text(encoding="utf-8"))
+                    current["processed_frames"] = report["sampled_frames"]
+                    current["total_frames"] = report["sampled_frames"]
+                    current["events_detected"] = sum(
+                        battle.get("candidate_events", 0) for battle in report["battles"]
+                    )
                 current["status"] = "ready"
                 current["stage"] = "Replays listos"
                 current["battles_detected"] = total
@@ -729,6 +782,8 @@ class ChampionsJobManager:
             "archivedRunCount": len(job.get("analysis_archives") or []),
             "sourceAvailable": source_available,
             "canRetry": status in {"ready", "error"} and source_available,
+            "canRebuildAutomata": status in {"ready", "error"} and self._has_reusable_trace(job),
+            "analysisMode": job.get("analysis_mode", "video"),
             "isProtected": bool(job.get("is_protected")),
             "compacted": bool(job.get("compacted_at")),
             "sourceBytes": storage["sourceBytes"],
@@ -788,6 +843,23 @@ class ChampionsJobManager:
 
     def _source_path(self, job: Mapping[str, Any]) -> Path:
         return self._job_directory(str(job["id"])) / str(job["source_path"])
+
+    def _trace_path(self, job: Mapping[str, Any]) -> Path:
+        return self._job_directory(str(job["id"])) / "output" / "ocr.trace.jsonl"
+
+    def _has_reusable_trace(self, job: Mapping[str, Any]) -> bool:
+        trace = self._trace_path(job)
+        report = trace.parent / "ledger-report.json"
+        try:
+            if not trace.is_file() or not trace.stat().st_size or not report.is_file():
+                return False
+            value = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return (isinstance(value, dict) and value.get("engine") == LEDGER_VERSION and
+                value.get("job_id") == job["id"]
+                and value.get("trace") == trace.name and value.get("status") in {"ready", "partial", "blocked"}
+                and isinstance(value.get("sampled_frames"), int) and value["sampled_frames"] > 0)
 
     def _archive_output(self, job_id: str) -> Path | None:
         """Conserva la traza y los replays actuales antes de reanalizar."""
