@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases,
-                                 health_ratio, hud_nickname, narration_signature, read_diagnostic,
+                                 health_ratio, hud_nickname, narration_signature, ordered_candidates, read_diagnostic,
                                  read_diagnostic_context, render_markdown, strip_pokemon_title)
 
 
@@ -36,6 +36,29 @@ def frame(n, events=(), texts=()):
             "resolved_identities": {},
             "ocr": ocr,
             "detections": {"events": list(events)}}
+
+
+def opponent_opening_swap_trace():
+    trace = [frame(n) for n in range(1, 8)]
+    trace[0]["ocr"].append({"text": "Jack sent out Dired One and Arcanine!",
+                             "confidence": .999, "left": .15, "top": .73})
+    trace[2] = frame(3, [event("switch", "p2a", "__champions_actor_p2_0001__", "5/5"),
+                         event("switch", "p2b", "Arcanine-Hisui", "100/100"),
+                         event("turn", turn=1)])
+    trace[4] = frame(5, [event("switch", "p2a", "Arcanine-Hisui", "100/100"),
+                         event("switch", "p2b", "Sneasler", "100/100")])
+    trace[5] = frame(6, [event("move", "p2b", "Sneasler", move="Throat Chop")],
+                     texts=["The opposing Dired One used Throat Chop!"])
+    for row in trace:
+        row["resolved_aliases"]["p2"]["dired one"] = "Sneasler"
+    for row in trace[2:5]:
+        row["ocr"].extend([
+            {"text": "Arcanine", "confidence": .999, "left": .62, "top": .05},
+            {"text": "Dired One", "confidence": .999, "left": .83, "top": .05},
+            {"text": "100%", "confidence": .999, "left": .70, "top": .12},
+            {"text": "100%", "confidence": .999, "left": .92, "top": .12},
+        ])
+    return trace
 
 
 def delayed_terrain_heal_trace():
@@ -311,6 +334,47 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_opening_pair_requires_announcement_two_named_huds_and_no_action(self):
+        trace = opponent_opening_swap_trace()
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        entries = [e for e in ledger["events"] if e["kind"] == "switch"]
+        self.assertEqual([(e["slot"], e["species"], e["health"]) for e in entries
+                          if e["status"] == "consistent"],
+                         [("p2a", "Arcanine-Hisui", "100/100"),
+                          ("p2b", "Sneasler", "100/100")])
+        self.assertEqual([e["status"] for e in entries if e["frame"] == 3],
+                         ["suppressed", "suppressed"])
+        self.assertTrue(all(e["logical_frame"] == 1 for e in entries
+                            if e["status"] == "consistent"))
+
+        for missing in ("announcement", "hud", "action"):
+            uncertain = copy.deepcopy(trace)
+            if missing == "announcement":
+                uncertain[0]["ocr"] = []
+            elif missing == "hud":
+                uncertain[3]["ocr"] = [line for line in uncertain[3]["ocr"]
+                                        if not (line.get("left") == .92 and line["text"] == "100%")]
+            else:
+                uncertain[3]["detections"]["events"] = [event("move", "p2a", "Arcanine-Hisui",
+                                                                move="Protect")]
+            candidates = ordered_candidates(uncertain)
+            self.assertFalse(any(c.get("opening_pair") for c in candidates), missing)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_7C47"), "Requiere diagnóstico 7c47")
+    def test_dired_one_opening_and_lethal_damage_from_diagnostic(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_7C47"])
+        frames, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertFalse(ledger["issues"])
+        opening = [(e["slot"], e["species"]) for e in ledger["events"]
+                   if e["kind"] == "switch" and e["status"] == "consistent" and e["turn"] == 0]
+        self.assertIn(("p2a", "Arcanine-Hisui"), opening)
+        self.assertIn(("p2b", "Sneasler"), opening)
+        self.assertEqual([(e["slot"], e["before"], e["after"]) for e in ledger["events"]
+                          if e["kind"] == "damage" and e["status"] == "consistent" and
+                          e["frame"] == 278], [("p2b", "100/100", "0/100")])
+
     def test_delayed_terrain_heal_requires_animation_narration_and_stable_hud(self):
         trace = delayed_terrain_heal_trace()
         ledger = BattleAutomaton(0, trace).run()
