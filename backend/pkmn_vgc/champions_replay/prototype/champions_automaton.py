@@ -1066,6 +1066,73 @@ def ordered_candidates(frames: list[dict[str, Any]],
                 if not any(a["frame"] == row["frame"] and a["side"] == side for a in announcements):
                     announcements.append({"frame": row["frame"], "side": side,
                                           "species": announced, "text": text})
+    # The detector can label both opponent HUDs before it resolves a nickname.
+    # Keep the early pair as evidence, but use a later, repeated pair only when
+    # both HUD names, both full HP readings and the opening announcement agree.
+    opponent_entries: dict[int, dict[str, dict[str, Any]]] = collections.defaultdict(dict)
+    for item in candidates:
+        event = item["event"]
+        if event["kind"] == "switch" and event.get("slot") in {"p2a", "p2b"}:
+            opponent_entries[item["observed_frame"]][event["slot"]] = item
+    for early_frame, pair in sorted(opponent_entries.items()):
+        if set(pair) != {"p2a", "p2b"} or any(item.get("superseded_switch") for item in pair.values()):
+            continue
+        early_species = [item.get("canonical_species") or item["event"].get("species") or ""
+                         for item in pair.values()]
+        if not any(PLACEHOLDER.fullmatch(species) for species in early_species):
+            continue
+        if not any(item["event"]["kind"] == "turn" and item["event"].get("turn") == 1
+                   and item["observed_frame"] == early_frame for item in candidates):
+            continue
+        for later_frame in range(early_frame + 1, early_frame + 9):
+            later = opponent_entries.get(later_frame, {})
+            if set(later) != {"p2a", "p2b"} or any(
+                item["event"]["kind"] in ACTIVITY | {"faint", "mega"} and
+                early_frame < item["observed_frame"] < later_frame and
+                item not in pair.values() for item in candidates):
+                continue
+            proof: list[dict[str, Any]] = []
+            names: dict[str, str] = {}
+            for slot in ("p2a", "p2b"):
+                species = later[slot].get("canonical_species") or later[slot]["event"].get("species") or ""
+                if PLACEHOLDER.fullmatch(species) or not species:
+                    break
+                readings = []
+                for number in (later_frame - 1, later_frame):
+                    row = frame_lookup.get(number, {})
+                    name = hud_nickname(row, slot)
+                    expected = identity_species(species).casefold()
+                    named = identity_species(aliases["p2"].get(name or "", name or "")).casefold()
+                    health = complete_hud_health(row, slot)
+                    if (not name or named not in {expected, expected.split("-", 1)[0]} or
+                        not any(hp == "100/100" and line["confidence"] >= .95 for hp, line in health)):
+                        break
+                    readings.append({"frame": number, "text": name,
+                                     "confidence": next(line["confidence"] for hp, line in health
+                                                        if hp == "100/100" and line["confidence"] >= .95)})
+                if len(readings) != 2 or readings[0]["text"] != readings[1]["text"]:
+                    break
+                names[slot] = readings[0]["text"]
+                proof.extend(readings)
+            if len(names) != 2 or names["p2a"] == names["p2b"]:
+                continue
+            opening = [(number, line) for number in range(max(1, early_frame - 80), early_frame)
+                       for line in frame_lookup.get(number, {}).get("ocr", ())
+                       if line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55 and
+                       "sent out" in line.get("text", "").casefold() and
+                       all(name in line["text"].casefold() for name in names.values())]
+            if not opening:
+                continue
+            for slot, item in pair.items():
+                item["superseded_switch"] = {
+                    "slot": slot, "nickname": names[slot], "hud_frames": [later_frame - 1, later_frame],
+                    "reason": "Lectura inicial del par rival reemplazada por ambos HUD estables.",
+                    "evidence": proof + [{"frame": opening[0][0], "text": opening[0][1]["text"],
+                                          "confidence": opening[0][1]["confidence"]}],
+                }
+                later[slot]["opening_pair"] = {"frame": opening[0][0],
+                                                "evidence": item["superseded_switch"]["evidence"]}
+            break
     # A narration-only switch can be emitted before the HUD establishes its
     # slot. If the later HUD puts that same nickname in the *other* slot and
     # shows a different nickname in the detector's slot, the later switch is
@@ -1113,7 +1180,7 @@ def ordered_candidates(frames: list[dict[str, Any]],
     delayed_hud_checkpoints: list[dict[str, Any]] = []
     for item in candidates:
         event = item["event"]
-        item["logical_frame"] = item["observed_frame"]
+        item["logical_frame"] = item.get("opening_pair", {}).get("frame", item["observed_frame"])
         if event["kind"] not in {"switch", "drag"}:
             continue
         if item.get("superseded_switch"):
@@ -2416,6 +2483,8 @@ class BattleAutomaton:
         if candidate.get("anchor"):
             a = candidate["anchor"]
             evidence.insert(0, {"frame": a["frame"], "text": a["text"], "confidence": None})
+        elif candidate.get("opening_pair"):
+            evidence = candidate["opening_pair"]["evidence"] + evidence
         if candidate.get("field_evidence"):
             a = candidate["field_evidence"]
             evidence.insert(0, {"frame": a["frame"], "text": a["text"], "confidence": None})
@@ -2986,7 +3055,8 @@ class BattleAutomaton:
             if candidate.get("superseded_switch"):
                 proof = candidate["superseded_switch"]
                 item = self._append(candidate, status="suppressed",
-                                    note=f"Anuncio temprano: el HUD posterior confirma {proof['nickname']} "
+                                    note=proof.get("reason") or
+                                         f"Anuncio temprano: el HUD posterior confirma {proof['nickname']} "
                                          f"en {proof['slot']}, no en {slot}.")
                 item["slot_resolution"] = proof
                 return
