@@ -673,7 +673,11 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
                 effect = "move: Trick Room"
             lines.append(f"|-{kind}|{effect}{source_tags(event)}")
         elif kind == "sidestart":
-            slot, _ = actor_at(event)
+            # A side condition can be reported in a vacant partner slot after
+            # fainting. Its side is established by the preceding move, not
+            # by an occupant of that particular slot.
+            slot = (actor_at(event)[0] if event.get("actor_id") is not None
+                    else _slot(event.get("slot")))
             effect = _atom(event.get("value"), f"condición lateral {seq}")
             # The parser may attach a side condition to either active slot.
             # Corroborate the same side with the immediately preceding move.
