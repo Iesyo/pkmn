@@ -106,6 +106,38 @@ def voluntary_entry_trace():
     return trace
 
 
+def buffered_named_entry_trace():
+    trace = [frame(n) for n in range(1, 141)]
+    trace[0] = frame(1, [event("switch", "p1b", "Blaziken", "156/156"),
+                         event("switch", "p2a", "Pelipper", "100/100"), event("turn", turn=1)])
+    trace[18]["ocr"] = [{"text": "Tonatiuh", "confidence": .999, "left": .29, "top": .86},
+                         {"text": "156/156", "confidence": .999, "left": .34, "top": .92}]
+    trace[19] = frame(20, [event("message", value="Tonatiuh, come back!")], ["Tonatiuh, come back!"])
+    trace[20] = frame(21, texts=["Tonatiuh, come back!"])
+    for n in (26, 27):
+        trace[n - 1]["ocr"] = [{"text": "Go! Dee Dee!", "confidence": .999, "top": .73}]
+    for n in (33, 34):
+        trace[n - 1]["ocr"] = [{"text": "Dee Dee's", "confidence": .999, "left": .08, "top": .4},
+                               {"text": "Psychic Surge", "confidence": .999, "left": .08, "top": .45}]
+    trace[34]["ocr"] = [{"text": "The battlefield got weird!", "confidence": .999, "top": .73}]
+    trace[69] = frame(70, [event("move", "p2a", "Pelipper", move="Weather Ball")], ["The opposing Pelipper used Weather Ball!"])
+    terrain = event("fieldstart", value="move: Psychic Terrain")
+    terrain["tags"] = ["[from] ability: Psychic Surge", "[of] p1b: Indeedee-F"]
+    trace[126] = frame(127, [event("switch", "p1b", "Indeedee-F", "141/177"),
+                            event("ability", "p1b", "Indeedee-F", value="Psychic Surge"), terrain])
+    trace[127] = frame(128, [event("damage", "p1b", "Indeedee-F", "99/177")])
+    for n, health, confidence in ((127, "141/177", .999), (128, "99/177", .929), (129, "99/177", .999), (130, "99/177", .999)):
+        trace[n - 1]["ocr"] = [{"text": "Dee Dee", "confidence": .999, "left": .29, "top": .86},
+                               {"text": health, "confidence": confidence, "left": .34, "top": .92}]
+    trace[131] = frame(132, [event("damage", "p1b", "Indeedee-F", "0/177")])
+    trace[132] = frame(133, [event("faint", "p1b", "Indeedee-F")], ["Dee Dee fainted!"])
+    trace[133] = frame(134, texts=["Dee Dee fainted!"])
+    trace[139] = frame(140, [event("message", value="The battle has ended due to a forfeit.")])
+    for row in trace:
+        row["resolved_aliases"]["p1"]["tonatiuh"] = "Blaziken"
+    return trace
+
+
 def mega_duplicate_trace(correct_frame=3):
     text = "The opposing Delphox's Delphoxite is reacting to Rival's Omni Ring!"
     wrong = {**event("mega", "p1a", "Delphox", value="Delphoxite"), "forme": "Delphox-Mega"}
@@ -360,6 +392,57 @@ class TemporalAutomatonTests(unittest.TestCase):
                                                                 move="Protect")]
             candidates = ordered_candidates(uncertain)
             self.assertFalse(any(c.get("opening_pair") for c in candidates), missing)
+
+    def test_buffered_entry_uses_named_ability_hud_and_orders_before_attacks(self):
+        trace = buffered_named_entry_trace()
+        original = copy.deepcopy(trace)
+        context = {"teams": {"p1": ["Indeedee-F", "Gardevoir", "Blaziken"]}}
+        ledger = BattleAutomaton(0, trace, context).run()
+        self.assertEqual(trace, original)
+        self.assertEqual(ledger["issues"], [])
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Indeedee-F")
+        self.assertEqual((entry["logical_frame"], entry["health"], entry["hp_state"]), (26, "177/177", "inferred"))
+        ability = next(e for e in ledger["events"] if e["kind"] == "ability")
+        terrain = next(e for e in ledger["events"] if e["kind"] == "fieldstart")
+        self.assertEqual((ability["logical_frame"], terrain["logical_frame"]), (33, 35))
+        hp = [e for e in ledger["events"] if e["kind"] == "damage" and e["species"] == "Indeedee-F"]
+        self.assertEqual([(e["before"], e["after"]) for e in hp], [("177/177", "99/177"), ("99/177", "0/177")])
+        self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "faint")["status"], "consistent")
+        for missing in ("ability", "announcement", "hud", "outgoing", "endpoint", "continuity", "ambiguous_ability", "illusion"):
+            rows, ctx = copy.deepcopy(trace), copy.deepcopy(context)
+            if missing == "ability":
+                rows[32]["ocr"] = []
+            elif missing == "announcement":
+                rows[25]["ocr"] = []
+            elif missing == "hud":
+                rows[127]["ocr"] = []
+            elif missing == "outgoing":
+                rows[18]["ocr"] = []
+            elif missing == "endpoint":
+                rows[128]["ocr"] = rows[129]["ocr"] = []
+            elif missing == "continuity":
+                rows[50]["timestamp_ms"] += 2_000
+            elif missing == "ambiguous_ability":
+                ctx["teams"]["p1"].append("Tapu Lele")
+            else:
+                ctx["teams"]["p1"].append("Zoroark-Hisui")
+            uncertain = BattleAutomaton(0, rows, ctx).run()
+            self.assertFalse(any(e["kind"] == "switch" and e["species"] == "Indeedee-F" and e["logical_frame"] == 26
+                                 for e in uncertain["events"]), missing)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_FDD2"), "Requiere diagnóstico fdd2")
+    def test_fdd2_three_warnings_and_buffered_entry(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_FDD2"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Indeedee-F")
+        self.assertEqual((entry["logical_frame"], entry["health"], entry["hp_state"]), (246, "177/177", "inferred"))
+        first_damage = next(e for e in ledger["events"] if e["kind"] == "damage" and e["actor_id"] == entry["actor_id"])
+        self.assertEqual((first_damage["before"], first_damage["after"]), ("177/177", "99/177"))
+        self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 442)["status"], "consistent")
+        heal = next(e for e in ledger["events"] if e["kind"] == "heal" and e["slot"] == "p2a" and e["frame"] == 751)
+        self.assertEqual((heal["before"], heal["after"]), ("28/100", "33/100"))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_7C47"), "Requiere diagnóstico 7c47")
     def test_dired_one_opening_and_lethal_damage_from_diagnostic(self):
@@ -2034,6 +2117,35 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(heal["cause"], "Grassy Terrain corroborado por HUD y mensaje")
         self.assertIn("The opposing Sneasler had its HP restored.", heal["narration"])
         self.assertFalse(any(x["code"] == "hp_ocr_conflict" for x in ledger["issues"]))
+
+    def test_terrain_animation_conflicting_zero_requires_monotone_named_heal(self):
+        trace = [frame(1, [event("switch", "p2a", "Rillaboom", "28/100"),
+                           event("fieldstart", value="move: Grassy Terrain"), event("turn", turn=1),
+                           event("move", "p2a", "Rillaboom", move="Protect")]),
+                 frame(2, [event("damage", "p2a", "Rillaboom", "0/100")]),
+                 frame(3, [event("heal", "p2a", "Rillaboom", "32/100")]),
+                 frame(4, [event("heal", "p2a", "Rillaboom", "33/100")]),
+                 frame(5, [event("message", value="The opposing Rillaboom had its HP restored.")])]
+        trace[1]["ocr"] = [
+            {"text": "29", "confidence": .99999, "left": .70, "right": .74, "top": .11, "bottom": .15},
+            {"text": "0%", "confidence": .75, "left": .73, "right": .75, "top": .12, "bottom": .16},
+            {"text": "Rillaboom", "confidence": .999, "left": .62, "top": .05}]
+        ledger = BattleAutomaton(0, trace).run()
+        self.assertEqual(ledger["issues"], [])
+        heal = next(e for e in ledger["events"] if e["kind"] == "heal")
+        self.assertEqual((heal["before"], heal["after"]), ("28/100", "33/100"))
+        for missing in ("terrain", "narration", "nickname", "number"):
+            rows = copy.deepcopy(trace)
+            if missing == "terrain":
+                rows[0]["detections"]["events"] = [e for e in rows[0]["detections"]["events"] if e["kind"] != "fieldstart"]
+            elif missing == "narration":
+                rows[4]["detections"]["events"] = []
+            elif missing == "nickname":
+                rows[1]["ocr"][-1]["text"] = "Pelipper"
+            else:
+                rows[1]["ocr"][0]["text"] = "50"
+            uncertain = BattleAutomaton(0, rows).run()
+            self.assertTrue(any(e["code"] == "hp_ocr_conflict" for e in uncertain["issues"]), missing)
 
     def test_terrain_without_restoration_message_keeps_conflict_for_review(self):
         trace = [frame(1, [event("switch", "p2a", "Sneasler", "41/100"),
