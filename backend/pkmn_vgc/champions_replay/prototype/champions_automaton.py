@@ -131,6 +131,65 @@ def corroborated_digit_aliases(frames: list[dict[str, Any]],
     return proofs
 
 
+def corroborated_entry_aliases(frames: list[dict[str, Any]], context: dict[str, Any],
+                               aliases: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+    """Recover a missing nickname from entry HUD and a unique ability owner.
+
+    Detector species alone is insufficient: a repeated named ability panel,
+    repeated entry announcement and two consecutive complete HUDs must agree.
+    The roster must make that ability unique and exclude identity copying.
+    """
+    lookup = {row["frame"]: row for row in frames}
+    catalog = species_abilities()
+    proofs = []
+    for row in frames:
+        end = row["frame"]
+        for event in row.get("detections", {}).get("events", ()):
+            slot, species = event.get("slot"), event.get("species")
+            if event["kind"] != "switch" or slot not in SLOTS or not species:
+                continue
+            side = slot[:2]
+            roster = context.get("teams", {}).get(side, [])
+            if species not in roster or any(catalog.get(s, set()) & {"Illusion", "Imposter"} for s in roster):
+                continue
+            name = hud_nickname(row, slot)
+            if not name or name in aliases[side]:
+                continue
+            hud = [lookup.get(n, {}) for n in (end, end + 1)]
+            if any(hud_nickname(r, slot) != name or len(complete_hud_health(r, slot)) != 1 or
+                   any(hud_nickname(r, peer) == name for peer in SLOTS if peer.startswith(side) and peer != slot)
+                   for r in hud):
+                continue
+            abilities = [e["value"] for e in row.get("detections", {}).get("events", ())
+                         if e["kind"] == "ability" and e.get("slot") == slot and e.get("species") == species and
+                         [s for s in roster if e.get("value") in catalog.get(s, set())] == [species]]
+            if len(abilities) != 1:
+                continue
+            panels, announcements = [], []
+            for n in range(max(frames[0]["frame"], end - 120), end):
+                r = lookup.get(n, {})
+                panel = [l for l in r.get("ocr", ()) if l.get("confidence", 0) >= .95 and
+                         (.02 <= l.get("left", -1) <= .30 if side == "p1" else .75 <= l.get("left", -1) <= .99) and
+                         .30 <= l.get("top", -1) <= .55]
+                if any(re.sub(r"[’']s$", "", l["text"].casefold()) == name for l in panel) and any(l["text"] == abilities[0] for l in panel):
+                    panels.append({"frame": n, "text": abilities[0], "nickname": name})
+                for l in r.get("ocr", ()):
+                    m = ANNOUNCED_ENTRY.search(l.get("text", ""))
+                    if m and l.get("top", 0) >= .55 and l.get("confidence", 0) >= .95 and strip_pokemon_title(m[1] or m[2]).casefold() == name:
+                        announcements.append({"frame": n, "text": l["text"], "confidence": l["confidence"]})
+            pair = next(((a, b) for a, b in zip(panels, panels[1:]) if b["frame"] == a["frame"] + 1), None)
+            if not pair or len({a["frame"] for a in announcements if 0 < pair[0]["frame"] - a["frame"] <= 20}) < 2:
+                continue
+            start = min(a["frame"] for a in announcements if 0 < pair[0]["frame"] - a["frame"] <= 20)
+            if any(e["kind"] in {"switch", "drag", "faint"} and e.get("slot") == slot
+                   for n in range(start, end) for e in lookup.get(n, {}).get("detections", {}).get("events", ())):
+                continue
+            proofs.append({"side": side, "nickname": name, "species": species, "slot": slot,
+                           "evidence": announcements + list(pair) +
+                           [{"frame": r["frame"], "text": name, "health": complete_hud_health(r, slot)[0][0]} for r in hud]})
+    return proofs
+
+
 def status_panel_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
     """The status inspection overlay is not the battle HUD or narration.
 
@@ -310,7 +369,8 @@ def complete_hud_health(row: dict[str, Any], slot: str) -> list[tuple[str, dict[
 
 
 def reconstruct_entry_health(slot: str, name: str, initial: str, start: int, end: int,
-                             frames: dict[int, dict[str, Any]]) -> list[dict[str, Any]] | None:
+                             frames: dict[int, dict[str, Any]],
+                             observed_min_confidence: float = .95) -> list[dict[str, Any]] | None:
     """Recover omitted HUD changes only within an already verified appearance.
 
     Every change needs a complete value and the unique nickname in that HUD.
@@ -349,7 +409,7 @@ def reconstruct_entry_health(slot: str, name: str, initial: str, start: int, end
         health, line = readings[0]
         if health == previous:
             continue
-        if (not named(row) or line["confidence"] < .95 or health.split("/")[1] != initial.split("/")[1]
+        if (not named(row) or line["confidence"] < observed_min_confidence or health.split("/")[1] != initial.split("/")[1]
             or health_ratio(previous) == 0):
             return None
         observations.append({"frame": number, "observed_ms": row["timestamp_ms"], "health": health,
@@ -578,14 +638,12 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
     """Date a buffered entry from its own withdrawal, announcement and ability.
 
     A detector may emit the switch only when the next turn's HUD returns. Its
-    original timestamp is a clue, never sufficient evidence on its own. The
-    late HUD establishes identity, but cannot confirm HP at the earlier entry.
+    archived OCR establishes the entry time even when the detector timestamp
+    was reset at the later HUD. The late HUD cannot confirm initial HP.
     """
     event, end = item["event"], item["observed_frame"]
     slot = event.get("slot")
-    event_ms = event.get("timestamp_ms")
-    if (slot not in SLOTS or not isinstance(event_ms, (int, float)) or
-            item["observed_ms"] - event_ms <= 3_000):
+    if slot not in SLOTS:
         return None
     species = identity_species(item.get("canonical_species") or event.get("species") or "")
     possible = [a for a in announcements if a["side"] == slot[:2] and
@@ -612,8 +670,7 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
                 text = line.get("text", "").strip()
                 match = (re.fullmatch(r".+? withdrew (.+?)!", text, re.I) if slot.startswith("p2")
                          else re.fullmatch(r"(.+?), come back!", text, re.I))
-                if (match and line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
-                        abs(frames[number]["timestamp_ms"] - event_ms) <= 3_000):
+                if (match and line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95):
                     withdrawals.append({"frame": number, "name": match[1].casefold(), **line})
         if len({w["frame"] for w in withdrawals}) < 2 or len({w["name"] for w in withdrawals}) != 1:
             continue
@@ -629,7 +686,12 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
         old_hud = [n for n in range(withdrawals[0]["frame"] - 6, withdrawals[0]["frame"])
                    if hud_nickname(frames.get(n, {}), slot) == old_name]
         if len(old_hud) < 2:
-            continue
+            # One current complete HUD can corroborate an already confirmed
+            # outgoing entry when its exact health and known nickname agree.
+            prior = previous[-1]["event"]
+            if len(old_hud) != 1 or not prior.get("health") or \
+                    [h for h, _ in complete_hud_health(frames[old_hud[0]], slot)] != [prior["health"]]:
+                continue
         new_hud = [n for n in range(end, end + 4)
                    if hud_nickname(frames.get(n, {}), slot) == name and
                    len(complete_hud_health(frames[n], slot)) == 1]
@@ -670,7 +732,13 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
         if any(n not in frames or frames[n]["timestamp_ms"] - frames[n - 1]["timestamp_ms"] > 1_000
                for n in range(start + 1, end + 1)):
             continue
-        return {"anchor": anchor, "nickname": name, "slot": slot,
+        initial = complete_hud_health(frames[new_hud[0]], slot)[0][0]
+        changed = complete_hud_health(frames[new_hud[1]], slot)[0][0] != initial
+        hp_observations = (reconstruct_entry_health(slot, name, initial.split("/")[1] + "/" + initial.split("/")[1],
+                                                   new_hud[0], new_hud[-1], frames, observed_min_confidence=.9) if changed else [])
+        if changed and hp_observations is None:
+            continue
+        return {"anchor": anchor, "nickname": name, "slot": slot, "hp_observations": hp_observations,
                 "withdrawals": withdrawals, "outgoing_hud_frames": old_hud,
                 "announcements": announced, "ability_panel": panels,
                 "incoming_hud_frames": new_hud[:2],
@@ -1244,7 +1312,15 @@ def ordered_candidates(frames: list[dict[str, Any]],
                 "hp_reconstruction": {**observation, "entry_frame": proof["anchor"]["frame"],
                                       "detected_entry_frame": proof["observed_frame"]}})
     candidates.extend(recovered_hp)
-    candidates.extend(delayed_hud_checkpoints)
+    candidates.extend(c for c in delayed_hud_checkpoints if not
+                      delayed_voluntary[(c["observed_frame"], c["event"]["slot"])].get("hp_observations"))
+    for (detected, slot), proof in delayed_voluntary.items():
+        for obs in proof.get("hp_observations", ()):
+            n = obs["frame"]
+            candidates.append({"event": {"kind": obs["kind"], "slot": slot, "species": proof["anchor"]["species"],
+                                         "health": obs["health"], "source_frame": n, "confidence": obs["confidence"]},
+                               "observed_frame": n, "observed_ms": obs["observed_ms"], "logical_frame": n,
+                               "ordinal": -1, "hp_reconstruction": obs})
     for item in candidates:
         event = item["event"]
         if event["kind"] == "ability" and event.get("slot"):
@@ -1269,8 +1345,15 @@ def ordered_candidates(frames: list[dict[str, Any]],
             phrases = (["grass grew", "grassy terrain"] if "Grassy" in value
                        else ["psychic terrain", "weirdness filled", "battlefield got weird"]
                        if "Psychic" in value else [value.casefold()])
+            terrain_ability = {"move: Psychic Terrain": "Psychic Surge", "move: Grassy Terrain": "Grassy Surge",
+                               "move: Misty Terrain": "Misty Surge", "move: Electric Terrain": "Electric Surge"}.get(value)
+            linked_entry = next((proof for (detected, slot), proof in delayed_voluntary.items()
+                                 if detected == item["observed_frame"] and
+                                 any(tag.startswith("[of] " + slot + ":") for tag in event.get("tags", ())) and
+                                 proof["ability_panel"][0]["text"] == terrain_ability), None)
             hits = [(row["frame"], line["text"]) for row in frames
-                    if 0 <= item["observed_frame"] - row["frame"] <= 80
+                    if (0 <= item["observed_frame"] - row["frame"] <= 80 or
+                        linked_entry and 0 <= row["frame"] - linked_entry["ability_panel"][0]["frame"] <= 6)
                     for line in row.get("ocr", ())
                     if any(phrase in line.get("text", "").casefold() for phrase in phrases)]
             if hits:
@@ -1452,7 +1535,8 @@ class BattleAutomaton:
             for side in self.nickname_species:
                 for nickname, species in (row.get("resolved_aliases", {}).get(side) or {}).items():
                     self.nickname_species[side].setdefault(nickname.casefold(), species)
-        self.alias_reconstructions = corroborated_digit_aliases(frames, self.nickname_species)
+        self.alias_reconstructions = (corroborated_digit_aliases(frames, self.nickname_species) +
+                                      corroborated_entry_aliases(frames, self.context, self.nickname_species))
         for proof in self.alias_reconstructions:
             self.nickname_species[proof["side"]][proof["nickname"]] = proof["species"]
         self.events: list[dict[str, Any]] = []
@@ -3553,8 +3637,7 @@ class BattleAutomaton:
                 continue
             conflict = next((obs.get("competing_ocr") for obs in item["observations"] if
                              obs.get("competing_ocr")), None)
-            if not conflict or conflict["stronger"]["confidence"] < .99 or \
-                    conflict["stronger"]["text"] != item["before"].split("/", 1)[0]:
+            if not conflict or conflict["stronger"]["confidence"] < .99:
                 continue
             row = self.frame_lookup.get(item["frame"], {})
             nickname = hud_nickname(row, item["slot"])
@@ -3572,7 +3655,11 @@ class BattleAutomaton:
                 for proof in heal.get("causal_evidence", ())):
                 continue
             before, after = health_ratio(heal["before"]), health_ratio(heal["after"])
-            if before is None or after is None or not .045 <= after - before <= .075 or any(
+            stronger_value = conflict["stronger"]["text"]
+            if not stronger_value.isdigit():
+                continue
+            stronger_ratio = int(stronger_value) / 100
+            if before is None or after is None or not before <= stronger_ratio < after or not .045 <= after - before <= .075 or any(
                 event["status"] != "suppressed" and event["kind"] in ACTIVITY | {"turn", "faint", "battle_end"} and
                 item["logical_ms"] < event["logical_ms"] <= heal["logical_ms"]
                 for event in self.events):
@@ -3581,7 +3668,7 @@ class BattleAutomaton:
                       "confidence": conflict["stronger"]["confidence"]}] + heal["hp_support"]["evidence"] + [
                 {"frame": line["frame"], "text": line["text"], "confidence": line["confidence"]}
                 for line in heal["causal_evidence"] if line["effect"] == "restoration"]
-            reason = ("Fragmento OCR superpuesto al PS previo confirmado; cura completa de "
+            reason = ("Fragmento OCR contradicho dentro de la animación; cura completa de "
                       "Grassy Terrain y mensaje del mismo actor corroborados.")
             item.update(kind="hp_rejected_reading", status="suppressed", note=reason,
                         hp_state="rejected", hp_support={"state": "confirmed", "reason": reason,
@@ -4711,12 +4798,12 @@ class BattleAutomaton:
         A mere resemblance to an event does not resolve the warning: both the
         subject and the later accepted action must agree with repeated OCR.
         """
-        def opponent_species(name: str) -> str:
+        def named_species(name: str, side: str) -> str:
             nickname = strip_pokemon_title(name).casefold()
-            return identity_species(self.nickname_species["p2"].get(nickname, nickname)).casefold()
+            return identity_species(self.nickname_species[side].get(nickname, nickname)).casefold()
 
-        def same_species(mentioned: str, actual: str) -> bool:
-            base = opponent_species(mentioned)
+        def same_species(mentioned: str, actual: str, side: str = "p2") -> bool:
+            base = named_species(mentioned, side)
             current = identity_species(actual).casefold()
             return base == current or current.startswith(base + "-")
 
@@ -4728,9 +4815,12 @@ class BattleAutomaton:
             message = self.events[issue["event_seq"] - 1]
             value = message.get("value") or ""
             withdrawal = re.fullmatch(r"(.+?) withdrew (.+)!", value, re.I)
+            own_withdrawal = re.fullmatch(r"(.+?), come back!", value, re.I)
+            if own_withdrawal:
+                withdrawal = ("", "Player", own_withdrawal[1])
             stone = re.fullmatch(r"The opposing (.+?)'s .+?reacting to Trainer's Omni Ring!", value)
             matches = []
-            for slot in ("p2a", "p2b"):
+            for slot in (("p1a", "p1b") if own_withdrawal else ("p2a", "p2b")):
                 previous = next((e for e in reversed(self.events[:message["seq"] - 1])
                                  if e.get("slot") == slot and e["kind"] in {"switch", "drag"} and
                                  e["status"] == "consistent"), None)
@@ -4738,7 +4828,7 @@ class BattleAutomaton:
                                        for e in self.events[previous["seq"]:message["seq"] - 1]):
                     continue
                 actor = self.actors[previous["actor_id"]]
-                if withdrawal and same_species(withdrawal[2], actor["species"]):
+                if withdrawal and same_species(withdrawal[2], actor["species"], slot[:2]):
                     upcoming = [e for e in self.events[message["seq"]:] if
                                 e["kind"] in {"switch", "drag"} and e["status"] == "consistent" and
                                 e.get("slot") == slot and e["actor_id"] != previous["actor_id"] and
@@ -4754,17 +4844,23 @@ class BattleAutomaton:
                             text = line.get("text", "").strip()
                             if line.get("top", 0) < .55 or line.get("confidence", 0) < .95:
                                 continue
-                            old = re.fullmatch(r"(.+?) withdrew (.+)!", text, re.I)
-                            new = re.fullmatch(r"(.+?) sent out (.+)!", text, re.I)
+                            if own_withdrawal:
+                                old_match = re.fullmatch(r"(.+?), come back!", text, re.I)
+                                new_match = re.fullmatch(r"Go! (.+)!", text, re.I)
+                                old = ("", "Player", old_match[1]) if old_match else None
+                                new = ("", "Player", new_match[1]) if new_match else None
+                            else:
+                                old = re.fullmatch(r"(.+?) withdrew (.+)!", text, re.I)
+                                new = re.fullmatch(r"(.+?) sent out (.+)!", text, re.I)
                             proof = {"frame": row["frame"], "text": text, "confidence": line["confidence"]}
                             if (old and row["frame"] <= message["frame"] + 3 and
                                     old[1].casefold() == withdrawal[1].casefold() and
-                                    same_species(old[2], actor["species"])):
+                                    same_species(old[2], actor["species"], slot[:2])):
                                 withdraw_proof.append(proof)
                             if (new and action["logical_frame"] - 3 <= row["frame"] <=
                                     action["logical_frame"] + 3 and
                                     new[1].casefold() == withdrawal[1].casefold() and
-                                    same_species(new[2], self.actors[action["actor_id"]]["species"])):
+                                    same_species(new[2], self.actors[action["actor_id"]]["species"], slot[:2])):
                                 entry_proof.append(proof)
                     if (len({x["frame"] for x in withdraw_proof}) >= 2 and
                             len({x["frame"] for x in entry_proof}) >= 2):
