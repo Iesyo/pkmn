@@ -131,6 +131,43 @@ def corroborated_digit_aliases(frames: list[dict[str, Any]],
     return proofs
 
 
+def entry_hud_pair(frames: dict[int, dict[str, Any]], end: int, slot: str,
+                   name: str) -> list[dict[str, Any]]:
+    """Confirm the returning HUD, allowing its first HP text to be incomplete.
+
+    Require two consecutive complete, uniquely named readings within 1.5 s.
+    A changed owner, action, replacement or discontinuity stops the search.
+    Never repair a malformed number by inserting a missing separator.
+    """
+    previous = None
+    last_ms = frames.get(end, {}).get("timestamp_ms", 0)
+    for number in range(end, end + 4):
+        row = frames.get(number)
+        if not row or not 0 <= row["timestamp_ms"] - last_ms <= 1_000:
+            break
+        last_ms = row["timestamp_ms"]
+        if row["timestamp_ms"] - frames[end]["timestamp_ms"] > 1_500:
+            break
+        if (row.get("detections", {}).get("battle_complete") or
+            number > end and any(e["kind"] in {"move", "cant", "mega", "faint"} or
+                                e["kind"] in {"switch", "drag"} and e.get("slot") == slot
+                                for e in row.get("detections", {}).get("events", ()))):
+            break
+        if (hud_nickname(row, slot) != name or
+            any(hud_nickname(row, peer) == name for peer in SLOTS
+                if peer != slot and peer.startswith(slot[:2])) or
+            number > end and any(l.get("top", 0) >= .55 and l.get("confidence", 0) >= .95 and
+                                 (RAW_ACTION.search(l.get("text", "")) or
+                                  ANNOUNCED_ENTRY.search(l.get("text", "")))
+                                 for l in row.get("ocr", ()))):
+            break
+        complete = len(complete_hud_health(row, slot)) == 1
+        if complete and previous is not None:
+            return [previous, row]
+        previous = row if complete else None
+    return []
+
+
 def corroborated_entry_aliases(frames: list[dict[str, Any]], context: dict[str, Any],
                                aliases: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     """Recover a missing nickname from entry HUD and a unique ability owner.
@@ -155,10 +192,8 @@ def corroborated_entry_aliases(frames: list[dict[str, Any]], context: dict[str, 
             name = hud_nickname(row, slot)
             if not name or name in aliases[side]:
                 continue
-            hud = [lookup.get(n, {}) for n in (end, end + 1)]
-            if any(hud_nickname(r, slot) != name or len(complete_hud_health(r, slot)) != 1 or
-                   any(hud_nickname(r, peer) == name for peer in SLOTS if peer.startswith(side) and peer != slot)
-                   for r in hud):
+            hud = entry_hud_pair(lookup, end, slot, name)
+            if not hud:
                 continue
             abilities = [e["value"] for e in row.get("detections", {}).get("events", ())
                          if e["kind"] == "ability" and e.get("slot") == slot and e.get("species") == species and
@@ -647,7 +682,7 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
         return None
     species = identity_species(item.get("canonical_species") or event.get("species") or "")
     possible = [a for a in announcements if a["side"] == slot[:2] and
-                identity_species(a["species"]) == species and 80 < end - a["frame"] <= 120]
+                identity_species(a["species"]) == species and 0 < end - a["frame"] <= 120]
     for latest in sorted(possible, key=lambda a: a["frame"], reverse=True):
         episode = [a for a in possible if a["text"] == latest["text"] and
                    0 <= latest["frame"] - a["frame"] <= 5]
@@ -692,9 +727,12 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
             if len(old_hud) != 1 or not prior.get("health") or \
                     [h for h, _ in complete_hud_health(frames[old_hud[0]], slot)] != [prior["health"]]:
                 continue
-        new_hud = [n for n in range(end, end + 4)
-                   if hud_nickname(frames.get(n, {}), slot) == name and
-                   len(complete_hud_health(frames[n], slot)) == 1]
+        hud_pair = entry_hud_pair(frames, end, slot, name)
+        new_hud = [r["frame"] for r in hud_pair]
+        # Retain later endpoints when the first complete pair is animating.
+        new_hud += [n for n in range(new_hud[-1] + 1, end + 4)
+                    if hud_nickname(frames.get(n, {}), slot) == name and
+                    len(complete_hud_health(frames[n], slot)) == 1] if new_hud else []
         if (len(new_hud) < 2 or new_hud[1] != new_hud[0] + 1 or
                 (event.get("health") and complete_hud_health(frames[new_hud[0]], slot)[0][0] !=
                  event["health"])):
@@ -1261,22 +1299,23 @@ def ordered_candidates(frames: list[dict[str, Any]],
                    if a["side"] == slot[:2] and identity_species(a["species"]) == identity_species(clean or "")
                    and 0 <= item["observed_frame"] - a["frame"] <= 80
                    and (a["frame"], a["side"], a["species"]) not in used_announcements]
-        if not matches:
-            proof = (corroborate_delayed_opponent_switch(item, announcements, candidates, frame_lookup) or
-                     corroborate_delayed_voluntary_entry(
-                         item, announcements, candidates, frame_lookup, aliases[slot[:2]]))
+        proof = corroborate_delayed_voluntary_entry(
+            item, announcements, candidates, frame_lookup, aliases[slot[:2]])
+        if not matches or proof:
+            proof = proof or corroborate_delayed_opponent_switch(item, announcements, candidates, frame_lookup)
             if proof:
                 item["delayed_voluntary_entry"] = proof
                 delayed_voluntary[(item["observed_frame"], slot)] = proof
                 anchor = proof["anchor"]
-                hud = complete_hud_health(frame_lookup[item["observed_frame"]], slot)[0]
+                checkpoint_frame = proof["incoming_hud_frames"][0]
+                hud = complete_hud_health(frame_lookup[checkpoint_frame], slot)[0]
                 delayed_hud_checkpoints.append({
                     "event": {"kind": "hp_checkpoint", "slot": slot, "species": clean,
-                              "health": hud[0], "source_frame": item["observed_frame"],
-                              "timestamp_ms": item["observed_ms"],
+                              "health": hud[0], "source_frame": checkpoint_frame,
+                              "timestamp_ms": frame_lookup[checkpoint_frame]["timestamp_ms"],
                               "confidence": hud[1]["confidence"]},
-                    "observed_frame": item["observed_frame"], "logical_frame": item["observed_frame"],
-                    "observed_ms": item["observed_ms"], "ordinal": len(frame_lookup[item["observed_frame"]]
+                    "observed_frame": checkpoint_frame, "logical_frame": checkpoint_frame,
+                    "observed_ms": frame_lookup[checkpoint_frame]["timestamp_ms"], "ordinal": len(frame_lookup[checkpoint_frame]
                                                                   .get("detections", {}).get("events", ())),
                     "checkpoint_reconstruction": {"entry_frame": anchor["frame"],
                                                   "detected_frame": item["observed_frame"],
@@ -1313,7 +1352,7 @@ def ordered_candidates(frames: list[dict[str, Any]],
                                       "detected_entry_frame": proof["observed_frame"]}})
     candidates.extend(recovered_hp)
     candidates.extend(c for c in delayed_hud_checkpoints if not
-                      delayed_voluntary[(c["observed_frame"], c["event"]["slot"])].get("hp_observations"))
+        delayed_voluntary[(c["checkpoint_reconstruction"]["detected_frame"], c["event"]["slot"])].get("hp_observations"))
     for (detected, slot), proof in delayed_voluntary.items():
         for obs in proof.get("hp_observations", ()):
             n = obs["frame"]
@@ -1352,8 +1391,8 @@ def ordered_candidates(frames: list[dict[str, Any]],
                                  any(tag.startswith("[of] " + slot + ":") for tag in event.get("tags", ())) and
                                  proof["ability_panel"][0]["text"] == terrain_ability), None)
             hits = [(row["frame"], line["text"]) for row in frames
-                    if (0 <= item["observed_frame"] - row["frame"] <= 80 or
-                        linked_entry and 0 <= row["frame"] - linked_entry["ability_panel"][0]["frame"] <= 6)
+                    if (0 <= row["frame"] - linked_entry["ability_panel"][0]["frame"] <= 6
+                        if linked_entry else 0 <= item["observed_frame"] - row["frame"] <= 80)
                     for line in row.get("ocr", ())
                     if any(phrase in line.get("text", "").casefold() for phrase in phrases)]
             if hits:
@@ -3031,6 +3070,18 @@ class BattleAutomaton:
             actor_id = self.active.get(slot)
             health = event.get("health")
             support = self._hp_support(slot, health, candidate["observed_frame"])
+            if (actor_id and self.actors[actor_id]["health"] is None and
+                self.actors[actor_id]["health_state"] == "inferred" and health_ratio(health) == 1 and
+                identity_species(self.actors[actor_id]["species"]) == identity_species(event.get("species") or "") and
+                support["state"] == "confirmed"):
+                # The entry's maximum was unknown until this complete HUD.
+                # A full checkpoint supplies that maximum without inventing
+                # damage/healing or claiming the original HP was observed.
+                actor = self.actors[actor_id]
+                entry = self.events[actor["first_entry_seq"] - 1]
+                actor["health"] = entry["health"] = health
+                entry["note"] = (entry.get("note") or "") + (
+                    f" Máximo {health.split('/')[1]} deducido del primer HUD completo.")
             if (actor_id and identity_species(self.actors[actor_id]["species"]) ==
                     identity_species(event.get("species") or "") and
                     self.actors[actor_id]["health"] == health and support["state"] == "confirmed"):
