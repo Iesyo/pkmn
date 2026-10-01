@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases,
-                                 health_ratio, hud_nickname, narration_signature, ordered_candidates, read_diagnostic,
+                                 entry_hud_pair, health_ratio, hud_nickname, narration_signature, ordered_candidates, read_diagnostic,
                                  read_diagnostic_context, render_markdown, strip_pokemon_title)
 
 
@@ -366,6 +366,78 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_incomplete_first_entry_hud_needs_consecutive_named_complete_readings(self):
+        trace = buffered_named_entry_trace()
+        trace[126]["ocr"][1]["text"] = "141177"
+        lookup = {r["frame"]: r for r in trace}
+        self.assertEqual([r["frame"] for r in entry_hud_pair(lookup, 127, "p1b", "dee dee")], [128, 129])
+        for missing in ("owner", "peer", "action", "raw_action", "replacement", "time", "second", "outside"):
+            rows = copy.deepcopy(trace)
+            if missing == "owner": rows[127]["ocr"][0]["text"] = "Another"
+            elif missing == "peer": rows[127]["ocr"].append({"text": "Dee Dee", "left": .08, "top": .86, "confidence": .999})
+            elif missing == "action": rows[127]["detections"]["events"].append(event("move", "p2a", "Pelipper", move="Protect"))
+            elif missing == "raw_action": rows[127]["ocr"].append({"text": "Dee Dee used Protect!", "top": .73, "confidence": .999})
+            elif missing == "replacement": rows[127]["detections"]["events"].append(event("switch", "p1b", "Gardevoir"))
+            elif missing == "time": rows[127]["timestamp_ms"] += 2_000
+            elif missing == "second": rows[128]["ocr"] = rows[129]["ocr"] = []
+            else:
+                for row in rows[127:130]: row["ocr"][1]["text"] = "99177"
+            self.assertEqual(entry_hud_pair({r["frame"]: r for r in rows}, 127, "p1b", "dee dee"), [], missing)
+
+    def test_voluntary_entry_evidence_handles_shorter_delay_both_slots_and_other_names(self):
+        for slot, name, species, ability, shorter in (
+            ("p1a", "Moon", "Indeedee-F", "Psychic Surge", True),
+            ("p1b", "Sky", "Pelipper", "Drizzle", True),
+            ("p1a", "Star", "Indeedee-F", "Psychic Surge", False),
+        ):
+            with self.subTest(slot=slot, name=name, species=species, shorter=shorter):
+                rows = buffered_named_entry_trace()
+                for row in rows:
+                    for e in row["detections"]["events"]:
+                        if e.get("slot") == "p1b": e["slot"] = slot
+                        if e.get("species") == "Indeedee-F": e["species"] = species
+                        if e.get("value") == "Psychic Surge": e["value"] = ability
+                        if e.get("health") in {"141/177", "99/177"}: e["health"] = "177/177"
+                        e["tags"] = [tag.replace("p1b:", slot + ":").replace("Indeedee-F", species) for tag in e.get("tags", ())]
+                    for line in row["ocr"]:
+                        line["text"] = line["text"].replace("Dee Dee", name).replace("Psychic Surge", ability)
+                        if line["text"] in {"141/177", "99/177"}: line["text"] = "177/177"
+                        if slot == "p1a" and line.get("left") in {.29, .34}:
+                            line["left"] = .08 if line["left"] == .29 else .14
+                rows[126]["ocr"][1]["text"] = "177177"
+                rows[127]["detections"]["events"] = []
+                rows[39] = frame(40, [event("move", "p2a", "Pelipper", move="Protect")],
+                                 ["The opposing Pelipper used Protect!"])
+                if shorter:
+                    rows = [r for r in rows if not 50 <= r["frame"] < 90]
+                    for row in rows:
+                        if row["frame"] >= 90: row["frame"] -= 40
+                        row["timestamp_ms"] = row["frame"] * 500
+                        for e in row["detections"]["events"]:
+                            e.update(timestamp_ms=row["timestamp_ms"], source_frame=row["frame"] - 1)
+                original = copy.deepcopy(rows)
+                ledger = BattleAutomaton(0, rows, {"teams": {"p1": [species, "Gardevoir", "Blaziken"]}}).run()
+                self.assertEqual(rows, original)
+                self.assertEqual(ledger["issues"], [])
+                entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == species and e["slot"] == slot)
+                self.assertEqual((entry["logical_frame"], entry["health"], entry["hp_state"]), (26, "177/177", "inferred"))
+                self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "ability")["logical_frame"], 33)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_DCB33"), "Requiere diagnóstico dcb33")
+    def test_dcb33_incomplete_entry_hud_keeps_entry_ability_terrain_before_actions(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_DCB33"])
+        rows, _ = read_diagnostic(path)
+        original = copy.deepcopy(rows)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertEqual(rows, original)
+        self.assertEqual(ledger["issues"], [])
+        entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["species"] == "Indeedee-F")
+        self.assertEqual((entry["logical_frame"], entry["health"], entry["hp_state"]), (283, "177/177", "inferred"))
+        self.assertEqual(entry["delayed_voluntary_entry"]["incoming_hud_frames"], [345, 346])
+        self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "ability" and e["value"] == "Psychic Surge")["logical_frame"], 290)
+        self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "fieldstart" and e["value"] == "move: Psychic Terrain")["logical_frame"], 292)
+        self.assertEqual(next(e for e in ledger["events"] if e["kind"] == "faint" and e["species"] == "Indeedee-F")["status"], "consistent")
+
     def test_opening_pair_requires_announcement_two_named_huds_and_no_action(self):
         trace = opponent_opening_swap_trace()
         ledger = BattleAutomaton(0, trace).run()
