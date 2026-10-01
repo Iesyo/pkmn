@@ -366,6 +366,66 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_knock_off_after_faint_keeps_victim_identity_without_restoring_occupancy(self):
+        for side, item in (("p1", "Life Orb"), ("p2", "Choice Scarf")):
+            other = "p2" if side == "p1" else "p1"
+            slot, source = side + "b", other + "a"
+            text = ("The opposing " if other == "p2" else "") + "Striker knocked off " + (
+                "the opposing " if side == "p2" else "") + "Victim's " + item + "!"
+            rows = [frame(1, [event("switch", slot, "Kingambit", "100/100"),
+                               event("switch", source, "Sneasler", "100/100"), event("turn", turn=1)]),
+                    frame(2, [event("move", source, "Sneasler", move="Knock Off")]),
+                    frame(3, [event("damage", slot, "Kingambit", "0/100")]),
+                    frame(4, [event("faint", slot, "Kingambit")]), frame(5),
+                    frame(6, [event("enditem", slot, value=item)], [text]), frame(7, texts=[text]),
+                    frame(8, [event("message", value="The battle has ended due to a forfeit.")])]
+            rows[5]["detections"]["events"][0]["tags"] = ["[from] move: Knock Off", "[of] " + source + ": Sneasler"]
+            for row in rows:
+                row["resolved_aliases"][side]["victim"] = "Kingambit"
+                row["resolved_aliases"][other]["striker"] = "Sneasler"
+            original = copy.deepcopy(rows)
+            automaton = BattleAutomaton(0, rows)
+            ledger = automaton.run()
+            self.assertEqual(rows, original)
+            self.assertEqual(ledger["issues"], [])
+            lost = next(e for e in ledger["events"] if e["kind"] == "enditem")
+            faint = next(e for e in ledger["events"] if e["kind"] == "faint")
+            self.assertEqual(lost["actor_id"], faint["actor_id"])
+            self.assertNotIn(slot, automaton.active)
+            self.assertTrue(ledger["actors"][lost["actor_id"]]["fainted"])
+            self.assertTrue(ledger["actors"][lost["actor_id"]]["item_lost"])
+            for invalid in ("text", "item", "source", "move", "action", "turn", "replacement", "time", "weak", "zero"):
+                changed = copy.deepcopy(rows)
+                if invalid == "text": changed[6]["ocr"] = []
+                elif invalid == "item": changed[5]["detections"]["events"][0]["value"] = "Leftovers"
+                elif invalid == "source": changed[5]["detections"]["events"][0]["tags"][1] = "[of] " + source + ": Pelipper"
+                elif invalid == "move": changed[1]["detections"]["events"][0]["move"] = "Tackle"
+                elif invalid == "action": changed[4]["detections"]["events"] = [event("move", source, "Sneasler", move="Protect")]
+                elif invalid == "turn": changed[4]["detections"]["events"] = [event("turn", turn=2)]
+                elif invalid == "replacement": changed[4]["detections"]["events"] = [event("switch", slot, "Pelipper", "100/100")]
+                elif invalid == "time": changed[5]["timestamp_ms"] += 10_000
+                elif invalid == "weak": changed[6]["ocr"][0]["confidence"] = .8
+                else: changed[2]["ocr"] = []
+                uncertain = BattleAutomaton(0, changed).run()
+                effect = next(e for e in uncertain["events"] if e["kind"] == "enditem")
+                self.assertEqual(effect["status"], "review", (side, invalid))
+                self.assertTrue(any(i["code"] == "unbound_item_actor" for i in uncertain["issues"]), (side, invalid))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_32B"), "Requiere diagnóstico 32b")
+    def test_32b_lethal_knock_off_preserves_item_victim_after_faint(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_32B"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        lost = next(e for e in ledger["events"] if e["kind"] == "enditem")
+        self.assertEqual((lost["species"], lost["value"], lost["frame"]), ("Basculegion", "Life Orb", 346))
+        self.assertEqual(lost["post_faint_item_support"]["faint_seq"], 15)
+        from ledger_replay import build_replay, load_trace_context
+        replay = build_replay(ledger, load_trace_context(path, ledger))
+        self.assertIn("|-enditem|p1b: Basculegion|Life Orb|[from] move: Knock Off|[of] p2b: Malamar", replay["log"])
+        self.assertEqual(replay["log"].count("|faint|p1b: Basculegion"), 1)
+        self.assertLess(replay["log"].index("|faint|p1b: Basculegion"), replay["log"].index("|-enditem|p1b: Basculegion"))
+
     def test_incomplete_first_entry_hud_needs_consecutive_named_complete_readings(self):
         trace = buffered_named_entry_trace()
         trace[126]["ocr"][1]["text"] = "141177"
