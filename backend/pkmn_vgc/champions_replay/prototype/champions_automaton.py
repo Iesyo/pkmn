@@ -3096,8 +3096,12 @@ class BattleAutomaton:
         if len(references) != 1 or references[0][1] != move["slot"] or not named(references[0][2], move["slot"][:2], attacker):
             return None
         evidence = []
+        previous_ms = candidate["observed_ms"]
         for number in range(candidate["observed_frame"], candidate["observed_frame"] + 3):
             row = self.frame_lookup.get(number, {})
+            if not row or not 0 <= row["timestamp_ms"] - previous_ms <= 1_000:
+                break
+            previous_ms = row["timestamp_ms"]
             if number > candidate["observed_frame"] and any(e["kind"] in ACTIVITY | {"turn", "mega", "faint"}
                                                             for e in row.get("detections", {}).get("events", ())):
                 break
@@ -3267,6 +3271,18 @@ class BattleAutomaton:
                 self._issue("unbound_item_actor", item["note"], item["frame"], item["seq"])
                 return
             actor_id = proof["actor_id"]
+            previous = next((e for e in reversed(self.events) if e["kind"] == "enditem" and
+                             e["status"] == "consistent" and e["actor_id"] == actor_id), None)
+            if self.actors[actor_id]["item_lost"]:
+                if previous and previous["value"] == event.get("value") and previous["cause"] == proof["move_seq"]:
+                    item = self._append(candidate, actor_id=actor_id, status="suppressed",
+                                        note="La misma pérdida de objeto ya estaba corroborada.")
+                    item["post_faint_item_support"] = proof
+                else:
+                    item = self._append(candidate, actor_id=actor_id, status="review",
+                                        note="Otra pérdida de objeto después de un objeto ya perdido.")
+                    self._issue("unbound_item_actor", item["note"], item["frame"], item["seq"])
+                return
             self.actors[actor_id]["item_lost"] = True
             self.actors[actor_id]["item"] = None
             item = self._append({**candidate, "canonical_species": self.actors[actor_id]["species"]},
