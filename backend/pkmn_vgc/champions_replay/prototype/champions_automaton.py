@@ -43,6 +43,8 @@ HP_NARRATION_AMBIGUITY_MS = 500
 MEGA_NARRATION = re.compile(
     r"(The opposing )?(.+?)[’']s (.+?) is reacting to .+?[’']s Omni Ring!", re.I)
 FAINT_NARRATION = re.compile(r"(The opposing )?(.+?) fainted!", re.I)
+KNOCK_OFF_NARRATION = re.compile(
+    r"(The opposing )?(.+?) knocked off (the opposing )?(.+?)[’']s (.+?)!", re.I)
 RESULT_NARRATION = re.compile(r"You (?:defeated|lost to|were defeated by) .+!", re.I)
 STATUS_NAMES = {"brn": "quemado", "par": "paralizado", "slp": "dormido", "frz": "congelado", "psn": "envenenado", "tox": "muy envenenado"}
 RAW_ACTION = re.compile(r"\bused\s+(.+?)!$|\bfainted!$", re.IGNORECASE)
@@ -3054,6 +3056,66 @@ class BattleAutomaton:
                 "ocr": [{"frame": number, "text": value, "confidence": source["confidence"]},
                         *confirmed], "ui_cues": ["Battle Info", "Move Info", "MOVE TIME", "Close"]}
 
+    def _post_faint_knock_off(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Bind a delayed item-loss consequence to its already fainted victim.
+
+        Occupancy ends at faint; identity does not. Require the same attack's
+        confirmed lethal damage, faint, source tags and repeated named text.
+        Never restore a slot or cross another action/replacement/turn.
+        """
+        event, slot = candidate["event"], candidate["event"].get("slot")
+        if slot not in SLOTS or slot in self.active or "[from] move: Knock Off" not in event.get("tags", ()):
+            return None
+        faint = next((e for e in reversed(self.events) if e["status"] == "consistent" and
+                      e["kind"] == "faint" and e["slot"] == slot), None)
+        if not faint or faint["turn"] != self.turn or not 0 <= candidate["observed_ms"] - faint["observed_ms"] <= 6_000:
+            return None
+        actor_id = faint["actor_id"]
+        victim = self.actors[actor_id]
+        damage = next((e for e in reversed(self.events[:faint["seq"] - 1]) if e["status"] == "consistent" and
+                       e["kind"] == "damage" and e["actor_id"] == actor_id), None)
+        if not damage or damage.get("hp_state") != "confirmed" or health_ratio(damage.get("after")) != 0:
+            return None
+        move = next((e for e in self.events if e["seq"] == damage.get("cause") and e["kind"] == "move" and
+                     e["status"] == "consistent" and e["move"] == "Knock Off"), None)
+        if (not move or move["turn"] != self.turn or move["slot"][:2] == slot[:2] or
+            self.active.get(move["slot"]) != move["actor_id"] or
+            not 0 <= candidate["observed_ms"] - move["observed_ms"] <= 12_000 or
+            any(e["status"] == "consistent" and e["kind"] in ACTIVITY | {"turn", "mega", "battle_end"}
+                for e in self.events[move["seq"]:])):
+            return None
+
+        def named(name: str, side: str, actor: dict[str, Any]) -> bool:
+            name = strip_pokemon_title(name).casefold()
+            species = self.nickname_species[side].get(name, name)
+            return identity_species(species).casefold() == identity_species(actor["species"]).casefold()
+
+        attacker = self.actors[move["actor_id"]]
+        references = [m for tag in event.get("tags", ())
+                      if (m := re.fullmatch(r"\[of\] (p[12][ab]): (.+)", tag))]
+        if len(references) != 1 or references[0][1] != move["slot"] or not named(references[0][2], move["slot"][:2], attacker):
+            return None
+        evidence = []
+        for number in range(candidate["observed_frame"], candidate["observed_frame"] + 3):
+            row = self.frame_lookup.get(number, {})
+            if number > candidate["observed_frame"] and any(e["kind"] in ACTIVITY | {"turn", "mega", "faint"}
+                                                            for e in row.get("detections", {}).get("events", ())):
+                break
+            for line in row.get("ocr", ()):
+                match = KNOCK_OFF_NARRATION.fullmatch(line.get("text", ""))
+                if (match and line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                    ("p2" if match[1] else "p1") == move["slot"][:2] and
+                    ("p2" if match[3] else "p1") == slot[:2] and
+                    named(match[2], move["slot"][:2], attacker) and named(match[4], slot[:2], victim) and
+                    match[5] == event.get("value")):
+                    evidence.append({"frame": number, **line})
+        numbers = sorted({e["frame"] for e in evidence})
+        if not any(b == a + 1 for a, b in zip(numbers, numbers[1:])):
+            return None
+        return {"actor_id": actor_id, "move_seq": move["seq"], "damage_seq": damage["seq"],
+                "faint_seq": faint["seq"], "evidence": evidence,
+                "reason": "Objeto perdido por el mismo Knock Off letal, narrado después del faint."}
+
     def _handle(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
         kind = event["kind"]
@@ -3186,6 +3248,32 @@ class BattleAutomaton:
                 self._issue("unclassified_text", item["note"], item["frame"], item["seq"])
             return
         self._flush_hp()
+        if kind == "enditem" and actor_id and "[from] move: Knock Off" in event.get("tags", ()):
+            for line in self.frame_lookup[candidate["observed_frame"]].get("ocr", ()):
+                match = KNOCK_OFF_NARRATION.fullmatch(line.get("text", ""))
+                if not match or line.get("confidence", 0) < .95 or line.get("top", 0) < .55:
+                    continue
+                side = "p2" if match[3] else "p1"
+                name = strip_pokemon_title(match[4]).casefold()
+                subject = self.nickname_species[side].get(name, name)
+                if side != slot[:2] or identity_species(subject).casefold() != identity_species(self.actors[actor_id]["species"]).casefold():
+                    item = self._append(candidate, status="review", note="Knock Off nombra un destinatario distinto del ocupante actual.")
+                    self._issue("unbound_item_actor", item["note"], item["frame"], item["seq"])
+                    return
+        if kind == "enditem" and not actor_id:
+            proof = self._post_faint_knock_off(candidate)
+            if not proof:
+                item = self._append(candidate, status="review", note="Pérdida de objeto sin destinatario corroborado.")
+                self._issue("unbound_item_actor", item["note"], item["frame"], item["seq"])
+                return
+            actor_id = proof["actor_id"]
+            self.actors[actor_id]["item_lost"] = True
+            self.actors[actor_id]["item"] = None
+            item = self._append({**candidate, "canonical_species": self.actors[actor_id]["species"]},
+                                actor_id=actor_id, cause=proof["move_seq"], note=proof["reason"])
+            item["post_faint_item_support"] = proof
+            item["evidence"] = proof["evidence"]
+            return
         if kind in {"switch", "drag"} and slot in SLOTS:
             if candidate.get("superseded_switch"):
                 proof = candidate["superseded_switch"]
