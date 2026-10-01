@@ -394,7 +394,14 @@ class TemporalAutomatonTests(unittest.TestCase):
             self.assertNotIn(slot, automaton.active)
             self.assertTrue(ledger["actors"][lost["actor_id"]]["fainted"])
             self.assertTrue(ledger["actors"][lost["actor_id"]]["item_lost"])
-            for invalid in ("text", "item", "source", "move", "action", "turn", "replacement", "time", "weak", "zero"):
+            repeated = copy.deepcopy(rows)
+            repeated[6]["detections"]["events"] = copy.deepcopy(repeated[5]["detections"]["events"])
+            repeated[7]["ocr"].extend(copy.deepcopy(repeated[6]["ocr"]))
+            repeated_ledger = BattleAutomaton(0, repeated).run()
+            self.assertEqual(repeated_ledger["issues"], [])
+            self.assertEqual([e["status"] for e in repeated_ledger["events"] if e["kind"] == "enditem"],
+                             ["consistent", "suppressed"])
+            for invalid in ("text", "item", "source", "move", "action", "turn", "replacement", "time", "weak", "zero", "future_time"):
                 changed = copy.deepcopy(rows)
                 if invalid == "text": changed[6]["ocr"] = []
                 elif invalid == "item": changed[5]["detections"]["events"][0]["value"] = "Leftovers"
@@ -405,6 +412,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 elif invalid == "replacement": changed[4]["detections"]["events"] = [event("switch", slot, "Pelipper", "100/100")]
                 elif invalid == "time": changed[5]["timestamp_ms"] += 10_000
                 elif invalid == "weak": changed[6]["ocr"][0]["confidence"] = .8
+                elif invalid == "future_time": changed[6]["timestamp_ms"] += 10_000
                 else: changed[2]["ocr"] = []
                 uncertain = BattleAutomaton(0, changed).run()
                 effect = next(e for e in uncertain["events"] if e["kind"] == "enditem")
