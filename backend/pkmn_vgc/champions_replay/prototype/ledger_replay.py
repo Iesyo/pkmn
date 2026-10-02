@@ -203,9 +203,12 @@ def build_trace_context(
     for side in ("p1", "p2"):
         observed, evidence = _confirmed_team(team_votes[side], side)
         seeded = _team(configured.get(side), side)
-        if seeded and observed and set(seeded) != set(observed):
+        if side != "p1" and seeded and observed and set(seeded) != set(observed):
             raise ReplayEvidenceError(f"El equipo de {side} en el diagnóstico contradice el Team Preview.")
-        roster = (seeded if side == "p1" else observed) or observed or seeded
+        # The selected saved team may belong to another recording. A repeated
+        # own preview takes precedence; preserve the old order when both agree.
+        roster = (seeded if side == "p1" and seeded and
+                  (not observed or set(seeded) == set(observed)) else observed) or observed or seeded
         if not roster:
             raise ReplayEvidenceError(f"Falta el equipo completo de seis Pokémon para {side}.")
         teams[side] = roster
