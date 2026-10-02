@@ -2811,6 +2811,16 @@ class ChampionsTextParser:
         found: list[tuple[str, str | None, OcrLine]] = []
         seen: set[str] = set()
         for line in sorted(candidates, key=lambda item: item.center_x):
+            # The arena background can resemble a previously learned alias.
+            # A known alias does not make a weak/off-plate label a new HUD.
+            if line.confidence < 0.9:
+                continue
+            legacy = (side == "p1" and line.center_y >= 0.82) or (side == "p2" and line.center_y <= 0.18)
+            if legacy and not (
+                side == "p1" and 0.05 <= line.left <= 0.49 and 0.82 <= line.top <= 0.91
+                or side == "p2" and 0.57 <= line.left <= 0.99 and 0.02 <= line.top <= 0.10
+            ):
+                continue
             if _health_value(line.text) or _text_key(line.text) in _UI_TEXT:
                 continue
             species = self._resolve_species(line.text, side)
