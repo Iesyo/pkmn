@@ -56,6 +56,17 @@ def line(
 
 
 class ChampionsOcrTests(unittest.TestCase):
+    def test_known_background_alias_does_not_displace_the_two_real_hud_plates(self):
+        parser = self.parser()
+        parser._bind_alias("p2", "NOuKTO", "Steelix", evidence="inferred")
+        for confidence, x, y in ((.6, .40, .04), (.99, .40, .04), (.99, .63, .11), (.8, .63, .04)):
+            with self.subTest(confidence=confidence, x=x, y=y):
+                lines = self.command_frame() + (line("NOuKTO", x=x, y=y, confidence=confidence),)
+                readings = parser._hud_observations(lines)
+                self.assertEqual(readings["p2a"], ("Steelix", "100/100"))
+                self.assertEqual(readings["p2b"], ("Drampa", "100/100"))
+                self.assertEqual([name for name, _, _ in parser._hud_species(lines, "p2")], ["Steelix", "Drampa"])
+
     def parser(self) -> ChampionsTextParser:
         return ChampionsTextParser(
             context=DetectorContext(
