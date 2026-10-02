@@ -278,6 +278,135 @@ def corroborated_entry_aliases(frames: list[dict[str, Any]], context: dict[str, 
     return proofs
 
 
+def corroborated_summary_aliases(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use repeated own summary facts for identity, never for battle actions.
+
+    A named, fainted selection must match an earlier named zero-HP HUD.
+    Ability plus at least two moves must identify one species in the pinned
+    catalogue. A saved job roster is not evidence against the captured team.
+    """
+    path = Path(__file__).resolve().parents[4] / "public/data/showdown-dex.json.gz"
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            dex = json.load(stream)
+    except (OSError, ValueError):
+        return []
+    moves = {v["name"].casefold(): k for k, v in dex["moves"].items()}
+    ability_names = {a["name"] for a in dex["abilities"].values()}
+    lookup = {r["frame"]: r for r in frames}
+    proofs = {}
+    for row in frames:
+        readings = []
+        for r in (row, lookup.get(row["frame"] + 1, {})):
+            lines = [l for l in r.get("ocr", ()) if l.get("confidence", 0) >= .95]
+            if not (any(l["text"].casefold() == "hide summary" and in_area(l, (.8, 1., .90, 1.)) for l in lines)
+                    and any(l["text"].casefold() == "ability" and in_area(l, (.40, .50, .68, .78)) for l in lines)):
+                break
+            owner = [m[1].casefold() for l in lines if in_area(l, (.10, .30, .70, .80))
+                     and (m := re.fullmatch(r"(.+?) has no energy left to battle!", l["text"], re.I))]
+            ability = [l["text"] for l in lines if in_area(l, (.55, .75, .68, .78))
+                       and l["text"] in ability_names]
+            selected_moves = {moves[l["text"].casefold()] for l in lines
+                              if in_area(l, (.40, .62, .20, .68)) and l["text"].casefold() in moves}
+            if len(owner) != 1 or len(ability) != 1 or len(selected_moves) < 2:
+                break
+            readings.append((owner[0], ability[0], selected_moves))
+        if len(readings) != 2 or readings[0] != readings[1]:
+            continue
+        next_row = lookup[row["frame"] + 1]
+        if (row.get("battle_index") != next_row.get("battle_index") or
+                not 0 < next_row["timestamp_ms"] - row["timestamp_ms"] <= 1_000):
+            continue
+        name, ability, selected_moves = readings[0]
+        matches = [s["name"] for s in dex["species"].values() if
+                   ability in s.get("abilities", ()) and selected_moves <= set(s.get("championsMoves", ()))
+                   and "-Mega" not in s["name"]]
+        if len(matches) != 1:
+            continue
+        hud = [(r, slot, hp) for r in frames if r["frame"] < row["frame"] and
+               r.get("battle_index") == row.get("battle_index")
+               for slot in ("p1a", "p1b") if hud_nickname(r, slot) == name
+               for hp, line in complete_hud_health(r, slot) if health_ratio(hp) == 0 and line["confidence"] >= .95]
+        pair = next(((a, b) for a, b in zip(hud, hud[1:]) if
+                     b[0]["frame"] == a[0]["frame"] + 1 and a[1:] == b[1:] and
+                     0 < b[0]["timestamp_ms"] - a[0]["timestamp_ms"] <= 1_000), None)
+        if not pair or any(e.get("move") in {"Transform", "Role Play", "Skill Swap", "Entrainment"}
+                           or e.get("value") in {"Trace", "Imposter", "Illusion"}
+                           for r in frames if r["frame"] <= row["frame"]
+                           for e in r.get("detections", {}).get("events", ())):
+            continue
+        key = (name, matches[0])
+        proofs.setdefault(key, {"side": "p1", "nickname": name, "species": matches[0], "slot": pair[0][1],
+                               "method": "unique_summary_facts", "evidence": [
+                                   {"frame": r["frame"], "nickname": name, "ability": ability,
+                                    "moves": sorted(selected_moves), "kind": "summary_identity"}
+                                   for r in (row, next_row)] +
+                               [{"frame": r["frame"], "text": name, "health": hp, "kind": "named_zero_hud"}
+                                for r, _, hp in pair]})
+    # Conflicting summaries cannot choose an identity by first occurrence.
+    return [p for p in proofs.values() if len({s for n, s in proofs if n == p["nickname"]}) == 1]
+
+
+def corroborated_ability_aliases(frames: list[dict[str, Any]], context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Entry, ability panel and HUD can arrive in separate samples."""
+    catalog = species_abilities()
+    lookup = {r["frame"]: r for r in frames}
+    proofs = []
+    for row in frames:
+        n = row["frame"]
+        neighbor = lookup.get(n + 1, {})
+        if (neighbor.get("battle_index") != row.get("battle_index") or
+                not 0 < neighbor.get("timestamp_ms", 0) - row["timestamp_ms"] <= 1_000):
+            continue
+        for e in row.get("detections", {}).get("events", ()):
+            slot, species, ability = e.get("slot"), e.get("species"), e.get("value")
+            if e["kind"] != "ability" or slot not in SLOTS or species not in context.get("teams", {}).get(slot[:2], []):
+                continue
+            roster = context["teams"][slot[:2]]
+            if ([s for s in roster if ability in catalog.get(s, ())] != [species] or
+                    any(catalog.get(s, set()) & {"Illusion", "Imposter"} for s in roster)):
+                continue
+            panels = []
+            area = BATTLE_TEXT_AREAS["own_banner" if slot.startswith("p1") else "opponent_banner"]
+            for r in (row, lookup.get(n + 1, {})):
+                lines = [l for l in r.get("ocr", ()) if in_area(l, area) and l.get("confidence", 0) >= .95]
+                names = [re.sub(r"[’']s$", "", l["text"].casefold()) for l in lines if re.search(r"[’']s$", l["text"])]
+                if len(names) == 1 and any(l["text"] == ability for l in lines):
+                    panels.append((r, names[0]))
+            if len(panels) != 2 or panels[0][1] != panels[1][1]:
+                continue
+            name = panels[0][1]
+            entries = [r for r in frames if n - 20 <= r["frame"] < n and
+                       r.get("battle_index") == row.get("battle_index") and any(
+                       l.get("confidence", 0) >= .95 and l.get("top", 0) >= .55 and
+                       (m := ANNOUNCED_ENTRY.search(l.get("text", ""))) and
+                       strip_pokemon_title(m[1] or m[2]).casefold() == name for l in r.get("ocr", ()))]
+            if len(entries) < 2 or not any(e["kind"] == "switch" and e.get("slot") == slot and e.get("species") == species
+                                         for r in entries for e in r.get("detections", {}).get("events", ())):
+                continue
+            hud = []
+            for f in range(n + 1, n + 121):
+                r = lookup.get(f)
+                if not r or r.get("battle_index") != row.get("battle_index") or any(
+                    x["kind"] in {"switch", "drag", "faint"} and x.get("slot") == slot
+                    for x in r.get("detections", {}).get("events", ())):
+                    break
+                health = complete_hud_health(r, slot)
+                peer = slot[:2] + ("b" if slot.endswith("a") else "a")
+                if (hud_nickname(r, slot) == name and hud_nickname(r, peer) != name and
+                        len(health) == 1 and health[0][1]["confidence"] >= .95):
+                    hud.append(r)
+            pair = next(((a, b) for a, b in zip(hud, hud[1:]) if b["frame"] == a["frame"] + 1 and
+                         0 < b["timestamp_ms"] - a["timestamp_ms"] <= 1_000 and
+                         complete_hud_health(a, slot)[0][0] == complete_hud_health(b, slot)[0][0]), None)
+            if pair:
+                proofs.append({"side": slot[:2], "nickname": name, "species": species, "slot": slot,
+                               "method": "separate_entry_ability_hud", "evidence": [
+                                   {"frame": r["frame"], "text": name, "kind": "entry_ability_hud"}
+                                   for r in entries + [p[0] for p in panels] + list(pair)]})
+    return proofs
+
+
 def status_panel_evidence(row: dict[str, Any]) -> dict[str, Any] | None:
     """The status inspection overlay is not the battle HUD or narration.
 
@@ -1706,6 +1835,10 @@ class BattleAutomaton:
         self.alias_reconstructions = (corroborated_digit_aliases(frames, self.nickname_species) +
                                       corroborated_literal_aliases(frames) +
                                       corroborated_entry_aliases(frames, self.context, self.nickname_species))
+        recovered = corroborated_ability_aliases(frames, self.context) + corroborated_summary_aliases(frames)
+        self.alias_reconstructions += [p for p in recovered if
+            len({q["species"] for q in recovered if (q["side"], q["nickname"]) == (p["side"], p["nickname"])}) == 1 and
+            self.nickname_species[p["side"]].get(p["nickname"], p["species"]) == p["species"]]
         for proof in self.alias_reconstructions:
             self.nickname_species[proof["side"]][proof["nickname"]] = proof["species"]
         self.events: list[dict[str, Any]] = []
@@ -2722,6 +2855,12 @@ class BattleAutomaton:
         if len({value for _, value, _ in found}) != 1:
             return None
         _, health, evidence = max(found, key=lambda item: item[0])
+        if (actor.get("health_state") == "inferred" and actor.get("health") is None and
+                health_ratio(health) != 1 and not any(b[0] == a[0] + 1
+                for a, b in zip(found, found[1:]))):
+            # A single first HUD may already be sliding through an impact.
+            # Its denominator establishes a maximum, not a pre-impact value.
+            return None
         return health, {"state": "confirmed", "reason": "HUD inmediatamente antes del cambio de PS",
                         "evidence": [evidence]}
 
@@ -2773,6 +2912,8 @@ class BattleAutomaton:
             item["detection_lag"] = candidate["detection_lag"]
         if candidate.get("faint_reconstruction"):
             item["faint_reconstruction"] = candidate["faint_reconstruction"]
+        if candidate.get("mega_slot_support"):
+            item["mega_slot_support"] = candidate["mega_slot_support"]
         if event.get("tags"):
             item["tags"] = []
             for tag in event["tags"]:
@@ -2878,6 +3019,8 @@ class BattleAutomaton:
                 entry_seq = actor.get("first_entry_seq")
                 if entry_seq:
                     self.events[entry_seq - 1]["health"] = before
+                    self.events[entry_seq - 1]["maximum_from_impact"] = {
+                        "state": "confirmed", "entry_state": "inferred", "evidence": support["evidence"]}
                     self.events[entry_seq - 1]["note"] = (
                         (self.events[entry_seq - 1]["note"] or "") +
                         f" Máximo {maximum} deducido del primer HUD completo.")
@@ -3798,6 +3941,29 @@ class BattleAutomaton:
         if kind == "mega":
             observed = candidate.get("canonical_species") or self._resolve(event.get("species"))
             occupant = self.actors[actor_id]["species"] if actor_id else None
+            if observed and identity_species(observed) != identity_species(occupant or "") and slot in SLOTS:
+                proof = []
+                for n in (candidate["observed_frame"], candidate["observed_frame"] + 1):
+                    lines = [l for l in self.frame_lookup.get(n, {}).get("ocr", ()) if
+                             in_area(l, BATTLE_TEXT_AREAS["narration"]) and l.get("confidence", 0) >= .95 and
+                             (m := MEGA_NARRATION.fullmatch(l["text"])) and
+                             bool(m[1]) == slot.startswith("p2") and m[3] == event.get("value") and
+                             identity_species(self.nickname_species[slot[:2]].get(m[2].casefold(), m[2])) == identity_species(observed)]
+                    if len(lines) != 1:
+                        break
+                    proof.append({"frame": n, **lines[0]})
+                matches = [s for s, a in self.active.items() if s.startswith(slot[:2]) and
+                           identity_species(self.actors[a]["species"]) == identity_species(observed)]
+                first = self.frame_lookup.get(candidate["observed_frame"], {})
+                second = self.frame_lookup.get(candidate["observed_frame"] + 1, {})
+                if (len(proof) == 2 and proof[0]["text"] == proof[1]["text"] and len(matches) == 1 and
+                        first.get("battle_index") == second.get("battle_index") and
+                        0 < second.get("timestamp_ms", 0) - first.get("timestamp_ms", 0) <= 1_000):
+                    candidate = {**candidate, "mega_slot_support": {"raw_event": dict(event), "evidence": proof},
+                                 "event": {**event, "slot": matches[0]}}
+                    event, slot = candidate["event"], matches[0]
+                    actor_id = self.active[slot]
+                    occupant = self.actors[actor_id]["species"]
             if (not occupant or not observed or
                 identity_species(observed) != identity_species(occupant)):
                 item = self._append(candidate, actor_id=actor_id, status="suppressed",
