@@ -89,6 +89,63 @@ def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
     return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
 
 
+def corroborated_literal_aliases(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Protect a literal species HUD from a later polluted detector alias.
+
+    An explicit entry and two consecutive full, stationary HUD readings must
+    agree. This does not infer species from an arbitrary nickname or repair HP.
+    """
+    lookup = {row["frame"]: row for row in frames}
+    proofs = {}
+    for row in frames:
+        for event in row.get("detections", {}).get("events", ()):
+            slot, species = event.get("slot"), event.get("species")
+            if event["kind"] != "switch" or slot not in SLOTS or not species or PLACEHOLDER.fullmatch(species):
+                continue
+            name = hud_nickname(row, slot)
+            if name not in {identity_species(species).casefold(), identity_species(species).casefold().split("-", 1)[0]}:
+                continue
+            pair = [lookup.get(row["frame"] + offset, {}) for offset in (0, 1)]
+            if (not pair[1] or not 0 < pair[1]["timestamp_ms"] - pair[0]["timestamp_ms"] <= 1_000 or
+                pair[0].get("battle_index") != pair[1].get("battle_index")):
+                continue
+            if not all(hud_nickname(r, slot) == name and
+                       any(health_ratio(hp) == 1 and line["confidence"] >= .95
+                           for hp, line in complete_hud_health(r, slot)) for r in pair):
+                continue
+            key = (slot[:2], name)
+            if not any((mapped := r.get("resolved_aliases", {}).get(slot[:2], {}).get(name)) and
+                       mapped != species for r in frames):
+                continue
+            proofs.setdefault(key, {"side": slot[:2], "nickname": name, "species": species,
+                                     "slot": slot, "evidence": [
+                                         {"frame": r["frame"], "text": name, "kind": "literal_species_hud"}
+                                         for r in pair]})
+    return list(proofs.values())
+
+
+def repeated_hud_identity(lookup: dict[int, dict[str, Any]], number: int, slot: str,
+                          aliases: dict[str, str]) -> dict[str, Any] | None:
+    for first in (number - 1, number):
+        pair = [lookup.get(first + offset, {}) for offset in (0, 1)]
+        name = hud_nickname(pair[0], slot)
+        species = aliases.get(name or "")
+        if (not species or not pair[0] or not pair[1] or
+            not 0 < pair[1]["timestamp_ms"] - pair[0]["timestamp_ms"] <= 1_000 or
+            hud_nickname(pair[1], slot) != name):
+            continue
+        health = [complete_hud_health(row, slot) for row in pair]
+        if not all(len(values) == 1 and values[0][1]["confidence"] >= .95 for values in health):
+            continue
+        if health[0][0][0] != health[1][0][0]:
+            continue
+        return {"state": "confirmed", "species": species, "nickname": name,
+                "slot": slot, "health": health[0][0][0], "evidence": [
+                    {"frame": row["frame"], "text": name, "health": values[0][0],
+                     "confidence": values[0][1]["confidence"]} for row, values in zip(pair, health)]}
+    return None
+
+
 def corroborated_digit_aliases(frames: list[dict[str, Any]],
                                aliases: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     """Join a CJK nickname with one OCR digit to repeated faint narration.
@@ -1003,8 +1060,32 @@ def ordered_candidates(frames: list[dict[str, Any]],
                 aliases[side].setdefault(name.casefold(), species)
         for raw, species in (row.get("resolved_identities") or {}).items():
             resolutions[raw].add(species)
-    for proof in alias_reconstructions if alias_reconstructions is not None else corroborated_digit_aliases(frames, aliases):
+    for proof in alias_reconstructions if alias_reconstructions is not None else (corroborated_digit_aliases(frames, aliases) + corroborated_literal_aliases(frames)):
         aliases[proof["side"]][proof["nickname"]] = proof["species"]
+    # Archived detectors sorted background labels as if they were HUD plates.
+    # A repeated complete pair fixes both positions before announcement anchors
+    # or any actor creation can use those candidates.
+    pairs: dict[int, list[dict[str, Any]]] = collections.defaultdict(list)
+    for item in candidates:
+        if item["event"]["kind"] == "switch" and item["event"].get("slot") in {"p2a", "p2b"}:
+            pairs[item["observed_frame"]].append(item)
+    for number, items in pairs.items():
+        if len(items) != 2 or {i["event"]["slot"] for i in items} != {"p2a", "p2b"}:
+            continue
+        proofs = {slot: repeated_hud_identity(frame_lookup, number, slot, aliases["p2"])
+                  for slot in ("p2a", "p2b")}
+        if not all(proofs.values()) or proofs["p2a"]["species"] == proofs["p2b"]["species"]:
+            continue
+        if all(proofs[i["event"]["slot"]]["species"] in
+               ({i.get("canonical_species"), i["event"].get("species")} |
+                resolutions.get(i["event"].get("species"), set())) for i in items):
+            continue
+        for item in items:
+            proof = proofs[item["event"]["slot"]]
+            raw = dict(item["event"])
+            item["canonical_species"] = proof["species"]
+            item["event"] = {**raw, "species": proof["species"], "health": proof["health"]}
+            item["hud_pair_support"] = {**proof, "raw_event": raw}
     # The detector may flush an animation's events together at a later frame.
     # Its saved source time is only a hint: the original OCR must confirm the
     # move, literal HP or repeated faint before restoring chronological order.
@@ -1156,6 +1237,20 @@ def ordered_candidates(frames: list[dict[str, Any]],
             clean = item.get("canonical_species") or named_species or local or unambiguous.get(raw)
             if clean:
                 item["canonical_species"] = clean
+            # Faint narration remains legible after its HUD has disappeared.
+            # Require the same exact subject in consecutive original samples.
+            if event["kind"] == "faint":
+                subjects = []
+                for n in (frame, frame + 1):
+                    names = [m[2].casefold() for line in frame_lookup.get(n, {}).get("ocr", ())
+                             if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                             (m := FAINT_NARRATION.fullmatch(line.get("text", "").strip())) and
+                             bool(m[1]) == slot.startswith("p2")]
+                    subjects.append(names)
+                if len(subjects[0]) == len(subjects[1]) == 1 and subjects[0] == subjects[1]:
+                    named = aliases[slot[:2]].get(subjects[0][0])
+                    if named:
+                        item["canonical_species"] = named
     announcements: list[dict[str, Any]] = []
     for row in frames:
         for line in row.get("ocr", ()):
@@ -1577,6 +1672,7 @@ class BattleAutomaton:
                 for nickname, species in (row.get("resolved_aliases", {}).get(side) or {}).items():
                     self.nickname_species[side].setdefault(nickname.casefold(), species)
         self.alias_reconstructions = (corroborated_digit_aliases(frames, self.nickname_species) +
+                                      corroborated_literal_aliases(frames) +
                                       corroborated_entry_aliases(frames, self.context, self.nickname_species))
         for proof in self.alias_reconstructions:
             self.nickname_species[proof["side"]][proof["nickname"]] = proof["species"]
@@ -2694,6 +2790,9 @@ class BattleAutomaton:
         if candidate.get("action_reconstruction"):
             item["action_reconstruction"] = candidate["action_reconstruction"]
             item["evidence"] = candidate["action_reconstruction"]["evidence"] + item["evidence"]
+        if candidate.get("hud_pair_support"):
+            item["hud_pair_support"] = candidate["hud_pair_support"]
+            item["evidence"] = candidate["hud_pair_support"]["evidence"] + item["evidence"]
         self.events.append(item)
         return item
 
@@ -3169,6 +3268,32 @@ class BattleAutomaton:
                 return
             candidate["slot_correction"] = event["slot"]
             candidate["event"] = event = {**event, "slot": support["slot"]}
+        if kind == "move" and event.get("slot") in SLOTS:
+            # Spatially corrupted detector IDs must not overrule the actor
+            # explicitly named by the same move in consecutive OCR samples.
+            number, side = candidate["observed_frame"], event["slot"][:2]
+            proof = []
+            subjects = []
+            for n in (number, number + 1):
+                lines = [(line, sig) for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                         if line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                         (sig := narration_signature(line.get("text", "").strip())) and
+                         sig[:2] == ("move", side) and sig[3] == event.get("move")]
+                if len(lines) != 1:
+                    break
+                line, sig = lines[0]
+                subjects.append(self.nickname_species[side].get(sig[2].casefold(), sig[2]))
+                proof.append({"frame": n, "text": line["text"], "confidence": line["confidence"]})
+            if len(subjects) == 2 and subjects[0] == subjects[1]:
+                matches = [s for s, a in self.active.items() if s.startswith(side) and
+                           identity_species(self.actors[a]["species"]) == identity_species(subjects[0])]
+                if len(matches) == 1 and matches[0] != event["slot"]:
+                    candidate = {**candidate, "slot_correction": event["slot"],
+                                 "canonical_species": subjects[0],
+                                 "event": {**event, "slot": matches[0]}}
+                    event = candidate["event"]
+                    candidate["move_narration_support"] = {"state": "confirmed", "evidence": proof,
+                                                           "raw_event": dict(event, slot=candidate["slot_correction"])}
         slot = event.get("slot")
         actor_id = self.active.get(slot)
         if kind == "message":
@@ -3291,6 +3416,10 @@ class BattleAutomaton:
             item["evidence"] = proof["evidence"]
             return
         if kind in {"switch", "drag"} and slot in SLOTS:
+            if kind == "switch" and (noise := self._background_placeholder_entry(candidate)):
+                item = self._append(candidate, kind="ui_text", status="suppressed", note=noise["reason"])
+                item["ui_support"] = noise
+                return
             if candidate.get("superseded_switch"):
                 proof = candidate["superseded_switch"]
                 item = self._append(candidate, status="suppressed",
@@ -3370,7 +3499,15 @@ class BattleAutomaton:
                                      re.search(r"\b(come back|went back|withdrew)\b",
                                                line.get("text", ""), re.I))
                                     for row in nearby for line in row.get("ocr", ()))
-                    if (slot.startswith("p1") and not candidate.get("anchor") and
+                    pair = (repeated_hud_identity(self.frame_lookup, number, slot,
+                                                 self.nickname_species[slot[:2]]) if slot.startswith("p2") and
+                            any(e.get("kind") == "literal_species_hud" for p in self.alias_reconstructions
+                                for e in p.get("evidence", ())) else None)
+                    if (pair and pair["species"] == self.actors[actor_id]["species"] and
+                        not candidate.get("anchor") and not announced):
+                        item["note"] = "HUD estable del mismo ocupante; sin entrada anunciada."
+                        item["continuity_frames"] = [e["frame"] for e in pair["evidence"]]
+                    elif (slot.startswith("p1") and not candidate.get("anchor") and
                         not announced and len(named) >= 2 and
                         any(n >= number for n in named)):
                         item["note"] = "HUD del mismo ocupante durante una animación o redibujado; sin entrada anunciada."
@@ -5118,6 +5255,81 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_unknown_entry_maxima(self) -> None:
+        """Fill an already inferred full entry's maximum from its later HUD.
+
+        The entry remains inferred. No malformed number is repaired, and a
+        replacement, HP change or faint stops this actor's observation window.
+        """
+        for entry in self.events:
+            if (entry["kind"] not in {"switch", "drag"} or entry["status"] != "consistent" or
+                not entry["slot"].startswith("p1") or entry["health"] is not None or
+                entry.get("hp_state") != "inferred"):
+                continue
+            actor_id, slot = entry["actor_id"], entry["slot"]
+            barrier = next((e["frame"] for e in self.events[entry["seq"]:] if
+                            e["status"] == "consistent" and e["slot"] == slot and
+                            e["kind"] in HP_KINDS | {"switch", "drag", "faint"}), float("inf"))
+            for row in self.frames:
+                if not entry["frame"] < row["frame"] < barrier:
+                    continue
+                name = hud_nickname(row, slot)
+                if not name or self.nickname_species[slot[:2]].get(name, name).casefold() != identity_species(entry["species"]).casefold():
+                    continue
+                readings = [(hp, line) for hp, line in complete_hud_health(row, slot)
+                            if health_ratio(hp) == 1 and line["confidence"] >= .95]
+                if len(readings) != 1:
+                    continue
+                health, line = readings[0]
+                entry["health"] = health
+                entry["note"] = (entry.get("note") or "") + f" Máximo {health.split('/')[1]} deducido del primer HUD completo."
+                entry["maximum_support"] = {"state": "confirmed", "entry_state": "inferred",
+                                             "evidence": [{"frame": row["frame"], "text": line["text"],
+                                                           "nickname": name, "confidence": line["confidence"]}]}
+                if self.actors[actor_id]["health"] is None:
+                    self.actors[actor_id]["health"] = health
+                break
+
+    def _background_placeholder_entry(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Reject a detector alias read from background text, with provenance.
+
+        Absence of a HUD alone is insufficient: the exact provisional alias
+        must be present outside the name plate or below its confidence gate.
+        A nearby real plate or same-side entry announcement protects entries.
+        """
+        event, number = candidate["event"], candidate["observed_frame"]
+        slot, raw = event.get("slot"), event.get("species")
+        if slot not in SLOTS or event.get("health") or not PLACEHOLDER.fullmatch(raw or ""):
+            return None
+        row = self.frame_lookup[number]
+        resolved = row.get("resolved_identities", {}).get(raw)
+        aliases = row.get("resolved_aliases", {}).get(slot[:2], {})
+        left, right, top, bottom = NAME_HUD_AREAS[slot]
+        evidence = [{"frame": number, **line} for line in row.get("ocr", ())
+                    if aliases.get(line.get("text", "").casefold()) == resolved and resolved and
+                    (line.get("confidence", 0) < .9 or
+                     not (left <= line.get("left", -1) <= right and top <= line.get("top", -1) <= bottom))]
+        if not evidence:
+            return None
+        for n in range(number - 2, number + 3):
+            nearby = self.frame_lookup.get(n, {})
+            name = hud_nickname(nearby, slot)
+            if n == number and (name or complete_hud_health(nearby, slot)):
+                return None
+            if name:
+                active = self.active.get(slot)
+                if not active or identity_species(self.nickname_species[slot[:2]].get(name, name)) != identity_species(self.actors[active]["species"]):
+                    return None
+            for line in nearby.get("ocr", ()):
+                if line.get("top", 0) < .55 or line.get("confidence", 0) < .9:
+                    continue
+                text = line.get("text", "").strip()
+                if (slot.startswith("p1") and re.match(r"^Go!", text, re.I) or
+                    "sent out" in text.casefold()):
+                    return None
+        return {"state": "confirmed", "raw_event": dict(event), "evidence": evidence,
+                "reason": "Alias provisional tomado del fondo fuera de una placa HUD válida; no hubo entrada."}
+
     def _ghost_placeholder_after_faint(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
         """Identify a transient clipped HUD as the old fainted occupant."""
         event = candidate["event"]
@@ -5534,6 +5746,7 @@ class BattleAutomaton:
             self._handle(candidate)
         self._flush_hp()
         self._reconcile_hp_narration()
+        self._reconcile_unknown_entry_maxima()
         self._reconcile_terrain_hp_fragments()
         self._reconcile_mega_candidates()
         self._reconcile_faint_hud_entries()
