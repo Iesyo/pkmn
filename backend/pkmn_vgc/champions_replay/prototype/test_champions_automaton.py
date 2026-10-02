@@ -366,6 +366,32 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_archived_action_outside_narration_is_rejected_with_original_ocr(self):
+        for kind, text in (("move", "Arcanine used Protect!"), ("faint", "Arcanine fainted!"),
+                           ("message", "Arcanine was hurt by its burn!")):
+            trace = [frame(1, [event("switch", "p1a", "Arcanine", "180/180")]),
+                     frame(2, [event(kind, "p1a", "Arcanine", move="Protect" if kind == "move" else None,
+                                     value=text if kind == "message" else None)]), frame(3)]
+            trace[1]["ocr"] = [{"text": text, "confidence": .99, "left": .4, "top": .34}]
+            original = copy.deepcopy(trace)
+            ledger = BattleAutomaton(0, trace).run()
+            rejected = ledger["events"][-1]
+            with self.subTest(kind=kind):
+                self.assertEqual((rejected["kind"], rejected["status"]), ("ui_text", "suppressed"))
+                self.assertEqual(rejected["ui_support"]["evidence"][0]["text"], text)
+                self.assertEqual(trace, original)
+                self.assertFalse(next(iter(ledger["actors"].values()))["fainted"])
+
+    def test_valid_adjacent_narration_protects_an_archived_event_with_off_area_noise(self):
+        trace = [frame(1, [event("switch", "p1a", "Arcanine", "180/180")]),
+                 frame(2, [event("move", "p1a", "Arcanine", move="Protect")]), frame(3)]
+        trace[1]["ocr"] = [{"text": "Arcanine used Protect!", "confidence": .99, "left": .4, "top": .34}]
+        trace[2]["ocr"] = [{"text": "Arcanine used Protect!", "confidence": .99, "left": .15, "top": .72}]
+        ledger = BattleAutomaton(0, trace).run()
+        move = ledger["events"][-1]
+        self.assertEqual((move["kind"], move["status"]), ("move", "consistent"))
+        self.assertEqual([e["frame"] for e in move["evidence"]], [3])
+
     def test_literal_alias_override_requires_complete_repeated_local_evidence(self):
         from champions_automaton import corroborated_literal_aliases
         trace = [frame(1, [event("switch", "p2a", "Whimsicott", "100/100")]), frame(2)]
@@ -1516,7 +1542,16 @@ class TemporalAutomatonTests(unittest.TestCase):
                 else:
                     next(o for o in broken[2]["ocr"] if o["text"] == "Torrain Pulse")["top"] = .75
                 unresolved = BattleAutomaton(0, broken).run()
-                self.assertIn("unclassified_text", {i["code"] for i in unresolved["issues"]})
+                if change == "narration_position":
+                    self.assertIn("unclassified_text", {i["code"] for i in unresolved["issues"]})
+                else:
+                    # Geometry can exclude off-area text without identifying
+                    # its menu. It must not claim the repeated-label proof.
+                    fragment = next(item for item in unresolved["events"] if item["value"] == "Torrain Pulse")
+                    self.assertEqual((fragment["kind"], fragment["status"]), ("ui_text", "suppressed"))
+                    self.assertNotIn("ocr", fragment["ui_support"])
+                    self.assertEqual(fragment["ui_support"]["evidence"][0]["frame"], 3)
+                    self.assertFalse(unresolved["issues"])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_44FF"),
                          "requiere diagnóstico real 44ff")
