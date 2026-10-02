@@ -1425,7 +1425,7 @@ class ChampionsOcrTests(unittest.TestCase):
         parser = self.parser()
         parser._battle_open = True
         weather = parser.parse(
-            (line("A sandstorm kicked up!", x=0.12, y=0.5, width=0.5),),
+            (line("A sandstorm kicked up!", x=0.12, y=0.72, width=0.5),),
             timestamp_ms=0,
             source_frame=0,
         )
