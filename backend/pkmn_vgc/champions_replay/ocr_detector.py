@@ -21,14 +21,13 @@ from .armado import BattleView, HudFrame
 from .notices import notice_readings
 from .sources import FramePacket, OcrTraceFrameSource
 from .team_preview import TeamPreviewResolver, looks_like_a_nickname
+from .ocr_regions import (BATTLE_TEXT_AREAS, NAME_HUD_AREAS, OCR_REGIONS_VERSION, in_area,
+                          mask_text_areas, phase_label_seen, text_screen, useful_lines)
 
 
 def _text_key(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).casefold()
     return "".join(character for character in normalized if character.isalnum())
-
-
-_PHASE_LABEL_MATCH_RATIO = 0.85
 
 
 def _phase_label_seen(keys: Sequence[str], label: str) -> bool:
@@ -58,14 +57,7 @@ def _phase_label_seen(keys: Sequence[str], label: str) -> bool:
     motes (`_unplaced_entry_named`).
     """
 
-    for key in keys:
-        if not key or len(key) > len(label) + 4:
-            continue
-        if key == label:
-            return True
-        if SequenceMatcher(None, key, label).ratio() >= _PHASE_LABEL_MATCH_RATIO:
-            return True
-    return False
+    return phase_label_seen(keys, label)
 
 
 def _clean_ocr_text(value: object) -> str:
@@ -169,6 +161,7 @@ class PreparedOcrFrame:
     lines: tuple[OcrLine, ...]
     elapsed_ms: int
     rotation_degrees: int
+    ocr_screen: str = "battle"
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +306,7 @@ class RapidOcrEngine:
         self.min_confidence = min_confidence
         self.rotation_quarter_turns = 0
         self._orientation_locked = False
+        self.ocr_screen = "battle"
         self._second_reader: Any = None
         self._second_reader_loaded = False
 
@@ -347,6 +341,25 @@ class RapidOcrEngine:
         if reader is None:
             return lines
         return _with_japanese_second_opinion(lines, self._read_decoded(oriented, reader))
+
+    def _read_text_areas(self, oriented: Any) -> tuple[tuple[OcrLine, ...], str]:
+        """OCR sees only useful pixels, including the screen-change cues.
+
+        A transition may need the newly selected area's text once in this same
+        sample. No frame is re-opened, and normal samples use one masked pass.
+        Second opinions and digit rescans see the same masked copy.
+        """
+        screen = self.ocr_screen
+        masked = mask_text_areas(oriented, screen)
+        lines = self._read_decoded(masked)
+        selected = text_screen(lines)
+        if selected != screen:
+            screen = selected
+            masked = mask_text_areas(oriented, screen)
+            lines = self._read_decoded(masked)
+        lines = self._with_second_opinion(masked, lines)
+        lines = self._rescan_thin_digits(masked, lines)
+        return useful_lines(lines, screen=screen), screen
 
     @staticmethod
     def _orientation_score(lines: Sequence[OcrLine], *, landscape: bool) -> tuple[float, int]:
@@ -500,7 +513,8 @@ class RapidOcrEngine:
         replacements: dict[int, OcrLine] = {}
         for index, line in enumerate(lines):
             text = line.text.strip()
-            if text == "%":
+            if text == "%" and any(in_area(line, BATTLE_TEXT_AREAS[area])
+                                   for area in ("opponent_hud", "mobile_opponent_hud")):
                 found = self._rescan_zone(
                     oriented,
                     line,
@@ -515,7 +529,8 @@ class RapidOcrEngine:
                 if found is not None:
                     replacements[index] = replace(found, text=found.text.replace(" ", ""))
                 continue
-            if len(text) >= 8 and _looks_like_a_truncated_message(text):
+            if (in_area(line, BATTLE_TEXT_AREAS["narration"]) and
+                len(text) >= 8 and _looks_like_a_truncated_message(text)):
                 found = self._rescan_zone(
                     oriented,
                     line,
@@ -549,8 +564,8 @@ class RapidOcrEngine:
                 self.rotation_quarter_turns = 0
                 self._orientation_locked = True
             oriented = self._rotate(decoded, self.rotation_quarter_turns)
-            found = self._with_second_opinion(oriented, self._read_decoded(oriented))
-            return self._rescan_thin_digits(oriented, found)
+            found, self.ocr_screen = self._read_text_areas(oriented)
+            return found
 
         # Algunos screen recordings móviles conservan 1126x2436 aunque el
         # juego y su texto estén girados. Probamos ambas orientaciones una sola
@@ -558,14 +573,14 @@ class RapidOcrEngine:
         candidates = []
         for quarter_turns in (0, 1, 3):
             oriented = self._rotate(decoded, quarter_turns)
-            lines = self._read_decoded(oriented)
+            lines, screen = self._read_text_areas(oriented)
             oriented_height, oriented_width = oriented.shape[:2]
             score, battle_signals = self._orientation_score(
                 lines,
                 landscape=oriented_width >= oriented_height,
             )
-            candidates.append((battle_signals, score, quarter_turns, lines, oriented))
-        battle_signals, _score, quarter_turns, lines, oriented = max(
+            candidates.append((battle_signals, score, quarter_turns, lines, screen))
+        battle_signals, _score, quarter_turns, lines, screen = max(
             candidates,
             key=lambda candidate: (candidate[0], candidate[1]),
         )
@@ -575,8 +590,8 @@ class RapidOcrEngine:
         if lines and battle_signals and (quarter_turns != 0 or battle_signals >= 2):
             self.rotation_quarter_turns = quarter_turns
             self._orientation_locked = True
-        found = self._with_second_opinion(oriented, lines)
-        return self._rescan_thin_digits(oriented, found)
+        self.ocr_screen = screen
+        return lines
 
     def prepare_hud_frame(
         self,
@@ -2816,10 +2831,8 @@ class ChampionsTextParser:
             if line.confidence < 0.9:
                 continue
             legacy = (side == "p1" and line.center_y >= 0.82) or (side == "p2" and line.center_y <= 0.18)
-            if legacy and not (
-                side == "p1" and 0.05 <= line.left <= 0.49 and 0.82 <= line.top <= 0.91
-                or side == "p2" and 0.57 <= line.left <= 0.99 and 0.02 <= line.top <= 0.10
-            ):
+            if legacy and not any(in_area(line, area) for slot, area in NAME_HUD_AREAS.items()
+                                  if slot.startswith(side)):
                 continue
             if _health_value(line.text) or _text_key(line.text) in _UI_TEXT:
                 continue
@@ -3177,6 +3190,8 @@ class ChampionsTextParser:
             "snow",
         )
         for line in lines:
+            if not in_area(line, BATTLE_TEXT_AREAS["narration"]):
+                continue
             if not (0.42 <= line.center_y <= 0.92 and line.left <= 0.92):
                 continue
             # The phone recording keeps the move-selection sidebar visible on
@@ -3939,6 +3954,12 @@ class ChampionsTextParser:
         timestamp_ms: int,
         source_frame: int,
     ) -> FrameDetections:
+        screen = text_screen(lines)
+        lines = useful_lines(lines, screen=screen)
+        if screen == "status":
+            # This is an inspection screen, even when its body resembles HP,
+            # moves, abilities or statuses. Keep the existing battle state.
+            return FrameDetections(battle_started=self._battle_open)
         if self._is_team_preview(lines):
             return self._preview_detections(lines)
 
@@ -4560,6 +4581,8 @@ class ChampionsOcrDetector:
             "battle_index": self._trace_battle_index,
             "elapsed_ms": prepared.elapsed_ms,
             "rotation_degrees": prepared.rotation_degrees,
+            "ocr_regions_version": OCR_REGIONS_VERSION,
+            "ocr_screen": prepared.ocr_screen,
             "phase": phase,
             "ocr": [asdict(line) for line in prepared.lines],
             "visual_alias_candidates": [
@@ -4595,11 +4618,14 @@ class ChampionsOcrDetector:
     def _read_frame(engine: OcrEngine, frame: FramePacket) -> PreparedOcrFrame:
         started = time.monotonic()
         lines = engine.read(frame.image)
+        screen = text_screen(lines)
+        lines = useful_lines(lines, screen=screen)
         return PreparedOcrFrame(
             frame=frame,
             lines=lines,
             elapsed_ms=round((time.monotonic() - started) * 1_000),
             rotation_degrees=int(getattr(engine, "rotation_quarter_turns", 0)) * 90,
+            ocr_screen=screen,
         )
 
     def prepare(self, frame: FramePacket) -> PreparedOcrFrame:
