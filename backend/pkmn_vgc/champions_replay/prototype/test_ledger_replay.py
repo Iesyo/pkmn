@@ -9,7 +9,7 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 
-from ledger_replay import ReplayEvidenceError, build_replay, export, load_trace_context
+from ledger_replay import ReplayEvidenceError, build_replay, export, load_trace_context, build_trace_context
 
 
 def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
@@ -57,6 +57,21 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    def test_repeated_own_preview_overrides_a_different_saved_team(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, path = _pilot_fixture(Path(directory))
+            with zipfile.ZipFile(path) as archive:
+                job = json.loads(archive.read("job.json"))
+                rows = [json.loads(x) for x in archive.read("output/ocr.trace.jsonl").splitlines()]
+            job["context"]["teams"]["p1"][4] = "Whimsicott"
+            for row in rows[:2]: row["detections"]["teams"]["p1"][4] = "Volcarona"
+            context = build_trace_context(job, rows, battle)
+            self.assertIn("Volcarona", context.teams["p1"])
+            self.assertNotIn("Whimsicott", context.teams["p1"])
+            self.assertEqual(context.team_evidence["p1"]["source"], "team_preview")
+            rows[1]["detections"]["teams"]["p1"][4] = "Rillaboom"
+            with self.assertRaises(ReplayEvidenceError): build_trace_context(job, rows, battle)
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_TRICK_ROOM"), "Requiere ZIP de Trick Room")
     def test_137129_replay_preserves_room_and_observed_sources(self):
         from champions_automaton import BattleAutomaton, read_diagnostic, read_diagnostic_context
