@@ -407,3 +407,35 @@ La fixture canónica vive en
 `backend/tests/data/champions_capture.json`; su replay esperado es
 `backend/tests/data/champions_replay.json` y también lo consume el parser
 TypeScript del sitio.
+
+### Identidades propias con equipo guardado distinto (2 oct 2026)
+
+El equipo del job es una pista, no un filtro del catálogo visual. El Team Preview
+propio compara todos los sprites y conserva por separado cada pareja mote/especie
+repetida al menos tres veces, con margen y sin duplicados entre filas. Un fallo en
+el panel rival no descarta el propio. La traza guarda votos conjuntos, votos por
+fila y errores de ambos paneles; el reinicio de batalla los limpia. Un roster
+propio completo y repetido prevalece sobre otro equipo guardado al exportar.
+
+Para trazas anteriores, Ledger puede corroborar una identidad mediante entrada,
+panel de habilidad y HUD completo repetidos aunque aparezcan en muestras distintas.
+La habilidad debe ser única dentro del roster y no debe haber relevo ni ambigüedad.
+Un resumen propio también puede aportar identidad: selección debilitada nombrada,
+HUD anterior nombrado a cero y dos resúmenes consecutivos con habilidad y al menos
+dos movimientos que identifiquen una especie única del catálogo fijado. Sus
+movimientos y habilidad no se convierten en acciones de combate. Transformaciones
+o copia observadas impiden esa inferencia. Las pruebas conservan los avisos si
+falta evidencia, hay discontinuidad o conflicto.
+
+Una Mega atribuida al compañero se corrige sólo con propietario/piedra repetidos
+y un único actor activo compatible del mismo bando. El evento original queda en
+la evidencia. Un primer HUD parcial aislado durante el impacto no se eleva a
+PS iniciales confirmados; el máximo literal se audita y la entrada sigue inferida.
+
+El diagnóstico `6a28e58111b84978` pasa de ocho avisos a cero, con un replay de nueve
+turnos desde la traza original. La traza antigua no contiene los sprites ni los
+votos visuales de las seis filas: su Team Preview propio aún procede del equipo
+guardado, que incluye Whimsicott en vez de la Volcarona corroborada. Por tanto,
+la reconstrucción de acciones no valida ese preview completo. Una captura nueva
+prueba el resolver corregido; reevaluar la traza no recupera píxeles ausentes.
+Los fixtures de sprites pasan; la revisión visual del vídeo y una captura nueva con RapidOCR siguen pendientes en ROG.
