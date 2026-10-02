@@ -1221,19 +1221,17 @@ class ChampionsTeamPreviewResolver:
 
         image = self._decode_frame(frame, rotation_degrees)
         cards = self._card_boxes(image, side)
-        if team and len(cards) > 1:
+        if len(cards) > 1:
             centres = [(top + bottom) / 2 for _x1, _x2, top, bottom in cards]
             pitch = sorted(second - first for first, second in zip(centres, centres[1:]))[
                 (len(centres) - 1) // 2
             ]
-            # COL-102, job 8b7488cb5914449f: con el equipo propio conocido
-            # sólo hay seis candidatas, y el sprite con color las separa por un
-            # margen de tres a cinco veces. La silueta daba Blaziken como segura
-            # en 8 de 55 lecturas y el panel nunca llegaba a aceptarse.
+            # Compare the coloured sprite rather than only its silhouette.
+            candidates = tuple(dict.fromkeys((*team, *self._every_candidate())))
             species = tuple(
-                # El equipo ya dice qué forma es; el género de una tarjeta
-                # resaltada en lima se lee mal y la cambiaba.
-                self._appearance_decision(image, card, team, None, pitch=pitch)[0]
+                # The job may be attached to a different saved team. Include
+                # the full catalogue; a hint must not exclude the real sprite.
+                self._appearance_decision(image, card, candidates, None, pitch=pitch)[0]
                 for card in cards
             )
         else:
