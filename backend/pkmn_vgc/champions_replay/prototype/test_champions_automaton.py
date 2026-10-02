@@ -366,6 +366,70 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_delayed_opponent_terrain_uses_narration_when_ability_panel_is_absent_or_empty(self):
+        from unittest.mock import patch
+        from champions_automaton import corroborate_delayed_opponent_switch
+        trace = [frame(n) for n in range(1, 104)]
+        trace[0] = frame(1, [event("switch", "p2b", "Garchomp", "100/100"), event("turn", turn=1)])
+        for n in (2, 3):
+            trace[n - 1]["ocr"].append({"text": "Garchomp", "left": .84, "top": .05, "confidence": .99})
+        for n in (4, 5):
+            trace[n - 1]["ocr"].append({"text": "The Trainer withdrew Garchomp!", "left": .15, "top": .73, "confidence": .99})
+        for n in (10, 11):
+            trace[n - 1]["ocr"].append({"text": "The Trainer sent out Rillaboom!", "left": .15, "top": .73, "confidence": .99})
+        trace[22]["ocr"].append({"text": "Grass grew to cover the battlefield!", "left": .15, "top": .73, "confidence": .99})
+        terrain = event("fieldstart", value="move: Grassy Terrain")
+        terrain["tags"] = ["[from] ability: Grassy Surge", "[of] p2b: Rillaboom"]
+        trace[99] = frame(100, [event("switch", "p2b", "Rillaboom", "100/100"),
+                               event("ability", "p2b", "Rillaboom", value="Grassy Surge"), terrain])
+        for n in (100, 101):
+            trace[n - 1]["ocr"].append({"text": "Rillaboom", "left": .84, "top": .05, "confidence": .99})
+        trace[100]["ocr"].append({"text": "100%", "left": .92, "top": .12, "confidence": .99})
+        for empty in (False, True):
+            def producer(*args):
+                proof = corroborate_delayed_opponent_switch(*args)
+                return {**proof, "ability_panel": []} if proof and empty else proof
+            original = copy.deepcopy(trace)
+            with self.subTest(empty=empty), patch("champions_automaton.corroborate_delayed_opponent_switch", side_effect=producer):
+                candidates = ordered_candidates(trace)
+            self.assertEqual(trace, original)
+            entry = next(c for c in candidates if c["event"].get("species") == "Rillaboom" and c["event"]["kind"] == "switch")
+            effect = next(c for c in candidates if c["event"]["kind"] == "fieldstart")
+            self.assertEqual(entry["logical_frame"], 10)
+            self.assertFalse(entry["delayed_voluntary_entry"].get("ability_panel"))
+            self.assertEqual(effect["logical_frame"], 23)
+            self.assertEqual(effect["field_evidence"]["text"], "Grass grew to cover the battlefield!")
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_BFC6"), "Requiere diagnóstico bfc6")
+    def test_real_bfc6_delayed_entry_recovers_ability_terrain_order_and_exports(self):
+        import tempfile
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_BFC6"])
+        rows, _ = read_diagnostic(path)
+        original = copy.deepcopy(rows)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertFalse(ledger["issues"])
+        self.assertEqual(rows, original)
+        entry = next(e for e in ledger["events"] if e.get("delayed_voluntary_entry"))
+        self.assertEqual((entry["species"], entry["slot"], entry["frame"], entry["logical_frame"]),
+                         ("Rillaboom", "p2b", 696, 587))
+        self.assertEqual([p["frame"] for p in entry["delayed_voluntary_entry"]["ability_panel"]], [593, 594, 595, 596])
+        ability = next(e for e in ledger["events"] if e["kind"] == "ability" and e["slot"] == "p2b" and e["value"] == "Grassy Surge")
+        terrain = next(e for e in ledger["events"] if e["kind"] == "fieldstart" and e["value"] == "move: Grassy Terrain")
+        self.assertEqual((ability["frame"], ability["logical_frame"], terrain["logical_frame"]), (593, 593, 594))
+        move = next(e for e in ledger["events"] if e["kind"] == "move" and e["frame"] == 598)
+        self.assertLess(entry["seq"], ability["seq"])
+        self.assertLess(ability["seq"], terrain["seq"])
+        self.assertLess(terrain["seq"], move["seq"])
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(path) as archive:
+            root = Path(directory)
+            trace = root / "ocr.trace.jsonl"
+            trace.write_bytes(archive.read("output/ocr.trace.jsonl"))
+            documents = documents_from_trace(trace, json.loads(archive.read("job.json")), root / "output")
+            self.assertEqual(len(documents), 1)
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((report["status"], report["blocked_battles"]), ("ready", 0))
+
     @staticmethod
     def move_word_variant_trace(move="Psychic", damaged="Psychje", before=False):
         literal = f"The opposing Indeedee used {move}!"
