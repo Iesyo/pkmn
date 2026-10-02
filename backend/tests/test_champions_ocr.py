@@ -4,6 +4,8 @@ import json
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
+from unittest.mock import patch
 from dataclasses import asdict
 from pathlib import Path
 
@@ -56,6 +58,68 @@ def line(
 
 
 class ChampionsOcrTests(unittest.TestCase):
+    def test_partial_own_preview_binds_only_repeated_observed_pairs(self):
+        class Engine:
+            def read(self, _image): return ()
+        detector = ChampionsOcrDetector(engine=Engine())
+        try:
+            for count in range(3):
+                future = Future(); future.set_result({"p1": (("Volcarona", "Polly"), (None, "Other"))})
+                detector._preview_future = future
+                detector._poll_preview_team(wait=True)
+                self.assertEqual(detector.parser.resolved_aliases()["p1"].get("polly"),
+                                 "Volcarona" if count == 2 else None)
+            self.assertEqual(detector._preview_team["p1"], ())
+            self.assertNotIn("other", detector.parser.resolved_aliases()["p1"])
+            detector.reset_battle_state()
+            self.assertFalse(any(detector._preview_label_pairs))
+        finally: detector.close()
+
+    def test_partial_preview_does_not_pair_independent_species_and_nickname_votes(self):
+        class Engine:
+            def read(self, _image): return ()
+        detector = ChampionsOcrDetector(engine=Engine())
+        try:
+            detector._preview_votes["p1"][0]["Volcarona"] = 4
+            detector._preview_labels["p1"][0]["Polly"] = 4
+            detector._accept_preview_team("p1", final=True)
+            self.assertNotIn("polly", detector.parser.resolved_aliases()["p1"])
+            detector._preview_label_pairs[0][("Polly", "Volcarona")] = 4
+            detector._preview_votes["p1"][1]["Volcarona"] = 4
+            detector._accept_preview_team("p1", final=True)
+            self.assertNotIn("polly", detector.parser.resolved_aliases()["p1"])
+        finally: detector.close()
+
+    def test_opponent_preview_failure_preserves_own_labelled_reading(self):
+        class Engine:
+            def read(self, _image): return ()
+        class Resolver:
+            def resolve(self, _frame, **kwargs): raise DetectionError("opponent unreadable")
+            def resolve_labelled_rows(self, _frame, _lines, **kwargs): return (("Volcarona", "Polly"),)
+        detector = ChampionsOcrDetector(engine=Engine(), team_preview_resolver=Resolver())
+        try:
+            read = detector._read_preview(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"), 0)
+            self.assertEqual(read, {"p2": (), "p1": (("Volcarona", "Polly"),)})
+            self.assertEqual(detector._preview_errors["opponent unreadable"], 1)
+        finally: detector.close()
+
+    def test_own_preview_saved_team_cannot_exclude_the_observed_sprite(self):
+        resolver = object.__new__(ChampionsTeamPreviewResolver)
+        cards = ((0, 100, 0, 100), (0, 100, 120, 220))
+        candidate_sets = []
+        def appearance(_image, _card, candidates, _gender, **kwargs):
+            candidate_sets.append(candidates)
+            return ("Volcarona" if "Volcarona" in candidates else None, None)
+        with patch.object(resolver, "_decode_frame", return_value=object()), \
+             patch.object(resolver, "_card_boxes", return_value=cards), \
+             patch.object(resolver, "_every_candidate", return_value=("Volcarona", "Whimsicott")), \
+             patch.object(resolver, "_appearance_decision", side_effect=appearance), \
+             patch.object(resolver, "_labels_for_cards", return_value=("Polly", "Other")):
+            rows = resolver.resolve_labelled_rows(FramePacket(index=1, timestamp_ms=500, image=b"jpeg"),
+                                                  side="p1", team=("Whimsicott",))
+        self.assertEqual(rows[0], ("Volcarona", "Polly"))
+        self.assertTrue(all("Volcarona" in candidates for candidates in candidate_sets))
+
     def test_known_background_alias_does_not_displace_the_two_real_hud_plates(self):
         parser = self.parser()
         parser._bind_alias("p2", "NOuKTO", "Steelix", evidence="inferred")
