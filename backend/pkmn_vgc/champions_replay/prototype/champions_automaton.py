@@ -426,6 +426,18 @@ def species_abilities() -> dict[str, set[str]]:
         return {}
 
 
+@lru_cache(maxsize=1)
+def known_move_keys() -> frozenset[str]:
+    """Pinned names protect real moves from OCR-variant reconciliation."""
+    path = Path(__file__).resolve().parents[4] / "public/data/showdown-dex.json.gz"
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            dex = json.load(stream)
+        return frozenset(re.sub(r"\W+", "", move["name"].casefold()) for move in dex["moves"].values())
+    except (OSError, ValueError, KeyError):
+        return frozenset()
+
+
 def merge_recovered_candidates(candidates: list[dict[str, Any]], recovered: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Preserve the established lead ordering; only insert new observations.
     result = list(candidates)
@@ -3835,6 +3847,101 @@ class BattleAutomaton:
                     continue
                 self._issue("unparsed_action_text", f"Texto OCR sin evento candidato: {text}", frame)
 
+    def _reconcile_action_reading_variants(self) -> None:
+        """Audit a damaged move word within an already confirmed announcement.
+
+        This never resolves a new move from spelling similarity. The action
+        must exist, with two contiguous literal readings naming its actor.
+        A known different move, scene gap or intervening action keeps the issue.
+        """
+        vocabulary = known_move_keys()
+        if not vocabulary:
+            return
+        key = lambda text: re.sub(r"\W+", "", text.casefold())
+
+        def close_word(observed: str, literal: str) -> bool:
+            if min(len(observed), len(literal)) < 4 or abs(len(observed) - len(literal)) > 2:
+                return False
+            previous = list(range(len(literal) + 1))
+            for i, char in enumerate(observed, 1):
+                current = [i]
+                for j, expected in enumerate(literal, 1):
+                    current.append(min(current[-1] + 1, previous[j] + 1,
+                                       previous[j - 1] + (char != expected)))
+                previous = current
+            return previous[-1] <= 2
+
+        actions = [e for e in self.events if e["kind"] == "move" and e["status"] == "consistent"]
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] != "unparsed_action_text":
+                unresolved.append(issue)
+                continue
+            number = issue["frame"]
+            row = self.frame_lookup[number]
+            text = issue["message"].removeprefix("Texto OCR sin evento candidato: ")
+            source = next((line for line in row.get("ocr", ()) if line.get("text", "").strip() == text and
+                           line.get("confidence", 0) >= .9 and
+                           in_area(line, BATTLE_TEXT_AREAS["narration"])), None)
+            signature = narration_signature(text)
+            if not source or not signature or signature[0] != "move" or key(signature[3]) in vocabulary:
+                unresolved.append(issue)
+                continue
+            matches = []
+            for action in actions:
+                literal = key(action["move"])
+                side, named = signature[1:3]
+                resolved = identity_species(self.nickname_species[side].get(named.casefold(), named)).casefold()
+                expected = identity_species(action["species"]).casefold()
+                if (not action["slot"].startswith(side) or literal not in vocabulary or
+                    resolved not in {expected, expected.split("-", 1)[0]} or
+                    not close_word(key(signature[3]), literal)):
+                    continue
+                episode = {number: source}
+                for direction in (-1, 1):
+                    last_ms = row["timestamp_ms"]
+                    for offset in range(1, 7):
+                        nearby = self.frame_lookup.get(number + direction * offset)
+                        if (not nearby or abs(nearby["timestamp_ms"] - row["timestamp_ms"]) > 3_000 or
+                            not 0 < abs(nearby["timestamp_ms"] - last_ms) <= 1_500):
+                            break
+                        readings = [(line, sig) for line in nearby.get("ocr", ())
+                                    if line.get("confidence", 0) >= .9 and
+                                    in_area(line, BATTLE_TEXT_AREAS["narration"]) and
+                                    (sig := narration_signature(line.get("text", "").strip()))]
+                        if len(readings) != 1:
+                            break
+                        line, sig = readings[0]
+                        word = key(sig[3]) if sig[0] == "move" else ""
+                        if (sig[:3] != signature[:3] or
+                            abs(line["left"] - source["left"]) > .03 or
+                            abs(line["top"] - source["top"]) > .03 or
+                            (word != literal and (word in vocabulary or not close_word(word, literal)))):
+                            break
+                        episode[nearby["frame"]] = line
+                        last_ms = nearby["timestamp_ms"]
+                proof = [{"frame": n, **line} for n, line in sorted(episode.items())
+                         if line.get("confidence", 0) >= .95 and
+                         key(narration_signature(line["text"].strip())[3]) == literal]
+                numbers = [line["frame"] for line in proof]
+                if (action["frame"] not in numbers or
+                    not any(b == a + 1 for a, b in zip(numbers, numbers[1:])) or
+                    any(e["seq"] != action["seq"] and e["status"] != "suppressed" and
+                        e["kind"] in {"move", "cant", "turn", "switch", "drag", "faint", "mega", "battle_end", "illusion_reveal"} and
+                        min(episode) <= e["frame"] <= max(episode) for e in self.events)):
+                    continue
+                matches.append((action, proof))
+            if len(matches) != 1:
+                unresolved.append(issue)
+                continue
+            action, proof = matches[0]
+            self.resolved_issues.append({**issue, "resolution": {
+                "state": "resolved", "event_seq": action["seq"], "actor_id": action["actor_id"],
+                "slot": action["slot"], "move": action["move"],
+                "reason": "Palabra OCR dañada dentro del mismo anuncio continuo; acción y actor confirmados por narración literal repetida.",
+                "discarded_reading": {"frame": number, **source}, "evidence": proof}})
+        self.issues = unresolved
+
     def _reconcile_hp_narration(self) -> None:
         """Link typed messages after all HP episodes have been consolidated.
 
@@ -5820,6 +5927,7 @@ class BattleAutomaton:
             self._issue("last_turn_without_action", "Último turno sin acción observable.",
                         self.frames[-1]["frame"])
         self._unparsed_actions()
+        self._reconcile_action_reading_variants()
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
