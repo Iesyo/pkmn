@@ -4300,7 +4300,9 @@ class ChampionsOcrDetector:
             "p1": [Counter() for _ in range(6)],
             "p2": [Counter() for _ in range(6)],
         }
+        self._preview_label_pairs: list[Counter[tuple[str, str]]] = [Counter() for _ in range(6)]
         self._preview_errors: Counter[str] = Counter()
+        self._preview_own_errors: Counter[str] = Counter()
         self._preview_team: dict[str, tuple[str, ...]] = {"p1": (), "p2": ()}
         self._preview_source: PreparedOcrFrame | None = None
 
@@ -4334,6 +4336,8 @@ class ChampionsOcrDetector:
                                 self._preview_votes[side][index][species] += 1
                             if label:
                                 self._preview_labels[side][index][label] += 1
+                            if species and label:
+                                self._preview_label_pairs[index][(label, species)] += 1
         elif not wait:
             return ()
         applied = ()
@@ -4349,6 +4353,25 @@ class ChampionsOcrDetector:
         """Se queda con el roster que repiten varios frames del Team Preview."""
 
         rows = self._preview_votes[side]
+        # Accept independently corroborated own rows even if a different
+        # sprite never resolves. Never assign a row using the saved team order.
+        if side == "p1":
+            labels = []
+            for votes, names, pairs in zip(rows, self._preview_labels[side], self._preview_label_pairs, strict=True):
+                species_rank, name_rank = votes.most_common(2), names.most_common(2)
+                if not species_rank or not name_rank:
+                    continue
+                species, count = species_rank[0]
+                nickname, name_count = name_rank[0]
+                if (pairs[(nickname, species)] >= self._PREVIEW_MIN_VOTES and
+                    count >= self._PREVIEW_MIN_VOTES and name_count >= self._PREVIEW_MIN_VOTES and
+                    count - (species_rank[1][1] if len(species_rank) > 1 else 0) >= self._PREVIEW_MIN_LEAD and
+                    name_count - (name_rank[1][1] if len(name_rank) > 1 else 0) >= self._PREVIEW_MIN_LEAD and
+                    sum(bool(other and other.most_common(1)[0][0] == species) for other in rows) == 1 and
+                    sum(bool(other and other.most_common(1)[0][0] == nickname) for other in self._preview_labels[side]) == 1):
+                    labels.append((nickname, species))
+            if labels:
+                self.parser.bind_preview_labels(labels, side=side)
         if not any(rows):
             if final and side == "p2" and self._preview_errors:
                 error, _count = self._preview_errors.most_common(1)[0]
@@ -4390,7 +4413,7 @@ class ChampionsOcrDetector:
             for votes, species in zip(self._preview_labels[side], applied, strict=False)
             if votes
         ]
-        if labels:
+        if labels and side != "p1":
             self.parser.bind_preview_labels(labels, side=side)
         return applied
 
@@ -4451,9 +4474,7 @@ class ChampionsOcrDetector:
     ) -> dict[str, tuple]:
         """Lee ambos paneles del Team Preview en la misma pasada.
 
-        El rival es el que importa y su fallo se propaga; el del jugador es un
-        extra que ahorra pedir el equipo por fuera, así que si no sale se deja
-        vacío en vez de tumbar la lectura.
+        Cada panel conserva su evidencia aunque la lectura del otro falle.
         """
 
         assert self._preview_resolver is not None
@@ -4471,18 +4492,21 @@ class ChampionsOcrDetector:
         # frames en vez de perderla (ver _accept_preview_team).
         read_with_guesses = getattr(self._preview_resolver, "resolve_rows_with_guesses", None)
         p2_read = read_with_guesses or read
-        rosters: dict[str, tuple] = {
-            "p2": p2_read(frame, rotation_degrees=rotation_degrees, side="p2")
-        }
+        rosters: dict[str, tuple] = {}
+        try:
+            rosters["p2"] = p2_read(frame, rotation_degrees=rotation_degrees, side="p2")
+        except Exception as error:
+            # An unreadable opposing panel must not discard our labelled rows.
+            self._preview_errors[str(error)] += 1
+            rosters["p2"] = ()
         # El panel del jugador sí trae el mote escrito junto al sprite.
         labelled = getattr(self._preview_resolver, "resolve_labelled_rows", None)
         try:
             if labelled is None:
                 rosters["p1"] = read(frame, rotation_degrees=rotation_degrees, side="p1")
             else:
-                # El equipo propio del job, como conjunto de candidatas: su
-                # orden guardado no dice nada de las filas (ver
-                # ChampionsTextParser._preview_detections).
+                # Saved species are hints; the resolver still compares the
+                # complete catalogue and never assigns by saved row order.
                 rosters["p1"] = labelled(
                     frame,
                     lines,
@@ -4490,7 +4514,8 @@ class ChampionsOcrDetector:
                     side="p1",
                     team=tuple(self._base_context.p1_team),
                 )
-        except Exception:  # noqa: BLE001 - el panel propio es opcional
+        except Exception as error:  # noqa: BLE001 - preserve the other panel
+            self._preview_own_errors[str(error)] += 1
             rosters["p1"] = ()
         return rosters
 
@@ -4594,6 +4619,17 @@ class ChampionsOcrDetector:
             "resolved_identities": self.parser.resolved_identities(),
             "visual_alias_pending": self._alias_future is not None,
             "preview_team_pending": self._preview_future is not None,
+            "preview_identity_evidence": {
+                side: [{"species_votes": dict(votes), "nickname_votes": dict(names)}
+                       for votes, names in zip(self._preview_votes[side], self._preview_labels[side], strict=True)]
+                for side in ("p1", "p2")
+            },
+            "preview_identity_errors": dict(self._preview_errors),
+            "preview_own_errors": dict(self._preview_own_errors),
+            "preview_label_pairs": [
+                [{"nickname": name, "species": species, "votes": count}
+                 for (name, species), count in pairs.items()] for pairs in self._preview_label_pairs
+            ],
             "detections": {
                 "players": {"p1": detections.p1_name, "p2": detections.p2_name},
                 "teams": {
@@ -4686,6 +4722,9 @@ class ChampionsOcrDetector:
                 for votes in rows:
                     votes.clear()
         self._preview_errors.clear()
+        self._preview_own_errors.clear()
+        for pairs in self._preview_label_pairs:
+            pairs.clear()
         self._preview_team = {"p1": (), "p2": ()}
         self._preview_source = None
         self.parser.reset_battle_state()
