@@ -366,6 +366,95 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    @staticmethod
+    def move_word_variant_trace(move="Psychic", damaged="Psychje", before=False):
+        literal = f"The opposing Indeedee used {move}!"
+        variant = f"The opposing Indeedee used {damaged}!"
+        trace = [frame(1, [event("switch", "p2a", "Indeedee-F", "100/100"),
+                           event("turn", turn=1)])]
+        for n in range(2, 6):
+            accepted = 3 if before else 2
+            trace.append(frame(n, [event("move", "p2a", "Indeedee-F", move=move)] if n == accepted else [],
+                               [variant if n == (2 if before else 5) else literal]))
+            trace[-1]["ocr"][-1].update(left=.15, right=.55, top=.73, bottom=.79, confidence=.99)
+        trace.append(frame(6, [event("message", value="The battle has ended due to a forfeit.")]))
+        return trace
+
+    def test_damaged_move_word_is_audited_as_same_continuous_announcement(self):
+        for move, damaged in (("Psychic", "Psychje"), ("Protect", "Pr0teet")):
+            for before in (False, True):
+                with self.subTest(move=move, before=before):
+                    trace = self.move_word_variant_trace(move, damaged, before)
+                    original = copy.deepcopy(trace)
+                    ledger = BattleAutomaton(0, trace).run()
+                    self.assertEqual(trace, original)
+                    self.assertFalse(ledger["issues"])
+                    self.assertEqual([(e["move"], e["slot"]) for e in ledger["events"] if e["kind"] == "move"],
+                                     [(move, "p2a")])
+                    resolution = next(i["resolution"] for i in ledger["resolved_issues"]
+                                      if i["code"] == "unparsed_action_text")
+                    self.assertEqual(resolution["discarded_reading"]["text"],
+                                     f"The opposing Indeedee used {damaged}!")
+                    self.assertEqual(resolution["move"], move)
+                    self.assertEqual([p["frame"] for p in resolution["evidence"]],
+                                     [3, 4, 5] if before else [2, 3, 4])
+
+    def test_move_variant_requires_same_actor_continuity_and_repeated_literal_proof(self):
+        for change in ("single_literal", "weak_literal", "weak_variant", "different_actor", "different_side",
+                       "known_move", "too_damaged", "gap", "time_gap", "turn", "replacement", "position", "no_action"):
+            trace = self.move_word_variant_trace()
+            if change == "single_literal":
+                trace[2]["ocr"] = trace[3]["ocr"] = []
+            elif change == "weak_literal":
+                for row in trace[1:4]: row["ocr"][0]["confidence"] = .94
+            elif change == "weak_variant": trace[4]["ocr"][0]["confidence"] = .8
+            elif change == "different_actor": trace[4]["ocr"][0]["text"] = "The opposing Gardevoir used Psychje!"
+            elif change == "different_side": trace[4]["ocr"][0]["text"] = "Indeedee used Psychje!"
+            elif change == "known_move": trace[4]["ocr"][0]["text"] = "The opposing Indeedee used Psybeam!"
+            elif change == "too_damaged": trace[4]["ocr"][0]["text"] = "The opposing Indeedee used Psy0000!"
+            elif change == "gap": trace[3]["ocr"] = []
+            elif change == "time_gap":
+                for row in trace[4:]: row["timestamp_ms"] += 4_000
+            elif change == "turn": trace[3]["detections"]["events"] = [event("turn", turn=2)]
+            elif change == "replacement": trace[3]["detections"]["events"] = [event("switch", "p2a", "Delphox", "100/100")]
+            elif change == "position": trace[4]["ocr"][0]["left"] = .65
+            else: trace[1]["detections"]["events"] = []
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, trace).run()
+                self.assertIn("unparsed_action_text", {i["code"] for i in ledger["issues"]})
+                self.assertFalse(any(i["code"] == "unparsed_action_text" for i in ledger["resolved_issues"]))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_96C5"), "Requiere diagnóstico 96c5")
+    def test_real_96c5_audits_word_variant_without_changing_events_and_exports(self):
+        import tempfile
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_96C5"])
+        frames, _ = read_diagnostic(path)
+        original = copy.deepcopy(frames)
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(frames, original)
+        self.assertFalse(ledger["issues"])
+        resolution = next(i["resolution"] for i in ledger["resolved_issues"] if i["frame"] == 461)
+        self.assertEqual([p["frame"] for p in resolution["evidence"]], [458, 459, 460])
+        self.assertEqual(resolution["move"], "Psychic")
+        self.assertEqual(ledger["events"][resolution["event_seq"] - 1]["frame"], 458)
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            saved = json.loads(archive.read("output/ledger-battle-001.json"))
+            # The current baseline keeps repeated victory text; the archived
+            # ledger already deduplicated it. Combat events stay identical.
+            normalized = copy.deepcopy(ledger["events"])
+            for item in normalized:
+                if item["kind"] == "battle_end":
+                    item["narration"] = list(dict.fromkeys(item["narration"]))
+            self.assertEqual(normalized, saved["events"])
+            root = Path(directory)
+            trace = root / "trace.jsonl"
+            trace.write_bytes(archive.read("output/ocr.trace.jsonl"))
+            documents = documents_from_trace(trace, json.loads(archive.read("job.json")), root / "output")
+            self.assertEqual(len(documents), 1)
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((report["status"], report["replay_count"], report["blocked_battles"]), ("ready", 1, 0))
+
     def test_archived_action_outside_narration_is_rejected_with_original_ocr(self):
         for kind, text in (("move", "Arcanine used Protect!"), ("faint", "Arcanine fainted!"),
                            ("message", "Arcanine was hurt by its burn!")):
