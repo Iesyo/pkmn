@@ -23,11 +23,15 @@ from typing import Any, Iterable
 
 if __package__:
     from ..pokemon_names import strip_pokemon_title
+    from ..ocr_regions import (BATTLE_TEXT_AREAS, CLOCK_AREAS, HP_HUD_AREAS, NAME_HUD_AREAS,
+                               in_area, text_screen, useful_lines)
 else:
     # Keep the standalone CLI dependency-free while sharing the parser's
     # exact title rules instead of maintaining a second list.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from pokemon_names import strip_pokemon_title
+    from ocr_regions import (BATTLE_TEXT_AREAS, CLOCK_AREAS, HP_HUD_AREAS, NAME_HUD_AREAS,
+                             in_area, text_screen, useful_lines)
 
 
 SLOTS = {"p1a", "p1b", "p2a", "p2b"}
@@ -54,18 +58,8 @@ HUD_NUMBER = re.compile(r"^(\d{1,3})\s*%?$")
 PLACEHOLDER = re.compile(r"^__champions_actor_[^_]+_\d+__$")
 # Zonas normalizadas de los cuatro HUD de Champions. Se comprueba el slot
 # antes de aceptar una lectura: el 0% de p2b no puede confirmar PS de p2a.
-HP_HUD_AREAS = {
-    "p1a": (.10, .27, .87, .98), "p1b": (.30, .48, .87, .98),
-    "p2a": (.66, .82, .08, .20), "p2b": (.89, .99, .08, .20),
-}
-NAME_HUD_AREAS = {
-    "p1a": (.05, .27, .82, .91), "p1b": (.27, .49, .82, .91),
-    "p2a": (.57, .81, .02, .10), "p2b": (.81, .99, .02, .10),
-}
 # The clock may be merged with the team icons to its right. Classify its
 # origin (left/top), not the merged box's centre, in normalized video space.
-CLOCK_AREAS = {"p1_clock": (.15, .25, .78, .855),
-               "p2_clock": (.77, .86, .145, .205)}
 
 
 def clock_region(line: dict[str, Any]) -> str | None:
@@ -1640,6 +1634,7 @@ class BattleAutomaton:
         self.battle_index = battle_index
         self.context = context or {}
         self.raw_frames = frames
+        self.raw_frame_lookup = {row["frame"]: row for row in frames}
         self.transition_prefix = confirmed_transition_prefix(frames)
         if self.transition_prefix:
             frames = [row for row in frames if row["frame"] > self.transition_prefix["last_frame"]]
@@ -1658,6 +1653,11 @@ class BattleAutomaton:
                                for row in frames}
         frames = [{**row, "ocr": [line for line in row.get("ocr", ()) if not clock_region(line)]}
                   if self.clock_readings[row["frame"]] else row for row in frames]
+        # Saved traces pass the same geometry gate as new captures. Keep their
+        # raw text separately for audit and rejection of old detector noise.
+        frames = [{**row, "ocr": list(useful_lines(
+            row.get("ocr", ()), screen="preview" if row.get("detections", {}).get("team_preview")
+            else text_screen(row.get("ocr", ())), allow_unlocated=True))} for row in frames]
         self.frames = frames
         self.frame_lookup = {row["frame"]: row for row in frames}
         observed_resolutions: dict[str, set[str]] = collections.defaultdict(set)
@@ -3222,6 +3222,10 @@ class BattleAutomaton:
     def _handle(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
         kind = event["kind"]
+        if kind in {"move", "faint"} and (outside := self._outside_narration_source(candidate)):
+            item = self._append(candidate, kind="ui_text", status="suppressed", note=outside["reason"])
+            item["ui_support"] = outside
+            return
         if kind in HP_KINDS:
             self._hp(candidate)
             return
@@ -3321,6 +3325,10 @@ class BattleAutomaton:
             if re.fullmatch(r"Are you sure you wish to forfeit\?", value, re.I):
                 self._append(candidate, kind="ui_text", status="suppressed",
                              note="Confirmación del menú de abandono; aún no terminó la batalla.")
+                return
+            if outside := self._outside_narration_source(candidate):
+                item = self._append(candidate, kind="ui_text", status="suppressed", note=outside["reason"])
+                item["ui_support"] = outside
                 return
             if value.casefold() == "a critical hit!":
                 # Do not interrupt an HP animation or guess which spread-move
@@ -5255,6 +5263,44 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _outside_narration_source(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        """Audit an old detector event explicitly read outside the text box.
+
+        Missing text/coordinates never suffice to reject an event. An exact
+        located source is required; matching narration inside the known area
+        in any adjacent sample protects the event, including delayed reports.
+        """
+        event = candidate["event"]
+        slot, kind = event.get("slot"), event["kind"]
+        def matches(line: dict[str, Any]) -> bool:
+            text = line.get("text", "").strip()
+            if kind == "message":
+                return text == event.get("value") and not RESULT_NARRATION.fullmatch(text)
+            signature = narration_signature(text)
+            if not signature or signature[0] != kind or not slot or signature[1] != slot[:2]:
+                return False
+            named = self.nickname_species[slot[:2]].get(signature[2].casefold(), signature[2])
+            expected = candidate.get("canonical_species") or self._resolve(event.get("species")) or ""
+            return (identity_species(named).casefold() in
+                    {identity_species(expected).casefold(), identity_species(expected).casefold().split("-", 1)[0]} and
+                    (kind != "move" or signature[3] == event.get("move")))
+        centers = {candidate["observed_frame"]}
+        if isinstance(event.get("source_frame"), int):
+            centers.add(event["source_frame"] + 1)
+        numbers = {n + offset for n in centers for offset in (-1, 0, 1)}
+        rejected = []
+        for number in sorted(numbers):
+            for line in self.raw_frame_lookup.get(number, {}).get("ocr", ()):
+                if line.get("confidence", 0) < .9 or not matches(line):
+                    continue
+                if "left" not in line or "top" not in line:
+                    return None
+                if in_area(line, BATTLE_TEXT_AREAS["narration"]):
+                    return None
+                rejected.append({"frame": number, **line})
+        return {"state": "confirmed", "raw_event": dict(event), "evidence": rejected,
+                "reason": "Texto fuera de la zona de narración; candidato archivado sin acción de combate."} if rejected else None
+
     def _reconcile_unknown_entry_maxima(self) -> None:
         """Fill an already inferred full entry's maximum from its later HUD.
 
@@ -5301,7 +5347,7 @@ class BattleAutomaton:
         slot, raw = event.get("slot"), event.get("species")
         if slot not in SLOTS or event.get("health") or not PLACEHOLDER.fullmatch(raw or ""):
             return None
-        row = self.frame_lookup[number]
+        row = self.raw_frame_lookup[number]
         resolved = row.get("resolved_identities", {}).get(raw)
         aliases = row.get("resolved_aliases", {}).get(slot[:2], {})
         left, right, top, bottom = NAME_HUD_AREAS[slot]
