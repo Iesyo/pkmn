@@ -366,6 +366,118 @@ def partial_faint_trace(side="p1", name="Tomoe", species="Kingambit"):
 
 
 class TemporalAutomatonTests(unittest.TestCase):
+    def test_literal_alias_override_requires_complete_repeated_local_evidence(self):
+        from champions_automaton import corroborated_literal_aliases
+        trace = [frame(1, [event("switch", "p2a", "Whimsicott", "100/100")]), frame(2)]
+        for row in trace:
+            row["resolved_aliases"]["p2"]["whimsicott"] = "Rotom-Wash"
+            row["ocr"] = [{"text": "Whimsicott", "left": .62, "top": .04, "confidence": .99},
+                           {"text": "100%", "left": .70, "top": .12, "confidence": .99}]
+        self.assertEqual(corroborated_literal_aliases(trace)[0]["species"], "Whimsicott")
+        for change in ("weak", "other_name", "malformed_hp", "gap", "other_battle"):
+            altered = copy.deepcopy(trace)
+            if change == "weak": altered[1]["ocr"][0]["confidence"] = .8
+            elif change == "other_name": altered[1]["ocr"][0]["text"] = "Rotom"
+            elif change == "malformed_hp": altered[1]["ocr"][1]["text"] = "100100"
+            elif change == "gap": altered[1]["timestamp_ms"] = 10_000
+            else: altered[1]["battle_index"] = 1
+            with self.subTest(change=change):
+                self.assertEqual(corroborated_literal_aliases(altered), [])
+
+    def test_background_alias_cannot_create_entry_but_real_plate_is_protected(self):
+        raw = "__champions_actor_p2_0001__"
+        trace = [frame(1, [event("switch", "p2a", "Garchomp", "100/100")]),
+                 frame(2, [event("switch", "p2a", raw)])]
+        trace[1]["resolved_aliases"]["p2"]["noise"] = "Rotom-Wash"
+        trace[1]["resolved_identities"][raw] = "Rotom-Wash"
+        trace[1]["ocr"] = [{"text": "noise", "left": .45, "top": .04, "confidence": .6}]
+        original = copy.deepcopy(trace)
+        ledger = BattleAutomaton(0, trace).run()
+        rejected = ledger["events"][-1]
+        self.assertEqual((rejected["kind"], rejected["status"]), ("ui_text", "suppressed"))
+        self.assertEqual(len(ledger["actors"]), 1)
+        self.assertEqual(trace, original)
+        for change in ("valid_plate", "announcement", "missing_noise"):
+            altered = copy.deepcopy(trace)
+            if change == "valid_plate":
+                altered[1]["ocr"][0].update(left=.62, confidence=.99)
+            elif change == "announcement":
+                altered[1]["ocr"].append({"text": "Rival sent out Rotom!", "top": .75, "confidence": .99})
+            else:
+                altered[1]["ocr"] = []
+            machine = BattleAutomaton(0, altered)
+            candidate = {"event": altered[1]["detections"]["events"][0], "observed_frame": 2}
+            with self.subTest(change=change):
+                self.assertIsNone(machine._background_placeholder_entry(candidate))
+
+    def test_later_full_hud_supplies_unknown_maximum_without_repairing_digits(self):
+        trace = [frame(1, [event("switch", "p1a", "Arcanine")])] + [frame(n) for n in range(2, 21)]
+        trace[1]["ocr"] = [{"text": "Arcanine", "left": .08, "top": .86, "confidence": .99},
+                             {"text": "180180", "left": .14, "top": .92, "confidence": .999}]
+        trace[2]["detections"]["events"] = [event("move", "p1a", "Arcanine", move="Protect")]
+        trace[-1]["ocr"] = [{"text": "Arcanine", "left": .08, "top": .86, "confidence": .99},
+                             {"text": "180/180", "left": .14, "top": .92, "confidence": .99}]
+        ledger = BattleAutomaton(0, trace).run()
+        entry = ledger["events"][0]
+        self.assertEqual((entry["health"], entry["hp_state"]), ("180/180", "inferred"))
+        self.assertEqual(entry["maximum_support"]["evidence"][0]["frame"], 20)
+        for change in ("missing_slash", "other_actor", "weak", "replacement", "damage"):
+            altered = copy.deepcopy(trace)
+            if change == "missing_slash": altered[-1]["ocr"][1]["text"] = "180180"
+            elif change == "other_actor": altered[-1]["ocr"][0]["text"] = "Ninetales"
+            elif change == "weak": altered[-1]["ocr"][1]["confidence"] = .8
+            elif change == "replacement": altered[1]["detections"]["events"] = [event("switch", "p1a", "Ninetales")]
+            else:
+                altered[1]["detections"]["events"] = [event("damage", "p1a", "Arcanine", "100/180")]
+                altered[1]["ocr"][1]["text"] = "100/180"
+            with self.subTest(change=change):
+                self.assertNotIn("maximum_support", BattleAutomaton(0, altered).run()["events"][0])
+
+    def test_repeated_move_subject_corrects_slot_and_requires_unique_active_actor(self):
+        trace = [frame(1, [event("switch", "p2a", "Whimsicott", "100/100"),
+                            event("switch", "p2b", "Rotom-Wash", "100/100")]),
+                 frame(2, [event("move", "p2b", "Whimsicott", move="Tailwind")],
+                       ["The opposing Whimsicott used Tailwind!"]),
+                 frame(3, texts=["The opposing Whimsicott used Tailwind!"])]
+        corrected = BattleAutomaton(0, trace).run()["events"][-1]
+        self.assertEqual((corrected["slot"], corrected["status"]), ("p2a", "consistent"))
+        self.assertEqual(corrected["original_slot"], "p2b")
+        for change in ("single_reading", "other_subject", "weak"):
+            altered = copy.deepcopy(trace)
+            if change == "single_reading": altered[2]["ocr"] = []
+            elif change == "other_subject": altered[2]["ocr"][0]["text"] = "The opposing Rotom used Tailwind!"
+            else: altered[2]["ocr"][0]["confidence"] = .8
+            with self.subTest(change=change):
+                self.assertIn("actor_mismatch", {i["code"] for i in BattleAutomaton(0, altered).run()["issues"]})
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_2205"), "Requiere diagnóstico 2205")
+    def test_real_2205_preserves_two_opponents_and_exports_through_production(self):
+        import tempfile
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_2205"])
+        frames, _ = read_diagnostic(path)
+        original = copy.deepcopy(frames)
+        ledger = BattleAutomaton(0, frames, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(frames, original)
+        entries = [e for e in ledger["events"] if e["kind"] == "switch" and e["status"] == "consistent"]
+        self.assertEqual([(e["slot"], e["species"]) for e in entries if e["slot"].startswith("p2")][:2],
+                         [("p2a", "Whimsicott"), ("p2b", "Rotom-Wash")])
+        self.assertEqual(sum(a["species"] == "Rotom-Wash" for a in ledger["actors"].values()), 1)
+        self.assertEqual(sum(a["species"] == "Whimsicott" for a in ledger["actors"].values()), 1)
+        faint = next(e for e in ledger["events"] if e["frame"] == 481)
+        self.assertEqual(faint["species"], "Whimsicott")
+        self.assertEqual([e["kind"] for e in ledger["events"] if e["frame"] in {390, 762, 949}], ["ui_text"] * 3)
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(path) as archive:
+            root = Path(directory)
+            job = json.loads(archive.read("job.json"))
+            trace = root / "trace.jsonl"
+            trace.write_bytes(archive.read("output/ocr.trace.jsonl"))
+            documents = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(len(documents), 1)
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((report["status"], report["replay_count"]), ("ready", 1))
+
     def test_knock_off_after_faint_keeps_victim_identity_without_restoring_occupancy(self):
         for side, item in (("p1", "Life Orb"), ("p2", "Choice Scarf")):
             other = "p2" if side == "p1" else "p1"
