@@ -731,6 +731,23 @@ def reconstruct_entry_actions(entry: dict[str, Any], candidates: list[dict[str, 
         item["observed_ms"] = origin["timestamp_ms"]
 
 
+def repeated_entry_ability_panel(slot: str, name: str, ability: str, start: int, end: int,
+                                 frames: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Independent panel evidence shared by both delayed-entry proof types."""
+    panels = []
+    for number in range(start, min(start + 21, end)):
+        row = frames.get(number, {})
+        panel = [line for line in row.get("ocr", ()) if
+                 (.75 <= line.get("left", -1) <= .99 if slot.startswith("p2")
+                  else .02 <= line.get("left", -1) <= .30) and
+                 .30 <= line.get("top", -1) <= .55 and line.get("confidence", 0) >= .95]
+        if (any(re.sub(r"[’']s$", "", line["text"].casefold()) == name for line in panel) and
+                any(line["text"] == ability for line in panel)):
+            panels.append({"frame": number, "text": ability,
+                           "owner": name, "confidence": min(line["confidence"] for line in panel)})
+    return panels if any(b["frame"] == a["frame"] + 1 for a, b in zip(panels, panels[1:])) else []
+
+
 def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: list[dict[str, Any]],
                                         candidates: list[dict[str, Any]],
                                         frames: dict[int, dict[str, Any]],
@@ -807,18 +824,8 @@ def corroborate_delayed_voluntary_entry(item: dict[str, Any], announcements: lis
                         c["event"].get("value")), None)
         if not ability:
             continue
-        panels = []
-        for number in range(start, min(start + 21, end)):
-            row = frames.get(number, {})
-            panel = [line for line in row.get("ocr", ()) if
-                     (.75 <= line.get("left", -1) <= .99 if slot.startswith("p2")
-                      else .02 <= line.get("left", -1) <= .30) and
-                     .30 <= line.get("top", -1) <= .55 and line.get("confidence", 0) >= .95]
-            if (any(re.sub(r"[’']s$", "", line["text"].casefold()) == name for line in panel) and
-                    any(line["text"] == ability["event"]["value"] for line in panel)):
-                panels.append({"frame": number, "text": ability["event"]["value"],
-                               "owner": name, "confidence": min(line["confidence"] for line in panel)})
-        if not any(b["frame"] == a["frame"] + 1 for a, b in zip(panels, panels[1:])):
+        panels = repeated_entry_ability_panel(slot, name, ability["event"]["value"], start, end, frames)
+        if not panels:
             continue
         # Another occupant or withdrawal in this slot would break continuity.
         if any(c is not item and c["event"].get("slot") == slot and
@@ -1023,10 +1030,20 @@ def corroborate_delayed_opponent_switch(item: dict[str, Any],
                (seen := hud_nickname(frames[n], slot)) and seen not in {old_name, incoming}
                for n in range(first, end) if n in frames):
             continue
-        return {"state": "confirmed", "anchor": latest, "nickname": incoming,
-                "withdrawals": withdraw, "announcements": entries,
-                "outgoing_hud_frames": old_hud, "incoming_hud_frames": new_hud[:2],
-                "reason": "Retirada y entrada repetidas; HUD anterior y posterior fijan un único slot"}
+        proof = {"state": "confirmed", "anchor": latest, "nickname": incoming,
+                 "withdrawals": withdraw, "announcements": entries,
+                 "outgoing_hud_frames": old_hud, "incoming_hud_frames": new_hud[:2],
+                 "reason": "Retirada y entrada repetidas; HUD anterior y posterior fijan un único slot"}
+        # A panel is optional for identity, but supplies its own time when
+        # present. It must not be assumed or replaced with the late HUD time.
+        abilities = {c["event"]["value"] for c in candidates if c["observed_frame"] == end and
+                     c["event"]["kind"] == "ability" and c["event"].get("slot") == slot and
+                     c["event"].get("value")}
+        if len(abilities) == 1:
+            panels = repeated_entry_ability_panel(slot, incoming, next(iter(abilities)), start, end, frames)
+            if panels:
+                proof["ability_panel"] = panels
+        return proof
     return None
 
 
@@ -1489,9 +1506,12 @@ def ordered_candidates(frames: list[dict[str, Any]],
                        if "Psychic" in value else [value.casefold()])
             terrain_ability = {"move: Psychic Terrain": "Psychic Surge", "move: Grassy Terrain": "Grassy Surge",
                                "move: Misty Terrain": "Misty Surge", "move: Electric Terrain": "Electric Surge"}.get(value)
+            # Withdrawal + named HUD can prove an entry without any ability
+            # panel. Only an observed panel can anchor this terrain search.
             linked_entry = next((proof for (detected, slot), proof in delayed_voluntary.items()
                                  if detected == item["observed_frame"] and
                                  any(tag.startswith("[of] " + slot + ":") for tag in event.get("tags", ())) and
+                                 proof.get("ability_panel") and
                                  proof["ability_panel"][0]["text"] == terrain_ability), None)
             hits = [(row["frame"], line["text"]) for row in frames
                     if (0 <= row["frame"] - linked_entry["ability_panel"][0]["frame"] <= 6
