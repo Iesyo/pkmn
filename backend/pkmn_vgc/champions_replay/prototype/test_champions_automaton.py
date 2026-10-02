@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases,
+from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases, corroborated_summary_aliases, corroborated_ability_aliases,
                                  entry_hud_pair, health_ratio, hud_nickname, narration_signature, ordered_candidates, read_diagnostic,
                                  read_diagnostic_context, render_markdown, strip_pokemon_title)
 
@@ -3694,6 +3694,106 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertNotIn("rocky_helmet_support", next(e for e in uncertain["events"] if e["frame"] == 1496))
         self.assertTrue(any(i["code"] in {"hp_unconfirmed", "hp_transition"} for i in uncertain["issues"]))
 
+
+
+class ArchivedIdentityRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def text(text, left, top):
+        return {"text": text, "left": left, "top": top, "confidence": .999}
+
+    def summary_trace(self):
+        rows = [frame(n) for n in range(1, 5)]
+        for row in rows[:2]:
+            row["ocr"] = [self.text("Polly", .30, .86), self.text("0/191", .34, .92)]
+        for row in rows[2:]:
+            row["ocr"] = [self.text("Hide Summary", .87, .933), self.text("Ability", .425, .711),
+                          self.text("Polly has no energy left to battle!", .152, .730),
+                          self.text("Flame Body", .582, .711), self.text("Rage Powder", .418, .500),
+                          self.text("Tailwind", .418, .608)]
+        return rows
+
+    def test_summary_recovers_unique_species_from_catalogue_without_saved_roster(self):
+        proof, = corroborated_summary_aliases(self.summary_trace())
+        self.assertEqual((proof["nickname"], proof["species"], proof["slot"]), ("polly", "Volcarona", "p1b"))
+        self.assertEqual({x["kind"] for x in proof["evidence"]}, {"summary_identity", "named_zero_hud"})
+
+    def test_summary_identity_requires_repeated_facts_and_named_zero_hud(self):
+        for missing in ("summary", "second_move", "zero", "owner", "confidence", "battle", "time", "transform"):
+            with self.subTest(missing=missing):
+                rows = self.summary_trace()
+                if missing == "summary": rows[-1]["ocr"] = []
+                elif missing == "second_move":
+                    for row in rows[2:]: row["ocr"] = [x for x in row["ocr"] if x["text"] != "Tailwind"]
+                elif missing == "zero": rows[0]["ocr"][1]["text"] = "1/191"
+                elif missing == "owner": rows[1]["ocr"][0]["text"] = "Other"
+                elif missing == "confidence": rows[-1]["ocr"][3]["confidence"] = .8
+                elif missing == "battle": rows[0]["battle_index"] = 1
+                elif missing == "time": rows[-1]["timestamp_ms"] += 2000
+                elif missing == "transform": rows[0]["detections"]["events"] = [event("move", move="Transform")]
+                self.assertEqual(corroborated_summary_aliases(rows), [])
+
+    def ability_trace(self):
+        rows = [frame(n) for n in range(1, 10)]
+        for row in rows[1:3]:
+            row["ocr"] = [self.text("Go! Dee Dee!", .12, .73)]
+        rows[1]["detections"]["events"] = [event("switch", "p1a", "Indeedee-F")]
+        rows[4]["detections"]["events"] = [event("ability", "p1a", "Indeedee-F", value="Psychic Surge")]
+        for row in rows[4:6]:
+            row["ocr"] = [self.text("Dee Dee’s", .12, .31), self.text("Psychic Surge", .12, .36)]
+        for row in rows[6:8]:
+            row["ocr"] = [self.text("Dee Dee", .12, .86), self.text("118/177", .14, .92)]
+        return rows
+
+    def test_separate_entry_ability_and_hud_samples_confirm_alias(self):
+        proof, = corroborated_ability_aliases(self.ability_trace(), {"teams": {"p1": ["Indeedee-F", "Gardevoir"]}})
+        self.assertEqual((proof["nickname"], proof["species"]), ("dee dee", "Indeedee-F"))
+        self.assertEqual([x["frame"] for x in proof["evidence"]], [2, 3, 5, 6, 7, 8])
+
+    def test_separate_ability_identity_keeps_ambiguity_or_missing_proof_unresolved(self):
+        for missing in ("entry", "panel", "hud", "health", "battle", "time", "switch", "peer", "roster"):
+            with self.subTest(missing=missing):
+                rows = self.ability_trace(); roster = ["Indeedee-F", "Gardevoir"]
+                if missing == "entry": rows[1]["detections"]["events"] = []
+                elif missing == "panel": rows[5]["ocr"] = []
+                elif missing == "hud": rows[7]["ocr"] = []
+                elif missing == "health": rows[7]["ocr"][1]["text"] = "117/177"
+                elif missing == "battle": rows[5]["battle_index"] = 1
+                elif missing == "time": rows[5]["timestamp_ms"] += 2000
+                elif missing == "switch": rows[6]["detections"]["events"] = [event("switch", "p1a", "Gardevoir")]
+                elif missing == "peer":
+                    for row in rows[6:8]: row["ocr"].append(self.text("Dee Dee", .30, .86))
+                elif missing == "roster": roster.append("Indeedee")
+                self.assertEqual(corroborated_ability_aliases(rows, {"teams": {"p1": roster}}), [])
+
+    def test_mega_corrects_same_side_slot_only_with_repeated_owner_and_stone(self):
+        for repeated in (True, False):
+            rows = [frame(1, [event("switch", "p1a", "Kingambit", "100/100"),
+                              event("switch", "p1b", "Blaziken", "100/100"), event("turn", turn=1)]),
+                    frame(2, [{**event("mega", "p1a", "Blaziken", value="Blazikenite"), "forme": "Blaziken-Mega"}],
+                          ["Tonatiuh’s Blazikenite is reacting to Trainer’s Omni Ring!"]), frame(3)]
+            rows[1]["ocr"][0]["left"] = .12
+            if repeated: rows[2]["ocr"] = copy.deepcopy(rows[1]["ocr"])
+            for row in rows: row["resolved_aliases"]["p1"]["tonatiuh"] = "Blaziken"
+            ledger = BattleAutomaton(0, rows).run()
+            megas = [e for e in ledger["events"] if e["kind"] == "mega" and e["status"] == "consistent"]
+            if repeated:
+                self.assertEqual([e["slot"] for e in megas], ["p1b"])
+                self.assertIn("mega_slot_support", megas[0])
+            else:
+                self.assertEqual(megas, [])
+                self.assertIn("mega_wrong_occupant", [i["code"] for i in ledger["issues"]])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_6A28"), "diagnostic 6a28 not supplied")
+    def test_6a28_recovers_all_identities_and_exports_nine_turns(self):
+        from ledger_replay import build_replay, load_trace_context
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_6A28"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertEqual(ledger["issues"], [])
+        replay = build_replay(ledger, load_trace_context(path, ledger))
+        self.assertEqual(replay["log"].count("|turn|"), 9)
+        self.assertIn("Volcarona", replay["log"])
+        self.assertIn("Blaziken-Mega", replay["log"])
 
 if __name__ == "__main__":
     unittest.main()
