@@ -153,6 +153,7 @@ def build_trace_context(
     players: dict[str, Counter[str]] = {"p1": Counter(), "p2": Counter()}
     alias_votes: dict[str, dict[str, Counter[str]]] = {"p1": {}, "p2": {}}
     team_votes: dict[str, dict[tuple[str, ...], list[int]]] = {"p1": {}, "p2": {}}
+    sprite_teams: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {"p1": {}, "p2": {}}
     outcomes: list[tuple[int, str, float]] = []
     for row in rows:
         frame = row.get("frame")
@@ -174,6 +175,16 @@ def build_trace_context(
                 roster = _team(detected_teams.get(side), side)
                 if roster:
                     team_votes[side].setdefault(roster, []).append(frame)
+                cards = (row.get("preview_identity_evidence") or {}).get(side, [])
+                if len(cards) == 6:
+                    votes = [{s: n for s, n in card.get("species_votes", {}).items() if n > 0} for card in cards]
+                    if all(len(v) == 1 and next(iter(v.values())) >= 2 for v in votes):
+                        roster = _team([next(iter(v)) for v in votes], side)
+                        # These counters describe independent sprite reads.
+                        # Repeated copies of a cumulative snapshot are NOT votes.
+                        sprite_teams[side].setdefault(roster, {
+                            "source": "preview_sprite_votes", "frames": [frame],
+                            "votes": min(next(iter(v.values())) for v in votes), "cards": votes})
         if frame < ends[0]:
             continue
         for part in row.get("ocr") or ():
@@ -206,7 +217,15 @@ def build_trace_context(
     team_evidence: dict[str, Any] = {}
     configured = (job.get("context") or {}).get("teams") or {}
     for side in ("p1", "p2"):
-        observed, evidence = _confirmed_team(team_votes[side], side)
+        if sprite_teams[side]:
+            if len(sprite_teams[side]) != 1:
+                raise ReplayEvidenceError(f"Los votos de sprites no confirman un equipo único de seis para {side}.")
+            observed, evidence = next(iter(sprite_teams[side].items()))
+            if any(set(roster) != set(observed) and len(set(frames)) >= 2
+                   for roster, frames in team_votes[side].items()):
+                raise ReplayEvidenceError(f"El equipo de {side} tiene evidencia de preview contradictoria.")
+        else:
+            observed, evidence = _confirmed_team(team_votes[side], side)
         seeded = _team(configured.get(side), side)
         if side != "p1" and seeded and observed and set(seeded) != set(observed):
             raise ReplayEvidenceError(f"El equipo de {side} en el diagnóstico contradice el Team Preview.")
