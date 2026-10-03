@@ -20,6 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .champions_automaton import species_abilities
+else:
+    from champions_automaton import species_abilities
+
 
 _SLOT = re.compile(r"^p[12][ab]$")
 _HP = re.compile(r"^(\d+)/(\d+)$")
@@ -388,6 +393,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
         roster = context.teams[side]
         if len(roster) != 6:
             raise ReplayEvidenceError(f"Falta el equipo completo de {side}.")
+        entered = {(actors.get(e.get("actor_id")) or {}).get("species") for e in events
+                   if e["kind"] in {"switch", "drag"} and str(e.get("slot", "")).startswith(side)}
+        missing = entered - set(roster)
+        if missing:
+            raise ReplayEvidenceError(
+                f"El equipo de {side} contradice las especies confirmadas en combate: {sorted(missing, key=str)}. "
+                "Hace falta un Team Preview corroborado; el equipo guardado no puede sustituirlo.")
         lines.append(f"|teamsize|{side}|6")
         lines.extend(f"|poke|{side}|{species}, L50|" for species in roster)
     lines.extend(["|teampreview", "|start"])
@@ -468,7 +480,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             apparent = event.get("display_species")
             if apparent is not None:
                 apparent = _atom(apparent, f"apariencia de Ilusión {seq}")
-                if (not re.fullmatch(r"Zoroark(?:-Hisui)?", canonical) or apparent == canonical or
+                if ("Illusion" not in species_abilities().get(canonical, ()) or apparent == canonical or
                     canonical not in context.teams[slot[:2]] or apparent not in context.teams[slot[:2]]):
                     raise ReplayEvidenceError(f"Ilusión no acreditada por el equipo en cambio {seq}.")
                 disguises[actor] = apparent
