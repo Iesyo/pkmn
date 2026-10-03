@@ -475,3 +475,47 @@ de Ilusión con otro nombre declarado en un catálogo de prueba. Ilusión real y
 su revelación se siguen probando. Los tres controles 2205, 96c5 y bfc6 conservan
 Ledger y log idénticos al corte 807c24f. Son controles de independencia y
 regresión; no una garantía de fidelidad visual de todos los vídeos.
+### Selección de estados por continuidad (2 oct 2026)
+
+Primera versión acotada del enfoque solicitado por Ies: una entrada propia
+observada pero sin ubicación abre tres hipótesis (conservar ocupantes,
+reemplazar el slot a o reemplazar el slot b). Se propagan hasta un HUD estable
+posterior; la retirada y los nombres observados descartan las alternativas
+incompatibles. Sólo una hipótesis superviviente puede sustituir al candidato.
+No se selecciona por frecuencia de compañeros, nombres particulares ni número
+de avisos. Una entrada posterior, un hueco de captura o el límite de dos minutos
+cierra la búsqueda sin forzar una decisión. Cero o varios supervivientes
+conservan el aviso; no se inventa una transición para dar continuidad.
+
+Los votos independientes de sprite y mote del preview también pueden confirmar
+una identidad archivada. Las copias de un contador acumulado no son nuevos votos.
+El generador utiliza los votos por tarjeta para validar los seis miembros aunque
+el detector sólo haya emitido una confirmación global del preview. Los conflictos
+de roster siguen bloqueando la exportación. Ilusión y su revelación se conservan.
+
+Para lecturas deformadas de debilitamiento o restauración, una narración legible
+y su episodio de PS confirmado permiten descartar la variante provisional.
+Un sujeto distinto conocido, otro episodio compatible, una lectura fuerte sin
+corroboración o una frontera causal impiden esa selección. Se conservan tanto
+el texto original como la evidencia en `continuity_decisions` y `resolved_issues`.
+Esta versión no es un árbol general para todos los efectos de batalla.
+
+Las confirmaciones tardías del preview se ordenan por fotograma antes de evaluar
+continuidad y límites de batalla: el orden de escritura del JSONL no determina
+la última imagen ni excluye por accidente el resultado OCR.
+
+El diagnóstico f139 pasa de seis avisos y cero replays a cero avisos, nueve turnos
+y un replay emitido por la ruta de producción. La entrada de Kingambit se coloca
+en el anuncio observado antes de sus movimientos; el debilitamiento de Indeedee
+se confirma y las dos lecturas deformadas se descartan con evidencia. El equipo
+propio observado contiene Whimsicott; se respeta frente al Volcarona del contexto
+guardado. El rival conserva sus seis especies corroboradas en el preview.
+
+Validación: 201 pruebas de prototipos (162 pasan, 39 opcionales omitidas), 26 de
+pipeline/equivalencias (25 pasan, una omitida) y 19 de jobs pasan. Los controles
+2205, 96c5 y bfc6 conservan exactamente su Ledger y su log frente a 650553d.
+6a28 conserva su Ledger y sigue bloqueado por el roster incompatible. Se prueban
+ausencia y contradicción de HUD, interrupciones, sujetos distintos, votos
+insuficientes y captura transformada con motes y tiempos diferentes. La regresión
+archivada de 96c5 ahora incluye explícitamente la inferencia inicial de PS ya
+corregida antes de esta selección, en vez de exigir el estado antiguo del ZIP.
