@@ -58,6 +58,37 @@ def line(
 
 
 class ChampionsOcrTests(unittest.TestCase):
+    def test_statistical_prior_changes_do_not_change_identity_or_create_an_actor(self):
+        for scores in ((1000, 1), (1, 1000), (0, 0)):
+            parser = ChampionsTextParser(catalog=ChampionsCatalog(
+                species=("SpeciesA", "SpeciesB", "Partner"),
+                species_teammates=(("SpeciesA", "Partner", scores[0]), ("SpeciesB", "Partner", scores[1]))))
+            parser._bind_alias("p2", "Known Partner", "Partner", evidence="explicit")
+            for evidence in ("move:one", "move:two", "ability:shared"):
+                species, _, _ = parser._infer_alias("p2", "Unknown Actor", {"SpeciesA", "SpeciesB"}, evidence)
+                self.assertIsNone(species)
+            self.assertNotIn("unknownactor", parser.resolved_aliases()["p2"])
+            self.assertFalse(parser.resolved_identities())
+
+    def test_saved_roster_does_not_exclude_unique_catalogue_evidence(self):
+        for nickname in ("New Name", "Mote distinto", "せんせい"):
+            parser = ChampionsTextParser(context=DetectorContext(p1_team=("SpeciesA",)),
+                                         catalog=ChampionsCatalog(species=("SpeciesA", "SpeciesB")))
+            species, _, _ = parser._infer_alias("p1", nickname, {"SpeciesB"}, "ability:unique")
+            self.assertEqual(species, "SpeciesB")
+            self.assertEqual(parser._resolve_species("SpeciesB", "p1"), "SpeciesB")
+
+    def test_observed_roster_filters_candidates_and_reset_removes_its_authority(self):
+        parser = ChampionsTextParser(context=DetectorContext(p1_team=("SpeciesA",)),
+                                     catalog=ChampionsCatalog(species=("SpeciesA", "SpeciesB")))
+        parser.bind_preview_team(("SpeciesB",), side="p1")
+        species, _, _ = parser._infer_alias("p1", "Any Name", {"SpeciesA", "SpeciesB"}, "ability:shared")
+        self.assertEqual(species, "SpeciesB")
+        parser.reset_battle_state()
+        species, _, _ = parser._infer_alias("p1", "Another Name", {"SpeciesA", "SpeciesB"}, "ability:shared")
+        self.assertIsNone(species)
+        self.assertNotIn("p1", parser._observed_team_sides)
+
     def test_partial_own_preview_binds_only_repeated_observed_pairs(self):
         class Engine:
             def read(self, _image): return ()
@@ -242,7 +273,7 @@ class ChampionsOcrTests(unittest.TestCase):
             ],
         )
 
-    def test_known_opponent_team_disambiguates_gendered_form_without_visual_model(self) -> None:
+    def test_saved_team_cannot_disambiguate_gender_without_observed_preview(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_name="Rival", p2_team=("Basculegion-F",)),
             catalog=ChampionsCatalog(
@@ -266,10 +297,12 @@ class ChampionsOcrTests(unittest.TestCase):
             source_frame=1,
         )
 
-        self.assertEqual(
-            [(event.kind, event.species) for event in resolved.events],
-            [("switch", "Basculegion-F"), ("move", "Basculegion-F")],
-        )
+        self.assertEqual(resolved.events, ())
+        self.assertFalse(parser.resolved_identities())
+        parser.bind_preview_team(("Basculegion-F",), side="p2")
+        species, _, _ = parser._infer_alias_from_move("p2", "ニックネーム", "Wave Crash")
+        self.assertEqual(species, "Basculegion-F")
+        self.assertEqual(parser.resolved_aliases()["p2"]["ニックネーム"], "Basculegion-F")
 
     def test_a_title_pegged_to_a_sent_out_nickname_does_not_poison_the_announcement(self) -> None:
         """COL-102, reapertura estructural del 26 sep, job real
@@ -310,7 +343,7 @@ class ChampionsOcrTests(unittest.TestCase):
         # "Master" pegado al mote.
         self.assertEqual(_strip_pokemon_title("Judge the Royal Master"), "Judge")
 
-    def test_historical_teammates_break_a_move_evidence_tie(self) -> None:
+    def test_historical_teammates_cannot_settle_ambiguous_identity(self) -> None:
         parser = ChampionsTextParser(
             context=DetectorContext(p2_name="Rival"),
             catalog=ChampionsCatalog(
@@ -345,14 +378,9 @@ class ChampionsOcrTests(unittest.TestCase):
         )
 
         self.assertEqual(ambiguous.events, ())
-        self.assertEqual(
-            [(event.kind, event.slot, event.species, event.move) for event in resolved.events],
-            [
-                ("switch", "p2a", "Sableye", None),
-                ("move", "p2a", "Sableye", "Light Screen"),
-                ("move", "p2a", "Sableye", "Rain Dance"),
-            ],
-        )
+        self.assertEqual(resolved.events, ())
+        self.assertNotIn("しでき", parser.resolved_aliases()["p2"])
+        self.assertIn({"Sableye", "Grimmsnarl"}, list(parser._alias_book.alias_evidence.values()))
 
     def test_resolves_a_japanese_nickname_joined_to_used(self) -> None:
         parser = ChampionsTextParser(
