@@ -4073,5 +4073,121 @@ class HpOwnerContinuityTests(unittest.TestCase):
         self.assertEqual(clean.events[0]["slot"], "p2b")
         self.assertFalse(clean.continuity_decisions)
 
+def delayed_damage_endpoint_trace():
+    rows = [frame(n) for n in range(1, 39)]
+    rows[0] = frame(1, [event("switch", "p1a", "Pikachu", "200/200"),
+                        event("switch", "p1b", "Eevee", "160/160"),
+                        event("switch", "p2a", "Golduck", "100/100"),
+                        event("switch", "p2b", "Milotic", "100/100"),
+                        event("fieldstart", value="move: Grassy Terrain"), event("turn", turn=1)])
+    rows[2] = frame(3, [event("move", "p2a", "Golduck", move="Water Gun")], texts=["The opposing Golduck used Water Gun!"])
+    rows[3] = frame(4, [event("message", value="")])
+    rows[3]["ocr"].append({"text": "200/200", "left": .14, "top": .92, "confidence": .99})
+    rows[4] = frame(5, [event("damage", "p1a", "Pikachu", "150/200")])
+    rows[4]["ocr"][0]["confidence"] = .89
+    rows[6] = frame(7, [event("cant", "p1a", "Pikachu", value="flinch")], texts=["Pikachu flinched and couldn't move!"])
+    self_move = event("move", "p2b", "Milotic", move="Calm Mind")
+    self_move["target_slot"] = "p2b"
+    rows[9] = frame(10, [self_move], texts=["The opposing Milotic used Calm Mind!"])
+    rows[14] = frame(15, [event("move", "p1b", "Eevee", move="Psychic")], texts=["Eevee used Psychic!"])
+    rows[17] = frame(18, [event("damage", "p2b", "Milotic", "80/100")])
+    rows[21] = frame(22, [event("damage", "p1a", "Pikachu", "120/200")])
+    rows[22] = frame(23, [event("heal", "p1a", "Pikachu", "125/200")])
+    rows[24] = frame(25, [event("message", value="Pikachu had its HP restored.")], texts=["Pikachu had its HP restored."])
+    rows[25] = frame(26, texts=["Pikachu had its HP restored."])
+    rows[28] = frame(29, [event("turn", turn=2)])
+    for n in (29, 30):
+        rows[n - 1]["ocr"].append({"text": "132/200", "left": .14, "top": .92, "confidence": .99})
+    rows[32] = frame(33, [event("move", "p2a", "Golduck", move="Water Gun")], texts=["The opposing Golduck used Water Gun!"])
+    rows[34] = frame(35, [event("damage", "p1a", "Pikachu", "100/200")])
+    rows[37] = frame(38, [event("battle_end")])
+    for n in (1, 4, 5, 22, 23, 29, 30, 35):
+        rows[n - 1]["ocr"].append({"text": "Pikachu", "left": .08, "top": .86, "confidence": .999})
+    for row in rows:
+        for line in row["ocr"]:
+            if line.get("top") == .75:
+                line.setdefault("left", .1)
+    return rows
+
+
+class DelayedDamageEndpointTests(unittest.TestCase):
+    def test_mega_suffix_does_not_override_form_with_base_species(self):
+        mega = event("mega", "p2a", "Lucario", value="Lucarionite Z")
+        mega["forme"] = "Lucario-Mega-Z"
+        ledger = BattleAutomaton(0, [frame(1, [event("switch", "p2a", "Lucario", "100/100")]),
+                                     frame(2, [mega])]).run()
+        self.assertEqual(ledger["events"][1]["species"], "Lucario-Mega-Z")
+        from champions_automaton import identity_species
+        self.assertEqual(identity_species("Example-Mega-Future"), "Example")
+        self.assertEqual(identity_species("Zoroark-Hisui"), "Zoroark-Hisui")
+
+    def test_later_endpoint_preserves_original_and_cause(self):
+        ledger = BattleAutomaton(0, delayed_damage_endpoint_trace()).run()
+        self.assertFalse(ledger["issues"])
+        impact = next(e for e in ledger["events"] if e["frame"] == 5)
+        checkpoint = next(e for e in ledger["events"] if e["frame"] == 22)
+        cause = next(e for e in ledger["events"] if e["kind"] == "move" and e["frame"] == 3)
+        self.assertEqual((impact["kind"], impact["before"], impact["after"], impact["cause"]),
+                         ("damage", "200/200", "120/200", cause["seq"]))
+        self.assertEqual(impact["original_reading"]["health"], "150/200")
+        self.assertEqual(checkpoint["status"], "suppressed")
+        heal = next(e for e in ledger["events"] if e["frame"] == 23)
+        self.assertEqual(heal["after"], "132/200")
+        following = next(e for e in ledger["events"] if e["frame"] == 35)
+        self.assertEqual(following["before"], "132/200")
+
+    def test_uncertain_paths_keep_warning(self):
+        for change in ("spread", "unknown_move", "missing_target", "gap", "identity", "residual", "reversal", "weak_endpoint", "new_turn"):
+            rows = delayed_damage_endpoint_trace()
+            if change == "spread": rows[14]["detections"]["events"][0]["move"] = "Surf"
+            if change == "unknown_move": rows[14]["detections"]["events"][0]["move"] = "Uncatalogued"
+            if change == "missing_target": rows[17] = frame(18)
+            if change == "gap": rows[11]["timestamp_ms"] += 2000
+            if change == "identity": rows[21]["ocr"][-1]["text"] = "Raichu"
+            if change == "residual": rows[19]["ocr"].append({"text": "Pikachu was hurt by its burn!", "left": .1, "top": .75, "confidence": .999})
+            if change == "reversal": rows[19]["ocr"].append({"text": "100/200", "left": .14, "top": .92, "confidence": .999})
+            if change == "weak_endpoint": rows[21]["ocr"][0]["confidence"] = .96
+            if change == "new_turn": rows[19] = frame(20, [event("turn", turn=2)])
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertTrue(any(i["code"] == "hp_unconfirmed" for i in ledger["issues"]))
+
+    def test_heal_requires_repeated_literal_endpoint_before_action(self):
+        for change in ("missing_slash", "single_reading", "action", "wrong_name", "no_narration", "wrong_amount", "residual", "conflicting_next_heal"):
+            rows = delayed_damage_endpoint_trace()
+            if change == "missing_slash":
+                for n in (29, 30): rows[n - 1]["ocr"][0]["text"] = "132200"
+            if change == "single_reading": rows[29]["ocr"] = rows[29]["ocr"][1:]
+            if change == "action": rows[27] = frame(28, [event("move", "p1a", "Pikachu", move="Protect")])
+            if change == "wrong_name": rows[29]["ocr"][-1]["text"] = "Raichu"
+            if change == "no_narration": rows[25] = frame(26)
+            if change == "wrong_amount":
+                for n in (29, 30): rows[n - 1]["ocr"][0]["text"] = "140/200"
+            if change == "residual": rows[27]["ocr"].append({"text": "Pikachu was hurt by its burn!", "left": .1, "top": .75, "confidence": .999})
+            if change == "conflicting_next_heal": rows[34] = frame(35, [event("heal", "p1a", "Pikachu", "126/200")])
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, rows).run()
+                heal = next(e for e in ledger["events"] if e["frame"] == 23)
+                self.assertEqual(heal["after"], "125/200")
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_0FEB"), "diagnóstico opcional 0feb")
+    def test_real_capture_has_one_impact_and_complete_terrain_heal(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_0FEB"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, [r for r in rows if r["battle_index"] == 0], read_diagnostic_context(path)).run()
+        self.assertFalse(ledger["issues"])
+        impact = next(e for e in ledger["events"] if e["frame"] == 363)
+        self.assertEqual((impact["before"], impact["after"]), ("167/167", "136/167"))
+        self.assertEqual(ledger["events"][impact["cause"] - 1]["move"], "Fake Out")
+        self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 401)["after"], "146/167")
+        from ledger_replay import build_replay, build_trace_context
+        with zipfile.ZipFile(path) as archive:
+            job = json.loads(archive.read("job.json"))
+        replay = build_replay(ledger, build_trace_context(job, rows, ledger))
+        self.assertIn("Lucario-Mega-Z, L50", replay["log"])
+        self.assertIn("|-damage|p1a: Whimsicott|136/167", replay["log"])
+        self.assertIn("|-heal|p1a: Whimsicott|146/167", replay["log"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import copy
 import difflib
 import gzip
 import json
@@ -544,7 +545,7 @@ def health_ratio(health: str | None) -> float | None:
 
 
 def identity_species(species: str) -> str:
-    return re.sub(r"-Mega(?:-[XY])?$", "", species)
+    return re.sub(r"-Mega(?:-[A-Za-z0-9]+)?$", "", species)
 
 
 def narration_signature(text: str) -> tuple[str, str, str, str | None] | None:
@@ -592,6 +593,19 @@ def species_abilities() -> dict[str, set[str]]:
         with gzip.open(path, "rt", encoding="utf-8") as stream:
             dex = json.load(stream)
         return {entry["name"]: set(entry.get("abilities", ())) for entry in dex["species"].values()}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+@lru_cache(maxsize=1)
+def move_target_catalog() -> dict[str, dict[str, Any]]:
+    """Pinned targeting metadata, shared with the OCR catalog source."""
+    path = Path(__file__).resolve().parents[4] / "public/data/showdown-dex.json.gz"
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            dex = json.load(stream)
+        return {re.sub(r"\W+", "", move["name"].casefold()): move
+                for move in dex["moves"].values()}
     except (OSError, ValueError, KeyError):
         return {}
 
@@ -6410,6 +6424,211 @@ class BattleAutomaton:
             self.resolved_issues.append({**issue, "resolution": resolution})
         self.issues = unresolved
 
+    def _reconcile_delayed_damage_endpoint(self) -> None:
+        """Complete a provisional impact only when intervening actions exclude it.
+
+        A complete later HUD can settle an animation hidden by narration. Self
+        moves by other actors and a partner's confirmed hit on the opposing side
+        are the only actions allowed across this window. Everything ambiguous
+        remains pending, including moves with an unobserved target.
+        """
+        resolved = set()
+        for pending in self.events:
+            if pending["kind"] != "hp_unconfirmed" or pending["status"] != "review":
+                continue
+            slot, actor_id = pending["slot"], pending["actor_id"]
+            observations = pending.get("observations", [])
+            if slot not in SLOTS or not actor_id or not observations or any(
+                o.get("parser_kind") != "damage" for o in observations):
+                continue
+            endpoint = next((e for e in self.events[pending["seq"]:]
+                             if e["actor_id"] == actor_id and e["kind"] in
+                             HP_KINDS | {"switch", "drag", "faint", "hp_unconfirmed"}), None)
+            if (not endpoint or endpoint["kind"] != "damage" or endpoint["status"] != "review" or
+                endpoint["before"] is not None or endpoint.get("hp_state") != "confirmed" or
+                endpoint["slot"] != slot or endpoint["turn"] != pending["turn"] or
+                not 0 < endpoint["observed_ms"] - pending["observed_ms"] <= 20_000):
+                continue
+            values = [pending["before"], observations[-1]["health"], endpoint["after"]]
+            ratios = [health_ratio(v) for v in values]
+            if (any(v is None for v in ratios) or not ratios[0] > ratios[1] > ratios[2] or
+                len({v.split("/")[1] for v in values}) != 1):
+                continue
+            prior_frame = pending["frame"] - 1
+            prior_proof = self._hp_support(slot, values[0], prior_frame, [prior_frame])
+            middle_proof = self._hp_support(slot, values[1], pending["frame"], [pending["frame"]])
+            final_proof = self._hp_support(slot, values[2], endpoint["frame"], [endpoint["frame"]])
+            if (prior_proof["state"] != "confirmed" or
+                not any(e["confidence"] >= .85 for e in middle_proof["evidence"]) or
+                not any(e["confidence"] >= .97 for e in final_proof["evidence"])):
+                continue
+            names = [hud_nickname(self.frame_lookup.get(n, {}), slot)
+                     for n in (prior_frame, pending["frame"], endpoint["frame"])]
+            expected = identity_species(pending["species"]).casefold()
+            if (not all(names) or len(set(names)) != 1 or
+                identity_species(self.nickname_species[slot[:2]].get(names[0], names[0])).casefold() != expected):
+                continue
+            cause = next((e for e in reversed(self.events[:pending["seq"] - 1])
+                          if e["kind"] in ACTIVITY | {"turn", "mega"}), None)
+            if (not cause or cause["kind"] != "move" or cause["status"] != "consistent" or
+                not 0 <= pending["observed_ms"] - cause["observed_ms"] <= 3_000 or
+                cause.get("target_slot") not in {None, slot}):
+                continue
+            impact = move_target_catalog().get(re.sub(r"\W+", "", (cause["move"] or "").casefold()), {})
+            if (impact.get("target") != "normal" or impact.get("category") not in {"Physical", "Special"} or
+                not cause["slot"] or cause["slot"][:2] == slot[:2]):
+                continue
+            between = self.events[pending["seq"]:endpoint["seq"] - 1]
+            excluded = []
+            safe = True
+            for action in between:
+                if action["kind"] == "cant" and action["status"] == "consistent":
+                    continue
+                if action["kind"] in HP_KINDS and action["actor_id"] != actor_id and action["status"] == "consistent":
+                    continue
+                if (action["kind"] != "move" or action["status"] != "consistent" or
+                    action["actor_id"] == actor_id or not action["slot"]):
+                    safe = False
+                    break
+                move = move_target_catalog().get(re.sub(r"\W+", "", (action["move"] or "").casefold()), {})
+                hits = [e for e in between if e["kind"] == "damage" and e["cause"] == action["seq"] and
+                        e["status"] == "consistent" and e.get("hp_state") == "confirmed"]
+                targets = {e["slot"] for e in hits}
+                self_only = move.get("target") == "self" and action["target_slot"] == action["slot"]
+                partner_hit = (move.get("target") == "normal" and move.get("category") != "Status" and
+                               action["slot"][:2] == slot[:2] and len(targets) == 1 and
+                               all(t[:2] != slot[:2] for t in targets) and
+                               action.get("target_slot") in {None, *targets})
+                if not (self_only or partner_hit):
+                    safe = False
+                    break
+                excluded.append({"event_seq": action["seq"], "target_class": move["target"],
+                                 "confirmed_target_slots": sorted(targets), "evidence": action["evidence"]})
+            window = [r for r in self.frames if prior_frame <= r["frame"] <= endpoint["frame"]]
+            if not safe or any(b["timestamp_ms"] - a["timestamp_ms"] > 1_000 for a, b in zip(window, window[1:])):
+                continue
+            visible = [health_ratio(hp) for row in window for hp, _ in complete_hud_health(row, slot)]
+            if (any(hud_nickname(row, slot) not in {None, names[0]} for row in window) or
+                any(value is None or not ratios[2] <= value <= ratios[0] for value in visible) or
+                any(b > a for a, b in zip(visible, visible[1:]))):
+                continue
+            # Raw narration can expose an event the detector omitted. Only
+            # already represented actions and the victim's inability to act
+            # are allowed; residual damage and identity changes veto recovery.
+            def canonical_text(text: str) -> str:
+                text = re.sub(r"\s+", " ", text.casefold()).strip()
+                for aliases in self.nickname_species.values():
+                    for name, species in sorted(aliases.items(), key=lambda pair: -len(pair[0])):
+                        text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", species.casefold(), text)
+                return text
+
+            known_texts = {canonical_text(p["text"])
+                           for e in [cause, *between] for p in e["evidence"] +
+                           [{"text": text} for text in e.get("narration", [])]}
+            if any(in_area(line, BATTLE_TEXT_AREAS["narration"]) and line.get("confidence", 0) >= .95 and
+                   canonical_text(line.get("text", "")) not in known_texts
+                   for row in window for line in row.get("ocr", ())
+                   if re.search(r"[A-Za-z]{3}", line.get("text", ""))):
+                continue
+            resolution = {"state": "confirmed", "reason": "PS finales completos del mismo actor; acciones intermedias excluidas por sus destinos corroborados",
+                          "endpoint_event_seq": endpoint["seq"], "cause_event_seq": cause["seq"],
+                          "excluded_actions": excluded,
+                          "evidence": prior_proof["evidence"] + middle_proof["evidence"] + final_proof["evidence"]}
+            pending["original_reading"] = {k: copy.deepcopy(pending[k]) for k in
+                                           ("kind", "status", "health", "before", "after", "cause", "hp_support")}
+            pending.update(kind="damage", status="consistent", health=values[2], after=values[2], cause=cause["seq"],
+                           hp_state="confirmed", hp_support=resolution, resolution=resolution,
+                           note="Animación provisional completada por el HUD posterior del mismo actor.")
+            endpoint.update(status="suppressed", before=values[2], cause=cause["seq"], resolution=resolution,
+                            note="Punto final del daño anterior; no es un segundo impacto.")
+            resolved.update((pending["seq"], endpoint["seq"]))
+        remaining = []
+        for issue in self.issues:
+            if issue["code"] in {"hp_unconfirmed", "hp_transition"} and issue.get("event_seq") in resolved:
+                self.resolved_issues.append({**issue, "resolution": self.events[issue["event_seq"] - 1]["resolution"]})
+            else:
+                remaining.append(issue)
+        self.issues = remaining
+
+    def _reconcile_own_terrain_heal_endpoint(self) -> None:
+        """Require literal repeated final HP after a narrated terrain animation.
+
+        Own HP without its slash is never reconstructed. A turn-menu redraw
+        may instead supply independent complete readings before another action.
+        """
+        for heal in self.events:
+            if (heal["kind"] != "heal" or heal["status"] != "consistent" or
+                heal["slot"] not in {"p1a", "p1b"} or not heal["before"] or
+                heal.get("hp_state") != "confirmed" or
+                "Grassy Terrain" not in str(heal["cause"])):
+                continue
+            slot, actor_id = heal["slot"], heal["actor_id"]
+            before, maximum = map(int, heal["before"].split("/"))
+            expected = f"{min(maximum, before + maximum // 16)}/{maximum}"
+            if not health_ratio(heal["after"]) < health_ratio(expected):
+                continue
+            messages = heal.get("causal_evidence", [])
+            message = next((p for p in messages if p.get("effect") == "restoration"), None)
+            if not message:
+                continue
+            repeated = [{"frame": row["frame"], "text": line["text"], "confidence": line["confidence"]}
+                        for row in self.frames if message["frame"] <= row["frame"] <= message["frame"] + 3
+                        for line in row.get("ocr", ()) if in_area(line, BATTLE_TEXT_AREAS["narration"]) and
+                        line.get("confidence", 0) >= .95 and line.get("text", "").casefold() == message["text"].casefold()]
+            if len({p["frame"] for p in repeated}) < 2:
+                continue
+            rows, previous_ms = [], heal["observed_ms"]
+            for row in self.frames:
+                if row["frame"] <= heal["frame"]:
+                    continue
+                if row["timestamp_ms"] - heal["observed_ms"] > 10_000 or row["timestamp_ms"] - previous_ms > 1_000:
+                    break
+                previous_ms = row["timestamp_ms"]
+                if any(e["kind"] in ACTIVITY | {"mega", "faint", "battle_end", "fieldstart", "fieldend"} or
+                       (e["kind"] in HP_KINDS and e.get("slot") == slot)
+                       for e in row.get("detections", {}).get("events", ())):
+                    break
+                if any(in_area(line, BATTLE_TEXT_AREAS["narration"]) and line.get("confidence", 0) >= .95 and
+                       (narration_signature(line.get("text", "")) or
+                        (re.search(r"\b(hurt|damaged|poison|burn|recoil|drained|fainted)\b", line.get("text", ""), re.I)) or
+                        re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                       for line in row.get("ocr", ())):
+                    break
+                name = hud_nickname(row, slot)
+                if name and identity_species(self.nickname_species[slot[:2]].get(name, name)).casefold() != identity_species(heal["species"]).casefold():
+                    break
+                readings = complete_hud_health(row, slot)
+                if readings and any(health_ratio(hp) > health_ratio(expected) or health_ratio(hp) < health_ratio(heal["after"])
+                                    for hp, _ in readings):
+                    break
+                rows.append(row)
+            proof_rows = [row for row in rows if row["frame"] > message["frame"] and hud_nickname(row, slot) and
+                          len(complete_hud_health(row, slot)) == 1 and
+                          any(hp == expected and line["confidence"] >= .97 for hp, line in complete_hud_health(row, slot))]
+            pair = next(((a, b) for a, b in zip(proof_rows, proof_rows[1:]) if b["frame"] == a["frame"] + 1), None)
+            if not pair:
+                continue
+            original_after = heal["after"]
+            following = next((e for e in self.events[heal["seq"]:] if e["actor_id"] == actor_id and
+                              e["kind"] in HP_KINDS | {"switch", "drag", "faint", "hp_unconfirmed"}), None)
+            if following and following["kind"] in HP_KINDS and following["before"] == original_after:
+                next_ratio = health_ratio(following["after"])
+                if next_ratio is None or (next_ratio < health_ratio(expected) if following["kind"] == "heal"
+                                          else next_ratio > health_ratio(expected)):
+                    continue
+            proof = repeated + [{"frame": row["frame"], "text": line["text"], "confidence": line["confidence"]}
+                                for row in pair for _, line in complete_hud_health(row, slot)]
+            resolution = {"state": "confirmed", "reason": "Cura de terreno completada por dos HUD literales posteriores, antes de otra acción",
+                          "original_after": original_after, "evidence": proof}
+            heal["health"] = heal["after"] = expected
+            heal["hp_support"] = {**resolution, "evidence": heal["hp_support"]["evidence"] + proof}
+            heal["resolution"] = resolution
+            if following and following["kind"] in HP_KINDS and following["before"] == original_after:
+                following["before"] = expected
+                following["baseline_resolution"] = resolution
+            elif not following and self.actors[actor_id]["health"] == original_after:
+                self.actors[actor_id]["health"] = expected
+
     def run(self) -> dict[str, Any]:
         candidates = self._recover_delayed_terrain_heals(ordered_candidates(self.frames, self.alias_reconstructions))
         candidates = self._recover_withdrawn_entries(candidates)
@@ -6450,6 +6669,8 @@ class BattleAutomaton:
         self._unparsed_actions()
         self._reconcile_action_reading_variants()
         self._reconcile_continuity_readings()
+        self._reconcile_delayed_damage_endpoint()
+        self._reconcile_own_terrain_heal_endpoint()
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(

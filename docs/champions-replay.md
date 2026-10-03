@@ -557,3 +557,32 @@ los conflictos de roster y de evidencia mantienen sus bloqueos. En la ROG:
 `git pull --ff-only origin desarrollo`, reiniciar `npm.cmd run dev` y el servicio
 Python si está separado, y usar **Reevaluar autómatas** sobre la traza existente.
 Esta mejora no requiere volver a ejecutar OCR para las lecturas archivadas.
+
+### Punto final de PS oculto por la narración
+
+Una animación de daño provisional puede completarse con un HUD posterior del
+mismo actor, en el mismo turno, si no queda ninguna acción intermedia compatible
+con otro impacto. Se exige PS previo completo, lectura intermedia literal,
+PS final completo de confianza alta, el mismo nombre y continuidad de muestras.
+Sólo atraviesa movimientos sobre sí mismo de otros actores y un ataque del
+compañero con daño confirmado en el bando contrario. Los destinos se leen del
+dex fijado en el repositorio. Movimientos desconocidos, de área, sin objetivo
+corroborado, narración adicional, cambios de identidad, PS contradictorios y
+huecos conservan los avisos. La observación final no se exporta como otro daño;
+la lectura original, la causa y las acciones excluidas quedan en el Ledger.
+
+Las curaciones propias de Grassy Terrain pueden alcanzar su punto final en
+el menú del siguiente turno. Se requieren mensaje de recuperación repetido y
+dos lecturas completas consecutivas, antes de otra acción y compatibles con
+la cuantía del terreno. No se reconstruyen números propios sin `/`. Se ajusta
+el estado previo del siguiente cambio de PS sólo si continúa siendo compatible.
+La normalización de formas Mega admite sufijos del formato, conservando la
+forma confirmada del actor en lugar de reemplazarla por su especie base.
+
+El diagnóstico 0feb pasa de **dos avisos y cero replays a cero avisos y un replay
+por producción**: daño 167/167 → 136/167 atribuible al primer impacto y curación
+136/167 → 146/167. Los valores intermedios quedan archivados. El mismo lote de
+Drive conserva sus **62 Ledger y 52 logs exactos** frente a 8b141bb; los 34 avisos
+históricos siguen abiertos. f139 conserva Ledger/log y exporta por producción.
+Ilusión permanece. Para aplicar: actualizar desarrollo, reiniciar aplicación
+y servicio Python, y **Reevaluar autómatas** sobre la traza existente.
