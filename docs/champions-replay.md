@@ -439,3 +439,39 @@ guardado, que incluye Whimsicott en vez de la Volcarona corroborada. Por tanto,
 la reconstrucción de acciones no valida ese preview completo. Una captura nueva
 prueba el resolver corregido; reevaluar la traza no recupera píxeles ausentes.
 Los fixtures de sprites pasan; la revisión visual del vídeo y una captura nueva con RapidOCR siguen pendientes en ROG.
+
+### Auditoría de identidades y coherencia del preview (2 oct 2026)
+
+Se revisaron los 18 módulos Python de Champions: no hay condiciones ejecutables
+por los motes del equipo ni por los IDs de los diagnósticos revisados. Esos
+nombres aparecen en comentarios y fixtures. El catálogo, las frases del juego,
+las regiones de pantalla y las reglas de sus efectos son datos del dominio;
+las transiciones no deben depender de un caso concreto.
+
+Sí había decisiones que convertían supuestos en identidad: la inferencia filtraba
+por el roster guardado antes de observar el preview, y los compañeros históricos
+resolvían empates de movimientos/habilidad. La inferencia ahora sólo restringe por
+un roster observado; el guardado no excluye evidencia única del catálogo. Las
+frecuencias no resuelven identidades ambiguas. Un nombre literal del catálogo,
+fuera de un roster guardado ajeno, tampoco se fuerza sobre ese roster.
+
+**Ilusión se conserva.** Los dos controles específicos por nombre de especie
+se sustituyen por la habilidad declarada en el catálogo. Continúan las pruebas
+de revelación, disfraz, mismo actor, PS, ausencia de entrada real y pertenencia
+al roster; el generador conserva la validación del cambio de apariencia.
+
+El generador comprueba además que todas las especies que entraron pertenecen
+al roster exportado, en ambos bandos. Esta comprobación corrige el criterio
+permisivo de la sección anterior: el ZIP 6a28 tiene cero avisos Ledger y nueve
+turnos reconstruidos, pero ahora **bloquea la exportación** porque su roster
+propio guardado no contiene Volcarona. No se reemplaza una especie sin evidencia
+ni se declara válido ese preview. Hace falta una captura OCR nueva del mismo
+vídeo para comprobar el resolver; no pedir los nombres/especies al usuario.
+
+Las pruebas cambian los seis motes, el ID y el origen de tiempos/fotogramas del
+ZIP sin alterar decisiones. También invierten las frecuencias de compañeros,
+prueban catálogo externo al roster, reinicio de autoridad del preview y usuario
+de Ilusión con otro nombre declarado en un catálogo de prueba. Ilusión real y
+su revelación se siguen probando. Los tres controles 2205, 96c5 y bfc6 conservan
+Ledger y log idénticos al corte 807c24f. Son controles de independencia y
+regresión; no una garantía de fidelidad visual de todos los vídeos.
