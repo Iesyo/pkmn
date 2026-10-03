@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -57,6 +58,26 @@ def _pilot_fixture(directory: Path) -> tuple[dict, Path]:
 
 
 class LedgerReplayTest(unittest.TestCase):
+    def test_export_blocks_a_saved_roster_missing_a_confirmed_participant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, path = _pilot_fixture(Path(directory)); context = load_trace_context(path, battle)
+            for side, absent in (("p1", "Blaziken"), ("p2", "Garchomp")):
+                team = tuple("Different Species" if s == absent else s for s in context.teams[side])
+                with self.subTest(side=side), self.assertRaisesRegex(ReplayEvidenceError, "contradice las especies"):
+                    build_replay(battle, replace(context, teams={**context.teams, side: team}))
+
+    def test_illusion_export_uses_catalogue_ability_instead_of_species_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, path = _pilot_fixture(Path(directory)); context = load_trace_context(path, battle)
+            battle["actors"]["p2-one"]["species"] = "Catalogue Illusion User"
+            battle["events"][2].update(species="Catalogue Illusion User", display_species="Charizard")
+            context = replace(context, teams={**context.teams, "p2": ("Catalogue Illusion User", *context.teams["p2"][1:])})
+            with patch("ledger_replay.species_abilities", return_value={"Catalogue Illusion User": {"Illusion"}}):
+                self.assertIn("|switch|p2a: Charizard", build_replay(battle, context)["log"])
+            with patch("ledger_replay.species_abilities", return_value={"Catalogue Illusion User": {"Pressure"}}):
+                with self.assertRaisesRegex(ReplayEvidenceError, "Ilusión no acreditada"):
+                    build_replay(battle, context)
+
     def test_repeated_own_preview_overrides_a_different_saved_team(self):
         with tempfile.TemporaryDirectory() as directory:
             battle, path = _pilot_fixture(Path(directory))
