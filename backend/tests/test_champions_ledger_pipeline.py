@@ -98,6 +98,26 @@ class LedgerPipelineTests(unittest.TestCase):
     def job(self):
         return {"id": "fixture", "created_at": "2026-09-28T12:00:00+00:00", "context": CONTEXT}
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_F621"), "Requiere diagnóstico f621")
+    def test_empty_detector_names_do_not_block_corroborated_ocr_and_observed_participants(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_F621"])
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(path) as archive:
+            out = Path(directory)
+            job = json.loads(archive.read("job.json"))
+            trace = archive.read("output/ocr.trace.jsonl")
+            (out / "ocr.trace.jsonl").write_bytes(trace)
+            documents = documents_from_trace(out / "ocr.trace.jsonl", job, out / "output")
+            self.assertEqual(len(documents), 1)
+            document = documents[0]
+            self.assertEqual((document.p1, document.p2), ("Roku", "coacoaboy"))
+            self.assertEqual(document.log.splitlines()[-1], "|win|Roku")
+            self.assertEqual(sum(line.startswith("|poke|p2|") for line in document.log.splitlines()), 4)
+            self.assertIn("|switch|p1a: Kingambit|Kingambit, L50|177/177", document.log)
+            report = json.loads((out / "output/ledger-report.json").read_text())
+            self.assertEqual((report["status"], report["replay_count"], report["blocked_battles"]), ("ready", 1, 0))
+            self.assertFalse(report["battles"][0]["issues"])
+            self.assertEqual((out / "ocr.trace.jsonl").read_bytes(), trace)
+
     def transition_rows(self, *, message=True):
         stale = trace_battle(0)[-1]
         stale["battle_index"] = 1

@@ -608,7 +608,37 @@ deja de bloquear esa continuidad. El reemplazo tras un faint se sitúa sólo en
 el slot vacante corroborado por nombre, cero PS, faint repetido y nuevo HUD.
 
 f621 pasa de tres avisos a cero, reconoce el debilitamiento y conserva la entrada
-real del reemplazo. La exportación sigue bloqueada porque esa traza no confirma
-jugadores, equipo rival completo ni ganador; el final sólo indica abandono. La
-mejora del estado no autoriza inventar esos datos. Actualizar desarrollo y usar
-**Reevaluar autómatas** aplica las reglas sobre la captura archivada.
+real del reemplazo. La primera reevaluación quedó bloqueada por los campos de
+jugadores vacíos del detector y la exigencia de seis especies rivales. El OCR sí
+contiene nombres y resultado; la falta estaba en su recuperación por el generador.
+Actualizar desarrollo y usar **Reevaluar autómatas** aplica las reglas sobre la
+captura archivada.
+
+### Nombres en OCR y equipos sin preview confirmado
+
+El generador puede reconstruir campos de jugadores vacíos a partir de dos
+lecturas consecutivas de la pareja de nombres anterior a la primera entrada.
+La posición de cada nombre identifica el bando; el nombre rival debe coincidir
+con anuncios repetidos de entrada vinculados a cambios aceptados de ese combate.
+Se limita a su índice y sus fotogramas: no toma nombres ni resultados de la
+pantalla final asignada a otra batalla. Nombres incompatibles, baja confianza,
+posiciones incorrectas, varias parejas corroboradas o huecos conservan el bloqueo.
+Los nombres por defecto y el replay anterior no sustituyen esta evidencia.
+
+Un equipo completo corroborado conserva sus seis especies y su preview. Cuando
+no hay evidencia de preview ni equipo configurado, se pueden exportar sólo los
+participantes con entrada y actor confirmados por Ledger, hasta cuatro por bando.
+No se rellenan puestos desconocidos ni se añade un Team Preview ficticio. El
+tamaño mostrado corresponde a los participantes conocidos y `team_preview` en
+la auditoría indica `source: ledger_participants` y `complete: false`, con sus
+actores y sucesos. Un preview contradictorio o pendiente, un equipo guardado que
+excluye un participante real, PS discontinuos o resultado sin confirmar siguen
+bloqueando. Ilusión exige su habilidad y apariencia acreditadas; un roster parcial
+no acredita una apariencia que no figure entre sus miembros confirmados.
+
+El diagnóstico f621 reevaluado conserva el mismo OCR y **cero avisos**, y ahora
+genera **un replay por la ruta de producción**: nombres de frames 32–37,
+anuncios rivales corroborados, victoria OCR en frame 511 y cuatro participantes
+rivales confirmados. No necesita OCR nuevo. La traza posterior del índice siguiente
+no se mezcla con ese resultado. Frente a 20abe44, los 62 Ledger y los 52 logs del
+archivo de Drive son exactamente iguales; los 34 avisos históricos siguen abiertos.

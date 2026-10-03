@@ -3,7 +3,8 @@
 El JSON de Ledger determina todas las acciones. El diagnóstico aporta los
 nombres de los jugadores, los equipos del Team Preview y el resultado, que
 todavía no son campos de Ledger. Un resultado sin evidencia OCR o un equipo
-incompleto hace fallar la exportación.
+contradictorio hace fallar la exportación. Si no existe evidencia de preview,
+se describen sólo los participantes confirmados, sin completar los desconocidos.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import re
 import zipfile
 from collections.abc import Iterable, Mapping
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,97 @@ class TraceContext:
     teams: dict[str, tuple[str, ...]]
     team_evidence: dict[str, Any]
     aliases: dict[str, dict[str, str]]
+    player_evidence: dict[str, Any] = field(default_factory=dict)
+
+
+def _recover_player_names(
+    rows: list[dict[str, Any]], battle: dict[str, Any], players: dict[str, Counter[str]],
+) -> dict[str, Any]:
+    """A repeated versus pair plus an accepted rival entry identifies sides.
+
+    Older traces can contain perfectly legible names while their detector's
+    player fields are empty. No saved/default name or post-battle screen is
+    needed: use the pair preceding this battle's first accepted entry.
+    """
+    entries = [event for event in battle.get("events", [])
+               if event.get("status") == "consistent" and event.get("kind") in {"switch", "drag"}
+               and isinstance(event.get("frame"), int)]
+    if not entries or all(players.values()):
+        return {}
+    announcements: dict[str, set[int]] = {}
+    for row in rows:
+        frame = row["frame"]
+        if not any(str(event.get("slot") or "").startswith("p2")
+                   and 0 <= event["frame"] - frame <= 20 for event in entries):
+            continue
+        for part in row.get("ocr") or ():
+            text = str(part.get("text") or "").strip()
+            match = re.fullmatch(r"(.+) sent out .+!", text, re.IGNORECASE)
+            confidence = part.get("confidence")
+            if match and isinstance(confidence, (int, float)) and confidence >= .95:
+                name = _atom(match.group(1), "jugador rival")
+                announcements.setdefault(name, set()).add(frame)
+    rivals = {name: frames for name, frames in announcements.items() if len(frames) >= 2}
+    if len(rivals) != 1:
+        return {}
+    rival, announcement_frames = next(iter(rivals.items()))
+    pairs: dict[tuple[str, str], list[int]] = {}
+    first_entry = min(event["frame"] for event in entries)
+    for row in rows:
+        if row["frame"] >= first_entry:
+            continue
+        names: dict[str, list[str]] = {"p1": [], "p2": []}
+        for part in row.get("ocr") or ():
+            confidence, left, top = (part.get(key) for key in ("confidence", "left", "top"))
+            if not all(isinstance(value, (int, float)) for value in (confidence, left, top)):
+                continue
+            if confidence < .95 or not .9 <= top <= .96:
+                continue
+            side = "p1" if .1 <= left < .45 else "p2" if .55 < left <= .85 else None
+            if side and isinstance(part.get("text"), str) and part["text"].strip():
+                names[side].append(_atom(part["text"], f"jugador {side}"))
+        if (len(names["p1"]) == len(names["p2"]) == 1 and names["p2"][0] == rival
+                and names["p1"][0].casefold() != rival.casefold()):
+            pairs.setdefault((names["p1"][0], rival), []).append(row["frame"])
+    timestamps = {row["frame"]: row.get("timestamp_ms") for row in rows}
+    repeated = {pair: frames for pair, frames in pairs.items()
+                if any(b == a + 1 and (not all(isinstance(timestamps.get(frame), (int, float))
+                                              for frame in (a, b))
+                                      or 0 < timestamps[b] - timestamps[a] <= 1000)
+                       for a, b in zip(frames, frames[1:]))}
+    if len(repeated) != 1:
+        return {}
+    pair, frames = next(iter(repeated.items()))
+    evidence = {}
+    for side, name in zip(("p1", "p2"), pair):
+        if players[side]:
+            if not _ocr_player_variant(_one_vote(players[side], side), name):
+                raise ReplayEvidenceError(f"Los nombres de {side} contradicen la pantalla de jugadores.")
+        else:
+            players[side][name] = len(frames)
+            evidence[side] = {"source": "versus_pair_and_rival_entry", "name": name,
+                              "frames": frames, "rival_entry_frames": sorted(announcement_frames)}
+    return evidence
+
+
+def _participant_team(battle: dict[str, Any], side: str) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Describe observed participants, never fill unseen preview positions."""
+    roster, evidence = [], []
+    for event in battle.get("events", []):
+        if (event.get("status") != "consistent" or event.get("kind") not in {"switch", "drag"}
+                or not str(event.get("slot") or "").startswith(side)):
+            continue
+        actor = (battle.get("actors") or {}).get(event.get("actor_id")) or {}
+        species = _atom(actor.get("species"), f"participante de {side}")
+        if species not in roster:
+            roster.append(species)
+        evidence.append({"event_seq": event["seq"], "frame": event.get("frame"),
+                         "actor_id": event["actor_id"], "species": species})
+    if not 1 <= len(roster) <= 4:
+        raise ReplayEvidenceError(f"Ledger no confirma participantes válidos para {side}.")
+    return tuple(roster), {"source": "ledger_participants", "complete": False,
+                           "participants": evidence, "frames": sorted({item["frame"] for item in evidence
+                                                                        if isinstance(item["frame"], int)})}
 
 
 def _team(value: object, label: str) -> tuple[str, ...] | None:
@@ -150,11 +242,14 @@ def build_trace_context(
             and e.get("status") == "consistent"]
     if len(ends) != 1:
         raise ReplayEvidenceError("Hace falta un único cierre confirmado por Ledger.")
+    rows = [row for row in rows if row.get("battle_index") == index
+            and isinstance(row.get("frame"), int) and bounds[0] <= row["frame"] <= bounds[1]]
     players: dict[str, Counter[str]] = {"p1": Counter(), "p2": Counter()}
     alias_votes: dict[str, dict[str, Counter[str]]] = {"p1": {}, "p2": {}}
     team_votes: dict[str, dict[tuple[str, ...], list[int]]] = {"p1": {}, "p2": {}}
     sprite_teams: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {"p1": {}, "p2": {}}
     outcomes: list[tuple[int, str, float]] = []
+    unconfirmed_preview = {"p1": False, "p2": False}
     for row in rows:
         frame = row.get("frame")
         if row.get("battle_index") != index or not isinstance(frame, int) or not bounds[0] <= frame <= bounds[1]:
@@ -176,6 +271,8 @@ def build_trace_context(
                 if roster:
                     team_votes[side].setdefault(roster, []).append(frame)
                 cards = (row.get("preview_identity_evidence") or {}).get(side, [])
+                if any(any(n > 0 for n in card.get("species_votes", {}).values()) for card in cards):
+                    unconfirmed_preview[side] = True
                 if len(cards) == 6:
                     votes = [{s: n for s, n in card.get("species_votes", {}).items() if n > 0} for card in cards]
                     if all(len(v) == 1 and next(iter(v.values())) >= 2 for v in votes):
@@ -192,6 +289,7 @@ def build_trace_context(
             confidence = part.get("confidence")
             if isinstance(confidence, (int, float)) and confidence >= 0.9 and (_WIN.fullmatch(text) or _LOSS.fullmatch(text)):
                 outcomes.append((frame, text, float(confidence)))
+    player_evidence = _recover_player_names(rows, battle, players)
     p1, p2 = (_one_vote(players[side], side) for side in ("p1", "p2"))
     result_names = {(_WIN.fullmatch(text) or _LOSS.fullmatch(text)).group(1)
                     for _, text, _ in outcomes}
@@ -234,7 +332,9 @@ def build_trace_context(
         roster = (seeded if side == "p1" and seeded and
                   (not observed or set(seeded) == set(observed)) else observed) or observed or seeded
         if not roster:
-            raise ReplayEvidenceError(f"Falta el equipo completo de seis Pokémon para {side}.")
+            if unconfirmed_preview[side]:
+                raise ReplayEvidenceError(f"Falta el equipo completo de seis Pokémon para {side}: preview sin confirmar.")
+            roster, evidence = _participant_team(battle, side)
         teams[side] = roster
         team_evidence[side] = evidence or {"source": "job.context.teams", "votes": 0, "frames": []}
     fmt = _atom((job.get("context") or {}).get("format"), "formato del diagnóstico")
@@ -245,7 +345,7 @@ def build_trace_context(
         job_id=job_id, p1=p1, p2=p2, format=fmt, uploadtime=int(stamp.timestamp()),
         winner=p1 if "p1" in winners else p2,
         winner_evidence={"frame": source_frame, "text": source_text, "confidence": source_confidence},
-        teams=teams, team_evidence=team_evidence, aliases=aliases,
+        teams=teams, team_evidence=team_evidence, aliases=aliases, player_evidence=player_evidence,
     )
 
 
@@ -410,7 +510,8 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
     ]
     for side in ("p1", "p2"):
         roster = context.teams[side]
-        if len(roster) != 6:
+        partial = context.team_evidence[side].get("source") == "ledger_participants"
+        if (not partial and len(roster) != 6) or (partial and not 1 <= len(roster) <= 4):
             raise ReplayEvidenceError(f"Falta el equipo completo de {side}.")
         entered = {(actors.get(e.get("actor_id")) or {}).get("species") for e in events
                    if e["kind"] in {"switch", "drag"} and str(e.get("slot", "")).startswith(side)}
@@ -419,9 +520,13 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             raise ReplayEvidenceError(
                 f"El equipo de {side} contradice las especies confirmadas en combate: {sorted(missing, key=str)}. "
                 "Hace falta un Team Preview corroborado; el equipo guardado no puede sustituirlo.")
-        lines.append(f"|teamsize|{side}|6")
+        if partial and entered != set(roster):
+            raise ReplayEvidenceError(f"Los participantes de {side} no concuerdan con Ledger.")
+        lines.append(f"|teamsize|{side}|{len(roster)}")
         lines.extend(f"|poke|{side}|{species}, L50|" for species in roster)
-    lines.extend(["|teampreview", "|start"])
+    if not any(context.team_evidence[side].get("source") == "ledger_participants" for side in ("p1", "p2")):
+        lines.append("|teampreview")
+    lines.append("|start")
     active: dict[str, str] = {}
     known_hp: dict[str, str] = {}
     hp_source: dict[str, str] = {}
@@ -769,6 +874,7 @@ def build_replay(battle: dict[str, Any], context: TraceContext) -> dict[str, Any
             "inferred_entry_health": inferred_entry_health,
             "team_preview": context.team_evidence,
             "hp_units": "p1: observed actual/max; p2: normalized percent/100",
+            **({"players": context.player_evidence} if context.player_evidence else {}),
         },
     }
 

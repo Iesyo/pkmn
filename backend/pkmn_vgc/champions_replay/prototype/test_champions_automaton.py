@@ -4323,10 +4323,17 @@ class EntryNormalizationContinuityTests(unittest.TestCase):
         entry = next(e for e in ledger["events"] if e["frame"] == 489 and e["kind"] == "switch")
         self.assertEqual((entry["species"], entry["slot"], entry["health"]), ("Kingambit", "p1a", "177/177"))
         self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 449)["status"], "consistent")
-        from ledger_replay import build_trace_context, ReplayEvidenceError
+        from ledger_replay import build_trace_context, build_replay, ReplayEvidenceError
         with zipfile.ZipFile(path) as archive: job = json.loads(archive.read("job.json"))
-        with self.assertRaisesRegex(ReplayEvidenceError, "La traza no confirma p1"):
-            build_trace_context(job, rows, ledger)
+        context = build_trace_context(job, rows, ledger)
+        self.assertEqual((context.p1, context.p2, context.winner), ("Roku", "coacoaboy", "Roku"))
+        self.assertEqual(set(context.teams["p2"]), {"Whimsicott", "Charizard", "Basculegion", "Farigiraf"})
+        self.assertFalse(context.team_evidence["p2"]["complete"])
+        self.assertEqual(build_replay(ledger, context)["log"].splitlines()[-1], "|win|Roku")
+        no_result = copy.deepcopy(rows)
+        for row in no_result: row["ocr"] = [part for part in row["ocr"] if not part.get("text", "").startswith("You defeated ")]
+        with self.assertRaisesRegex(ReplayEvidenceError, "ganador único"):
+            build_trace_context(job, no_result, ledger)
 
 
 if __name__ == "__main__":

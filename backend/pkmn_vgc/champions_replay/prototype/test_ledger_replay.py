@@ -343,8 +343,14 @@ class LedgerReplayTest(unittest.TestCase):
             with zipfile.ZipFile(zip_path, "w") as archive:
                 archive.writestr("job.json", job)
                 archive.writestr("output/ocr.trace.jsonl", "\n".join(map(json.dumps, rows)))
-            with self.assertRaisesRegex(ReplayEvidenceError, "equipo completo de seis"):
-                load_trace_context(zip_path, battle)
+            context = load_trace_context(zip_path, battle)
+            self.assertEqual(context.teams["p2"], ("Garchomp", "Sneasler"))
+            self.assertFalse(context.team_evidence["p2"]["complete"])
+            lines = build_replay(battle, context)["log"].splitlines()
+            self.assertEqual(sum(line.startswith("|poke|p2|") for line in lines), 2)
+            self.assertIn("|teamsize|p2|2", lines)
+            self.assertNotIn("|teampreview", lines)
+            self.assertEqual(lines[-1], "|win|Roku")
 
             rows[0]["detections"]["teams"]["p2"] = [
                 "Garchomp", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Pelipper"]
@@ -729,6 +735,118 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertIn("|move|p2a: Tyranitar|Rock Slide|p1b: Rillaboom", lines)
         self.assertIn("|-miss|p2a: Tyranitar|p1b: Rillaboom", lines)
         self.assertEqual(lines[-1], "|win|Ivannn")
+
+
+class MissingDetectorContextTest(unittest.TestCase):
+    def fixture(self, directory):
+        battle, path = _pilot_fixture(Path(directory))
+        with zipfile.ZipFile(path) as archive:
+            job = json.loads(archive.read("job.json"))
+            rows = [json.loads(line) for line in archive.read("output/ocr.trace.jsonl").splitlines()]
+        for event in battle["events"][:4]: event["frame"] = 4
+        for row in rows: row["detections"]["players"] = {"p1": None, "p2": None}
+        for row in rows[:2]:
+            row["ocr"] = [{"text": name, "confidence": .999, "left": left, "top": .91}
+                          for name, left in (("Alba", .3), ("Nadir", .6))]
+        for row in rows[2:4]:
+            row["ocr"] = [{"text": "Nadir sent out Garchomp and Sneasler!", "confidence": .999}]
+        rows[-1]["ocr"][0]["text"] = "You defeated Nadir!"
+        return battle, job, rows
+
+    def test_repeated_player_pair_and_entry_recover_empty_detector_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, job, rows = self.fixture(directory)
+            context = build_trace_context(job, rows, battle)
+            self.assertEqual((context.p1, context.p2, context.winner), ("Alba", "Nadir", "Alba"))
+            self.assertEqual(context.player_evidence["p1"]["frames"], [1, 2])
+            self.assertEqual(context.player_evidence["p2"]["rival_entry_frames"], [3, 4])
+            replay = build_replay(battle, context)
+            self.assertEqual(replay["ledger_source"]["players"], context.player_evidence)
+            self.assertEqual(replay["log"].splitlines()[-1], "|win|Alba")
+
+    def test_names_require_repetition_position_same_battle_and_rival_entry(self):
+        for problem in ("single_pair", "weak_name", "wrong_position", "different_rival",
+                        "single_announcement", "foreign_battle", "outside_bounds", "time_gap",
+                        "duplicate_label", "different_own_name", "unaccepted_entry"):
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
+                battle, job, rows = self.fixture(directory)
+                if problem == "single_pair": rows[1]["ocr"] = []
+                if problem == "weak_name": rows[1]["ocr"][0]["confidence"] = .6
+                if problem == "wrong_position": rows[1]["ocr"][0]["top"] = .5
+                if problem == "different_rival": rows[1]["ocr"][1]["text"] = "Other Rival"
+                if problem == "single_announcement": rows[3]["ocr"] = []
+                if problem == "foreign_battle": rows[1]["battle_index"] = 1
+                if problem == "outside_bounds": battle["first_frame"] = 2
+                if problem == "time_gap":
+                    rows[0]["timestamp_ms"] = 0; rows[1]["timestamp_ms"] = 10000
+                if problem == "duplicate_label": rows[1]["ocr"].append(dict(rows[1]["ocr"][0]))
+                if problem == "different_own_name": rows[1]["ocr"][0]["text"] = "Someone Else"
+                if problem == "unaccepted_entry":
+                    for event in battle["events"][2:4]: event["status"] = "suppressed"
+                with self.assertRaisesRegex(ReplayEvidenceError, "La traza no confirma"):
+                    build_trace_context(job, rows, battle)
+
+    def test_disagreeing_confirmed_player_and_ambiguous_pairs_are_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, job, rows = self.fixture(directory)
+            for row in rows: row["detections"]["players"]["p2"] = "Another Rival"
+            with self.assertRaisesRegex(ReplayEvidenceError, "contradicen"):
+                build_trace_context(job, rows, battle)
+            for row in rows: row["detections"]["players"]["p2"] = None
+            for event in battle["events"][:4]: event["frame"] = 7
+            rows[4]["ocr"] = copy.deepcopy(rows[0]["ocr"])
+            rows[5]["ocr"] = copy.deepcopy(rows[0]["ocr"])
+            for row in rows[4:6]: row["ocr"][0]["text"] = "Other Player"
+            with self.assertRaisesRegex(ReplayEvidenceError, "La traza no confirma"):
+                build_trace_context(job, rows, battle)
+
+    def test_partial_participants_preserve_real_identity_and_require_exact_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, job, rows = self.fixture(directory)
+            for row in rows:
+                row["detections"]["team_preview"] = False
+                row["detections"]["teams"] = {}
+            context = build_trace_context(job, rows, battle)
+            self.assertEqual(context.teams["p2"], ("Garchomp", "Sneasler"))
+            self.assertEqual(context.team_evidence["p2"]["source"], "ledger_participants")
+            evidence = context.team_evidence["p2"]["participants"]
+            self.assertEqual([item["actor_id"] for item in evidence], ["p2-one", "p2-two"])
+            lines = build_replay(battle, context)["log"].splitlines()
+            self.assertIn("|teamsize|p2|2", lines)
+            self.assertNotIn("|teampreview", lines)
+            # Extra unseen members and omitted real members cannot be labelled observed.
+            for roster in (("Garchomp",), ("Garchomp", "Sneasler", "Charizard")):
+                with self.subTest(roster=roster), self.assertRaises(ReplayEvidenceError):
+                    build_replay(battle, replace(context, teams={**context.teams, "p2": roster}))
+            battle["actors"]["p2-one"]["species"] = "Zoroark-Hisui"
+            battle["events"][2].update(species="Zoroark-Hisui", display_species="Charizard")
+            context = build_trace_context(job, rows, battle)
+            self.assertEqual(context.teams["p2"][0], "Zoroark-Hisui")
+            with self.assertRaisesRegex(ReplayEvidenceError, "Ilusión no acreditada"):
+                build_replay(battle, context)
+            battle["events"][2]["display_species"] = "Sneasler"
+            self.assertIn("|switch|p2a: Sneasler", build_replay(battle, context)["log"])
+
+    def test_partial_team_needs_accepted_actors_and_cannot_bypass_conflicting_preview(self):
+        for problem in ("no_participants", "missing_actor", "five_participants", "single_preview"):
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as directory:
+                battle, path = _pilot_fixture(Path(directory))
+                with zipfile.ZipFile(path) as archive:
+                    job = json.loads(archive.read("job.json"))
+                    rows = [json.loads(line) for line in archive.read("output/ocr.trace.jsonl").splitlines()]
+                for row in rows[:2]: row["detections"]["teams"]["p2"] = []
+                if problem == "no_participants":
+                    for event in battle["events"][2:4]: event["status"] = "suppressed"
+                if problem == "missing_actor": del battle["actors"]["p2-one"]
+                if problem == "five_participants":
+                    for number, species in enumerate(("Charizard", "Whimsicott", "Pelipper"), 10):
+                        battle["actors"][str(number)] = {"species": species}
+                        battle["events"].append({"seq": number, "kind": "switch", "slot": "p2a",
+                                                 "actor_id": str(number), "status": "consistent"})
+                if problem == "single_preview":
+                    rows[0]["detections"]["teams"]["p2"] = [
+                        "Garchomp", "Sneasler", "Charizard", "Whimsicott", "Sylveon", "Pelipper"]
+                with self.assertRaises(ReplayEvidenceError): build_trace_context(job, rows, battle)
 
 
 class PreviewSpriteEvidenceTest(unittest.TestCase):
