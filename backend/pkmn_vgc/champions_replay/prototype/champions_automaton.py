@@ -1684,13 +1684,14 @@ def ordered_candidates(frames: list[dict[str, Any]],
                            slot_order.get(c["event"].get("slot"), 4)
                            if c["event"]["kind"] in {"switch", "drag"} else c["logical_frame"]),
         )
-    # Champions shows the apparent species until Zoroark's Ilusión breaks.
+    # Champions shows the apparent species until Illusion breaks.
     # The detector describes that reveal as a switch, although the occupant
     # did not leave the slot. Link the visible disguise back to its real actor
     # before replaying candidates, so HP, items and earlier moves stay together.
     for index, item in enumerate(candidates):
         event = item["event"]
-        if event["kind"] != "switch" or "Zoroark" not in str(event.get("species")):
+        real = item.get("canonical_species") or unambiguous.get(event.get("species"), event.get("species"))
+        if event["kind"] != "switch" or "Illusion" not in species_abilities().get(real, ()):
             continue
         slot = event.get("slot")
         previous_index = next((i for i in range(index - 1, -1, -1)
@@ -1699,7 +1700,6 @@ def ordered_candidates(frames: list[dict[str, Any]],
         if previous_index is None:
             continue
         apparent = candidates[previous_index]["event"].get("species")
-        real = item.get("canonical_species") or unambiguous.get(event.get("species"), event.get("species"))
         if not apparent or identity_species(apparent) == identity_species(real or ""):
             continue
         observations = [(f, line["text"]) for f in range(item["observed_frame"], item["observed_frame"] + 9)
