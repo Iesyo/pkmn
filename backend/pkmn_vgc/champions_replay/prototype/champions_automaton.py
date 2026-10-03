@@ -3215,6 +3215,66 @@ class BattleAutomaton:
             if result == "review":
                 self._issue("hp_transition", item["note"] or "Transición de PS dudosa.", item["frame"], item["seq"])
 
+    def _hp_owner_by_continuity(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        """Discard a detector's slot hypothesis only with a unique named HUD.
+
+        A complete value repeated on the partner's plate can establish its
+        owner even when an archived detector assigned the event to the wrong
+        slot. Equal values, missing names, another action or a capture gap do
+        not resolve the alternatives. The raw event remains in the proof.
+        """
+        event = candidate["event"]
+        slot, health = event.get("slot"), event.get("health")
+        if slot not in {"p2a", "p2b"} or not health:
+            return candidate
+        other = "p2b" if slot == "p2a" else "p2a"
+        rows = self._confirmation_rows(candidate["observed_frame"], include_boundary=True)
+        previous = self.frame_lookup.get(candidate["observed_frame"] - 1)
+        if (previous and rows and 0 < rows[0]["timestamp_ms"] - previous["timestamp_ms"] <= 1_000 and
+            any(hp == health and line["confidence"] >= .97
+                for hp, line in complete_hud_health(previous, other)) and
+            not any(e["kind"] in ACTIVITY | {"faint", "mega", "battle_end"}
+                    for e in previous.get("detections", {}).get("events", ()))):
+            rows = [previous] + rows
+        if len(rows) < 2:
+            return candidate
+        # A value on its proposed plate is still a viable interpretation.
+        if any(hp == health for row in rows[:2] for hp, _ in complete_hud_health(row, slot)):
+            return candidate
+        actor_id = self.active.get(other)
+        actor = self.actors.get(actor_id or "")
+        if not actor or PLACEHOLDER.fullmatch(actor["species"]) or actor["species"] == "unknown":
+            return candidate
+        proof = []
+        for row in rows[:2]:
+            if any(e["kind"] in ACTIVITY | {"faint", "mega", "battle_end"}
+                   for e in row.get("detections", {}).get("events", ())):
+                return candidate
+            names = sorted((line for line in row.get("ocr", ())
+                            if .57 <= line.get("left", -1) <= .99 and
+                            .02 <= line.get("top", -1) <= .10 and
+                            line.get("confidence", 0) >= .9 and
+                            sum(char.isalpha() for char in line.get("text", "")) >= 2),
+                           key=lambda line: line["left"])
+            name = (names[0 if other == "p2a" else 1]["text"].casefold()
+                    if len(names) == 2 and names[1]["left"] - names[0]["left"] >= .12
+                    else hud_nickname(row, other))
+            species = self.nickname_species["p2"].get(name or "", name or "")
+            readings = complete_hud_health(row, other)
+            if (not name or identity_species(species).casefold() != identity_species(actor["species"]).casefold() or
+                len(readings) != 1 or readings[0][0] != health or readings[0][1]["confidence"] < .97):
+                return candidate
+            proof.append({"frame": row["frame"], "nickname": name,
+                          "text": readings[0][1]["text"], "confidence": readings[0][1]["confidence"]})
+        if rows[1]["frame"] != rows[0]["frame"] + 1:
+            return candidate
+        decision = {"kind": "hp_owner", "state": "confirmed", "frame": candidate["observed_frame"],
+                    "selected_slot": other, "actor_id": actor_id, "raw_event": dict(event),
+                    "evidence": proof, "reason": "PS completos repetidos del único ocupante nombrado; slot original sin ese valor"}
+        self.continuity_decisions.append(decision)
+        return {**candidate, "canonical_species": actor["species"], "continuity_support": decision,
+                "event": {**event, "slot": other, "species": actor["species"]}}
+
     def _hp(self, candidate: dict[str, Any]) -> None:
         event = candidate["event"]
         clock = self._clock_hp_source(candidate) or self._invalid_own_hp_source(candidate)
@@ -3225,6 +3285,8 @@ class BattleAutomaton:
                                 status="suppressed", before=before, after=before, note=clock["reason"])
             item["hp_state"], item["hp_support"] = "rejected", clock
             return
+        candidate = self._hp_owner_by_continuity(candidate)
+        event = candidate["event"]
         conflict = self._competing_hp_ocr(candidate)
         if conflict:
             candidate["competing_ocr"] = conflict
@@ -6251,18 +6313,27 @@ class BattleAutomaton:
                  link["status"] == "unmatched"), None)
             text = str((bad or {}).get("value") or (bad or {}).get("text") or "")
             match = (FAINT_NARRATION if issue["code"] == "faint_text_unconfirmed" else HP_NARRATION).fullmatch(text)
-            if not bad or not match or bad.get("confidence", 1) >= .95:
+            if (not bad or not match or
+                (issue["code"] != "faint_text_unconfirmed" and bad.get("confidence", 1) >= .95)):
                 unresolved.append(issue)
                 continue
             side, subject = ("p2" if match[1] else "p1"), match[2].casefold()
             # A legible different nickname is evidence for a different event.
-            if subject in self.nickname_species[side] or any(
-                identity_species(actor["species"]).casefold() == subject for actor in self.actors.values()):
+            named_species = self.nickname_species[side].get(subject)
+            if not named_species and any(identity_species(actor["species"]).casefold() == subject
+                                         for actor in self.actors.values()):
+                named_species = subject
+            if named_species and issue["code"] != "faint_text_unconfirmed":
                 unresolved.append(issue)
                 continue
             options = {}
             for accepted in self.events:
                 if accepted["status"] != "consistent" or accepted["turn"] != bad["turn"]:
+                    continue
+                if (((bad.get("confidence", 1) >= .95 or named_species) and
+                     not str(accepted.get("slot") or "").startswith(side)) or
+                    (named_species and identity_species(named_species).casefold() !=
+                     identity_species(accepted.get("species") or "").casefold())):
                     continue
                 if abs(accepted["observed_ms"] - bad["observed_ms"]) > HP_NARRATION_WINDOW_MS:
                     continue
@@ -6270,8 +6341,17 @@ class BattleAutomaton:
                 if any(e["kind"] in ACTIVITY | {"turn", "battle_end"} and first < e["frame"] < last
                        for e in self.events):
                     continue
+                window = [r for r in self.frames if first <= r["frame"] <= last]
+                if (any(b["timestamp_ms"] - a["timestamp_ms"] > 1_000 for a, b in zip(window, window[1:])) or
+                    any(line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55 and
+                        (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                         re.search(r"\bused .+!$|\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                        for r in window if first < r["frame"] < last for line in r.get("ocr", ()))):
+                    continue
                 if issue["code"] == "faint_text_unconfirmed":
                     if accepted["kind"] != "faint":
+                        continue
+                    if bad.get("confidence", 1) >= .95 and bad.get("actor_id") == accepted["actor_id"]:
                         continue
                     hp = next((e for e in reversed(self.events[:accepted["seq"] - 1])
                                if e["actor_id"] == accepted["actor_id"] and e["kind"] in HP_KINDS), None)
@@ -6293,7 +6373,7 @@ class BattleAutomaton:
                                identity_species(self.nickname_species[accepted["slot"][:2]].get(m[2].casefold(), m[2])).casefold() ==
                                identity_species(accepted["species"]).casefold() and
                                difflib.SequenceMatcher(a=text.casefold(), b=line["text"].casefold()).ratio() >= .9]
-                    if anchors:
+                    if len({a["frame"] for a in anchors}) >= (2 if bad.get("confidence", 1) >= .95 else 1):
                         options[accepted["seq"]] = (accepted, hp["evidence"] + anchors)
                 else:
                     if accepted["kind"] not in HP_KINDS or accepted.get("hp_state") != "confirmed":

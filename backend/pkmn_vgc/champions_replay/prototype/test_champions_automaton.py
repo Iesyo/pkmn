@@ -3527,9 +3527,11 @@ class TemporalAutomatonTests(unittest.TestCase):
         battle = [row for row in frames if row["battle_index"] == 0]
         ledger = BattleAutomaton(0, battle, context).run()
         self.assertEqual(ledger["issues"], [])
-        self.assertEqual([(x["code"], x["frame"]) for x in ledger["resolved_issues"]],
-                         [("hp_unconfirmed", 296), ("hp_transition", 297)])
-        indeedee = next(e for e in ledger["events"] if e["frame"] == 296 and e["slot"] == "p2a")
+        self.assertEqual(ledger["resolved_issues"], [])
+        owner = next(d for d in ledger["continuity_decisions"] if d["frame"] == 296)
+        self.assertEqual((owner["raw_event"]["slot"], owner["selected_slot"]), ("p2a", "p2b"))
+        self.assertEqual([p["text"] for p in owner["evidence"]], ["1%", "1%"])
+        indeedee = next(e for e in ledger["events"] if e["frame"] == 294 and e["slot"] == "p2a")
         self.assertEqual((indeedee["kind"], indeedee["status"], indeedee["before"],
                           indeedee["after"], indeedee["cause"]),
                          ("damage", "consistent", "100/100", "77/100", 12))
@@ -4004,6 +4006,72 @@ class ContinuitySelectionTest(unittest.TestCase):
             with self.subTest(removed=removed):
                 self.assertEqual(len(machine.issues), 1)
                 self.assertEqual(machine.continuity_decisions, [])
+
+class HpOwnerContinuityTests(unittest.TestCase):
+    def machine_and_candidate(self):
+        rows = [frame(n) for n in range(1, 4)]
+        for row in rows[1:]:
+            row["ocr"] = [
+                {"text": "Charizard", "left": .63, "top": .05, "confidence": .999},
+                {"text": "Kingambit", "left": .80, "top": .05, "confidence": .999},
+                {"text": "56%", "left": .69, "right": .74, "top": .11, "bottom": .16, "confidence": .999},
+                {"text": "69%", "left": .86, "right": .91, "top": .11, "bottom": .16, "confidence": .999},
+            ]
+        machine = BattleAutomaton(0, rows)
+        machine.active = {"p2a": "left", "p2b": "right"}
+        machine.actors = {"left": {"species": "Charizard"}, "right": {"species": "Kingambit"}}
+        raw = event("damage", "p2b", "Kingambit", "56/100")
+        candidate = {"event": raw, "observed_frame": 2, "observed_ms": 1000, "logical_frame": 2}
+        return machine, candidate
+
+    def test_unique_repeated_hud_selects_owner_and_preserves_original(self):
+        machine, candidate = self.machine_and_candidate()
+        original = copy.deepcopy(candidate)
+        selected = machine._hp_owner_by_continuity(candidate)
+        self.assertEqual((selected["event"]["slot"], selected["canonical_species"]), ("p2a", "Charizard"))
+        self.assertEqual(candidate, original)
+        self.assertEqual(selected["continuity_support"]["raw_event"], original["event"])
+        self.assertEqual([e["frame"] for e in selected["continuity_support"]["evidence"]], [2, 3])
+
+    def test_ambiguous_missing_or_interrupted_hud_preserves_candidate(self):
+        for change in ("equal_hp", "missing_name", "wrong_occupant", "action", "gap", "weak_hp"):
+            machine, candidate = self.machine_and_candidate()
+            last = machine.frame_lookup[3]
+            if change == "equal_hp": last["ocr"][3]["text"] = "56%"
+            if change == "missing_name": last["ocr"] = last["ocr"][2:]
+            if change == "wrong_occupant": last["ocr"][0]["text"] = "Garchomp"
+            if change == "action": last["detections"]["events"] = [event("move", "p2a", "Charizard", move="Protect")]
+            if change == "gap": last["timestamp_ms"] += 2000
+            if change == "weak_hp": last["ocr"][2]["confidence"] = .91
+            with self.subTest(change=change):
+                self.assertEqual(machine._hp_owner_by_continuity(candidate), candidate)
+                self.assertFalse(machine.continuity_decisions)
+
+    def test_turn_redraw_preserves_owner_but_new_action_does_not(self):
+        machine, candidate = self.machine_and_candidate()
+        machine.frame_lookup[3]["detections"]["events"] = [event("turn", turn=2)]
+        self.assertEqual(machine._hp_owner_by_continuity(candidate)["event"]["slot"], "p2a")
+
+    def test_shifted_complete_percent_is_valid_but_clock_is_not_hp(self):
+        machine, _ = self.machine_and_candidate()
+        self.assertEqual(machine._hp_support("p2b", "69/100", 2)["state"], "confirmed")
+        row = machine.frame_lookup[2]
+        row["ocr"] = [{"text": "69%", "left": .84, "right": .87, "top": .16, "bottom": .19, "confidence": .999}]
+        # The raw clock is excluded before every inference pass.
+        clean = BattleAutomaton(0, [row, frame(3)])
+        self.assertEqual(clean._hp_support("p2b", "69/100", 2)["state"], "unconfirmed")
+
+    def test_clock_candidate_cannot_borrow_matching_partner_hp(self):
+        machine, candidate = self.machine_and_candidate()
+        rows = copy.deepcopy(machine.frames)
+        rows[1]["ocr"].append({"text": "56%", "left": .84, "right": .87,
+                                "top": .16, "bottom": .19, "confidence": .999})
+        clean = BattleAutomaton(0, rows)
+        clean.active, clean.actors = machine.active, machine.actors
+        clean._hp(candidate)
+        self.assertEqual(clean.events[0]["kind"], "hp_rejected_reading")
+        self.assertEqual(clean.events[0]["slot"], "p2b")
+        self.assertFalse(clean.continuity_decisions)
 
 if __name__ == "__main__":
     unittest.main()

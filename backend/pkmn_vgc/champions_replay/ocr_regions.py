@@ -19,9 +19,12 @@ NAME_HUD_AREAS = {
     "p1a": (.05, .27, .82, .91), "p1b": (.27, .49, .82, .91),
     "p2a": (.57, .81, .02, .10), "p2b": (.81, .99, .02, .10),
 }
+# Rival plates slide horizontally during narration. The right HP region
+# includes the stationary and shifted labels; the clock origin is still
+# excluded before HUD evidence can be consumed.
 HP_HUD_AREAS = {
     "p1a": (.10, .27, .87, .98), "p1b": (.30, .48, .87, .98),
-    "p2a": (.66, .82, .08, .20), "p2b": (.89, .99, .08, .20),
+    "p2a": (.66, .82, .08, .20), "p2b": (.83, .99, .08, .20),
 }
 CLOCK_AREAS = {"p1_clock": (.15, .25, .78, .855),
                "p2_clock": (.77, .86, .145, .205)}

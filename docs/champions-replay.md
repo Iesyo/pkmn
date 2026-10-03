@@ -519,3 +519,41 @@ ausencia y contradicción de HUD, interrupciones, sujetos distintos, votos
 insuficientes y captura transformada con motes y tiempos diferentes. La regresión
 archivada de 96c5 ahora incluye explícitamente la inferencia inicial de PS ya
 corregida antes de esta selección, en vez de exigir el estado antiguo del ZIP.
+
+### Continuidad del propietario de PS y anuncios repetidos (2 oct 2026)
+
+La prueba amplia de Drive mostró que la primera selección no se activaba en
+las capturas históricas. La zona de PS rival derecha ahora incluye el HUD
+desplazado durante las animaciones; los números de reloj siguen excluidos
+antes de interpretar PS. No se cambia la zona de nombres ni se fuerza una
+identidad a partir de una etiqueta aislada que se desliza.
+
+Una lectura de PS abre dos alternativas de propietario: el slot del detector
+y su compañero. Sólo se cambia cuando el primero no muestra ese valor y el
+otro ocupante conocido tiene nombre y PS completos en dos muestras consecutivas
+de confianza alta. Con ambas placas visibles se usa su orden relativo. Una
+acción, un cambio, un hueco de captura, nombres contradictorios, PS iguales
+o evidencia débil mantienen la propuesta pendiente. El redibujado de turno
+puede corroborar al mismo ocupante; no permite cruzar otra acción. La decisión
+conserva el candidato original, actor, slot y lecturas en `continuity_decisions`.
+
+Los duplicados de faint mal asignados al compañero también se descartan con
+un único debilitamiento aceptado, PS cero confirmados, narración corroborada y
+PS positivos del actor incorrecto. Una lectura OCR fuerte exige dos anuncios
+corroborados; una variante débil sigue necesitando su anuncio legible. Un nombre
+conocido de otra especie, una nueva acción incluso sólo en OCR, más de un
+episodio compatible o una interrupción conservan el aviso. Ilusión se conserva.
+
+Sobre 49 ZIP de Drive (44 distintos; 42 compatibles y dos sin battle_index),
+62 batallas pasan de **67 a 34 avisos**, de **51 a 52 replays** y de 11 a diez
+bloqueos. Los 51 logs previamente exportables son exactamente iguales. 57 Ledger
+completos permanecen idénticos; cinco cambian y sus pruebas de evidencia se
+conservan. El caso japonés cc5298 pasa de dos avisos a cero y se exporta por la
+ruta de producción. f139 conserva Ledger y log exactos, cero avisos y un replay.
+
+La reducción no equivale a resolver todos los casos ni a demostrar fidelidad
+visual de todos los vídeos. Los dos ZIP sin índice siguen fuera de la comparación;
+los conflictos de roster y de evidencia mantienen sus bloqueos. En la ROG:
+`git pull --ff-only origin desarrollo`, reiniciar `npm.cmd run dev` y el servicio
+Python si está separado, y usar **Reevaluar autómatas** sobre la traza existente.
+Esta mejora no requiere volver a ejecutar OCR para las lecturas archivadas.
