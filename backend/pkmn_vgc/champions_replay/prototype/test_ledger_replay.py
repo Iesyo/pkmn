@@ -731,5 +731,50 @@ class LedgerReplayTest(unittest.TestCase):
         self.assertEqual(lines[-1], "|win|Ivannn")
 
 
+class PreviewSpriteEvidenceTest(unittest.TestCase):
+    def fixture(self, directory):
+        battle, path = _pilot_fixture(Path(directory))
+        with zipfile.ZipFile(path) as archive:
+            job = json.loads(archive.read("job.json"))
+            rows = [json.loads(line) for line in archive.read("output/ocr.trace.jsonl").splitlines()]
+        for row in rows[:2]:
+            row["preview_identity_evidence"] = {side: [{"species_votes": {s: 2}}
+                                                         for s in row["detections"]["teams"][side]]
+                                                for side in ("p1", "p2")}
+            row["detections"]["teams"] = {}
+        return battle, job, rows
+
+    def test_independent_sprite_votes_confirm_roster_without_repeated_flush(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, job, rows = self.fixture(directory)
+            context = build_trace_context(job, rows, battle)
+            self.assertEqual(context.team_evidence["p2"]["source"], "preview_sprite_votes")
+            self.assertEqual(context.team_evidence["p2"]["votes"], 2)
+            self.assertEqual(context.team_evidence["p2"]["frames"], [1])
+            self.assertIn("|poke|p2|Garchomp", build_replay(battle, context)["log"])
+
+    def test_copies_of_a_single_sprite_vote_do_not_confirm_preview(self):
+        with tempfile.TemporaryDirectory() as directory:
+            battle, job, rows = self.fixture(directory)
+            for row in rows[:2]:
+                for cards in row["preview_identity_evidence"].values():
+                    for card in cards:
+                        card["species_votes"] = {s: 1 for s in card["species_votes"]}
+            with self.assertRaisesRegex(ReplayEvidenceError, "Falta el equipo completo.*p2"):
+                build_trace_context(job, rows, battle)
+
+    def test_conflicting_or_partial_cards_cannot_choose_a_roster(self):
+        for problem in ("competing_vote", "missing_card", "different_snapshot"):
+            with tempfile.TemporaryDirectory() as directory:
+                battle, job, rows = self.fixture(directory)
+                for row in rows[:2]:
+                    cards = row["preview_identity_evidence"]["p2"]
+                    if problem == "competing_vote": cards[0]["species_votes"]["Kingambit"] = 1
+                    if problem == "missing_card": cards.pop()
+                if problem == "different_snapshot":
+                    rows[1]["preview_identity_evidence"]["p2"][0]["species_votes"] = {"Kingambit": 2}
+                with self.subTest(problem=problem), self.assertRaises(ReplayEvidenceError):
+                    build_trace_context(job, rows, battle)
+
 if __name__ == "__main__":
     unittest.main()
