@@ -4189,5 +4189,145 @@ class DelayedDamageEndpointTests(unittest.TestCase):
         self.assertIn("|-heal|p1a: Whimsicott|146/167", replay["log"])
 
 
+class EntryNormalizationContinuityTests(unittest.TestCase):
+    def paired_entry_rows(self):
+        rows = [frame(n) for n in range(1, 9)]
+        for n in (1, 2):
+            rows[n - 1]["ocr"] = [{"text": "Go! Luna and Nova the Hoenn Champion!", "left": .1, "top": .73, "confidence": .999}]
+        for n in (3, 4):
+            rows[n - 1]["ocr"] = [{"text": "Luna's", "left": .08, "top": .35, "confidence": .999},
+                                   {"text": "Psychic Surge", "left": .08, "top": .4, "confidence": .999}]
+        rows[5] = frame(6, [event("switch", "p1a", "Indeedee-F", "177/177"),
+                             event("ability", "p1a", "Indeedee-F", value="Psychic Surge")])
+        rows[6] = frame(7, [event("damage", "p1a", "Indeedee-F", "177/177")])
+        for n in (6, 7):
+            rows[n - 1]["ocr"].append({"text": "Luna", "left": .08, "top": .86, "confidence": .999})
+        return rows
+
+    def test_two_entry_names_are_normalized_before_event_validation(self):
+        machine = BattleAutomaton(0, self.paired_entry_rows(), {"teams": {"p1": ["Indeedee-F", "Gardevoir"]}})
+        self.assertEqual(machine.nickname_species["p1"]["luna"], "Indeedee-F")
+        from champions_automaton import announced_names
+        self.assertEqual(announced_names("Go! Luna and Nova the Hoenn Champion!"), ("luna", "nova"))
+
+    def test_ambiguous_or_unconfirmed_aliases_are_not_replaced(self):
+        for change in ("illusion", "shared_ability", "weak_panel", "malformed_hp", "other_name"):
+            rows = self.paired_entry_rows()
+            roster = ["Indeedee-F", "Gardevoir"]
+            if change == "illusion": roster.append("Zoroark-Hisui")
+            if change == "shared_ability": roster.append("Indeedee")
+            if change == "weak_panel": rows[3]["ocr"][1]["confidence"] = .9
+            if change == "malformed_hp": rows[6]["ocr"][0]["text"] = "177177"
+            if change == "other_name": rows[6]["ocr"][-1]["text"] = "Other"
+            with self.subTest(change=change):
+                machine = BattleAutomaton(0, rows, {"teams": {"p1": roster}})
+                self.assertNotIn("luna", machine.nickname_species["p1"])
+
+    def test_split_fragment_requires_stem_and_repeated_complete_announcement(self):
+        def trace():
+            rows = [frame(n) for n in range(1, 7)]
+            rows[0] = frame(1, [event("switch", "p2a", "Charizard", "100/100"), event("turn", turn=1)])
+            rows[1] = frame(2, [event("message", value="Omni Ring!")])
+            rows[1]["ocr"] = [{"text": "The opposing Charizard's Charizardite Y is reacting", "left": .1, "top": .73, "confidence": .999},
+                               {"text": "Omni Ring!", "left": .8, "top": .73, "confidence": .999}]
+            mega = event("mega", "p2a", "Charizard", value="Charizardite Y")
+            mega["forme"] = "Charizard-Mega-Y"
+            rows[2] = frame(3, [mega])
+            for n in (3, 4): rows[n - 1]["ocr"].append({"text": "The opposing Charizard's Charizardite Y is reacting to Any's Omni Ring!", "left": .1, "top": .73, "confidence": .999})
+            rows[5] = frame(6, [event("battle_end")])
+            return rows
+        for change in (None, "missing_stem", "single_full", "different_fragment"):
+            rows = trace()
+            if change == "missing_stem": rows[1]["ocr"] = rows[1]["ocr"][1:]
+            if change == "single_full": rows[3]["ocr"] = []
+            if change == "different_fragment": rows[1]["detections"]["events"][0]["value"] = "Different event!"
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual(any(i["code"] == "unclassified_text" for i in ledger["issues"]), change is not None)
+
+    def test_unmeasured_reentry_needs_unique_continuing_named_hp(self):
+        for change in (None, "action", "withdrawal", "wrong_name", "missing_percent", "gap"):
+            rows = [frame(n) for n in range(1, 16)]
+            rows[0] = frame(1, [event("switch", "p2a", "Pikachu", "100/100")])
+            rows[3] = frame(4, [event("damage", "p2a", "Pikachu", "61/100")])
+            rows[9] = frame(10, [event("switch", "p2a", "Pikachu")])
+            for n in (4, 10, 12, 13):
+                rows[n - 1]["ocr"].append({"text": "Pikachu", "left": .63, "top": .05, "confidence": .999})
+            for n in (12, 13):
+                rows[n - 1]["ocr"].append({"text": "61%", "left": .7, "top": .12, "confidence": .999})
+            if change == "action": rows[7] = frame(8, [event("move", "p1a", "Eevee", move="Psychic")])
+            if change == "withdrawal": rows[7]["ocr"].append({"text": "Rival withdrew Pikachu!", "left": .1, "top": .73, "confidence": .999})
+            if change == "wrong_name": rows[11]["ocr"][0]["text"] = "Raichu"
+            if change == "missing_percent": rows[12]["ocr"][-1]["text"] = "61"
+            if change == "gap": rows[10]["timestamp_ms"] += 2000
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual(any(i["code"] == "reentry_without_exit" for i in ledger["issues"]), change is not None)
+
+    def test_party_card_requires_entry_hud_and_unique_native_identity(self):
+        from champions_automaton import corroborated_party_aliases
+        for change in (None, "illusion", "unknown_ability", "missing_card", "missing_announcement", "wrong_hp", "wrong_name", "copying"):
+            rows = [frame(n) for n in range(1, 10)]
+            rows[0]["ocr"] = [{"text": "Latte", "left": .06, "top": .575, "confidence": .999},
+                               {"text": "177/177", "left": .067, "top": .615, "confidence": .999},
+                               {"text": "Switch in", "left": .17, "top": .709, "confidence": .999},
+                               {"text": "Defiant", "left": .599, "top": .714, "confidence": .999},
+                               {"text": "Hide Summary", "left": .871, "top": .933, "confidence": .999}]
+            for n in (2, 3): rows[n - 1]["ocr"] = [{"text": "Go! Latte!", "left": .1, "top": .73, "confidence": .999}]
+            for n in (6, 7): rows[n - 1]["ocr"] = [{"text": "Latte", "left": .08, "top": .86, "confidence": .999},
+                                                      {"text": "177/177", "left": .14, "top": .92, "confidence": .999}]
+            roster = ["Kingambit", "Gardevoir"]
+            if change == "illusion": roster.append("Zoroark-Hisui")
+            if change == "unknown_ability": rows[0]["ocr"][3]["text"] = "Unconfirmed"
+            if change == "missing_card": rows[0]["ocr"].pop()
+            if change == "missing_announcement": rows[2]["ocr"] = []
+            if change == "wrong_hp": rows[6]["ocr"][1]["text"] = "150/177"
+            if change == "wrong_name": rows[6]["ocr"][0]["text"] = "Other"
+            if change == "copying": rows[0]["detections"]["events"] = [event("ability", "p1b", "Gardevoir", value="Trace")]
+            with self.subTest(change=change):
+                proof = corroborated_party_aliases(rows, {"teams": {"p1": roster}})
+                self.assertEqual(bool(proof), change is None)
+
+    def test_replacement_requires_named_zero_faint_and_unique_new_hud(self):
+        for change in (None, "positive_hp", "missing_faint", "unknown_incoming", "duplicate_name", "occupied_again"):
+            rows = [frame(n) for n in range(1, 14)]
+            rows[0] = frame(1, [event("switch", "p1a", "Pikachu", "200/200")])
+            rows[1] = frame(2, [event("damage", "p1a", "Pikachu", "0/200")])
+            for n in (2, 3): rows[n - 1]["ocr"] = [{"text": "Pip", "left": .08, "top": .86, "confidence": .999},
+                                                      {"text": "0/200", "left": .14, "top": .92, "confidence": .999}]
+            rows[3] = frame(4, [event("faint", "p1a", "Pikachu")])
+            for n in (4, 5): rows[n - 1]["ocr"] = [{"text": "Pip fainted!", "left": .1, "top": .73, "confidence": .999}]
+            rows[7] = frame(8, [event("message", value="Go! Latte!")])
+            for n in (8, 9): rows[n - 1]["ocr"] = [{"text": "Go! Latte!", "left": .1, "top": .73, "confidence": .999}]
+            for n in (10, 11): rows[n - 1]["ocr"] = [{"text": "Latte", "left": .08, "top": .86, "confidence": .999},
+                                                        {"text": "177/177", "left": .14, "top": .92, "confidence": .999}]
+            for row in rows: row["resolved_aliases"]["p1"] = {"pip": "Pikachu", "latte": "Kingambit"}
+            if change == "positive_hp":
+                for n in (2, 3): rows[n - 1]["ocr"][1]["text"] = "5/200"
+            if change == "missing_faint": rows[4]["ocr"] = []
+            if change == "unknown_incoming":
+                for row in rows: row["resolved_aliases"]["p1"].pop("latte")
+            if change == "duplicate_name":
+                for n in (10, 11): rows[n - 1]["ocr"].append({"text": "Latte", "left": .29, "top": .86, "confidence": .999})
+            if change == "occupied_again": rows[6] = frame(7, [event("switch", "p1a", "Eevee", "160/160")])
+            with self.subTest(change=change):
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual(any(e["frame"] == 8 and e["kind"] == "switch" for e in ledger["events"]), change is None)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_F621"), "diagnóstico opcional f621")
+    def test_capture_normalizes_aliases_and_recovers_replacement_without_inventing_result(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_F621"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
+        self.assertFalse(ledger["issues"])
+        entry = next(e for e in ledger["events"] if e["frame"] == 489 and e["kind"] == "switch")
+        self.assertEqual((entry["species"], entry["slot"], entry["health"]), ("Kingambit", "p1a", "177/177"))
+        self.assertEqual(next(e for e in ledger["events"] if e["frame"] == 449)["status"], "consistent")
+        from ledger_replay import build_trace_context, ReplayEvidenceError
+        with zipfile.ZipFile(path) as archive: job = json.loads(archive.read("job.json"))
+        with self.assertRaisesRegex(ReplayEvidenceError, "La traza no confirma p1"):
+            build_trace_context(job, rows, ledger)
+
+
 if __name__ == "__main__":
     unittest.main()

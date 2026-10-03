@@ -586,3 +586,29 @@ Drive conserva sus **62 Ledger y 52 logs exactos** frente a 8b141bb; los 34 avis
 históricos siguen abiertos. f139 conserva Ledger/log y exporta por producción.
 Ilusión permanece. Para aplicar: actualizar desarrollo, reiniciar aplicación
 y servicio Python, y **Reevaluar autómatas** sobre la traza existente.
+
+### Identidades previas al estado y lecturas sin transición
+
+La tabla común de mote → especie se reconstruye antes de validar sucesos.
+Los anuncios iniciales con dos Pokémon admiten nombres y títulos individuales;
+una habilidad única dentro del equipo, su panel repetido y dos HUD completos
+corroboran cada relación. Un menú de equipo puede aportar identidad del Pokémon
+seleccionado si su habilidad, nombre y PS concuerdan con un anuncio posterior y
+dos HUD completos. El menú no produce acciones de batalla. Se conservan las
+lecturas originales y los fundamentos de cada alias. Una habilidad compartida,
+identidad copiada, nombres o PS incompatibles y evidencia incompleta no permiten
+sustituir el mote. Ilusión mantiene su tratamiento de apariencia y revelación.
+
+Un fragmento separado se descarta cuando tiene el inicio del mismo anuncio en
+su frame y el texto completo se repite después, vinculado a un único evento
+aceptado. Una entrada sin PS del ocupante actual puede descartarse con su último
+estado confirmado y dos HUD posteriores concordantes, sin salida, ataque o
+interrupción. Un candidato ya descartado con evidencia conserva su auditoría y
+deja de bloquear esa continuidad. El reemplazo tras un faint se sitúa sólo en
+el slot vacante corroborado por nombre, cero PS, faint repetido y nuevo HUD.
+
+f621 pasa de tres avisos a cero, reconoce el debilitamiento y conserva la entrada
+real del reemplazo. La exportación sigue bloqueada porque esa traza no confirma
+jugadores, equipo rival completo ni ganador; el final sólo indica abandono. La
+mejora del estado no autoriza inventar esos datos. Actualizar desarrollo y usar
+**Reevaluar autómatas** aplica las reglas sobre la captura archivada.
