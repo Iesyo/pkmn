@@ -1218,10 +1218,6 @@ class ChampionsTextParser:
         for species, abilities in self.catalog.species_abilities:
             for ability in abilities:
                 self._species_by_ability.setdefault(_text_key(ability), set()).add(species)
-        self._teammate_counts = {
-            tuple(sorted((first, second))): count
-            for first, second, count in self.catalog.species_teammates
-        }
         self._mega_stones = {
             _text_key(item): (item, base_species, mega_forme)
             for item, base_species, mega_forme in self.catalog.mega_stones
@@ -1244,6 +1240,7 @@ class ChampionsTextParser:
         }
         # Vuelve el orden en que se guardó el equipo, no el de la pantalla.
         self._preview_rows_confirmed = False
+        self._observed_team_sides: set[str] = set()
         self._side_species = {
             side: _NameMatcher(team or self.catalog.species)
             for side, team in self._teams.items()
@@ -1360,7 +1357,7 @@ class ChampionsTextParser:
         if not nickname_key or not candidates:
             return None, None, False
         known_team = set(self._teams[side])
-        if known_team:
+        if side in self._observed_team_sides:
             candidates &= known_team
         assigned = {
             species
@@ -1375,31 +1372,6 @@ class ChampionsTextParser:
         if not narrowed:
             return None, None, False
         self._alias_book.alias_evidence[evidence_key] = narrowed
-        if (
-            len(narrowed) > 1
-            and not self._known_teams[side]
-            and len(self._alias_book.alias_evidence_labels[evidence_key]) >= 2
-        ):
-            observed_teammates = {
-                species
-                for alias_key, species in self._alias_book.aliases[side].items()
-                if alias_key != nickname_key and alias_key in self._alias_book.bound_alias_keys[side]
-            }
-            scores = {
-                species: sum(
-                    self._teammate_counts.get(tuple(sorted((species, teammate))), 0)
-                    for teammate in observed_teammates
-                    if teammate != species
-                )
-                for species in narrowed
-            }
-            ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-            if ranked:
-                top_species, top_score = ranked[0]
-                runner_up = ranked[1][1] if len(ranked) > 1 else 0
-                if top_score >= 3 and top_score >= max(1, runner_up * 2):
-                    narrowed = {top_species}
-                    self._alias_book.alias_evidence[evidence_key] = narrowed
         if len(narrowed) != 1:
             return None, None, False
         species = next(iter(narrowed))
@@ -1507,6 +1479,7 @@ class ChampionsTextParser:
         roster = tuple(canonical[:6])
         allowed = {_text_key(species) for species in roster}
         self._teams[side] = roster
+        self._observed_team_sides.add(side)
         if side == "p1":
             # El roster viene de las filas del Team Preview, en su orden.
             self._preview_rows_confirmed = True
@@ -1577,6 +1550,11 @@ class ChampionsTextParser:
                 )
                 if fuzzy_alias[0] >= 0.74:
                     return fuzzy_alias[1]
+            # An exact catalogue name outside an unrelated saved roster is
+            # observed text, not a typo to force onto a configured species.
+            literal = self._species.resolve(value, allow_fuzzy=False)
+            if literal and not any(_text_key(s.split("-", 1)[0]) == value_key for s in self._teams[side]):
+                return literal
             resolved = self._side_species[side].resolve(
                 value,
                 allow_fuzzy=self._known_teams[side],
