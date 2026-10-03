@@ -83,6 +83,47 @@ def hud_nickname(row: dict[str, Any], slot: str) -> str | None:
     return max(matches, key=lambda line: line["confidence"])["text"].casefold() if matches else None
 
 
+def corroborated_preview_aliases(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use independent, repeated sprite/name votes; never the saved roster."""
+    pairs: dict[tuple[str, str], dict[str, list[int]]] = collections.defaultdict(lambda: collections.defaultdict(list))
+    conflicts: set[tuple[str, str]] = set()
+    for row in frames:
+        for side, cards in (row.get("preview_identity_evidence") or {}).items():
+            if side not in {"p1", "p2"}:
+                continue
+            for card in cards:
+                species = {s: n for s, n in card.get("species_votes", {}).items() if n > 0}
+                names = {s.casefold(): n for s, n in card.get("nickname_votes", {}).items() if n > 0}
+                if len(species) != 1 or len(names) != 1:
+                    conflicts.update((side, name) for name in names)
+                    continue
+                clean, votes = next(iter(species.items()))
+                name, name_votes = next(iter(names.items()))
+                if min(votes, name_votes) >= 2:
+                    pairs[side, name][clean].append(row["frame"])
+    return [{"side": side, "nickname": name, "species": next(iter(values)),
+             "evidence": [{"kind": "preview_sprite_name_votes", "frame": min(next(iter(values.values())))}]}
+            for (side, name), values in pairs.items() if len(values) == 1 and (side, name) not in conflicts]
+
+
+@dataclass
+class ContinuityHypothesis:
+    """A bounded alternative occupancy, rejected by facts rather than scores."""
+    transition: str | None
+    occupants: dict[str, str]
+    contradiction: dict[str, Any] | None = None
+
+    def observe(self, slot: str, species: str, frame: int) -> None:
+        if self.contradiction is None and identity_species(self.occupants.get(slot, "")).casefold() != identity_species(species).casefold():
+            self.contradiction = {"frame": frame, "slot": slot, "observed_species": species,
+                                  "expected_species": self.occupants.get(slot)}
+
+    def diagnostic(self) -> dict[str, Any]:
+        return {"transition": self.transition, "occupants": self.occupants,
+                "status": "discarded" if self.contradiction else "surviving",
+                **({"contradiction": self.contradiction} if self.contradiction else {})}
+
+
 def corroborated_literal_aliases(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Protect a literal species HUD from a later polluted detector alias.
 
@@ -1794,6 +1835,10 @@ class BattleAutomaton:
     def __init__(self, battle_index: int, frames: list[dict[str, Any]], context: dict[str, Any] | None = None):
         self.battle_index = battle_index
         self.context = context or {}
+        # Deferred preview confirmations may be appended after battle end.
+        # Physical frame order, not append order, defines state continuity
+        # and the bounds used to validate the winner.
+        frames = sorted(frames, key=lambda row: row["frame"])
         self.raw_frames = frames
         self.raw_frame_lookup = {row["frame"]: row for row in frames}
         self.transition_prefix = confirmed_transition_prefix(frames)
@@ -1836,6 +1881,8 @@ class BattleAutomaton:
                                       corroborated_literal_aliases(frames) +
                                       corroborated_entry_aliases(frames, self.context, self.nickname_species))
         recovered = corroborated_ability_aliases(frames, self.context) + corroborated_summary_aliases(frames)
+        recovered += [p for p in corroborated_preview_aliases(frames)
+                      if p["nickname"] not in self.nickname_species[p["side"]]]
         self.alias_reconstructions += [p for p in recovered if
             len({q["species"] for q in recovered if (q["side"], q["nickname"]) == (p["side"], p["nickname"])}) == 1 and
             self.nickname_species[p["side"]].get(p["nickname"], p["species"]) == p["species"]]
@@ -1858,6 +1905,7 @@ class BattleAutomaton:
         self.hp_order: list[str] = []
         self.hp_messages: list[dict[str, Any]] = []
         self.narration_links: list[dict[str, Any]] = []
+        self.continuity_decisions: list[dict[str, Any]] = []
 
     def _hp_message_actor(self, value: str, observed_ms: int | None = None) -> str | None:
         match = HP_NARRATION.fullmatch(value)
@@ -2910,6 +2958,8 @@ class BattleAutomaton:
         }
         if candidate.get("detection_lag"):
             item["detection_lag"] = candidate["detection_lag"]
+        if candidate.get("continuity_support"):
+            item["continuity_support"] = candidate["continuity_support"]
         if candidate.get("faint_reconstruction"):
             item["faint_reconstruction"] = candidate["faint_reconstruction"]
         if candidate.get("mega_slot_support"):
@@ -5823,6 +5873,114 @@ class BattleAutomaton:
                     break
         return merge_recovered_candidates([c for c in candidates if c not in relocated], relocated)
 
+    def _recover_continuity_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Branch on an unplaced entry and propagate until a stable HUD.
+
+        The three alternatives are unchanged occupancy or a replacement in
+        either slot. No score, warning count, statistical prior or invented
+        action selects a path. Only a unique survivor of observed constraints
+        can replace the provisional announcement. Other cases stay untouched.
+        """
+        result = list(candidates)
+        for candidate in candidates:
+            event, start = candidate["event"], candidate["observed_frame"]
+            text = str(event.get("value") or "")
+            match = re.fullmatch(r"Go! (.+?)!", text, re.I) if event["kind"] == "message" else None
+            if not match or " and " in match[1].casefold():
+                continue
+            name = strip_pokemon_title(match[1]).casefold()
+            incoming = self.nickname_species["p1"].get(name)
+            if not incoming or any(c["event"]["kind"] in {"switch", "drag"} and
+                                   (c["event"].get("slot") or "").startswith("p1") and
+                                   identity_species(c.get("canonical_species") or c["event"].get("species") or "") == identity_species(incoming) and
+                                   abs(c["observed_ms"] - candidate["observed_ms"]) <= 2_500 for c in candidates):
+                continue
+            announcement = [{"frame": n, **line} for n in range(start, start + 5)
+                            for line in self.frame_lookup.get(n, {}).get("ocr", ())
+                            if line.get("text", "").strip() == text and line.get("top", 0) >= .55 and
+                            line.get("confidence", 0) >= .95]
+            if len({p["frame"] for p in announcement}) < 2:
+                continue
+            withdrawals = [(row["frame"], m[1].casefold()) for row in self.frames
+                           if 0 < candidate["observed_ms"] - row["timestamp_ms"] <= 10_000
+                           for line in row.get("ocr", ()) if line.get("top", 0) >= .55 and
+                           line.get("confidence", 0) >= .95 and
+                           (m := re.fullmatch(r"(.+?), come back!", line.get("text", ""), re.I))]
+            if len({n for n, _ in withdrawals}) < 2 or len({name for _, name in withdrawals}) != 1:
+                continue
+            withdrawal_frame, outgoing_name = withdrawals[0]
+            before = {}
+            for slot in ("p1a", "p1b"):
+                names = [hud_nickname(self.frame_lookup.get(n, {}), slot)
+                         for n in range(withdrawal_frame - 3, withdrawal_frame)]
+                stable = {name for name in names if name and names.count(name) >= 2}
+                if len(stable) == 1:
+                    before[slot] = next(iter(stable))
+            if len(before) != 2 or len(set(before.values())) != 2 or outgoing_name not in before.values():
+                continue
+            occupants = {slot: self.nickname_species["p1"].get(nickname) for slot, nickname in before.items()}
+            if not all(occupants.values()) or incoming in occupants.values():
+                continue
+            hypotheses = [ContinuityHypothesis(None, dict(occupants))] + [
+                ContinuityHypothesis(slot, {**occupants, slot: incoming}) for slot in before]
+            for hypothesis in hypotheses:
+                if hypothesis.transition and before[hypothesis.transition] != outgoing_name:
+                    hypothesis.contradiction = {"frame": withdrawal_frame, "slot": hypothesis.transition,
+                                                "reason": "La retirada observada corresponde al otro slot."}
+            observed, last_ms, started = [], candidate["observed_ms"], False
+            for row in self.frames:
+                if row["frame"] <= start:
+                    continue
+                if row["timestamp_ms"] - last_ms > 2_000 or row["timestamp_ms"] - candidate["observed_ms"] > 120_000:
+                    break
+                last_ms = row["timestamp_ms"]
+                boundary = any(line.get("top", 0) >= .55 and line.get("confidence", 0) >= .95 and
+                               ((m := re.fullmatch(r"Go! (.+?)!", line.get("text", ""), re.I)) and
+                                strip_pokemon_title(m[1]).casefold() != name or
+                                re.fullmatch(r".+?, come back!", line.get("text", ""), re.I))
+                               for line in row.get("ocr", ()))
+                if boundary or any(e["kind"] == "battle_end" or
+                                   (e["kind"] in {"switch", "drag", "faint"} and
+                                    (e.get("slot") or "").startswith("p1"))
+                                   for e in row.get("detections", {}).get("events", ())):
+                    break
+                # Animation residue cannot reject a branch. Begin only when
+                # the announced entrant is visible twice in the same slot.
+                next_row = self.frame_lookup.get(row["frame"] + 1, {})
+                if not next_row or next_row.get("timestamp_ms", last_ms + 3_000) - last_ms > 2_000:
+                    continue
+                stable = {slot: n for slot in before if (n := hud_nickname(row, slot)) and
+                          n == hud_nickname(next_row, slot)}
+                started = started or name in stable.values()
+                if not started:
+                    continue
+                for slot, nickname in stable.items():
+                    species = self.nickname_species["p1"].get(nickname)
+                    if not species:
+                        continue
+                    for proof_row in (row, next_row):
+                        observed.append({"frame": proof_row["frame"], "slot": slot,
+                                         "nickname": nickname, "species": species})
+                        for hypothesis in hypotheses:
+                            hypothesis.observe(slot, species, proof_row["frame"])
+                if set(stable) == set(before):
+                    break
+            survivors = [h for h in hypotheses if h.contradiction is None]
+            selected = survivors[0] if len(survivors) == 1 and survivors[0].transition and observed else None
+            decision = {"frame": start, "kind": "entry", "state": "confirmed" if selected else "unresolved",
+                        "selected_transition": selected.transition if selected else None,
+                        "hypotheses": [h.diagnostic() for h in hypotheses],
+                        "evidence": [{"frame": n, **line} for n, old_name in withdrawals
+                                     for line in self.frame_lookup[n].get("ocr", ())
+                                     if line.get("text", "").casefold() == old_name + ", come back!"] + announcement + observed}
+            self.continuity_decisions.append(decision)
+            if selected:
+                replacement = {**candidate, "canonical_species": incoming, "continuity_support": decision,
+                               "event": {**event, "kind": "switch", "slot": selected.transition,
+                                         "species": incoming, "value": None, "health": None}}
+                result[result.index(candidate)] = replacement
+        return result
+
     def _recover_withdrawn_entries(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Recover a missed voluntary replacement from independent evidence.
 
@@ -6076,9 +6234,106 @@ class BattleAutomaton:
                                                     "zero_hud": zero, "faint_text": faint_text}})
         return merge_recovered_candidates(candidates, recovered)
 
+    def _reconcile_continuity_readings(self) -> None:
+        """Prune an OCR variant only when a unique observed episode survives.
+
+        A second real event, an exact different known subject, a causal
+        boundary, or more than one compatible episode prevents selection.
+        This never repairs a state by minimizing the number of warnings.
+        """
+        unresolved = []
+        for issue in self.issues:
+            if issue["code"] not in {"faint_text_unconfirmed", "hp_narration_unmatched"}:
+                unresolved.append(issue)
+                continue
+            bad = self.events[issue["event_seq"] - 1] if issue["event_seq"] else next(
+                (link for link in self.narration_links if link["frame"] == issue["frame"] and
+                 link["status"] == "unmatched"), None)
+            text = str((bad or {}).get("value") or (bad or {}).get("text") or "")
+            match = (FAINT_NARRATION if issue["code"] == "faint_text_unconfirmed" else HP_NARRATION).fullmatch(text)
+            if not bad or not match or bad.get("confidence", 1) >= .95:
+                unresolved.append(issue)
+                continue
+            side, subject = ("p2" if match[1] else "p1"), match[2].casefold()
+            # A legible different nickname is evidence for a different event.
+            if subject in self.nickname_species[side] or any(
+                identity_species(actor["species"]).casefold() == subject for actor in self.actors.values()):
+                unresolved.append(issue)
+                continue
+            options = {}
+            for accepted in self.events:
+                if accepted["status"] != "consistent" or accepted["turn"] != bad["turn"]:
+                    continue
+                if abs(accepted["observed_ms"] - bad["observed_ms"]) > HP_NARRATION_WINDOW_MS:
+                    continue
+                first, last = sorted((accepted["frame"], bad["frame"]))
+                if any(e["kind"] in ACTIVITY | {"turn", "battle_end"} and first < e["frame"] < last
+                       for e in self.events):
+                    continue
+                if issue["code"] == "faint_text_unconfirmed":
+                    if accepted["kind"] != "faint":
+                        continue
+                    hp = next((e for e in reversed(self.events[:accepted["seq"] - 1])
+                               if e["actor_id"] == accepted["actor_id"] and e["kind"] in HP_KINDS), None)
+                    wrong_hp = next((e for e in reversed(self.events[:bad["seq"] - 1])
+                                     if e["actor_id"] == bad.get("actor_id") and e["status"] == "consistent" and
+                                     e["kind"] in HP_KINDS | {"switch", "drag", "faint"}), None)
+                    if not hp or hp.get("hp_state") != "confirmed" or health_ratio(hp.get("after")) != 0:
+                        continue
+                    if (bad.get("actor_id") != accepted["actor_id"] and
+                        (not wrong_hp or wrong_hp.get("hp_state") != "confirmed" or
+                         (health_ratio(wrong_hp.get("after") or wrong_hp.get("health")) or 0) <= 0)):
+                        continue
+                    anchors = [{"frame": row["frame"], **line} for row in self.frames
+                               if abs(row["timestamp_ms"] - bad["observed_ms"]) <= 1_500
+                               for line in row.get("ocr", ()) if line.get("top", 0) >= .55 and
+                               line.get("confidence", 0) >= .95 and
+                               (m := FAINT_NARRATION.fullmatch(line.get("text", ""))) and
+                               ("p2" if m[1] else "p1") == accepted["slot"][:2] and
+                               identity_species(self.nickname_species[accepted["slot"][:2]].get(m[2].casefold(), m[2])).casefold() ==
+                               identity_species(accepted["species"]).casefold() and
+                               difflib.SequenceMatcher(a=text.casefold(), b=line["text"].casefold()).ratio() >= .9]
+                    if anchors:
+                        options[accepted["seq"]] = (accepted, hp["evidence"] + anchors)
+                else:
+                    if accepted["kind"] not in HP_KINDS or accepted.get("hp_state") != "confirmed":
+                        continue
+                    linked = [link for link in self.narration_links if link["status"] == "linked" and
+                              link["event_seq"] == accepted["seq"] and link["effect"] == bad["effect"] and
+                              abs(link["observed_ms"] - bad["observed_ms"]) <= 1_500 and
+                              difflib.SequenceMatcher(a=text.casefold(), b=link["text"].casefold()).ratio() >= .85]
+                    anchors = [{"frame": row["frame"], **line} for link in linked for row in self.frames
+                               if abs(row["timestamp_ms"] - bad["observed_ms"]) <= 1_500
+                               for line in row.get("ocr", ()) if line.get("top", 0) >= .55 and
+                               line.get("confidence", 0) >= .95 and line.get("text", "") == link["text"]]
+                    if len({p["frame"] for p in anchors}) >= 2:
+                        options[accepted["seq"]] = (accepted, accepted["evidence"] + anchors)
+            if len(options) != 1:
+                unresolved.append(issue)
+                continue
+            seq, (accepted, proof) = next(iter(options.items()))
+            decision = {"frame": bad["frame"], "kind": "reading", "state": "confirmed",
+                        "selected_event_seq": seq,
+                        "hypotheses": [{"transition": "additional_event", "status": "discarded",
+                                        "contradiction": "Sujeto OCR sin corroboración; la misma narración tiene un actor y un episodio de PS confirmados."},
+                                       {"transition": "same_announcement", "status": "surviving"}],
+                        "evidence": proof}
+            self.continuity_decisions.append(decision)
+            resolution = {"state": "resolved", "event_seq": seq, "actor_id": accepted["actor_id"],
+                          "slot": accepted["slot"], "reason": "Lectura provisional descartada por continuidad del mismo episodio confirmado.",
+                          "evidence": proof, "continuity": decision}
+            if issue["event_seq"]:
+                bad.update(status="suppressed", resolution=resolution)
+                bad["text_support"]["state"] = "rejected"
+            else:
+                bad.update(status="superseded", event_seq=seq, resolution=resolution)
+            self.resolved_issues.append({**issue, "resolution": resolution})
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         candidates = self._recover_delayed_terrain_heals(ordered_candidates(self.frames, self.alias_reconstructions))
         candidates = self._recover_withdrawn_entries(candidates)
+        candidates = self._recover_continuity_entries(candidates)
         candidates = self._recover_late_lethal_hp(candidates)
         self.candidates = self._complete_hp_candidates(candidates)
         for candidate in self.candidates:
@@ -6114,6 +6369,7 @@ class BattleAutomaton:
                         self.frames[-1]["frame"])
         self._unparsed_actions()
         self._reconcile_action_reading_variants()
+        self._reconcile_continuity_readings()
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
@@ -6123,6 +6379,7 @@ class BattleAutomaton:
                 "counts": dict(counts), "actors": self.actors,
                 **({"transition_prefix": self.transition_prefix} if self.transition_prefix else {}),
                 **({"alias_reconstructions": self.alias_reconstructions} if self.alias_reconstructions else {}),
+                **({"continuity_decisions": self.continuity_decisions} if self.continuity_decisions else {}),
                 **({"ignored_ui_frames": self.ignored_ui_frames} if self.ignored_ui_frames else {})}
 
 
@@ -6274,8 +6531,10 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
     links = ledger.get("narration_links", [])
     if links:
         linked = sum(link["status"] == "linked" for link in links)
+        superseded = sum(link["status"] == "superseded" for link in links)
         lines += [f"Mensajes de PS asociados a un cambio: {linked}/{len(links)}; "
-                  f"{len(links) - linked} sin asociar.", ""]
+                  f"{len(links) - linked - superseded} sin asociar." +
+                  (f" {superseded} lectura(s) provisional(es) descartada(s) con evidencia." if superseded else ""), ""]
     by_seq = {item["seq"]: item for item in ledger["events"]}
     event_positions = {item["seq"]: index for index, item in enumerate(ledger["events"])}
     section = None
@@ -6384,9 +6643,15 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
     else:
         lines += ["- Ninguno."]
     for link in links:
-        if link["status"] != "linked":
+        if link["status"] not in {"linked", "superseded"}:
             lines += [f"- Mensaje sin asociar, fotograma {link['frame']}: «{link['text']}»; "
                       f"{link['reason']}"]
+    if ledger.get("continuity_decisions"):
+        lines += ["", "## Selección por continuidad", ""]
+        for decision in ledger["continuity_decisions"]:
+            discarded = sum(h["status"] == "discarded" for h in decision["hypotheses"])
+            lines += [f"- Fotograma {decision['frame']}: {decision['state']}; "
+                      f"{discarded} alternativa(s) descartada(s) por evidencia."]
     if ledger.get("resolved_issues"):
         lines += ["", "## Avisos resueltos con evidencia", ""]
         for issue in sorted(ledger["resolved_issues"], key=lambda row: row["frame"]):
