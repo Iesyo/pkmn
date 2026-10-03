@@ -12,6 +12,7 @@ from pathlib import Path
 from champions_automaton import (BattleAutomaton, compare_baseline, corroborated_digit_aliases, corroborated_summary_aliases, corroborated_ability_aliases,
                                  entry_hud_pair, health_ratio, hud_nickname, narration_signature, ordered_candidates, read_diagnostic,
                                  read_diagnostic_context, render_markdown, strip_pokemon_title)
+from champions_automaton import corroborated_preview_aliases
 
 
 def event(kind, slot=None, species=None, health=None, move=None, value=None, turn=None):
@@ -512,7 +513,17 @@ class TemporalAutomatonTests(unittest.TestCase):
             for item in normalized:
                 if item["kind"] == "battle_end":
                     item["narration"] = list(dict.fromkeys(item["narration"]))
-            self.assertEqual(normalized, saved["events"])
+            expected = copy.deepcopy(saved["events"])
+            # The later first-sighting fix rejects the isolated partial HUD
+            # as an initial baseline and learns the maximum at first impact.
+            # Keep an exact comparison including those established changes.
+            expected[60].update(health="171/171", maximum_from_impact={
+                "state": "confirmed", "entry_state": "inferred",
+                "evidence": [{"frame": 1115, "text": "118/171", "confidence": .99995}]})
+            expected[60]["note"] += " Máximo 171 deducido del primer HUD completo."
+            expected[62].update(before="171/171", hp_baseline={
+                "state": "inferred", "reason": "primer avistamiento; PS iniciales al máximo", "evidence": []})
+            self.assertEqual(normalized, expected)
             root = Path(directory)
             trace = root / "trace.jsonl"
             trace.write_bytes(archive.read("output/ocr.trace.jsonl"))
@@ -3838,6 +3849,161 @@ class ArchivedIdentityRecoveryTests(unittest.TestCase):
         self.assertEqual(len([e for e in ledger["events"] if e["kind"] == "turn" and e["status"] == "consistent"]), 9)
         with self.assertRaisesRegex(ReplayEvidenceError, "contradice las especies"):
             build_replay(ledger, load_trace_context(path, ledger))
+
+def continuity_entry_trace():
+    rows = [frame(n) for n in range(1, 146)]
+    rows[0] = frame(1, [event("switch", "p1a", "Blaziken", "100/100"),
+                         event("switch", "p1b", "Indeedee-F", "100/100"), event("turn", turn=1)])
+    aliases = {"sun": "Blaziken", "moon": "Indeedee-F", "ember": "Kingambit"}
+    for row in rows:
+        row["resolved_aliases"]["p1"] = dict(aliases)
+    for n in (2, 3, 4, 140, 141):
+        rows[n - 1]["ocr"] += [
+            {"text": "Sun" if n < 5 else "Ember", "left": .08, "top": .87, "confidence": .999},
+            {"text": "Moon", "left": .29, "top": .87, "confidence": .999}]
+    for n in (5, 6):
+        rows[n - 1]["ocr"] = [{"text": "Sun, come back!", "top": .75, "confidence": .999}]
+    for n in (9, 10):
+        rows[n - 1]["ocr"] = [{"text": "Go! Ember the Paldea Champion!", "top": .75, "confidence": .999}]
+    rows[8]["detections"]["events"] = [event("message", value="Go! Ember the Paldea Champion!")]
+    rows[142] = frame(143, [event("move", "p1a", "Kingambit", move="Kowtow Cleave")],
+                      texts=["Ember used Kowtow Cleave!"])
+    rows[142]["resolved_aliases"]["p1"] = dict(aliases)
+    return rows
+
+
+class ContinuitySelectionTest(unittest.TestCase):
+    def test_future_hud_discards_incompatible_entry_states(self):
+        rows = continuity_entry_trace()
+        machine = BattleAutomaton(0, rows)
+        ledger = machine.run()
+        decision = ledger["continuity_decisions"][0]
+        self.assertEqual(decision["selected_transition"], "p1a")
+        self.assertEqual([h["status"] for h in decision["hypotheses"]], ["discarded", "surviving", "discarded"])
+        entry = next(e for e in ledger["events"] if e.get("continuity_support"))
+        self.assertEqual((entry["frame"], entry["slot"], entry["species"]), (9, "p1a", "Kingambit"))
+        move = next(e for e in ledger["events"] if e["kind"] == "move")
+        self.assertEqual((move["species"], move["status"]), ("Kingambit", "consistent"))
+
+    def test_absent_future_hud_retains_multiple_states(self):
+        rows = continuity_entry_trace()
+        for n in (140, 141):
+            rows[n - 1]["ocr"] = []
+        machine = BattleAutomaton(0, rows)
+        candidates = ordered_candidates(machine.frames, machine.alias_reconstructions)
+        after = machine._recover_continuity_entries(candidates)
+        self.assertEqual(after, candidates)
+        self.assertEqual(machine.continuity_decisions[0]["state"], "unresolved")
+        self.assertEqual(sum(h["status"] == "surviving" for h in machine.continuity_decisions[0]["hypotheses"]), 2)
+
+    def test_contradictory_hud_does_not_pick_least_bad_state(self):
+        rows = continuity_entry_trace()
+        for n in (140, 141):
+            rows[n - 1]["ocr"][1]["text"] = "Ember"
+        machine = BattleAutomaton(0, rows)
+        candidates = ordered_candidates(machine.frames, machine.alias_reconstructions)
+        self.assertEqual(machine._recover_continuity_entries(candidates), candidates)
+        self.assertEqual(machine.continuity_decisions[0]["state"], "unresolved")
+        self.assertTrue(all(h["status"] == "discarded" for h in machine.continuity_decisions[0]["hypotheses"]))
+
+    def test_new_entry_or_sampling_gap_stops_continuity_search(self):
+        for boundary in ("entry", "gap"):
+            rows = continuity_entry_trace()
+            if boundary == "entry":
+                rows[49]["ocr"] = [{"text": "Go! Moon!", "top": .75, "confidence": .999}]
+            else:
+                for row in rows[49:]:
+                    row["timestamp_ms"] += 10_000
+            machine = BattleAutomaton(0, rows)
+            candidates = ordered_candidates(machine.frames, machine.alias_reconstructions)
+            with self.subTest(boundary=boundary):
+                self.assertEqual(machine._recover_continuity_entries(candidates), candidates)
+                self.assertEqual(machine.continuity_decisions[0]["state"], "unresolved")
+
+    def test_preview_aliases_require_independent_uncontested_votes(self):
+        rows = [frame(1)]
+        card = {"species_votes": {"Kingambit": 2}, "nickname_votes": {"Ember": 2}}
+        rows[0]["preview_identity_evidence"] = {"p1": [card]}
+        self.assertEqual(corroborated_preview_aliases(rows)[0]["species"], "Kingambit")
+        card["species_votes"]["Kingambit"] = 1
+        self.assertEqual(corroborated_preview_aliases(rows * 20), [])
+        card["species_votes"].update(Kingambit=2, Blaziken=1)
+        self.assertEqual(corroborated_preview_aliases(rows), [])
+
+    def test_reading_continuity_preserves_a_legible_different_subject(self):
+        machine = BattleAutomaton(0, [frame(1)])
+        machine.nickname_species["p1"] = {"alpha": "Blaziken"}
+        machine.actors = {"living": {"species": "Blaziken"}}
+        bad = {"seq": 1, "frame": 1, "observed_ms": 500, "turn": 1, "kind": "faint",
+               "actor_id": "living", "slot": "p1a", "species": "Blaziken", "status": "review",
+               "value": "Alpha fainted!", "confidence": .91, "text_support": {"state": "unconfirmed"}}
+        issue = {"code": "faint_text_unconfirmed", "frame": 1, "event_seq": 1}
+        machine.events = [bad]; machine.issues = [issue]
+        machine._reconcile_continuity_readings()
+        self.assertEqual(machine.issues, [issue])
+        self.assertEqual(bad["status"], "review")
+        self.assertEqual(machine.continuity_decisions, [])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_F139"), "Requiere diagnóstico f139")
+    def test_archived_continuity_case_and_renamed_shifted_capture(self):
+        from ledger_replay import build_replay, load_trace_context
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_F139"])
+        rows, _ = read_diagnostic(path)
+        rows = [row for row in rows if row["battle_index"] == 0]
+        context = read_diagnostic_context(path)
+        ledger = BattleAutomaton(0, copy.deepcopy(rows), context).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual([d["frame"] for d in ledger["continuity_decisions"]], [511, 1178, 1386])
+        replay = build_replay(ledger, load_trace_context(path, ledger))
+        self.assertIn("|poke|p1|Whimsicott", replay["log"])
+        self.assertNotIn("|poke|p1|Volcarona", replay["log"])
+        self.assertEqual(len([e for e in ledger["events"] if e["kind"] == "faint" and e["status"] == "consistent"]), 5)
+        names = {"tonatiuh": "Aster", "dee dee": "Boreal", "yuki": "Cobalt", "tomoe": "Dahlia",
+                 "suzuko": "Ember", "revenant": "Fable", "loffatiuh": "Asfer"}
+        pattern = re.compile("|".join(map(re.escape, names)), re.I)
+        def rename(value):
+            if isinstance(value, str): return pattern.sub(lambda m: names[m[0].casefold()], value)
+            if isinstance(value, list): return [rename(v) for v in value]
+            if isinstance(value, dict): return {rename(k): rename(v) for k, v in value.items()}
+            return value
+        changed = rename(copy.deepcopy(rows))
+        for row in changed:
+            row["frame"] += 137; row["timestamp_ms"] += 42_000
+            for e in row.get("detections", {}).get("events", ()):
+                if isinstance(e.get("source_frame"), int): e["source_frame"] += 137
+                if isinstance(e.get("timestamp_ms"), int): e["timestamp_ms"] += 42_000
+        second = BattleAutomaton(0, changed, rename(context)).run()
+        signature = lambda b: [{k: rename(e.get(k)) for k in ("kind", "status", "slot", "species", "health", "before", "after", "move", "actor_id")}
+                               for e in b["events"]]
+        self.assertEqual(signature(ledger), signature(second))
+        self.assertEqual(second["issues"], [])
+        self.assertEqual(ledger["last_frame"], 1404)
+        import tempfile
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(path) as archive:
+            root = Path(directory); trace = root / "ocr.trace.jsonl"
+            trace.write_bytes(archive.read("output/ocr.trace.jsonl"))
+            documents = documents_from_trace(trace, json.loads(archive.read("job.json")), root / "output")
+            self.assertEqual(len(documents), 1)
+            self.assertEqual(documents[0].log, replay["log"])
+        # Removing either the accepted faint episode or the clean restoration
+        # narration cannot be compensated by merely deleting the warning.
+        for removed in ("faint_episode", "restoration"):
+            machine = BattleAutomaton(0, copy.deepcopy(rows), context)
+            raw = copy.deepcopy(ledger)
+            machine.events = raw["events"]; machine.actors = raw["actors"]
+            machine.narration_links = raw["narration_links"]
+            machine.continuity_decisions = []
+            resolved = next(i for i in raw["resolved_issues"] if i["frame"] == (1178 if removed == "faint_episode" else 1386))
+            machine.issues = [{k: v for k, v in resolved.items() if k != "resolution"}]
+            if removed == "faint_episode":
+                machine.events[resolved["resolution"]["event_seq"] - 1]["status"] = "review"
+            else:
+                for link in machine.narration_links: link["status"] = "unmatched"
+            machine._reconcile_continuity_readings()
+            with self.subTest(removed=removed):
+                self.assertEqual(len(machine.issues), 1)
+                self.assertEqual(machine.continuity_decisions, [])
 
 if __name__ == "__main__":
     unittest.main()
