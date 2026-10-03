@@ -3,7 +3,9 @@
 import os
 import json
 import copy
+import re
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -3701,6 +3703,19 @@ class ArchivedIdentityRecoveryTests(unittest.TestCase):
     def text(text, left, top):
         return {"text": text, "left": left, "top": top, "confidence": .999}
 
+    def test_illusion_recovery_follows_catalogue_ability_for_any_species_name(self):
+        rows = [frame(1, [event("switch", "p2a", "Disguise", "100/100")]),
+                frame(2, [event("damage", "p2a", "Disguise", "1/100")]),
+                frame(3, [event("switch", "p2a", "Catalogue User", "1/100")],
+                      ["The opposing Any Name’s illusion wore off!"])]
+        with patch("champions_automaton.species_abilities", return_value={"Catalogue User": {"Illusion"}}):
+            recovered = ordered_candidates(rows)
+        self.assertEqual(recovered[0]["canonical_species"], "Catalogue User")
+        self.assertIn("illusion_reveal", recovered[-1])
+        with patch("champions_automaton.species_abilities", return_value={"Catalogue User": {"Pressure"}}):
+            plain = ordered_candidates(rows)
+        self.assertNotIn("illusion_reveal", plain[-1])
+
     def summary_trace(self):
         rows = [frame(n) for n in range(1, 5)]
         for row in rows[:2]:
@@ -3784,16 +3799,45 @@ class ArchivedIdentityRecoveryTests(unittest.TestCase):
                 self.assertIn("mega_wrong_occupant", [i["code"] for i in ledger["issues"]])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_6A28"), "diagnostic 6a28 not supplied")
-    def test_6a28_recovers_all_identities_and_exports_nine_turns(self):
+    def test_archived_decisions_are_independent_of_nicknames_job_id_and_absolute_time(self):
+        from ledger_replay import build_trace_context
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_6A28"])
+        rows, _ = read_diagnostic(path); context = read_diagnostic_context(path)
+        replacements = dict(zip(("polly", "dee dee", "tonatiuh", "tomoe", "suzuko", "revenant"),
+                                ("Aster", "Boreal", "Cobalt", "Dahlia", "Ember", "Fable")))
+        pattern = re.compile("|".join(map(re.escape, replacements)), re.I)
+        def rename(value):
+            if isinstance(value, str): return pattern.sub(lambda m: replacements[m[0].casefold()], value)
+            if isinstance(value, list): return [rename(x) for x in value]
+            if isinstance(value, dict): return {rename(k): rename(v) for k, v in value.items()}
+            return value
+        shifted = rename(copy.deepcopy(rows))
+        for row in shifted:
+            row["frame"] += 137; row["timestamp_ms"] += 42000
+            for e in row.get("detections", {}).get("events", ()):
+                if isinstance(e.get("source_frame"), int): e["source_frame"] += 137
+                if isinstance(e.get("timestamp_ms"), int): e["timestamp_ms"] += 42000
+        original = BattleAutomaton(0, rows, context).run()
+        changed = BattleAutomaton(0, shifted, rename(context)).run()
+        fields = ("kind", "status", "slot", "species", "health", "before", "after", "move", "value", "actor_id", "forme")
+        self.assertEqual([{k: rename(e.get(k)) for k in fields} for e in original["events"]],
+                         [{k: e.get(k) for k in fields} for e in changed["events"]])
+        self.assertEqual(changed["issues"], [])
+        with zipfile.ZipFile(path) as archive: job = rename(json.loads(archive.read("job.json")))
+        job["id"] = "independent-audit-id"
+        self.assertEqual(build_trace_context(job, shifted, changed).job_id, "independent-audit-id")
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_6A28"), "diagnostic 6a28 not supplied")
+    def test_6a28_recovers_identities_but_blocks_contradictory_saved_preview(self):
         from ledger_replay import build_replay, load_trace_context
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_6A28"])
         rows, _ = read_diagnostic(path)
         ledger = BattleAutomaton(0, rows, read_diagnostic_context(path)).run()
         self.assertEqual(ledger["issues"], [])
-        replay = build_replay(ledger, load_trace_context(path, ledger))
-        self.assertEqual(replay["log"].count("|turn|"), 9)
-        self.assertIn("Volcarona", replay["log"])
-        self.assertIn("Blaziken-Mega", replay["log"])
+        from ledger_replay import ReplayEvidenceError
+        self.assertEqual(len([e for e in ledger["events"] if e["kind"] == "turn" and e["status"] == "consistent"]), 9)
+        with self.assertRaisesRegex(ReplayEvidenceError, "contradice las especies"):
+            build_replay(ledger, load_trace_context(path, ledger))
 
 if __name__ == "__main__":
     unittest.main()
