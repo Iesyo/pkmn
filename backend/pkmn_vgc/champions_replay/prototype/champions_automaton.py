@@ -689,6 +689,21 @@ def move_target_catalog() -> dict[str, dict[str, Any]]:
         return {}
 
 
+def side_condition_move_matches(move: dict[str, Any], transition: dict[str, Any]) -> bool:
+    """Match the effect and affected side using the pinned move catalogue."""
+    if move.get("kind") != "move":
+        return False
+    key = re.sub(r"\W+", "", str(move.get("move") or "").casefold())
+    metadata = move_target_catalog().get(key, {})
+    condition = metadata.get("details", {}).get("sideCondition")
+    effect = re.sub(r"\W+", "", str(transition.get("value") or "").removeprefix("move: ").casefold())
+    move_side, side = str(move.get("slot") or "")[:2], str(transition.get("slot") or "")[:2]
+    target = metadata.get("target")
+    return bool(condition and effect == condition and move_side in {"p1", "p2"}
+                and side in {"p1", "p2"} and ((target == "allySide" and side == move_side)
+                                                  or (target == "foeSide" and side != move_side)))
+
+
 @lru_cache(maxsize=1)
 def known_move_keys() -> frozenset[str]:
     """Pinned names protect real moves from OCR-variant reconciliation."""
@@ -6865,6 +6880,111 @@ class BattleAutomaton:
             elif not following and self.actors[actor_id]["health"] == original_after:
                 self.actors[actor_id]["health"] = expected
 
+    def _reconcile_side_condition_readings(self) -> None:
+        """One causal action opens one side-effect episode, not one per OCR read.
+
+        A fresh cast is a different cause, including moves that add layers.
+        Ends close the episode; repeated starts/ends require the same bounded,
+        corroborated narration. Conditions remain attached to the side even
+        when their detector label refers to the other active slot.
+        """
+        active: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+        ended: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+        last_move = None
+
+        def repeated(original: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+            first, last = original.get("frame"), current.get("frame")
+            if (not isinstance(first, int) or not isinstance(last, int) or not 0 <= last - first <= 10
+                    or original.get("turn") != current.get("turn")):
+                return []
+            rows = [self.frame_lookup.get(n) for n in range(first, last + 1)]
+            if any(row is None for row in rows):
+                return []
+            if any(not 0 < right["timestamp_ms"] - left["timestamp_ms"] <= 1000
+                   for left, right in zip(rows, rows[1:])):
+                return []
+            readings = []
+            for row in rows:
+                lines = [part for part in row.get("ocr", ()) if in_area(part, BATTLE_TEXT_AREAS["narration"])
+                         and part.get("confidence", 0) >= .9 and len(part.get("text", "")) >= 12]
+                if len(lines) == 1:
+                    readings.append({"frame": row["frame"], "text": lines[0]["text"],
+                                     "confidence": lines[0]["confidence"]})
+            originals = [part for part in readings if part["frame"] < last and part["confidence"] >= .95]
+            final = next((part for part in readings if part["frame"] == last), None)
+            normalize = lambda value: re.sub(r"\W+", "", value.casefold())
+            if not final or len(originals) < 2:
+                return []
+            text = normalize(originals[0]["text"])
+            if (not any(b["frame"] == a["frame"] + 1 for a, b in zip(originals, originals[1:]))
+                    or any(difflib.SequenceMatcher(a=text, b=normalize(part["text"])).ratio() < .9
+                           for part in originals + [final])):
+                return []
+            # A second action seen only by OCR must not be erased with its state.
+            if any(RAW_ACTION.search(part.get("text", "")) for row in rows[1:]
+                   for part in row.get("ocr", ()) if part.get("top", 0) >= .55):
+                return []
+            return originals + [final]
+
+        for item in self.events:
+            if item.get("status") != "consistent":
+                continue
+            kind = item["kind"]
+            if kind == "move":
+                last_move = item
+                continue
+            if kind in {"turn", "switch", "drag", "faint", "battle_end"}:
+                last_move = None
+            if kind not in {"sidestart", "sideend"}:
+                continue
+            side = str(item.get("slot") or "")[:2]
+            effect = str(item.get("value") or "").removeprefix("move: ")
+            if side not in {"p1", "p2"} or not effect:
+                continue
+            key = side, effect.casefold()
+            source = last_move
+            if kind == "sidestart":
+                if (source is None or not side_condition_move_matches(source, item)
+                        or source.get("turn") != item.get("turn")
+                        or not isinstance(source.get("frame"), int)
+                        or not 0 <= item["frame"] - source["frame"] <= 20):
+                    continue
+                previous = active.get(key)
+                cause = source["seq"]
+                if not previous or previous[1] != cause:
+                    active[key] = item, cause
+                    ended.pop(key, None)
+                    continue
+            else:
+                if key in active:
+                    start, cause = active.pop(key)
+                    ended[key] = item, start["seq"]
+                    continue
+                previous = ended.get(key)
+                if previous is None:
+                    continue
+                cause = previous[1]
+            original = previous[0]
+            evidence = repeated(original, item)
+            if not evidence:
+                continue
+            resolution = {"state": "resolved", "from": "accepted", "to": "discarded",
+                          "event_seq": original["seq"], "cause_seq": cause, "side": side,
+                          "effect": effect, "reason": "Lectura repetida de la misma transición de bando y episodio causal",
+                          "raw_event": {key: item.get(key) for key in
+                                        ("kind", "slot", "actor_id", "value", "frame", "source_frame", "confidence")},
+                          "evidence": evidence}
+            item.update(status="suppressed", resolution=resolution, note=resolution["reason"])
+            original["observations"].append({"frame": item["frame"], "event_seq": item["seq"],
+                                             "reason": resolution["reason"], "evidence": evidence})
+            self.continuity_decisions.append({"frame": item["frame"], "kind": kind,
+                                              "state": "confirmed", "selected_event_seq": original["seq"],
+                                              "selected_transition": {"side": side, "effect": effect},
+                                              "hypotheses": [{"transition": "additional_transition", "status": "discarded",
+                                                              "contradiction": "Misma causa y narración; no existe otra transición"},
+                                                             {"transition": "same_episode", "status": "surviving"}],
+                                              "cause_seq": cause, "evidence": evidence})
+
     def run(self) -> dict[str, Any]:
         candidates = self._recover_delayed_terrain_heals(ordered_candidates(self.frames, self.alias_reconstructions))
         candidates = self._recover_withdrawn_entries(candidates)
@@ -6909,6 +7029,7 @@ class BattleAutomaton:
         self._reconcile_unmeasured_duplicate_entries()
         self._reconcile_delayed_damage_endpoint()
         self._reconcile_own_terrain_heal_endpoint()
+        self._reconcile_side_condition_readings()
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(

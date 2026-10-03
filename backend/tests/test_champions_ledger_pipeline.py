@@ -98,6 +98,25 @@ class LedgerPipelineTests(unittest.TestCase):
     def job(self):
         return {"id": "fixture", "created_at": "2026-09-28T12:00:00+00:00", "context": CONTEXT}
 
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_777"), "Requiere diagnóstico 777")
+    def test_repeated_side_condition_is_resolved_before_the_generator(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_777"])
+        with tempfile.TemporaryDirectory() as directory, zipfile.ZipFile(path) as archive:
+            out = Path(directory)
+            trace = archive.read("output/ocr.trace.jsonl")
+            (out / "ocr.trace.jsonl").write_bytes(trace)
+            job = json.loads(archive.read("job.json"))
+            documents = documents_from_trace(out / "ocr.trace.jsonl", job, out / "output")
+            self.assertEqual(len(documents), 1)
+            self.assertEqual((documents[0].p1, documents[0].p2), ("Roku", "Tranquility"))
+            starts = [line for line in documents[0].log.splitlines() if line.startswith("|-sidestart|")]
+            self.assertEqual(starts, ["|-sidestart|p1: Roku|move: Tailwind", "|-sidestart|p2: Tranquility|move: Tailwind"])
+            self.assertEqual(documents[0].log.splitlines()[-1], "|win|Roku")
+            report = json.loads((out / "output/ledger-report.json").read_text())
+            self.assertEqual((report["status"], report["replay_count"]), ("ready", 1))
+            self.assertFalse(report["battles"][0]["issues"])
+            self.assertEqual((out / "ocr.trace.jsonl").read_bytes(), trace)
+
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_F621"), "Requiere diagnóstico f621")
     def test_empty_detector_names_do_not_block_corroborated_ocr_and_observed_participants(self):
         path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_F621"])

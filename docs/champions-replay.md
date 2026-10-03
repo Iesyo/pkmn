@@ -642,3 +642,27 @@ anuncios rivales corroborados, victoria OCR en frame 511 y cuatro participantes
 rivales confirmados. No necesita OCR nuevo. La traza posterior del índice siguiente
 no se mezcla con ese resultado. Frente a 20abe44, los 62 Ledger y los 52 logs del
 archivo de Drive son exactamente iguales; los 34 avisos históricos siguen abiertos.
+
+### Una transición de bando por episodio causal
+
+Las condiciones de bando también necesitan selección por continuidad. El
+diagnóstico 777 tenía cero avisos en Ledger, pero conservaba dos inicios de
+Tailwind para el mismo movimiento: frames 277 y 280. El generador rechazaba el
+segundo porque ya no existía otra acción causal que lo acreditara.
+
+Ahora cada episodio se identifica por bando, condición y acción que lo origina.
+El catálogo fijado de movimientos relaciona el efecto y su bando objetivo. Dos
+lecturas fuertes consecutivas y el texto concordante del candidato posterior,
+con muestras continuas y sin otra acción, acreditan una sola transición. La
+segunda lectura queda suprimida, conservando evento original, causa, evidencia
+y alternativas en la auditoría de continuidad. Un cierre termina el episodio;
+un nuevo uso tiene otra causa y no se elimina, incluyendo condiciones por capas.
+Los bandos independientes no se mezclan. Un cierre repetido puede descartarse
+sólo con un episodio previo y la misma evidencia; un cierre sin inicio no se
+inventa ni se elimina para forzar la exportación.
+
+777 pasa de bloqueo del generador a un replay por producción, sin OCR nuevo:
+un inicio propio y otro rival, victoria de Roku contra Tranquility. El requisito
+causal del generador se conserva. Esta mejora incorpora transiciones de bando;
+la selección por continuidad aún no cubre de forma general todas las transiciones
+del juego. Cero avisos en Ledger no garantiza por sí solo la exportación.

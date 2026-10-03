@@ -4189,6 +4189,100 @@ class DelayedDamageEndpointTests(unittest.TestCase):
         self.assertIn("|-heal|p1a: Whimsicott|146/167", replay["log"])
 
 
+class SideConditionContinuityTests(unittest.TestCase):
+    def trace(self, move="Tailwind", affected="p1a"):
+        text = "The same side condition has started on this side!"
+        rows = [frame(n) for n in range(1, 12)]
+        rows[0] = frame(1, [event("switch", "p1a", "Whimsicott", "167/167"),
+                            event("switch", "p1b", "Kingambit", "177/177"),
+                            event("switch", "p2a", "Pelipper", "100/100"), event("turn", turn=1)])
+        rows[1] = frame(2, [event("move", "p1a", "Whimsicott", move=move)])
+        rows[3] = frame(4, [event("sidestart", affected, value="move: " + move)], texts=[text])
+        rows[4] = frame(5, texts=[text])
+        rows[5] = frame(6, [event("sidestart", affected, value="move: " + move)], texts=[text[:-1] + "l"])
+        for row in rows:
+            for part in row["ocr"]:
+                if part.get("top") == .75:
+                    part.update(left=.15, right=.75, bottom=.8)
+        return rows
+
+    def test_one_cause_yields_one_transition_using_catalogue_for_each_affected_side(self):
+        for move, affected in (("Tailwind", "p1a"), ("Reflect", "p1b"), ("Spikes", "p2a")):
+            with self.subTest(move=move):
+                ledger = BattleAutomaton(0, self.trace(move, affected)).run()
+                starts = [e for e in ledger["events"] if e["kind"] == "sidestart"]
+                self.assertEqual([e["status"] for e in starts], ["consistent", "suppressed"])
+                self.assertEqual(starts[1]["resolution"]["event_seq"], starts[0]["seq"])
+                self.assertEqual(starts[1]["resolution"]["cause_seq"], 5)
+                self.assertEqual(starts[1]["resolution"]["raw_event"]["frame"], 6)
+                self.assertEqual(ledger["continuity_decisions"][-1]["hypotheses"][0]["status"], "discarded")
+                self.assertIn("Selección por continuidad", render_markdown(ledger, None))
+
+    def test_new_cast_layers_other_side_and_reactivation_are_preserved(self):
+        for mode in ("new_cast", "new_layer", "other_side", "end_then_cast"):
+            with self.subTest(mode=mode):
+                move, affected = ("Spikes", "p2a") if mode == "new_layer" else ("Tailwind", "p1a")
+                rows = self.trace(move, affected)
+                if mode in {"new_cast", "new_layer"}:
+                    rows[4]["detections"]["events"] = [event("move", "p1a", "Whimsicott", move=move)]
+                if mode == "other_side": rows[5]["detections"]["events"][0]["slot"] = "p2a"
+                if mode == "end_then_cast":
+                    rows[4]["detections"]["events"] = [event("sideend", "p1a", value="move: Tailwind"),
+                                                         event("move", "p1a", "Whimsicott", move="Tailwind")]
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sidestart"],
+                                 ["consistent", "consistent"])
+
+    def test_missing_evidence_action_gaps_and_unknown_effect_do_not_discard(self):
+        for problem in ("single_text", "weak_text", "different_text", "gap", "missing_frame",
+                        "raw_action", "different_effect", "unknown_move", "wrong_side", "another_action", "turn"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                if problem == "single_text": rows[4]["ocr"] = []
+                if problem == "weak_text": rows[4]["ocr"][0]["confidence"] = .6
+                if problem == "different_text": rows[5]["ocr"][0]["text"] = "A different effect started blowing somewhere else!"
+                if problem == "gap": rows[4]["timestamp_ms"] = 5000
+                if problem == "missing_frame": rows.pop(4)
+                if problem == "raw_action": rows[4]["ocr"].append({"text": "Unknown used Another Move!", "top": .75, "confidence": .999})
+                if problem == "different_effect": rows[5]["detections"]["events"][0]["value"] = "move: Reflect"
+                if problem == "unknown_move": rows[1]["detections"]["events"][0]["move"] = "Uncatalogued Effect"
+                if problem == "wrong_side":
+                    for number in (3, 5): rows[number]["detections"]["events"][0]["slot"] = "p2a"
+                if problem == "another_action": rows[4]["detections"]["events"] = [event("move", "p1b", "Kingambit", move="Protect")]
+                if problem == "turn": rows[4]["detections"]["events"] = [event("turn", turn=2)]
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sidestart"],
+                                 ["consistent", "consistent"])
+
+    def test_repeated_end_closes_only_one_confirmed_episode(self):
+        rows = self.trace()
+        rows[6] = frame(7, [event("sideend", "p1b", value="move: Tailwind")],
+                        texts=["The same side condition has ended on this side!"])
+        rows[7] = frame(8, texts=["The same side condition has ended on this side!"])
+        rows[8] = frame(9, [event("sideend", "p1a", value="move: Tailwind")],
+                        texts=["The same side condition has ended on this sidel"])
+        for row in rows[6:9]:
+            for part in row["ocr"]: part.update(left=.15, right=.75, bottom=.8)
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sideend"], ["consistent", "suppressed"])
+        for row in rows:
+            row["detections"]["events"] = [e for e in row["detections"]["events"] if e["kind"] != "sidestart"]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sideend"], ["consistent", "consistent"])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_777"), "Requiere diagnóstico 777")
+    def test_real_side_reading_is_discarded_and_both_sides_survive(self):
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_777"])
+        rows, _ = read_diagnostic(path)
+        ledger = BattleAutomaton(0, [row for row in rows if row["battle_index"] == 0], read_diagnostic_context(path)).run()
+        self.assertFalse(ledger["issues"])
+        starts = [e for e in ledger["events"] if e["kind"] == "sidestart"]
+        self.assertEqual([(e["frame"], e["status"]) for e in starts],
+                         [(277, "consistent"), (280, "suppressed"), (569, "consistent")])
+        self.assertEqual(starts[1]["resolution"]["cause_seq"], 10)
+        self.assertEqual(starts[1]["resolution"]["event_seq"], 12)
+
+
 class EntryNormalizationContinuityTests(unittest.TestCase):
     def paired_entry_rows(self):
         rows = [frame(n) for n in range(1, 9)]
