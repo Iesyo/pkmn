@@ -154,6 +154,15 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    lectura, se vuelve a comprobar la transición: PS iguales se conservan
    como observación suprimida del mismo punto final, con la transición
    original auditada. Una segunda curación o daño real se conserva.
+   Una oscilación de PS propios anterior a la primera acción también puede
+   cerrarse como lectura recortada: un único numerador positivo pierde dígitos
+   iniciales y regresa al valor confirmado en el siguiente frame. Requiere
+   dos HUD literales anteriores y dos posteriores (confianza ≥0,97), el mismo
+   ocupante nombrado, muestras continuas y una caja OCR más estrecha que
+   conserva el extremo derecho. Acciones, narración de PS, otro nombre,
+   máximo distinto o prueba incompleta conservan la duda. El fragmento y
+   la falsa curación quedan auditados en una observación `suppressed`;
+   los PS del actor permanecen en el valor confirmado.
 8. Al cerrar el autómata, poda los componentes provisionales sin vínculos
    con la secuencia viva. Los vínculos son actores persistentes, dependencias
    causales, estados de campo/bando, turnos estructurales e hipótesis de
