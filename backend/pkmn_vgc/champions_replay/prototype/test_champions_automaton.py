@@ -64,6 +64,36 @@ def opponent_opening_swap_trace():
     return trace
 
 
+
+def review_or_discarded_status(event):
+    """Both states reject the candidate; a pruned node must carry its proof."""
+    if event.get("resolution", {}).get("orphaned"):
+        assert event["status"] == "suppressed"
+        assert event["resolution"]["to"] == "discarded"
+        return "review"
+    return event["status"]
+
+
+def pending_or_orphaned(ledger):
+    """A rejected candidate is either live and pending, or pruned with audit.
+
+    These older guards test that insufficient evidence is never accepted.
+    Final pruning now retires disconnected candidates instead of blocking
+    forever; the dedicated pruning tests check which branches remain live.
+    """
+    discarded = [issue for issue in ledger["resolved_issues"]
+                 if issue["resolution"].get("orphaned")]
+    by_seq = {event["seq"]: event for event in ledger["events"]}
+    for issue in discarded:
+        assert issue["resolution"]["to"] == "discarded"
+        if issue.get("event_seq") is not None:
+            assert by_seq[issue["event_seq"]]["status"] == "suppressed"
+        else:
+            assert any(link["frame"] == issue["frame"] and link["status"] == "discarded"
+                       for link in ledger["narration_links"])
+    return ledger["issues"] + discarded
+
+
 def delayed_terrain_heal_trace():
     """The detector notices an earlier Rillaboom heal on a later menu redraw."""
     trace = [frame(n) for n in range(1, 31)]
@@ -720,8 +750,8 @@ class TemporalAutomatonTests(unittest.TestCase):
                 else: changed[2]["ocr"] = []
                 uncertain = BattleAutomaton(0, changed).run()
                 effect = next(e for e in uncertain["events"] if e["kind"] == "enditem")
-                self.assertEqual(effect["status"], "review", (side, invalid))
-                self.assertTrue(any(i["code"] == "unbound_item_actor" for i in uncertain["issues"]), (side, invalid))
+                self.assertEqual(review_or_discarded_status(effect), "review", (side, invalid))
+                self.assertTrue(any(i["code"] == "unbound_item_actor" for i in pending_or_orphaned(uncertain)), (side, invalid))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_32B"), "Requiere diagnóstico 32b")
     def test_32b_lethal_knock_off_preserves_item_victim_after_faint(self):
@@ -967,10 +997,12 @@ class TemporalAutomatonTests(unittest.TestCase):
         # No inferred closure: a battle can finish while Trick Room is active.
         self.assertEqual(ledger["counts"]["fieldend"], 1)
 
-    def test_trick_room_end_without_start_remains_an_issue(self):
+    def test_trick_room_end_without_a_start_is_discarded_as_an_orphan(self):
         ledger = BattleAutomaton(0, [frame(1, [event("fieldend", value="move: Trick Room")])]).run()
-        self.assertEqual(ledger["events"][0]["status"], "review")
-        self.assertEqual(ledger["issues"][0]["code"], "field_transition")
+        self.assertEqual(review_or_discarded_status(ledger["events"][0]), "review")
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(ledger["resolved_issues"][0]["code"], "field_transition")
+        self.assertTrue(ledger["resolved_issues"][0]["resolution"]["orphaned"])
 
     def test_trick_room_new_cast_without_closure_is_not_hidden_as_repeated_ocr(self):
         trace = [frame(1, [event("switch", "p1a", "Indeedee-F", "177/177"),
@@ -1197,7 +1229,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                     for i in (54, 55):trace[i]["ocr"][1]["text"] = "0/100"
                 ledger = BattleAutomaton(0, trace).run()
                 self.assertFalse(any(e.get("entry_reconstruction") for e in ledger["events"]))
-                self.assertTrue(ledger["issues"])
+                self.assertTrue(pending_or_orphaned(ledger))
 
     def test_buffered_move_needs_its_own_clock_actor_and_repeated_text(self):
         for missing in ("clock", "source", "one_text", "side", "actor", "move", "confidence"):
@@ -1217,7 +1249,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 ledger = BattleAutomaton(0, trace).run()
                 move = next(e for e in ledger["events"] if e["move"] == "Fake Out")
                 self.assertNotIn("action_reconstruction", move)
-                self.assertEqual((move["frame"], move["slot"], move["status"]), (95, "p1b", "review"))
+                self.assertEqual((move["frame"], move["slot"], review_or_discarded_status(move)), (95, "p1b", "review"))
 
     def test_delayed_entry_during_impact_requires_real_continuation_and_endpoint(self):
         for missing in (None, "candidate", "endpoint", "name", "new_action", "reversal"):
@@ -1306,7 +1338,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 elif missing == "candidate_hp":trace[94]["detections"]["events"][0]["health"] = "50/100"
                 ledger = BattleAutomaton(0, trace).run()
                 self.assertFalse(any(e.get("entry_reconstruction") for e in ledger["events"]))
-                self.assertTrue(ledger["issues"])
+                self.assertTrue(pending_or_orphaned(ledger))
 
     def test_sliding_hud_assigns_identity_after_stable_names_on_either_side(self):
         for side, species, partner in (("p1", "Blaziken", "Kingambit"), ("p2", "Delphox", "Indeedee-F")):
@@ -1365,7 +1397,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 entry = next(e for e in ledger["events"] if e["kind"] == "switch" and e["frame"] == 1 and e["slot"] == "p1a")
                 self.assertEqual((entry["status"], entry["identity_support"]["state"]), ("suppressed", "unconfirmed"))
                 self.assertIsNone(entry["actor_id"])
-                self.assertIn("entry_identity_unconfirmed", [i["code"] for i in ledger["issues"]])
+                self.assertIn("entry_identity_unconfirmed", [i["code"] for i in pending_or_orphaned(ledger)])
 
     def test_confirmed_hud_identity_survives_a_later_action_boundary(self):
         trace = sliding_hud_trace()
@@ -1414,7 +1446,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 ledger = BattleAutomaton(0, trace).run()
                 self.assertFalse(any(e["kind"] == "heal" and e["status"] == "consistent" and e["after"] == "82/100"
                                      for e in ledger["events"]))
-                self.assertTrue(ledger["issues"])
+                self.assertTrue(pending_or_orphaned(ledger))
 
     def test_pending_zero_uses_visible_zero_and_repeated_matching_faint(self):
         ledger = BattleAutomaton(0, pending_hp_trace(zero=True)).run()
@@ -1466,7 +1498,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual(message["resolution"]["slot"], "p2a")
 
         trace[-1]["detections"]["events"][0]["value"] = "Raichunite X"
-        self.assertIn("unclassified_text", {issue["code"] for issue in BattleAutomaton(0, trace).run()["issues"]})
+        self.assertIn("unclassified_text", {issue["code"] for issue in pending_or_orphaned(BattleAutomaton(0, trace).run())})
 
     def test_transient_text_preserves_unexplained_or_different_events(self):
         for missing in ("event", "legible", "confidence", "time", "action", "turn", "species", "stone", "side", "meaningful", "unrelated"):
@@ -1493,7 +1525,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                     trace[1]["detections"]["events"][0]["value"] = value
                     trace[1]["ocr"][0]["text"] = value
                 ledger = BattleAutomaton(0, trace).run()
-                self.assertTrue(any(i["code"] == "unclassified_text" for i in ledger["issues"]))
+                self.assertTrue(any(i["code"] == "unclassified_text" for i in pending_or_orphaned(ledger)))
 
     def test_hp_ratio_parses_fractions_and_rejects_invalid_values(self):
         self.assertEqual(health_ratio("50/200"), .25)
@@ -1599,7 +1631,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 if case == "withdraw": trace[3]["ocr"].append({"text": "Arcanine, come back!", "top": .75, "confidence": .99})
                 ledger = BattleAutomaton(0, trace).run()
                 suspect = next(e for e in ledger["events"] if e["frame"] == 3)
-                self.assertEqual((suspect["kind"], suspect["status"]), ("move_text_unconfirmed", "review"))
+                self.assertEqual((suspect["kind"], review_or_discarded_status(suspect)), ("move_text_unconfirmed", "review"))
                 self.assertEqual(suspect["move_narration_support"]["state"], "unconfirmed")
 
     def test_damaged_side_does_not_choose_between_two_possible_opponents(self):
@@ -1709,7 +1741,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                     next(o for o in broken[2]["ocr"] if o["text"] == "Torrain Pulse")["top"] = .75
                 unresolved = BattleAutomaton(0, broken).run()
                 if change == "narration_position":
-                    self.assertIn("unclassified_text", {i["code"] for i in unresolved["issues"]})
+                    self.assertIn("unclassified_text", {i["code"] for i in pending_or_orphaned(unresolved)})
                 else:
                     # Geometry can exclude off-area text without identifying
                     # its menu. It must not claim the repeated-label proof.
@@ -1799,7 +1831,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 trace[1]["ocr"][0]["confidence"] = confidence
                 ledger = BattleAutomaton(0, trace).run()
                 self.assertNotIn("ignored_ui_frames", ledger)
-                self.assertTrue(any(i["code"] == "unclassified_text" for i in ledger["issues"]))
+                self.assertTrue(any(i["code"] == "unclassified_text" for i in pending_or_orphaned(ledger)))
 
     def test_retrospective_burn_does_not_attach_to_previous_heal(self):
         trace = [frame(1, [event("switch", "p1a", "Gardevoir", "20/100"), event("turn", turn=1)]),
@@ -1885,7 +1917,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                     trace[1]["ocr"] = []
                 ledger = BattleAutomaton(0, trace).run()
                 link = ledger["narration_links"][0]
-                self.assertEqual((link["status"], link["frame"]), ("unmatched", 4))
+                self.assertEqual((link["status"], link["frame"]), ("discarded" if unknown_actor else "unmatched", 4))
                 self.assertIn("was hurt by its burn!", link["text"])
                 self.assertFalse(any(e.get("causal_evidence") for e in ledger["events"]))
 
@@ -2022,7 +2054,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual([x["species"] for x in ledger["events"]
                           if x["kind"] == "switch" and x["status"] == "consistent"],
                          ["Rillaboom", "Blaziken"])
-        self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
+        self.assertIn("ghost_reentry_after_faint", [x["code"] for x in pending_or_orphaned(ledger)])
 
     def test_opponent_menu_hud_uses_both_named_slots_and_keeps_real_entries(self):
         trace = opponent_menu_hud_trace()
@@ -2051,7 +2083,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 else:
                     altered[17]["ocr"].append({"text": "Rival sent out Baxcalibur!", "top": .75,
                                                 "confidence": 1})
-                issues = BattleAutomaton(0, altered).run()["issues"]
+                issues = pending_or_orphaned(BattleAutomaton(0, altered).run())
                 expected = 18 if change == "duplicate_announcement" else 12
                 self.assertTrue(any(i["frame"] == expected for i in issues), change)
 
@@ -2131,8 +2163,8 @@ class TemporalAutomatonTests(unittest.TestCase):
                     self.assertIn("faint_text_unconfirmed", [x["code"] for x in ledger["issues"]])
                     self.assertFalse(next(iter(ledger["actors"].values()))["fainted"])
                 else:
-                    self.assertIn("ghost_reentry_after_faint", [x["code"] for x in ledger["issues"]])
-                self.assertEqual(ledger["resolved_issues"], [])
+                    self.assertIn("ghost_reentry_after_faint", [x["code"] for x in pending_or_orphaned(ledger)])
+                self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_real_replacement_after_faint_stays_an_entry(self):
         trace = faint_hud_trace()
@@ -2141,7 +2173,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual([(e["species"], e["health"]) for e in ledger["events"]
                           if e["kind"] == "switch" and e["status"] == "consistent"],
                          [("Rillaboom", "10/100"), ("Blaziken", "100/100")])
-        self.assertEqual(ledger["resolved_issues"], [])
+        self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_returning_hud_resolves_provisional_identity_without_new_entry(self):
         for species, name in (("Kingambit", "Kingambit"), ("Rillaboom", "Bonkers")):
@@ -2205,8 +2237,8 @@ class TemporalAutomatonTests(unittest.TestCase):
                     trace[5]["detections"]["events"].append(event("faint", "p2b", "Kingambit"))
                 ledger = BattleAutomaton(0, trace).run()
                 self.assertTrue(any(i["code"] == "reentry_without_exit" and i["frame"] == 4
-                                    for i in ledger["issues"]))
-                self.assertEqual(ledger["resolved_issues"], [])
+                                    for i in pending_or_orphaned(ledger)))
+                self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_returning_hud_does_not_absorb_real_replacement(self):
         trace = returning_hud_trace()
@@ -2216,7 +2248,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertEqual([e["species"] for e in ledger["events"]
                           if e["kind"] == "switch" and e["status"] == "consistent"],
                          ["Kingambit", "Blaziken"])
-        self.assertEqual(ledger["resolved_issues"], [])
+        self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_isolated_partial_hp_read_does_not_create_damage_or_recovery(self):
         trace = [frame(1, [event("switch", "p2a", "Delphox", "28/100"), event("turn", turn=1)]),
@@ -2306,7 +2338,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 if case == "no_endpoint": trace[13]["ocr"] = []
                 ledger = BattleAutomaton(0, trace, {"teams": {"p1": team}}).run()
                 self.assertFalse(any(e.get("withdrawal_reconstruction") for e in ledger["events"]))
-                self.assertIn("hp_narration_unmatched", [e["code"] for e in ledger["issues"]])
+                self.assertIn("hp_narration_unmatched", [e["code"] for e in pending_or_orphaned(ledger)])
 
     def test_malformed_own_entry_never_confirms_a_repaired_separator(self):
         for raw in ("177177", "1771177", "1777177", "177:177", "177", "177/0", "178/177"):
@@ -2485,7 +2517,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         damage = next(x for x in ledger["events"] if x["kind"] == "damage")
         self.assertIsNone(entry["health"])
         self.assertEqual(entry["hp_state"], "unconfirmed")
-        self.assertEqual(damage["status"], "review")
+        self.assertEqual(review_or_discarded_status(damage), "review")
         self.assertIsNone(damage["before"])
         self.assertEqual(next(iter(ledger["actors"].values()))["health"], "1/100")
 
@@ -2789,7 +2821,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                           if x["kind"] == "mega" and x["status"] == "consistent"], ["p2a"])
         self.assertIsNone(next(a["forme"] for a in ledger["actors"].values()
                                if a["species"] == "Indeedee-F"))
-        self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
+        self.assertIn("mega_wrong_occupant", [x["code"] for x in pending_or_orphaned(ledger)])
 
     def test_wrong_slot_mega_resolves_only_to_corroborated_accepted_event(self):
         ledger = BattleAutomaton(0, mega_duplicate_trace()).run()
@@ -2803,7 +2835,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         self.assertNotIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
         self.assertIsNone(next(a["forme"] for a in ledger["actors"].values() if a["species"] == "Indeedee-F"))
 
-    def test_wrong_slot_mega_keeps_warning_without_complete_corroboration(self):
+    def test_wrong_slot_mega_never_confirms_without_complete_corroboration(self):
         for missing in ("one_frame", "side", "stone", "forme", "confidence", "time", "action", "turn",
                         "accepted_event", "distinct_frames"):
             with self.subTest(missing=missing):
@@ -2828,8 +2860,8 @@ class TemporalAutomatonTests(unittest.TestCase):
                     trace[-1]["frame"] = trace[-2]["frame"]
                     trace[-1]["timestamp_ms"] = trace[-2]["timestamp_ms"]
                 ledger = BattleAutomaton(0, trace).run()
-                self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
-                self.assertEqual(ledger["resolved_issues"], [])
+                self.assertIn("mega_wrong_occupant", [x["code"] for x in pending_or_orphaned(ledger)])
+                self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_two_supported_megas_do_not_resolve_an_ambiguous_wrong_slot(self):
         trace = mega_duplicate_trace()
@@ -2841,8 +2873,8 @@ class TemporalAutomatonTests(unittest.TestCase):
                                "top": .75, "confidence": 1})
         ledger = BattleAutomaton(0, trace).run()
         self.assertEqual(sum(e["kind"] == "mega" and e["status"] == "consistent" for e in ledger["events"]), 2)
-        self.assertIn("mega_wrong_occupant", [x["code"] for x in ledger["issues"]])
-        self.assertEqual(ledger["resolved_issues"], [])
+        self.assertIn("mega_wrong_occupant", [x["code"] for x in pending_or_orphaned(ledger)])
+        self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
 
     def test_unresolved_actor_is_reported_before_replay_export(self):
         trace = [frame(1, [event("switch", "p2a", "__champions_actor_p2_0002__", "100/100"),
@@ -2889,7 +2921,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                               line.get("text") not in {"Kushina's", "Pressure"}]
         uncertain = BattleAutomaton(0, frames).run()
         self.assertFalse(any(e.get("delayed_voluntary_entry") for e in uncertain["events"]))
-        self.assertIn("unclassified_text", {issue["code"] for issue in uncertain["issues"]})
+        self.assertIn("unclassified_text", {issue["code"] for issue in pending_or_orphaned(uncertain)})
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_NINTH"), "Requiere el noveno ZIP del usuario")
     def test_partner_hud_and_repeated_faint_text_need_independent_evidence(self):
@@ -2954,7 +2986,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 row["ocr"].append({"text": "Rival withdrew Incineroar!", "confidence": .999,
                                    "left": .15, "top": .75})
         unresolved = BattleAutomaton(0, withdrawn, context).run()
-        self.assertIn("reentry_without_exit", {i["code"] for i in unresolved["issues"]})
+        self.assertIn("reentry_without_exit", {i["code"] for i in pending_or_orphaned(unresolved)})
         missing_panel = json.loads(json.dumps([r for r in frames if r["battle_index"] == 1]))
         for row in missing_panel:
             if 1380 <= row["frame"] <= 1383:
@@ -3397,7 +3429,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 row["ocr"] = [line for line in row["ocr"] if
                               "reacting to Trainer's Omni Ring!" not in line.get("text", "")]
         uncertain = BattleAutomaton(0, missing_reaction, context).run()
-        self.assertIn(442, [x["frame"] for x in uncertain["issues"]])
+        self.assertIn(442, [x["frame"] for x in pending_or_orphaned(uncertain)])
 
         missing_move = copy.deepcopy(frames)
         for row in missing_move:
@@ -3517,7 +3549,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                     row["ocr"].append({"text": "Dragonsbane sent out Archaludon!",
                                        "confidence": .999, "left": .15, "top": .75})
             uncertain = BattleAutomaton(0, altered, context).run()
-            self.assertIn("reentry_without_exit", {item["code"] for item in uncertain["issues"]}, mutate)
+            self.assertIn("reentry_without_exit", {item["code"] for item in pending_or_orphaned(uncertain)}, mutate)
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_DA3F"), "Requiere diagnóstico da3f")
     def test_da3f_separates_partner_hud_and_confirms_late_zero(self):
@@ -3527,7 +3559,7 @@ class TemporalAutomatonTests(unittest.TestCase):
         battle = [row for row in frames if row["battle_index"] == 0]
         ledger = BattleAutomaton(0, battle, context).run()
         self.assertEqual(ledger["issues"], [])
-        self.assertEqual(ledger["resolved_issues"], [])
+        self.assertEqual([i for i in ledger["resolved_issues"] if not i["resolution"].get("orphaned")], [])
         owner = next(d for d in ledger["continuity_decisions"] if d["frame"] == 296)
         self.assertEqual((owner["raw_event"]["slot"], owner["selected_slot"]), ("p2a", "p2b"))
         self.assertEqual([p["text"] for p in owner["evidence"]], ["1%", "1%"])
@@ -3577,7 +3609,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 row["ocr"] = [l for l in row["ocr"] if
                               "Gardevoirite is reacting" not in l.get("text", "")]
         self.assertIn("unclassified_text", {i["code"] for i in
-                                         BattleAutomaton(0, no_clean_stone, context).run()["issues"]})
+                                         pending_or_orphaned(BattleAutomaton(0, no_clean_stone, context).run())})
         no_faint_repeat = copy.deepcopy(battle)
         for row in no_faint_repeat:
             if row["frame"] in (344, 345, 346):
@@ -3615,7 +3647,7 @@ class TemporalAutomatonTests(unittest.TestCase):
                 row["ocr"] = [line for line in row["ocr"] if
                               line.get("text") != "The Trainer withdrew Maushold!"]
         self.assertIn("unclassified_text", {i["code"] for i in
-                                       BattleAutomaton(0, missing_departure, context).run()["issues"]})
+                                       pending_or_orphaned(BattleAutomaton(0, missing_departure, context).run())})
         missing_final = copy.deepcopy(battle)
         for row in missing_final:
             if row["frame"] == 804:
@@ -3679,7 +3711,7 @@ class TemporalAutomatonTests(unittest.TestCase):
             if row["frame"] in (544, 545):
                 row["ocr"] = [line for line in row["ocr"] if "withdrew Kaiju!" not in line.get("text", "")]
         uncertain = BattleAutomaton(0, no_withdrawal_repeat, context).run()
-        self.assertIn(543, [i["frame"] for i in uncertain["issues"] if i["code"] == "unclassified_text"])
+        self.assertIn(543, [i["frame"] for i in pending_or_orphaned(uncertain) if i["code"] == "unclassified_text"])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_BC6"), "Requiere diagnóstico bc6")
     def test_bc6_replays_timed_damage_faint_terrain_and_helmet(self):
@@ -3809,7 +3841,7 @@ class ArchivedIdentityRecoveryTests(unittest.TestCase):
                 self.assertIn("mega_slot_support", megas[0])
             else:
                 self.assertEqual(megas, [])
-                self.assertIn("mega_wrong_occupant", [i["code"] for i in ledger["issues"]])
+                self.assertIn("mega_wrong_occupant", [i["code"] for i in pending_or_orphaned(ledger)])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_6A28"), "diagnostic 6a28 not supplied")
     def test_archived_decisions_are_independent_of_nicknames_job_id_and_absolute_time(self):
@@ -3943,7 +3975,7 @@ class ContinuitySelectionTest(unittest.TestCase):
         machine.events = [bad]; machine.issues = [issue]
         machine._reconcile_continuity_readings()
         self.assertEqual(machine.issues, [issue])
-        self.assertEqual(bad["status"], "review")
+        self.assertEqual(review_or_discarded_status(bad), "review")
         self.assertEqual(machine.continuity_decisions, [])
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_F139"), "Requiere diagnóstico f139")
@@ -4337,7 +4369,7 @@ class EntryNormalizationContinuityTests(unittest.TestCase):
             if change == "different_fragment": rows[1]["detections"]["events"][0]["value"] = "Different event!"
             with self.subTest(change=change):
                 ledger = BattleAutomaton(0, rows).run()
-                self.assertEqual(any(i["code"] == "unclassified_text" for i in ledger["issues"]), change is not None)
+                self.assertEqual(any(i["code"] == "unclassified_text" for i in pending_or_orphaned(ledger)), change is not None)
 
     def test_unmeasured_reentry_needs_unique_continuing_named_hp(self):
         for change in (None, "action", "withdrawal", "wrong_name", "missing_percent", "gap"):
@@ -4356,7 +4388,7 @@ class EntryNormalizationContinuityTests(unittest.TestCase):
             if change == "gap": rows[10]["timestamp_ms"] += 2000
             with self.subTest(change=change):
                 ledger = BattleAutomaton(0, rows).run()
-                self.assertEqual(any(i["code"] == "reentry_without_exit" for i in ledger["issues"]), change is not None)
+                self.assertEqual(any(i["code"] == "reentry_without_exit" for i in pending_or_orphaned(ledger)), change is not None)
 
     def test_party_card_requires_entry_hud_and_unique_native_identity(self):
         from champions_automaton import corroborated_party_aliases
