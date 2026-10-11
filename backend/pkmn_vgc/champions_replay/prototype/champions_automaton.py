@@ -6581,6 +6581,25 @@ class BattleAutomaton:
             if named_species and issue["code"] != "faint_text_unconfirmed":
                 unresolved.append(issue)
                 continue
+            ownership_variant = None
+            # A misspelled ownership word is not evidence for our side.
+            # Keep this interpretation local to a corroborated faint episode;
+            # an exact known nickname always keeps its original ownership.
+            prefix = re.fullmatch(r"the ([a-z]+) (.+)", subject)
+            if issue["code"] == "faint_text_unconfirmed" and not match[1] and not named_species and prefix:
+                word, expected = prefix[1], "opposing"
+                one_edit = (len(word) == len(expected) and sum(a != b for a, b in zip(word, expected)) == 1)
+                shorter, longer = sorted((word, expected), key=len)
+                one_edit = one_edit or (len(longer) == len(shorter) + 1 and
+                                       any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer))))
+                body_species = self.nickname_species["p2"].get(prefix[2]) or next(
+                    (actor["species"] for actor in self.actors.values() if actor.get("side") == "p2" and
+                     identity_species(actor["species"]).casefold() == identity_species(prefix[2]).casefold()), None)
+                if one_edit and body_species:
+                    ownership_variant = {"raw_prefix": "The " + word, "confirmed_prefix": "The opposing",
+                                         "subject": prefix[2], "confirmed_side": "p2"}
+                    side, subject = "p2", prefix[2]
+                    named_species = body_species
             options = {}
             for accepted in self.events:
                 if accepted["status"] != "consistent" or accepted["turn"] != bad["turn"]:
@@ -6606,7 +6625,8 @@ class BattleAutomaton:
                 if issue["code"] == "faint_text_unconfirmed":
                     if accepted["kind"] != "faint":
                         continue
-                    if bad.get("confidence", 1) >= .95 and bad.get("actor_id") == accepted["actor_id"]:
+                    if (not ownership_variant and bad.get("confidence", 1) >= .95 and
+                            bad.get("actor_id") == accepted["actor_id"]):
                         continue
                     hp = next((e for e in reversed(self.events[:accepted["seq"] - 1])
                                if e["actor_id"] == accepted["actor_id"] and e["kind"] in HP_KINDS), None)
@@ -6624,12 +6644,55 @@ class BattleAutomaton:
                                for line in row.get("ocr", ()) if line.get("top", 0) >= .55 and
                                line.get("confidence", 0) >= .95 and
                                (m := FAINT_NARRATION.fullmatch(line.get("text", ""))) and
+                               (not ownership_variant or m[2].casefold() == subject) and
                                ("p2" if m[1] else "p1") == accepted["slot"][:2] and
                                identity_species(self.nickname_species[accepted["slot"][:2]].get(m[2].casefold(), m[2])).casefold() ==
                                identity_species(accepted["species"]).casefold() and
                                difflib.SequenceMatcher(a=text.casefold(), b=line["text"].casefold()).ratio() >= .9]
+                    if ownership_variant:
+                        # The corrected ownership needs more than spelling:
+                        # measured lethal HP, two literal clean announcements,
+                        # continuous samples and no competing transition.
+                        if (hp["status"] != "consistent" or hp["kind"] != "damage" or
+                                not 0 <= bad["frame"] - hp["frame"] <= 12 or
+                                len({a["frame"] for a in anchors}) < 2):
+                            continue
+                        if bad.get("actor_id") != accepted["actor_id"]:
+                            continuation = next((e for e in self.events if e["seq"] > bad["seq"] and
+                                                 e["status"] == "consistent" and e["actor_id"] == bad.get("actor_id") and
+                                                 e["kind"] in HP_KINDS | ACTIVITY | {"faint"}), None)
+                            if (not continuation or continuation["kind"] in {"switch", "drag", "faint"} or
+                                    (continuation["kind"] in HP_KINDS and
+                                     (continuation.get("hp_state") != "confirmed" or
+                                      (health_ratio(continuation.get("after")) or 0) <= 0)) or
+                                    any(e["status"] != "suppressed" and e["kind"] == "move" and
+                                        str(e.get("move") or "").casefold() == "revival blessing" and
+                                        bad["seq"] < e["seq"] < continuation["seq"] for e in self.events)):
+                                continue
+                        first = min([hp["frame"], bad["frame"], accepted["frame"]] + [a["frame"] for a in anchors])
+                        last = max([bad["frame"], accepted["frame"]] + [a["frame"] for a in anchors])
+                        window = [self.frame_lookup.get(n) for n in range(first, last + 1)]
+                        announcement_texts = {text.casefold()} | {a["text"].casefold() for a in anchors}
+                        if (any(row is None for row in window) or any(
+                                not 0 < b["timestamp_ms"] - a["timestamp_ms"] <= 1_000
+                                for a, b in zip(window, window[1:])) or
+                                any(e["status"] != "suppressed" and e is not bad and e is not accepted and
+                                    e["kind"] in ACTIVITY | {"turn", "faint", "mega", "illusion_reveal", "battle_end"} and
+                                    first < e["frame"] <= last for e in self.events) or
+                                any(in_area(line, BATTLE_TEXT_AREAS["narration"]) and
+                                    ((RAW_ACTION.search(line.get("text", "")) and
+                                      line.get("text", "").casefold() not in announcement_texts) or
+                                     ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                                     re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                                    for row in window if first < row["frame"] <= last for line in row.get("ocr", ()))):
+                            continue
                     if len({a["frame"] for a in anchors}) >= (2 if bad.get("confidence", 1) >= .95 else 1):
-                        options[accepted["seq"]] = (accepted, hp["evidence"] + anchors)
+                        proof = hp["evidence"] + anchors
+                        if ownership_variant and bad.get("actor_id") != accepted["actor_id"]:
+                            proof += [{"frame": continuation["frame"], "kind": "actor_continuation",
+                                       "event_seq": continuation["seq"], "actor_id": continuation["actor_id"],
+                                       "health": continuation.get("after"), "move": continuation.get("move")}] + continuation["evidence"]
+                        options[accepted["seq"]] = (accepted, proof)
                 else:
                     if accepted["kind"] not in HP_KINDS or accepted.get("hp_state") != "confirmed":
                         continue
@@ -6699,6 +6762,8 @@ class BattleAutomaton:
             resolution = {"state": "resolved", "event_seq": seq, "actor_id": accepted["actor_id"],
                           "slot": accepted["slot"], "reason": "Lectura provisional descartada por continuidad del mismo episodio confirmado.",
                           "evidence": proof, "continuity": decision}
+            if ownership_variant:
+                resolution["ownership_prefix"] = ownership_variant
             if issue["event_seq"]:
                 bad.update(status="suppressed", resolution=resolution)
                 bad["text_support"]["state"] = "rejected"
