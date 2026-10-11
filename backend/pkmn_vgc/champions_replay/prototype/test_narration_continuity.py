@@ -423,5 +423,131 @@ class SideEpisodeReachabilityTests(unittest.TestCase):
             self.assertEqual(docs[0].log.count("|-sideend|p2:"), 1)
 
 
+class TerminalUnboundEntryTests(unittest.TestCase):
+    unknown = "__champions_actor_p2_0003__"
+    forfeit = "The battle has ended due to a forfeit."
+
+    def trace(self, slot="p2a", species=None):
+        species = species or self.unknown
+        rows = [frame(n) for n in range(1, 8)]
+        rows[0] = frame(1, [event("switch", "p1b", "Whimsicott", "167/167"), event("turn", turn=1)])
+        rows[1] = frame(2, [event("move", "p1b", "Whimsicott", move="Protect")])
+        rows[2] = frame(3, [event("switch", slot, species, "100/100"), event("turn", turn=2)])
+        rows[5] = frame(6, [event("message", value=self.forfeit)], [self.forfeit])
+        rows[6] = frame(7, texts=[self.forfeit])
+        for row in rows[5:]:
+            row["ocr"][0]["left"] = .15
+        return rows
+
+    def entry(self, ledger):
+        return next(e for e in ledger["events"] if e.get("species") == self.unknown and e["kind"] == "switch")
+
+    def assert_live(self, rows):
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertNotEqual(self.entry(ledger)["status"], "suppressed")
+        self.assertTrue(any(i["code"] == "unresolved_identity" for i in ledger["issues"]))
+
+    def test_unused_entry_is_retained_as_observation_outside_the_replay(self):
+        for slot in ("p1a", "p2a"):
+            with self.subTest(slot=slot):
+                ledger = BattleAutomaton(0, self.trace(slot)).run()
+                entry = self.entry(ledger)
+                self.assertEqual((entry["status"], ledger["issues"]), ("suppressed", []))
+                self.assertTrue(entry["resolution"]["observed_entry"])
+                self.assertEqual(entry["resolution"]["identity_state"], "unresolved")
+                self.assertEqual(entry["resolution"]["raw_event"]["species"], self.unknown)
+                self.assertEqual(ledger["actors"][entry["actor_id"]]["health"], "100/100")
+                self.assertEqual([i["code"] for i in ledger["resolved_issues"]], ["unresolved_identity"])
+                self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "battle_end"], ["consistent"])
+
+    def test_known_terminal_entry_retains_its_root(self):
+        ledger = BattleAutomaton(0, self.trace(species="Gardevoir")).run()
+        self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "switch"],
+                         ["consistent", "consistent"])
+        self.assertEqual(ledger["issues"], [])
+
+    def test_actions_receivers_sources_and_effects_keep_the_identity_live(self):
+        for kind, slot, species, health, move, value in (
+            ("move", "p2a", self.unknown, None, "Protect", None),
+            ("damage", "p2a", self.unknown, "90/100", None, None),
+            ("ability", "p2a", self.unknown, None, None, "Intimidate"),
+            ("status", "p2a", self.unknown, None, None, "par"),
+            ("move", "p1b", "Whimsicott", None, "Dazzling Gleam", None),
+            ("fieldstart", "p1b", "Whimsicott", None, None, "move: Trick Room"),
+            ("switch", "p2a", "Gardevoir", "100/100", None, None),
+        ):
+            with self.subTest(kind=kind, slot=slot):
+                rows = self.trace()
+                rows[3] = frame(4, [event(kind, slot, species, health, move, value)])
+                self.assert_live(rows)
+
+    def test_unparsed_combat_narration_or_banner_prevents_discard(self):
+        for text, top in (("The opposing Caramel used Protect!", .75),
+                          ("The opposing Caramel had its HP restored.", .75),
+                          ("Caramel is paralyzed!", .75), ("Caramel's Intimidate!", .35)):
+            with self.subTest(text=text):
+                rows = self.trace()
+                rows[3]["ocr"].append({"text": text, "left": .7, "top": top, "confidence": .999})
+                self.assert_live(rows)
+
+    def test_explicit_causal_field_target_and_owner_references_keep_the_entry(self):
+        for reference in ("cause", "field_state_seq", "target_slot", "tags"):
+            with self.subTest(reference=reference):
+                class ReferencedEntry(BattleAutomaton):
+                    def _prune_orphaned_states(self):
+                        entry = next(e for e in self.events if e.get("species") == TerminalUnboundEntryTests.unknown)
+                        successor = next(e for e in self.events if e["kind"] == "turn" and e["seq"] > entry["seq"])
+                        successor[reference] = (["[of] p2a: Caramel"] if reference == "tags" else
+                                                "p2a" if reference == "target_slot" else entry["seq"])
+                        super()._prune_orphaned_states()
+
+                ledger = ReferencedEntry(0, self.trace()).run()
+                self.assertNotEqual(self.entry(ledger)["status"], "suppressed")
+                self.assertTrue(any(i["code"] == "unresolved_identity" for i in ledger["issues"]))
+
+    def test_missing_ending_corroboration_samples_or_time_continuity_keep_review(self):
+        for problem in ("no_end", "different_end", "one_read", "weak_read", "missing_sample", "time_gap", "extra_turn"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                if problem == "no_end": rows = rows[:5]
+                elif problem == "different_end":
+                    for n in (5, 6):
+                        rows[n] = frame(n + 1, [event("message", value="You defeated Jack!")] if n == 5 else [],
+                                        ["You defeated Jack!"])
+                elif problem == "one_read": rows[6]["ocr"] = []
+                elif problem == "weak_read": rows[6]["ocr"][0]["confidence"] = .8
+                elif problem == "missing_sample": rows.pop(4)
+                elif problem == "time_gap": rows[4]["timestamp_ms"] += 2_000
+                elif problem == "extra_turn": rows[3] = frame(4, [event("turn", turn=3)])
+                self.assert_live(rows)
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_5FF8"), "diagnóstico opcional 5ff8")
+    def test_real_forfeit_exports_without_inventing_the_unused_species(self):
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_5FF8"])
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            trace_bytes = archive.read("output/ocr.trace.jsonl")
+            original = json.loads(archive.read("output/ledger-battle-001.json"))
+            job = json.loads(archive.read("job.json"))
+            root = Path(directory); trace = root / "ocr.trace.jsonl"
+            trace.write_bytes(trace_bytes)
+            docs = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(trace.read_bytes(), trace_bytes)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual((docs[0].p1, docs[0].p2), ("Roku", "dedoded0"))
+            self.assertTrue(docs[0].log.endswith("|win|Roku"))
+            self.assertNotIn(self.unknown, docs[0].log)
+            self.assertNotIn("MissingNo", docs[0].log)
+            ledger = json.loads((root / "output/ledger-battle-001.json").read_text())
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((ledger["issues"], report["blocked_battles"]), ([], 0))
+            self.assertEqual(ledger["actors"], original["actors"])
+            self.assertEqual(len(ledger["events"]), len(original["events"]))
+            self.assertEqual([(a["seq"], a["status"], b["status"]) for a, b in zip(original["events"], ledger["events"])
+                              if a["status"] != b["status"]], [(20, "consistent", "suppressed")])
+            self.assertEqual(ledger["events"][-1], original["events"][-1])
+            self.assertEqual(self.entry(ledger)["resolution"]["terminal_event_seq"], 22)
+
+
 if __name__ == "__main__":
     unittest.main()
