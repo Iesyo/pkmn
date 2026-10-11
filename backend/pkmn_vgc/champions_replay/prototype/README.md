@@ -194,6 +194,14 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    su texto crudo y referencias al último inicio/cierre, aunque tenga confianza
    alta o no haya dos lecturas repetidas. Otro inicio permite otro cierre;
    un inicio provisional conserva su incertidumbre vinculada.
+   Una acción acreditada por el catálogo abre una sola vez el mismo episodio
+   de bando/efecto. Una lectura posterior del mismo inicio se descarta por
+   identidad causal, incluso si el primer texto estaba dividido o no existen
+   dos lecturas completas anteriores. Exige muestras continuas y ausencia
+   de otra acción, cierre o cambio; texto incompatible o de otro bando mantiene
+   la duda. Otro lanzamiento o una nueva capa de hazards conserva su propia
+   causa. La evidencia y la apertura original quedan auditadas; el generador
+   sigue rechazando transiciones sin causa acreditada.
 9. Compara la secuencia de eventos principales y episodios de PS con los
    replays archivados de los tres jobs. Los desacuerdos se informan; un replay
    archivado puede contener una entrada espuria por Ilusión o por un ID
