@@ -163,6 +163,19 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    máximo distinto o prueba incompleta conservan la duda. El fragmento y
    la falsa curación quedan auditados en una observación `suppressed`;
    los PS del actor permanecen en el valor confirmado.
+   Una errata de un carácter en la palabra «opposing» no confirma que el
+   debilitamiento pertenezca al lado propio. Se interpreta únicamente en
+   el episodio local: mismo sujeto literal, un debilitamiento rival ya
+   confirmado, daño medido a cero y dos anuncios limpios repetidos, sin
+   nueva acción ni huecos entre el daño y todos los anuncios. Si el parser
+   vinculó la lectura a otro actor, este conserva PS previos positivos
+   confirmados y una acción o lectura positiva posterior que demuestra que
+   continúa vivo, sin reentrada ni Revival Blessing. Un mote
+   propio conocido con ese texto, otro sujeto, una segunda transición,
+   daño sin confirmar o prueba incompleta mantienen la duda. No se cambia
+   el OCR ni se crean alias globales; la lectura provisional queda
+   `suppressed` con `resolution.ownership_prefix` y el anuncio real se
+   exporta una sola vez.
 8. Al cerrar el autómata, poda los componentes provisionales sin vínculos
    con la secuencia viva. Los vínculos son actores persistentes, dependencias
    causales, estados de campo/bando, turnos estructurales e hipótesis de
