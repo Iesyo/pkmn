@@ -549,5 +549,142 @@ class TerminalUnboundEntryTests(unittest.TestCase):
             self.assertEqual(self.entry(ledger)["resolution"]["terminal_event_seq"], 22)
 
 
+class FaintOwnershipContinuityTests(unittest.TestCase):
+    def trace(self, prefix="oppesing", confidence=.99247, nickname="Incineroar"):
+        bad = f"The {prefix} {nickname} fainted!"
+        clean = f"The opposing {nickname} fainted!"
+        rows = [frame(n) for n in range(1, 9)]
+        rows[0] = frame(1, [event("switch", "p1a", "Kommo-o", "56/182"),
+                             event("switch", "p2b", "Incineroar", "100/100"), event("turn", turn=1)])
+        rows[1] = frame(2, [event("move", "p1a", "Kommo-o", move="Aura Sphere")])
+        rows[2] = frame(3, [event("damage", "p2b", "Incineroar", "0/100")])
+        rows[3] = frame(4, [{**event("faint", "p1a", "Kommo-o"), "confidence": confidence}], [bad])
+        rows[3]["ocr"][0]["confidence"] = confidence
+        rows[4] = frame(5, [event("faint", "p2b", "Incineroar")], [clean])
+        rows[5] = frame(6, texts=[clean])
+        rows[6] = frame(7, [event("move", "p1a", "Kommo-o", move="Protect")])
+        for row in rows:
+            for line in row["ocr"]:
+                if line["text"].endswith("fainted!"): line["left"] = .15
+            if nickname != "Incineroar": row["resolved_aliases"]["p2"][nickname.casefold()] = "Incineroar"
+        return rows
+
+    def bad(self, ledger):
+        return next(e for e in ledger["events"] if e["kind"] == "faint" and e.get("slot") == "p1a")
+
+    def test_ownership_spelling_variants_fold_into_one_confirmed_episode(self):
+        for prefix in ("oppesing", "oppasing", "opposlng", "oposing", "oppossing"):
+            for confidence in (.99247, 1.0):
+                with self.subTest(prefix=prefix, confidence=confidence):
+                    ledger = BattleAutomaton(0, self.trace(prefix, confidence)).run()
+                    rejected = self.bad(ledger)
+                    self.assertEqual((rejected["status"], ledger["issues"]), ("suppressed", []))
+                    prefix_proof = rejected["resolution"]["ownership_prefix"]
+                    self.assertEqual(prefix_proof["raw_prefix"], "The " + prefix)
+                    self.assertEqual(prefix_proof["confirmed_side"], "p2")
+                    self.assertEqual([e["slot"] for e in ledger["events"] if e["kind"] == "faint" and
+                                      e["status"] == "consistent"], ["p2b"])
+                    own = ledger["actors"][rejected["actor_id"]]
+                    self.assertEqual((own["health"], own["fainted"]), ("56/182", False))
+
+    def test_nickname_body_is_literal_and_no_global_alias_is_created(self):
+        rows = self.trace(nickname="Toro")
+        automaton = BattleAutomaton(0, rows)
+        before = {side: dict(names) for side, names in automaton.nickname_species.items()}
+        ledger = automaton.run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(self.bad(ledger)["resolution"]["ownership_prefix"]["subject"], "toro")
+        self.assertEqual(automaton.nickname_species, before)
+        self.assertNotIn("the oppesing toro", automaton.nickname_species["p1"])
+
+    def test_incomplete_contradictory_or_interrupted_proof_keeps_the_faint_pending(self):
+        for problem in ("different_subject", "two_prefix_errors", "positive_target_hp", "weak_zero",
+                        "dead_wrong_actor", "unknown_wrong_hp", "one_anchor", "weak_anchor",
+                        "different_anchor_name", "missing_sample", "time_gap", "new_action", "raw_action",
+                        "replacement", "new_turn", "other_faint", "stale_zero", "no_live_continuation", "revival"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                clean = "The opposing Incineroar fainted!"
+                if problem == "different_subject": rows[3]["ocr"][0]["text"] = "The oppesing Pelipper fainted!"
+                elif problem == "two_prefix_errors": rows[3]["ocr"][0]["text"] = "The appesing Incineroar fainted!"
+                elif problem == "positive_target_hp": rows[2] = frame(3, [event("damage", "p2b", "Incineroar", "40/100")])
+                elif problem == "weak_zero": rows[2]["ocr"][0]["confidence"] = .6
+                elif problem == "dead_wrong_actor": rows[0]["detections"]["events"][0]["health"] = "0/182"; rows[0]["ocr"][0]["text"] = "0/182"
+                elif problem == "unknown_wrong_hp": rows[0]["detections"]["events"][0]["health"] = None; rows[0]["ocr"].pop(0)
+                elif problem == "one_anchor": rows[5]["ocr"] = []
+                elif problem == "weak_anchor": rows[5]["ocr"][0]["confidence"] = .8
+                elif problem == "different_anchor_name":
+                    rows[5]["ocr"][0]["text"] = "The opposing Tiger fainted!"
+                    for row in rows: row["resolved_aliases"]["p2"]["tiger"] = "Incineroar"
+                elif problem == "missing_sample":
+                    rows[5] = frame(6)
+                    rows[6] = frame(7, texts=[clean]); rows[6]["ocr"][0]["left"] = .15
+                    rows.pop(5)
+                elif problem == "time_gap": rows[5]["timestamp_ms"] += 2_000
+                elif problem == "new_action": rows[5]["detections"]["events"].append(event("move", "p1a", "Kommo-o", move="Protect"))
+                elif problem == "raw_action": rows[5]["ocr"].append({"text": "Kommo-o used Protect!", "left": .15, "top": .75, "confidence": .999})
+                elif problem == "replacement": rows[5]["detections"]["events"].append(event("switch", "p1a", "Gardevoir", "161/161"))
+                elif problem == "new_turn": rows[5]["detections"]["events"].append(event("turn", turn=2))
+                elif problem == "other_faint": rows[5]["detections"]["events"].append(event("faint", "p1a", "Kommo-o"))
+                elif problem == "no_live_continuation": rows[6] = frame(7)
+                elif problem == "revival":
+                    rows[0]["detections"]["events"].append(event("switch", "p1b", "Pawmot", "150/150"))
+                    rows[6] = frame(7, [event("move", "p1b", "Pawmot", move="Revival Blessing")])
+                    rows[7] = frame(8, [event("move", "p1a", "Kommo-o", move="Protect")])
+                elif problem == "stale_zero":
+                    rows = rows[:3] + [frame(n) for n in range(4, 20)] + [
+                        frame(20, [event("faint", "p1a", "Kommo-o")], ["The oppesing Incineroar fainted!"]),
+                        frame(21, [event("faint", "p2b", "Incineroar")], [clean]), frame(22, texts=[clean])]
+                    for row in rows[19:]: row["ocr"][0]["left"] = .15
+                for row in rows:
+                    for observed in row["detections"]["events"]:
+                        observed["timestamp_ms"] = row["timestamp_ms"]
+                        observed["source_frame"] = row["frame"]
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertNotEqual(self.bad(ledger)["status"], "suppressed")
+                self.assertTrue(any(i["code"] == "faint_text_unconfirmed" for i in ledger["issues"]))
+
+    def test_a_known_own_nickname_is_not_reinterpreted_as_ownership(self):
+        rows = self.trace()
+        for row in rows: row["resolved_aliases"]["p1"]["the oppesing incineroar"] = "Kommo-o"
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertNotEqual(self.bad(ledger)["status"], "suppressed")
+        self.assertNotIn("ownership_prefix", self.bad(ledger).get("resolution", {}))
+
+    def test_weak_prefix_and_subject_errors_keep_the_existing_continuity_route(self):
+        rows = self.trace(confidence=.91126)
+        rows[3]["ocr"][0]["text"] = "The opposng Incneroar fainted!"
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(self.bad(ledger)["status"], "suppressed")
+        self.assertNotIn("ownership_prefix", self.bad(ledger)["resolution"])
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_B8CC"), "diagnóstico opcional b8cc")
+    def test_real_opposing_typo_is_pruned_before_production_export(self):
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_B8CC"])
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            raw = archive.read("output/ocr.trace.jsonl")
+            original = json.loads(archive.read("output/ledger-battle-001.json"))
+            job = json.loads(archive.read("job.json"))
+            root = Path(directory); trace = root / "ocr.trace.jsonl"; trace.write_bytes(raw)
+            docs = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(trace.read_bytes(), raw)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual((docs[0].p1, docs[0].p2), ("Roku", "Calo"))
+            self.assertTrue(docs[0].log.endswith("|win|Roku"))
+            ledger = json.loads((root / "output/ledger-battle-001.json").read_text())
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((ledger["issues"], report["blocked_battles"]), ([], 0))
+            self.assertEqual(ledger["actors"], original["actors"])
+            self.assertEqual(len(ledger["events"]), 81)
+            self.assertEqual([(a["seq"], a["status"], b["status"]) for a, b in zip(original["events"], ledger["events"])
+                              if a != b], [(68, "review", "suppressed")])
+            self.assertEqual(ledger["events"][67]["resolution"]["event_seq"], 69)
+            self.assertEqual(ledger["events"][67]["resolution"]["ownership_prefix"]["subject"], "incineroar")
+            self.assertEqual(docs[0].log.count("|faint|p2b: Incineroar"), 1)
+            self.assertNotIn("|faint|p1a: Kommo-o", docs[0].log)
+
+
 if __name__ == "__main__":
     unittest.main()
