@@ -686,5 +686,90 @@ class FaintOwnershipContinuityTests(unittest.TestCase):
             self.assertNotIn("|faint|p1a: Kommo-o", docs[0].log)
 
 
+class SideOpeningCauseTests(unittest.TestCase):
+    def trace(self, move="Tailwind", side="p1"):
+        rows = [frame(n) for n in range(1, 9)]
+        rows[0] = frame(1, [event("switch", "p1a", "Whimsicott", "167/167"),
+                             event("switch", "p2a", "Pelipper", "100/100"), event("turn", turn=1)])
+        rows[1] = frame(2, [event("move", "p1a", "Whimsicott", move=move)])
+        rows[3] = frame(4, [event("sidestart", side + "a", value="move: " + move)])
+        rows[3]["ocr"] = [{"text": "A tailwind started blowing", "confidence": .99389, "left": .15, "top": .73},
+                          {"text": "our side!", "confidence": .97985, "left": .41, "top": .732}]
+        rows[4] = frame(5, [event("sidestart", side + "a", value="move: " + move)])
+        rows[4]["ocr"] = [{"text": "A tailwind started blowing on your side!", "confidence": .99594, "left": .15, "top": .73}]
+        rows[5] = frame(6)
+        if move != "Tailwind":
+            for row in (rows[3], rows[4]):
+                for part in row["ocr"]:
+                    part["text"] = part["text"].replace("tailwind", move.casefold())
+                    if side == "p2": part["text"] = part["text"].replace("our side", "the opposing side").replace("your side", "the opposing side")
+        return rows
+
+    def test_split_captions_cannot_open_one_credited_effect_twice(self):
+        for move, side in (("Tailwind", "p1"), ("Reflect", "p1"), ("Spikes", "p2")):
+            with self.subTest(move=move):
+                ledger = BattleAutomaton(0, self.trace(move, side)).run()
+                starts = [e for e in ledger["events"] if e["kind"] == "sidestart"]
+                self.assertEqual([e["status"] for e in starts], ["consistent", "suppressed"])
+                self.assertEqual(starts[1]["resolution"]["cause_seq"], 4)
+                self.assertEqual(ledger["issues"], [])
+
+    def test_distinct_casts_and_hazard_layers_keep_distinct_causes(self):
+        for move, side in (("Tailwind", "p1"), ("Spikes", "p2")):
+            with self.subTest(move=move):
+                rows = self.trace(move, side)
+                rows[4] = frame(5, [event("move", "p1a", "Whimsicott", move=move),
+                                     event("sidestart", side + "a", value="move: " + move)])
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sidestart"],
+                                 ["consistent", "consistent"])
+
+    def test_pending_opening_gap_hidden_action_and_opposite_side_do_not_merge(self):
+        for problem in ("gap", "raw_action", "opposite_caption", "pending_opening"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                if problem == "gap": rows[4]["timestamp_ms"] += 2_000
+                elif problem == "raw_action": rows[4]["ocr"].append({"text": "Unknown used Tailwind!", "left": .15, "top": .75, "confidence": .999})
+                elif problem == "opposite_caption": rows[4]["ocr"][0]["text"] = "A tailwind started blowing on the opposing side!"
+                class PendingOpening(BattleAutomaton):
+                    def _reconcile_side_condition_readings(self):
+                        if problem == "pending_opening":
+                            start = next(e for e in self.events if e["kind"] == "sidestart")
+                            start["status"] = "review"
+                            self._issue("side_transition", "Inicio pendiente.", start["frame"], start["seq"])
+                        super()._reconcile_side_condition_readings()
+                ledger = PendingOpening(0, rows).run()
+                starts = [e for e in ledger["events"] if e["kind"] == "sidestart"]
+                self.assertNotEqual(starts[-1]["status"], "suppressed")
+                if problem == "pending_opening": self.assertTrue(any(i["code"] == "side_transition" for i in ledger["issues"]))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_2B84"), "diagnóstico opcional 2b84")
+    def test_clean_ledger_and_generator_export_the_same_archived_ocr(self):
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_2B84"])
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            raw = archive.read("output/ocr.trace.jsonl")
+            original = json.loads(archive.read("output/ledger-battle-001.json"))
+            job = json.loads(archive.read("job.json"))
+            root = Path(directory); trace = root / "ocr.trace.jsonl"; trace.write_bytes(raw)
+            self.assertEqual(original["issues"], [])
+            docs = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(trace.read_bytes(), raw)
+            self.assertEqual(len(docs), 1)
+            self.assertEqual((docs[0].p1, docs[0].p2), ("Roku", "AitorVaz95"))
+            self.assertTrue(docs[0].log.endswith("|win|AitorVaz95"))
+            ledger = json.loads((root / "output/ledger-battle-001.json").read_text())
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((ledger["issues"], report["blocked_battles"]), ([], 0))
+            self.assertEqual(ledger["actors"], original["actors"])
+            self.assertEqual(len(ledger["events"]), 126)
+            self.assertEqual([(a["seq"], a["status"], b["status"]) for a, b in zip(original["events"], ledger["events"])
+                              if a["status"] != b["status"]], [(31, "consistent", "suppressed")])
+            self.assertEqual(ledger["events"][30]["resolution"]["event_seq"], 30)
+            self.assertEqual(ledger["events"][30]["resolution"]["cause_seq"], 29)
+            self.assertEqual(docs[0].log.count("|-sidestart|p1:"), 1)
+            self.assertEqual(docs[0].log.count("|-sideend|p1:"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
