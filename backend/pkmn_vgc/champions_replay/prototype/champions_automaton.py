@@ -6609,6 +6609,10 @@ class BattleAutomaton:
                     if len({p["frame"] for p in anchors}) >= 2 and not interrupted:
                         options[accepted["seq"]] = (accepted, accepted["evidence"] + anchors)
             if len(options) != 1:
+                if not issue["event_seq"] and options:
+                    # These are live alternatives, not an isolated reading.
+                    bad["candidate_event_seqs"] = sorted(set(
+                        list(bad.get("candidate_event_seqs", ())) + list(options)))
                 unresolved.append(issue)
                 continue
             seq, (accepted, proof) = next(iter(options.items()))
@@ -7040,6 +7044,132 @@ class BattleAutomaton:
                                                              {"transition": "same_episode", "status": "surviving"}],
                                               "cause_seq": cause, "evidence": evidence})
 
+    def _prune_orphaned_states(self) -> None:
+        """Close the live state graph before exposing blocking diagnostics.
+
+        Rejected nodes never re-enter through their old issues. Provisional
+        components need an actor, a causal dependency, a structural turn or
+        a surviving observed transition to connect to the battle. Merely
+        repeating an isolated reading does not make it a live branch.
+        Preserve raw nodes and discarded issues for audit, without selecting
+        an alternative or changing any confirmed battle state.
+        """
+        nodes = {item["seq"]: item for item in self.events}
+        edges: dict[int, set[int]] = collections.defaultdict(set)
+        roots = {seq for seq, item in nodes.items() if item["status"] == "consistent"}
+        actor_nodes: dict[str, list[int]] = collections.defaultdict(list)
+        field_nodes: dict[tuple[str, str], list[int]] = collections.defaultdict(list)
+        for seq, item in nodes.items():
+            if item["status"] == "suppressed":
+                continue
+            if item.get("actor_id"):
+                actor_nodes[item["actor_id"]].append(seq)
+            if item["kind"] in {"fieldstart", "fieldend", "sidestart", "sideend"}:
+                effect = str(item.get("value") or "").removeprefix("move: ").casefold()
+                side = str(item.get("slot") or "")[:2] if item["kind"].startswith("side") else ""
+                if effect:
+                    field_nodes[side, effect].append(seq)
+            # Turn markers constrain the ordering of the entire stream;
+            # the final turn and terminal states need no outgoing action.
+            if item["kind"] == "turn":
+                roots.add(seq)
+            for dependency in (item.get("cause"), item.get("field_state_seq")):
+                if (isinstance(dependency, int) and dependency in nodes and
+                    nodes[dependency]["status"] != "suppressed"):
+                    edges[seq].add(dependency)
+                    edges[dependency].add(seq)
+            # A source tag is a dependency even when the recipient is still
+            # unbound (for example Knock Off after the victim's faint).
+            source_tags = [match for tag in item.get("tags", ()) if
+                           (match := re.fullmatch(r"\[from\] (move|ability): (.+)", tag))]
+            owner_tags = [match for tag in item.get("tags", ()) if
+                          (match := re.fullmatch(r"\[of\] (p[12][ab]): (.+)", tag))]
+            for tag in source_tags:
+                source = next((previous for previous in reversed(self.events[:seq - 1]) if
+                               previous["status"] != "suppressed" and previous["kind"] == tag[1]), None)
+                if (source and source.get("turn") == item.get("turn") and
+                    str(source.get("move") if tag[1] == "move" else source.get("value")).casefold() == tag[2].casefold() and
+                    all(source.get("slot") == owner[1] and
+                        identity_species(str(source.get("species") or "")).casefold() ==
+                        identity_species(owner[2]).casefold() for owner in owner_tags)):
+                    edges[seq].add(source["seq"])
+                    edges[source["seq"]].add(seq)
+            # An explicit observed action/entry is an unresolved constraint
+            # on the battle even if its parser has not placed the actor yet.
+            if item["status"] == "review" and any(
+                ANNOUNCED_ENTRY.search(text) or RAW_ACTION.search(text) or
+                narration_signature(text) or
+                MEGA_NARRATION.fullmatch(text) or KNOCK_OFF_NARRATION.fullmatch(text) or
+                re.fullmatch(r".+?, come back!", text, re.I)
+                for text in [str(item.get("value") or "")] +
+                [str(proof.get("text") or "") for proof in item.get("evidence", ())]):
+                roots.add(seq)
+        for sequences in actor_nodes.values():
+            for left, right in zip(sequences, sequences[1:]):
+                edges[left].add(right)
+                edges[right].add(left)
+        for sequences in field_nodes.values():
+            for left, right in zip(sequences, sequences[1:]):
+                edges[left].add(right)
+                edges[right].add(left)
+        for decision in self.continuity_decisions:
+            if any(h.get("status") == "surviving" for h in decision.get("hypotheses", ())):
+                roots.update(seq for seq, item in nodes.items() if item["frame"] == decision["frame"] and
+                             item["status"] != "suppressed")
+        live, pending = set(roots), list(roots)
+        while pending:
+            for neighbor in edges[pending.pop()] - live:
+                live.add(neighbor)
+                pending.append(neighbor)
+        reason = "Estado sin vínculo con una rama viva; descartado al cerrar el autómata."
+        resolutions = {}
+        for seq, item in nodes.items():
+            if item["status"] != "suppressed" and seq not in live:
+                resolution = {"state": "resolved", "from": item["status"], "to": "discarded",
+                              "orphaned": True,
+                              "reason": reason, "event_seq": seq,
+                              "live_event_seqs": [], "evidence": item.get("evidence", [])}
+                item.update(status="suppressed", resolution=resolution, note=reason)
+                resolutions[seq] = resolution
+        live_actors = {nodes[seq].get("actor_id") for seq in live} - {None}
+        referenced = {item.get("cause") for item in nodes.values() if item["status"] != "suppressed" and
+                      isinstance(item.get("cause"), int)}
+        link_resolutions = {}
+        for link in self.narration_links:
+            if link["status"] not in {"unmatched", "ambiguous"}:
+                continue
+            dependencies = set(link.get("candidate_event_seqs", ())) & live
+            if link.get("actor_id") in live_actors or dependencies:
+                continue
+            resolution = {"state": "resolved", "from": link["status"], "to": "discarded",
+                          "orphaned": True,
+                          "reason": reason, "live_event_seqs": [],
+                          "evidence": [{"frame": link["frame"], "text": link["text"],
+                                        "confidence": link.get("confidence")}]}
+            link.update(status="discarded", resolution=resolution)
+            link_resolutions[link["frame"]] = resolution
+        unresolved = []
+        for issue in self.issues:
+            seq = issue.get("event_seq")
+            item = nodes.get(seq)
+            resolution = resolutions.get(seq)
+            if issue["code"] == "unresolved_identity" and item and item.get("actor_id") in live_actors:
+                first = next(nodes[n] for n in sorted(live) if nodes[n].get("actor_id") == item["actor_id"])
+                unresolved.append({**issue, "frame": first["frame"], "event_seq": first["seq"]})
+                continue
+            if item and item["status"] == "suppressed" and seq not in referenced:
+                resolution = resolution or {"state": "resolved", "to": "discarded",
+                                            "orphaned": True,
+                                            "reason": "El estado ya está descartado y no forma parte de la secuencia viva.",
+                                            "event_seq": seq, "evidence": item.get("evidence", [])}
+            if seq is None and issue["code"].startswith("hp_narration_"):
+                resolution = link_resolutions.get(issue["frame"])
+            if resolution:
+                self.resolved_issues.append({**issue, "resolution": resolution})
+            else:
+                unresolved.append(issue)
+        self.issues = unresolved
+
     def run(self) -> dict[str, Any]:
         candidates = self._recover_delayed_terrain_heals(ordered_candidates(self.frames, self.alias_reconstructions))
         candidates = self._recover_withdrawn_entries(candidates)
@@ -7085,6 +7215,7 @@ class BattleAutomaton:
         self._reconcile_delayed_damage_endpoint()
         self._reconcile_own_terrain_heal_endpoint()
         self._reconcile_side_condition_readings()
+        self._prune_orphaned_states()
         counts = collections.Counter(item["kind"] for item in self.events if item["status"] != "suppressed")
         return {"battle_index": self.battle_index, "first_frame": self.frames[0]["frame"],
                 "last_frame": self.frames[-1]["frame"], "candidate_events": sum(
@@ -7246,7 +7377,7 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
     links = ledger.get("narration_links", [])
     if links:
         linked = sum(link["status"] == "linked" for link in links)
-        superseded = sum(link["status"] == "superseded" for link in links)
+        superseded = sum(link["status"] in {"superseded", "discarded"} for link in links)
         lines += [f"Mensajes de PS asociados a un cambio: {linked}/{len(links)}; "
                   f"{len(links) - linked - superseded} sin asociar." +
                   (f" {superseded} lectura(s) provisional(es) descartada(s) con evidencia." if superseded else ""), ""]
@@ -7358,7 +7489,7 @@ def render_markdown(ledger: dict[str, Any], comparison: dict[str, Any] | None) -
     else:
         lines += ["- Ninguno."]
     for link in links:
-        if link["status"] not in {"linked", "superseded"}:
+        if link["status"] not in {"linked", "superseded", "discarded"}:
             lines += [f"- Mensaje sin asociar, fotograma {link['frame']}: «{link['text']}»; "
                       f"{link['reason']}"]
     if ledger.get("continuity_decisions"):
