@@ -100,12 +100,18 @@ class LedgerEquivalenceTests(unittest.TestCase):
         self.assertEqual(_critical_targets(events), {})
 
     def test_fainted_actor_cannot_return_through_a_forced_switch(self):
-        with self.assertRaises(CaptureIncompleteError):
-            self.replay([self.opening(),
-                         [event("damage", slot="p2a", species="Garchomp", health="0/100")],
-                         [event("faint", slot="p2a", species="Garchomp")],
-                         [event("drag", slot="p2a", species="Charizard", health="100/100")],
-                         [event("drag", slot="p2a", species="Garchomp", health="100/100")]])
+        lines, ledger = self.replay([self.opening(),
+                                    [event("damage", slot="p2a", species="Garchomp", health="0/100")],
+                                    [event("faint", slot="p2a", species="Garchomp")],
+                                    [event("drag", slot="p2a", species="Charizard", health="100/100")],
+                                    [event("drag", slot="p2a", species="Garchomp", health="100/100")]])
+        self.assertIn("|faint|p2a: Garchomp", lines)
+        self.assertFalse(any(line.startswith("|drag|p2a: Garchomp|") for line in lines))
+        discarded = next(e for e in ledger["events"] if e["kind"] == "drag" and e["species"] == "Garchomp")
+        self.assertEqual(discarded["status"], "suppressed")
+        self.assertTrue(ledger["actors"][discarded["actor_id"]]["fainted"])
+        self.assertEqual(ledger["issues"], [])
+        self.assertTrue(any(i["resolution"].get("orphaned") for i in ledger["resolved_issues"]))
 
     def test_narrated_critical_is_attributed_only_with_one_target(self):
         for spread in (False, True):
