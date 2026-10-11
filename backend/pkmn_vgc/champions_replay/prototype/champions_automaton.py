@@ -7081,8 +7081,8 @@ class BattleAutomaton:
         """One causal action opens one side-effect episode, not one per OCR read.
 
         A fresh cast is a different cause, including moves that add layers.
-        Ends close the episode; repeated starts/ends require the same bounded,
-        corroborated narration. Conditions remain attached to the side even
+        Starts are idempotent for one cause across continuous samples; ends
+        require corroborated narration. Conditions remain attached to the side even
         when their detector label refers to the other active slot.
         """
         active: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
@@ -7122,6 +7122,56 @@ class BattleAutomaton:
                    for part in row.get("ocr", ()) if part.get("top", 0) >= .55):
                 return []
             return originals + [final]
+
+        def same_opening(original: dict[str, Any], current: dict[str, Any],
+                         source: dict[str, Any]) -> list[dict[str, Any]]:
+            """One credited action cannot open the same episode twice.
+
+            Literal OCR repetition is sufficient, but not necessary: a
+            caption can be split or incomplete. A continuous causal span
+            with no second action establishes idempotence of this opening.
+            Fresh casts (including hazard layers) keep their own causes.
+            """
+            first, last = original["frame"], current["frame"]
+            if original["turn"] != current["turn"] or not 0 <= last - first <= 10:
+                return []
+            rows = [self.frame_lookup.get(n) for n in range(first, last + 1)]
+            if any(row is None for row in rows) or any(
+                    not 0 < b["timestamp_ms"] - a["timestamp_ms"] <= 1_000 for a, b in zip(rows, rows[1:])):
+                return []
+            barriers = ACTIVITY | {"turn", "faint", "mega", "battle_end", "sideend"}
+            if any(e is not original and e is not current and e["status"] != "suppressed" and
+                   e["kind"] in barriers and original["seq"] < e["seq"] <= current["seq"] for e in self.events):
+                return []
+            if any(e["kind"] in barriers for row in rows[1:]
+                   for e in (row.get("detections") or {}).get("events", ())):
+                return []
+            if any(RAW_ACTION.search(part.get("text", "")) or
+                   ANNOUNCED_ENTRY.search(part.get("text", "")) or
+                   re.search(r"\b(come back|went back|withdrew)\b", part.get("text", ""), re.I)
+                   for row in rows for part in row.get("ocr", ())
+                   if part.get("top", 0) >= .55):
+                return []
+            captions = [" ".join(part["text"] for part in sorted(row.get("ocr", ()),
+                        key=lambda part: (part.get("top", 0), part.get("left", 0)))
+                        if in_area(part, BATTLE_TEXT_AREAS["narration"]) and
+                        part.get("confidence", 0) >= .9 and len(part.get("text", "")) >= 2)
+                        for row in (rows[0], rows[-1])]
+            normalize = lambda value: re.sub(r"\W+", "", value.casefold())
+            if all(captions) and difflib.SequenceMatcher(a=normalize(captions[0]),
+                                                        b=normalize(captions[1])).ratio() < .9:
+                return []
+            side = str(current["slot"])[:2]
+            if any((side == "p1" and re.search(r"\bopposing (?:side|team)\b", caption, re.I)) or
+                   (side == "p2" and re.search(r"\b(?:your|our) (?:side|team)\b", caption, re.I))
+                   for caption in captions):
+                return []
+            return [{"kind": "same_causal_opening", "frame": current["frame"],
+                     "cause_seq": source["seq"], "first_start_seq": original["seq"],
+                     "side": str(current["slot"])[:2], "effect": current["value"],
+                     "checked_frames": [row["frame"] for row in rows]}] + source["evidence"] + [
+                         {"frame": row["frame"], **part} for row in rows for part in row.get("ocr", ())
+                         if in_area(part, BATTLE_TEXT_AREAS["narration"])]
 
         for item in self.events:
             if item.get("status") != "consistent":
@@ -7163,6 +7213,8 @@ class BattleAutomaton:
                 cause = previous[1]
             original = previous[0]
             evidence = repeated(original, item)
+            if not evidence and kind == "sidestart":
+                evidence = same_opening(original, item, source)
             if not evidence:
                 continue
             resolution = {"state": "resolved", "from": "accepted", "to": "discarded",
