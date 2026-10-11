@@ -925,3 +925,6 @@ Siete pruebas de integración usan los cinco, cuatro, tres, dos, dos, dos y dos 
 respectivamente, y comprueban además la traza antigua con un actor anónimo y
 un falso rebote desde cero.
 Sin los ZIP se omiten sólo las pruebas de integración.
+
+
+Las entradas con identidad pendiente necesitan continuidad para bloquear un replay terminado por abandono. Antes de crear raíces del grafo, Ledger aparta únicamente una entrada desconocida que no participa en ninguna acción, daño, habilidad, estado ni efecto antes de un abandono corroborado en dos muestras consecutivas. Conserva la entrada observada, los PS, el actor sin especie y el motivo en el diagnóstico; no asigna una especie del preview ni inventa un participante. Una acción de cualquier actor, una referencia causal o de objetivo, narración de combate sin analizar, una sustitución del mismo slot, muestras ausentes, saltos temporales o un cierre sin corroborar conservan la identidad pendiente. Las entradas de especie conocida y el cierre real mantienen su secuencia. Esta regla se aplica antes de la puerta de exportación, que sigue exigiendo resolver todos los avisos conectados a la batalla.
