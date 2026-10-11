@@ -165,6 +165,13 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    `resolved_issues` con `resolution.orphaned: true`: se conserva la evidencia
    cruda, pero esos avisos no bloquean la exportación. Las dudas vinculadas
    a estados vivos permanecen pendientes.
+   Antes de convertir los eventos consistentes en raíces, comprueba el ciclo
+   de cada condición de bando: un cierre necesita un inicio anterior todavía
+   abierto para ese bando y efecto. Un actor vivo o un cierre anterior no
+   acreditan otra apertura. El cierre sin predecesor abierto se descarta con
+   su texto crudo y referencias al último inicio/cierre, aunque tenga confianza
+   alta o no haya dos lecturas repetidas. Otro inicio permite otro cierre;
+   un inicio provisional conserva su incertidumbre vinculada.
 9. Compara la secuencia de eventos principales y episodios de PS con los
    replays archivados de los tres jobs. Los desacuerdos se informan; un replay
    archivado puede contener una entrada espuria por Ilusión o por un ID
