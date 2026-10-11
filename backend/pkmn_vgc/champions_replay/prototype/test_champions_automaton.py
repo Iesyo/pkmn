@@ -4265,13 +4265,11 @@ class SideConditionContinuityTests(unittest.TestCase):
                 self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sidestart"],
                                  ["consistent", "consistent"])
 
-    def test_missing_evidence_action_gaps_and_unknown_effect_do_not_discard(self):
-        for problem in ("single_text", "weak_text", "different_text", "gap", "missing_frame",
+    def test_causal_gaps_actions_and_conflicting_text_do_not_discard(self):
+        for problem in ("different_text", "gap", "missing_frame",
                         "raw_action", "different_effect", "unknown_move", "wrong_side", "another_action", "turn"):
             with self.subTest(problem=problem):
                 rows = self.trace()
-                if problem == "single_text": rows[4]["ocr"] = []
-                if problem == "weak_text": rows[4]["ocr"][0]["confidence"] = .6
                 if problem == "different_text": rows[5]["ocr"][0]["text"] = "A different effect started blowing somewhere else!"
                 if problem == "gap": rows[4]["timestamp_ms"] = 5000
                 if problem == "missing_frame": rows.pop(4)
@@ -4285,6 +4283,17 @@ class SideConditionContinuityTests(unittest.TestCase):
                 ledger = BattleAutomaton(0, rows).run()
                 self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sidestart"],
                                  ["consistent", "consistent"])
+
+    def test_one_credited_cause_does_not_need_two_prior_complete_captions(self):
+        for problem in ("single_text", "weak_text"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                if problem == "single_text": rows[4]["ocr"] = []
+                else: rows[4]["ocr"][0]["confidence"] = .6
+                ledger = BattleAutomaton(0, rows).run()
+                starts = [e for e in ledger["events"] if e["kind"] == "sidestart"]
+                self.assertEqual([e["status"] for e in starts], ["consistent", "suppressed"])
+                self.assertTrue(any(p.get("kind") == "same_causal_opening" for p in starts[1]["resolution"]["evidence"]))
 
     def test_repeated_end_closes_only_one_confirmed_episode(self):
         rows = self.trace()
