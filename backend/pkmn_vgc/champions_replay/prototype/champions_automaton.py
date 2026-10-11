@@ -2756,6 +2756,72 @@ class BattleAutomaton:
         return {"state": "confirmed", "reason": "PS completos repetidos antes del fragmento OCR",
                 "evidence": list(reversed(evidence))}
 
+    def _clipped_own_hp_rebound(self, episode: HpEpisode, restored: dict[str, Any],
+                               stable: str | None) -> dict[str, Any] | None:
+        """Reject one clipped numerator between repeated, unchanged own HUDs.
+
+        The actor alone cannot disprove a loss/heal. Require the same named
+        occupant, two literal readings on each side, a cropped bounding box
+        and no intervening action or HP narration in the archived frames.
+        """
+        slot = episode.slot
+        if (not slot or not slot.startswith("p1") or not stable or not episode.actor_id or
+            len(episode.candidates) != 1 or episode.kind != "damage" or
+            restored["event"].get("health") != stable):
+            return None
+        suspect = episode.candidates[0]
+        health = suspect["event"].get("health")
+        if (not health or not re.fullmatch(r"\d+/[1-9]\d*", stable) or health == stable or
+            not stable.endswith(health) or not re.fullmatch(r"\d+/[1-9]\d*", health) or
+            int(health.split("/", 1)[0]) == 0):
+            return None
+        number = suspect["observed_frame"]
+        if restored["observed_frame"] != number + 1:
+            return None
+        rows = [self.frame_lookup.get(n) for n in range(number - 2, number + 3)]
+        if (any(row is None for row in rows) or
+            any(not 0 < b["timestamp_ms"] - a["timestamp_ms"] <= 1000 for a, b in zip(rows, rows[1:]))):
+            return None
+        for row in rows[1:]:
+            if any(e["kind"] in ACTIVITY | {"turn", "mega", "faint", "battle_end", "ability", "item", "status"}
+                   for e in row.get("detections", {}).get("events", ())):
+                return None
+            if any(RAW_ACTION.search(line.get("text", "")) or ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                   HP_NARRATION.fullmatch(line.get("text", "").strip()) or
+                   re.search(r"\b(come back|went back|withdrew)\b", line.get("text", ""), re.I)
+                   for line in row.get("ocr", ()) if line.get("top", 0) >= .55):
+                return None
+        actor = self.actors[episode.actor_id]
+        names = [hud_nickname(row, slot) for row in rows]
+        if (not names[0] or any(name != names[0] for name in names) or
+            identity_species(self.nickname_species[slot[:2]].get(names[0], names[0])).casefold() !=
+            identity_species(actor["species"]).casefold()):
+            return None
+        full = []
+        for row in rows[:2] + rows[3:]:
+            readings = complete_hud_health(row, slot)
+            if len(readings) != 1 or readings[0][0] != stable or readings[0][1]["confidence"] < .97:
+                return None
+            full.append((row, readings[0][1]))
+        readings = complete_hud_health(rows[2], slot)
+        if len(readings) != 1 or readings[0][0] != health:
+            return None
+        clipped = readings[0][1]
+        if any(not isinstance(line.get(coordinate), (int, float))
+               for line in [clipped] + [line for _, line in full] for coordinate in ("left", "right", "top", "bottom")):
+            return None
+        if any(clipped["left"] - line["left"] < .015 or
+               abs(clipped["right"] - line["right"]) > .015 or
+               abs(clipped["top"] - line["top"]) > .02 or
+               abs(clipped["bottom"] - line["bottom"]) > .02 or
+               clipped["right"] - clipped["left"] >= .85 * (line["right"] - line["left"])
+               for _, line in full):
+            return None
+        evidence = [{"frame": row["frame"], "nickname": names[0], **line} for row, line in full]
+        evidence.append({"frame": number, "nickname": names[0], **clipped})
+        return {"state": "confirmed", "reason": "Numerador recortado entre cuatro HUD completos estables, sin acción ni narración de PS",
+                "original_health": health, "confirmed_health": stable, "evidence": evidence}
+
     def _sliding_hud_hp_fragment(self, episode: HpEpisode, before: str | None,
                                  support: dict[str, Any]) -> dict[str, Any] | None:
         """Reject a shifted HUD's clipped suffix when its name and HP move together.
@@ -3430,9 +3496,12 @@ class BattleAutomaton:
                 if suspect.get("competing_ocr") else None)
             stable_after = (self._hp_support(slot, stable, candidate["observed_frame"])
                             if stable_before else None)
-            confirmed_fragment = bool(stable_after and stable_after["state"] == "confirmed")
+            clipped_rebound = self._clipped_own_hp_rebound(pending, candidate, stable)
+            confirmed_fragment = bool(clipped_rebound or (stable_after and stable_after["state"] == "confirmed"))
             note = "Dos lecturas opuestas antes de la primera acción regresan al PS previo."
-            if confirmed_fragment:
+            if clipped_rebound:
+                note = clipped_rebound["reason"]
+            elif confirmed_fragment:
                 note = (f"El fragmento OCR {conflict['suspect']['text']} contradice "
                         f"{conflict['stronger']['text']} en el mismo HUD; los PS completos "
                         "son estables antes y después, sin acción entre ambas lecturas.")
@@ -3449,7 +3518,11 @@ class BattleAutomaton:
                                               for x in reads])
             item["narration"].extend(pending.narration)
             item["hp_state"] = "rejected"
-            if confirmed_fragment:
+            if clipped_rebound:
+                item["hp_support"] = clipped_rebound
+                item["resolution"] = {**clipped_rebound, "from": "candidate", "to": "discarded",
+                                      "event_seq": item["seq"]}
+            elif confirmed_fragment:
                 item["hp_support"] = {"state": "confirmed",
                                       "reason": "PS completos estables antes y después del fragmento OCR",
                                       "evidence": stable_before["evidence"] + stable_after["evidence"]}
