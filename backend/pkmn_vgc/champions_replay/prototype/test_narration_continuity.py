@@ -231,6 +231,101 @@ class CorrectedBaselineTests(unittest.TestCase):
                               if a["status"] != b["status"]], [(32, "consistent", "suppressed")])
 
 
+class ClippedHpNumeratorTests(unittest.TestCase):
+    def trace(self, slot="p1a", stable="77/167", clipped="7/167", nickname="Whimsicott", confidence=.91207):
+        rows = [frame(n) for n in range(1, 8)]
+        rows[0] = frame(1, [event("switch", slot, "Whimsicott", stable), event("turn", turn=1)])
+        rows[3] = frame(4, [event("damage", slot, "Whimsicott", clipped)])
+        rows[4] = frame(5, [event("heal", slot, "Whimsicott", stable)])
+        rows[6] = frame(7, [event("move", slot, "Whimsicott", move="Protect")])
+        hp_left, name_left = (.14, .075) if slot == "p1a" else (.34, .285)
+        for row in rows[1:6]:
+            short = row["frame"] == 4
+            row["ocr"] = [
+                {"text": nickname, "confidence": .999, "left": name_left, "right": name_left + .05,
+                 "top": .867, "bottom": .905},
+                {"text": clipped if short else stable, "confidence": confidence if short else .999,
+                 "left": hp_left + (.028 if short else 0), "right": hp_left + .075,
+                 "top": .92, "bottom": .98}]
+            row["resolved_aliases"]["p1"][nickname.casefold()] = "Whimsicott"
+        return rows
+
+    def test_clipped_numerator_is_an_observation_on_either_own_slot_at_any_confidence(self):
+        for slot in ("p1a", "p1b"):
+            for stable, short in (("77/167", "7/167"), ("133/167", "33/167")):
+                for confidence in (.91207, 1):
+                    with self.subTest(slot=slot, stable=stable, short=short, confidence=confidence):
+                        ledger = BattleAutomaton(0, self.trace(slot, stable, short, "Yuki", confidence)).run()
+                        self.assertEqual(ledger["issues"], [])
+                        reading = next(e for e in ledger["events"] if e["kind"] == "hp_rejected_reading")
+                        self.assertEqual((reading["status"], reading["before"], reading["after"]),
+                                         ("suppressed", stable, stable))
+                        self.assertEqual(reading["resolution"]["original_health"], short)
+                        self.assertEqual([e["frame"] for e in reading["resolution"]["evidence"]], [2, 3, 5, 6, 4])
+                        self.assertEqual([o["health"] for o in reading["observations"]], [short, stable])
+                        self.assertEqual(ledger["actors"][reading["actor_id"]]["health"], stable)
+                        self.assertFalse(any(e["kind"] in {"damage", "heal"} for e in ledger["events"]))
+
+    def test_without_complete_local_proof_the_oscillation_remains_pending(self):
+        for problem in ("missing_before", "missing_after", "weak_before", "different_after", "different_name",
+                        "gap", "missing_frame", "raw_action", "hp_narration", "not_suffix", "wide_box", "wrong_maximum"):
+            with self.subTest(problem=problem):
+                rows = self.trace()
+                if problem == "missing_before": rows[1]["ocr"] = []
+                if problem == "missing_after": rows[5]["ocr"] = []
+                if problem == "weak_before": rows[1]["ocr"][1]["confidence"] = .96
+                if problem == "different_after": rows[5]["ocr"][1]["text"] = "78/167"
+                if problem == "different_name": rows[5]["ocr"][0]["text"] = "Farigiraf"
+                if problem == "gap": rows[3]["timestamp_ms"] += 1500
+                if problem == "missing_frame": rows.pop(1)
+                if problem == "raw_action": rows[3]["ocr"].append({"text": "Whimsicott used Protect!", "top": .75, "confidence": .999})
+                if problem == "hp_narration": rows[3]["ocr"].append({"text": "Whimsicott had its HP restored.", "top": .75, "confidence": .999})
+                if problem in {"not_suffix", "wrong_maximum"}:
+                    short = "8/167" if problem == "not_suffix" else "7/168"
+                    rows[3]["ocr"][1]["text"] = short
+                    rows[3]["detections"]["events"][0]["health"] = short
+                if problem == "wide_box": rows[3]["ocr"][1]["left"] = .14
+                ledger = BattleAutomaton(0, rows).run()
+                self.assertTrue(any(i["code"] == "hp_oscillation" for i in ledger["issues"]))
+                self.assertFalse(any(e.get("resolution", {}).get("confirmed_health") for e in ledger["events"]))
+
+    def test_a_real_action_between_the_readings_keeps_both_hp_changes(self):
+        rows = self.trace(confidence=1)
+        rows[3]["detections"]["events"].insert(0, event("move", "p1a", "Whimsicott", move="Substitute"))
+        ledger = BattleAutomaton(0, rows).run()
+        changes = [e for e in ledger["events"] if e["kind"] in {"damage", "heal"}]
+        self.assertEqual([(e["before"], e["after"]) for e in changes], [("77/167", "7/167"), ("7/167", "77/167")])
+        self.assertFalse(any(e.get("resolution", {}).get("confirmed_health") for e in ledger["events"]))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_15D9"), "diagnóstico opcional 15d9")
+    def test_real_cropped_hp_exports_from_the_identical_archived_ocr(self):
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_15D9"])
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            trace_bytes = archive.read("output/ocr.trace.jsonl")
+            original = json.loads(archive.read("output/ledger-battle-001.json"))
+            job = json.loads(archive.read("job.json"))
+            root = Path(directory); trace = root / "ocr.trace.jsonl"; trace.write_bytes(trace_bytes)
+            docs = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(hashlib.sha256(trace.read_bytes()).digest(), hashlib.sha256(trace_bytes).digest())
+            self.assertEqual(len(docs), 1)
+            self.assertEqual((docs[0].p1, docs[0].p2), ("Roku", "DecoLipe2"))
+            self.assertTrue(docs[0].log.endswith("|win|Roku"))
+            ledger = json.loads((root / "output/ledger-battle-001.json").read_text())
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((ledger["issues"], report["blocked_battles"]), ([], 0))
+            self.assertEqual(ledger["actors"], original["actors"])
+            self.assertEqual(len(ledger["events"]), len(original["events"]))
+            fields = ("kind", "status", "actor_id", "slot", "species", "move", "value", "before", "after", "cause")
+            changed = [a["seq"] for a, b in zip(original["events"], ledger["events"])
+                       if any(a.get(k) != b.get(k) for k in fields)]
+            self.assertEqual(changed, [48])
+            rejected = ledger["events"][47]
+            self.assertEqual((rejected["kind"], rejected["status"]), ("hp_rejected_reading", "suppressed"))
+            self.assertEqual(rejected["resolution"]["original_health"], "7/167")
+            self.assertNotIn("|7/167", docs[0].log)
+
+
 class SideEpisodeReachabilityTests(unittest.TestCase):
     def trace(self):
         return [frame(1, [event("switch", "p1a", "Whimsicott", "167/167"),
