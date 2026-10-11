@@ -231,5 +231,102 @@ class CorrectedBaselineTests(unittest.TestCase):
                               if a["status"] != b["status"]], [(32, "consistent", "suppressed")])
 
 
+class SideEpisodeReachabilityTests(unittest.TestCase):
+    def trace(self):
+        return [frame(1, [event("switch", "p1a", "Whimsicott", "167/167"),
+                          event("switch", "p1b", "Kingambit", "177/177"),
+                          event("turn", turn=1)]),
+                frame(2, [event("move", "p1a", "Whimsicott", move="Tailwind")]),
+                frame(3, [event("sidestart", "p1a", value="move: Tailwind")]),
+                frame(4, [event("sideend", "p1b", value="move: Tailwind")]),
+                frame(5, [event("sideend", "p1a", value="move: Tailwind")])]
+
+    def test_adjacent_closes_without_repeated_text_cannot_close_twice(self):
+        ledger = BattleAutomaton(0, self.trace()).run()
+        ends = [e for e in ledger["events"] if e["kind"] == "sideend"]
+        self.assertEqual([e["status"] for e in ends], ["consistent", "suppressed"])
+        discarded = ends[1]["resolution"]
+        self.assertTrue(discarded["orphaned"])
+        self.assertEqual(discarded["previous_end_seq"], ends[0]["seq"])
+        self.assertEqual(discarded["raw_event"]["confidence"], 1)
+        self.assertEqual(ledger["counts"]["sideend"], 1)
+        self.assertEqual(ledger["issues"], [])
+
+    def test_an_actor_and_a_later_opening_do_not_revive_an_earlier_close(self):
+        rows = self.trace()
+        rows[1] = frame(2, [event("sideend", "p1a", value="move: Tailwind")])
+        rows[2] = frame(3, [event("move", "p1a", "Whimsicott", move="Tailwind")])
+        rows[3] = frame(4, [event("sidestart", "p1b", value="move: Tailwind")])
+        ledger = BattleAutomaton(0, rows).run()
+        ends = [e for e in ledger["events"] if e["kind"] == "sideend"]
+        self.assertEqual([e["status"] for e in ends], ["suppressed", "consistent"])
+        self.assertIsNone(ends[0]["resolution"]["previous_start_seq"])
+        self.assertTrue(ends[0]["actor_id"])
+        self.assertEqual(ledger["actors"][ends[0]["actor_id"]]["health"], "167/167")
+
+    def test_a_new_opening_allows_another_real_close(self):
+        rows = self.trace()
+        rows[4] = frame(5, [event("move", "p1a", "Whimsicott", move="Tailwind")])
+        rows.extend([frame(6, [event("sidestart", "p1b", value="move: Tailwind")]),
+                     frame(7, [event("sideend", "p1a", value="move: Tailwind")])])
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sideend"],
+                         ["consistent", "consistent"])
+        self.assertEqual(ledger["issues"], [])
+
+    def test_side_and_effect_require_their_own_opening(self):
+        for slot, effect in (("p2a", "Tailwind"), ("p1b", "Reflect")):
+            with self.subTest(slot=slot, effect=effect):
+                rows = self.trace()
+                rows[3] = frame(4, [event("sideend", slot, value="move: " + effect)])
+                ledger = BattleAutomaton(0, rows).run()
+                ends = [e for e in ledger["events"] if e["kind"] == "sideend"]
+                self.assertEqual([e["status"] for e in ends], ["suppressed", "consistent"])
+
+    def test_a_provisional_opening_keeps_its_connected_uncertainty(self):
+        class ProvisionalOpening(BattleAutomaton):
+            def _reconcile_side_condition_readings(self):
+                super()._reconcile_side_condition_readings()
+                start = next(e for e in self.events if e["kind"] == "sidestart")
+                start["status"] = "review"
+                self._issue("side_transition", "Inicio pendiente de resolver.", start["frame"], start["seq"])
+
+        ledger = ProvisionalOpening(0, self.trace()[:-1]).run()
+        start = next(e for e in ledger["events"] if e["kind"] == "sidestart")
+        end = next(e for e in ledger["events"] if e["kind"] == "sideend")
+        self.assertEqual((start["status"], end["status"]), ("review", "consistent"))
+        self.assertTrue(any(i["code"] == "side_transition" for i in ledger["issues"]))
+
+    @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_355F"), "diagnóstico opcional 355f")
+    def test_real_duplicate_close_is_pruned_before_production_export(self):
+        from pkmn_vgc.champions_replay.ledger_pipeline import documents_from_trace
+        path = Path(os.environ["CHAMPIONS_DIAGNOSTIC_355F"])
+        with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory() as directory:
+            trace_bytes = archive.read("output/ocr.trace.jsonl")
+            original = json.loads(archive.read("output/ledger-battle-001.json"))
+            job = json.loads(archive.read("job.json"))
+            root = Path(directory); trace = root / "ocr.trace.jsonl"
+            trace.write_bytes(trace_bytes)
+            docs = documents_from_trace(trace, job, root / "output")
+            self.assertEqual(hashlib.sha256(trace.read_bytes()).digest(), hashlib.sha256(trace_bytes).digest())
+            self.assertEqual(len(docs), 1)
+            self.assertEqual((docs[0].p1, docs[0].p2), ("Roku", "zid99"))
+            self.assertTrue(docs[0].log.endswith("|win|Roku"))
+            ledger = json.loads((root / "output/ledger-battle-001.json").read_text())
+            report = json.loads((root / "output/ledger-report.json").read_text())
+            self.assertEqual((ledger["issues"], report["blocked_battles"]), ([], 0))
+            self.assertEqual(ledger["actors"], original["actors"])
+            self.assertEqual([(a["seq"], a["status"], b["status"]) for a, b in zip(original["events"], ledger["events"])
+                              if a["status"] != b["status"]], [(48, "consistent", "suppressed")])
+            ends = [e for e in ledger["events"] if e["kind"] == "sideend"]
+            self.assertEqual([(e["seq"], e["status"]) for e in ends],
+                             [(46, "consistent"), (47, "consistent"), (48, "suppressed")])
+            self.assertEqual(ends[-1]["resolution"]["previous_end_seq"], 47)
+            self.assertIn("Your side's tailwind petered out!",
+                          [e["text"] for e in ends[-1]["resolution"]["evidence"]])
+            self.assertEqual(docs[0].log.count("|-sideend|p1:"), 1)
+            self.assertEqual(docs[0].log.count("|-sideend|p2:"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
