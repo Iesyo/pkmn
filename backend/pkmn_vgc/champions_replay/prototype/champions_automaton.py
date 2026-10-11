@@ -6494,8 +6494,7 @@ class BattleAutomaton:
                  link["status"] == "unmatched"), None)
             text = str((bad or {}).get("value") or (bad or {}).get("text") or "")
             match = (FAINT_NARRATION if issue["code"] == "faint_text_unconfirmed" else HP_NARRATION).fullmatch(text)
-            if (not bad or not match or
-                (issue["code"] != "faint_text_unconfirmed" and bad.get("confidence", 1) >= .95)):
+            if not bad or not match:
                 unresolved.append(issue)
                 continue
             side, subject = ("p2" if match[1] else "p1"), match[2].casefold()
@@ -6503,6 +6502,8 @@ class BattleAutomaton:
             named_species = self.nickname_species[side].get(subject)
             if not named_species and any(identity_species(actor["species"]).casefold() == subject
                                          for actor in self.actors.values()):
+                named_species = subject
+            if not named_species and subject in {identity_species(name).casefold() for name in species_abilities()}:
                 named_species = subject
             if named_species and issue["code"] != "faint_text_unconfirmed":
                 unresolved.append(issue)
@@ -6559,15 +6560,53 @@ class BattleAutomaton:
                 else:
                     if accepted["kind"] not in HP_KINDS or accepted.get("hp_state") != "confirmed":
                         continue
+                    # OCR confidence estimates legibility, not identity. A
+                    # confidently misspelled subject can still be a reading
+                    # of one confirmed episode. Compare the typed subject,
+                    # side and effect; sentence similarity alone would hide
+                    # an unrelated name behind the common restoration text.
+                    def same_announcement(value: str) -> bool:
+                        clean = HP_NARRATION.fullmatch(value)
+                        if (not clean or ("p2" if clean[1] else "p1") != side or
+                            clean[3].casefold() != match[3].casefold()):
+                            return False
+                        a, b = re.sub(r"\W", "", subject), re.sub(r"\W", "", clean[2].casefold())
+                        if min(len(a), len(b)) < 5:
+                            return False
+                        previous = list(range(len(b) + 1))
+                        for i, char in enumerate(a, 1):
+                            current = [i]
+                            for j, expected in enumerate(b, 1):
+                                current.append(min(current[-1] + 1, previous[j] + 1,
+                                                   previous[j - 1] + (char != expected)))
+                            previous = current
+                        return 0 < previous[-1] <= (3 if min(len(a), len(b)) >= 8 else 1)
+
                     linked = [link for link in self.narration_links if link["status"] == "linked" and
                               link["event_seq"] == accepted["seq"] and link["effect"] == bad["effect"] and
                               abs(link["observed_ms"] - bad["observed_ms"]) <= 1_500 and
-                              difflib.SequenceMatcher(a=text.casefold(), b=link["text"].casefold()).ratio() >= .85]
+                              same_announcement(link["text"])]
                     anchors = [{"frame": row["frame"], **line} for link in linked for row in self.frames
                                if abs(row["timestamp_ms"] - bad["observed_ms"]) <= 1_500
                                for line in row.get("ocr", ()) if line.get("top", 0) >= .55 and
                                line.get("confidence", 0) >= .95 and line.get("text", "") == link["text"]]
-                    if len({p["frame"] for p in anchors}) >= 2:
+                    # Include both anchors in the continuity check. In
+                    # particular, a later clean reading after a new action
+                    # must not corroborate an earlier damaged announcement.
+                    first = min([first] + [p["frame"] for p in anchors])
+                    last = max([last] + [p["frame"] for p in anchors])
+                    window = [r for r in self.frames if first <= r["frame"] <= last]
+                    interrupted = any(e["status"] != "suppressed" and
+                                      e["kind"] in ACTIVITY | {"turn", "faint", "mega", "illusion_reveal", "battle_end"} and
+                                      first < e["frame"] <= last for e in self.events)
+                    interrupted = interrupted or any(
+                        b["timestamp_ms"] - a["timestamp_ms"] > 1_000 for a, b in zip(window, window[1:]))
+                    interrupted = interrupted or any(
+                        line.get("confidence", 0) >= .95 and line.get("top", 0) >= .55 and
+                        (ANNOUNCED_ENTRY.search(line.get("text", "")) or
+                         re.search(r"\bused .+!$|\b(come back|went back|withdrew)\b", line.get("text", ""), re.I))
+                        for row in window if first < row["frame"] <= last for line in row.get("ocr", ()))
+                    if len({p["frame"] for p in anchors}) >= 2 and not interrupted:
                         options[accepted["seq"]] = (accepted, accepted["evidence"] + anchors)
             if len(options) != 1:
                 unresolved.append(issue)
@@ -6877,6 +6916,22 @@ class BattleAutomaton:
             if following and following["kind"] in HP_KINDS and following["before"] == original_after:
                 following["before"] = expected
                 following["baseline_resolution"] = resolution
+                # Updating the baseline can collapse a later detector delta
+                # into a repeated state. Reapply the forward pass's invariant:
+                # equal confirmed HP are an observation, never another heal
+                # or hit. Keep the raw transition and its causal provenance.
+                if following["after"] == expected and following["status"] == "consistent":
+                    following["original_transition"] = {"before": original_after, "after": following["after"]}
+                    following.update(status="suppressed", note="HUD del punto final ya confirmado; no existe otra transición de PS.")
+                    following["resolution"] = {**resolution, "event_seq": heal["seq"],
+                                               "from": "accepted", "to": "discarded",
+                                               "reason": "El estado anterior corregido coincide con el posterior; lectura del mismo punto final."}
+                    self.continuity_decisions.append({"frame": following["frame"], "kind": "hp_reading",
+                                                      "state": "confirmed", "selected_event_seq": heal["seq"],
+                                                      "hypotheses": [{"transition": "additional_hp_change", "status": "discarded",
+                                                                      "contradiction": "Los PS confirmados antes y después son iguales."},
+                                                                     {"transition": "same_endpoint", "status": "surviving"}],
+                                                      "evidence": proof + following["evidence"]})
             elif not following and self.actors[actor_id]["health"] == original_after:
                 self.actors[actor_id]["health"] = expected
 
