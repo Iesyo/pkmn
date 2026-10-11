@@ -7044,6 +7044,51 @@ class BattleAutomaton:
                                                              {"transition": "same_episode", "status": "surviving"}],
                                               "cause_seq": cause, "evidence": evidence})
 
+    def _prune_unreachable_side_ends(self) -> None:
+        """An end needs an open episode, even when its actor is still alive.
+
+        OCR corroboration can merge readings, but cannot make a transition
+        from a closed state reachable. Keep provisional openings as possible
+        predecessors: their connected uncertainty must still be reviewed.
+        """
+        opened: dict[tuple[str, str], list[dict[str, Any]]] = collections.defaultdict(list)
+        last_start: dict[tuple[str, str], int] = {}
+        last_end: dict[tuple[str, str], int] = {}
+        for item in self.events:
+            if item["status"] == "suppressed" or item["kind"] not in {"sidestart", "sideend"}:
+                continue
+            side = str(item.get("slot") or "")[:2]
+            effect = str(item.get("value") or "").removeprefix("move: ").casefold()
+            if side not in {"p1", "p2"} or not effect:
+                continue
+            key = side, effect
+            if item["kind"] == "sidestart":
+                opened[key].append(item)
+                last_start[key] = item["seq"]
+                continue
+            predecessors = [start for start in opened[key] if start["frame"] <= item["frame"]]
+            if predecessors:
+                if item["status"] == "consistent":
+                    opened[key] = [start for start in opened[key] if start not in predecessors]
+                    last_end[key] = item["seq"]
+                continue
+            evidence = item.get("evidence", []) + [
+                {"frame": item["frame"], **line}
+                for line in self.frame_lookup.get(item["frame"], {}).get("ocr", ())
+                if in_area(line, BATTLE_TEXT_AREAS["narration"])]
+            reason = "Cierre sin episodio de bando abierto; transición inalcanzable descartada."
+            resolution = {"state": "resolved", "from": item["status"], "to": "discarded",
+                          "orphaned": True, "reason": reason, "event_seq": item["seq"],
+                          "side": side, "effect": effect, "live_event_seqs": [],
+                          "previous_start_seq": last_start.get(key), "previous_end_seq": last_end.get(key),
+                          "raw_event": {name: item.get(name) for name in
+                                        ("kind", "slot", "actor_id", "value", "frame", "source_frame", "confidence")},
+                          "evidence": evidence}
+            item.update(status="suppressed", resolution=resolution, note=reason)
+            self.continuity_decisions.append({"frame": item["frame"], "kind": "sideend", "state": "resolved",
+                                              "hypotheses": [{"transition": "close_side_episode", "status": "discarded",
+                                                              "contradiction": reason}], "evidence": evidence})
+
     def _prune_orphaned_states(self) -> None:
         """Close the live state graph before exposing blocking diagnostics.
 
@@ -7054,6 +7099,9 @@ class BattleAutomaton:
         Preserve raw nodes and discarded issues for audit, without selecting
         an alternative or changing any confirmed battle state.
         """
+        # Validate typed predecessors before consistent nodes become graph
+        # roots. Sharing an actor/effect cannot reopen a closed side episode.
+        self._prune_unreachable_side_ends()
         nodes = {item["seq"]: item for item in self.events}
         edges: dict[int, set[int]] = collections.defaultdict(set)
         roots = {seq for seq, item in nodes.items() if item["status"] == "consistent"}
