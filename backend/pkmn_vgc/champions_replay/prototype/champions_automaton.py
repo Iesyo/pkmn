@@ -7162,6 +7162,82 @@ class BattleAutomaton:
                                               "hypotheses": [{"transition": "close_side_episode", "status": "discarded",
                                                               "contradiction": reason}], "evidence": evidence})
 
+    def _prune_terminal_unbound_entries(self) -> None:
+        """An unused identity at a proven forfeit is not a replay dependency.
+
+        The entry was observed; retain it and its unknown actor for audit.
+        Do not guess a species. A move, effect, raw combat message, missing
+        sample or unconfirmed ending keeps the identity in the live graph.
+        Known entries and terminal states retain their normal roots.
+        """
+        ends = [e for e in self.events if e["kind"] == "battle_end" and e["status"] != "suppressed"]
+        if len(ends) != 1 or ends[0]["status"] != "consistent":
+            return
+        end = ends[0]
+        forfeit = "The battle has ended due to a forfeit."
+        if str(end.get("value") or "").casefold() != forfeit.casefold():
+            return
+        proof = [{"frame": row["frame"], **line} for row in self.frames
+                 if row["frame"] in {end["frame"], end["frame"] + 1}
+                 for line in row.get("ocr", ()) if in_area(line, BATTLE_TEXT_AREAS["narration"]) and
+                 line.get("confidence", 0) >= .9 and
+                 str(line.get("text") or "").casefold() == forfeit.casefold()]
+        if {p["frame"] for p in proof} != {end["frame"], end["frame"] + 1}:
+            return
+        for item in self.events:
+            actor_id = item.get("actor_id")
+            species = str((self.actors.get(actor_id) or {}).get("species") or "")
+            if (item["kind"] != "switch" or item["status"] == "suppressed" or
+                    not (species == "unknown" or PLACEHOLDER.match(species)) or
+                    item["frame"] >= end["frame"] or item.get("cause") or
+                    item.get("field_state_seq") or item.get("tags")):
+                continue
+            related = [e for e in self.events if e["status"] != "suppressed" and e.get("actor_id") == actor_id]
+            if related != [item]:
+                continue
+            suffix = [e for e in self.events if e["status"] != "suppressed" and e["seq"] > item["seq"]]
+            if (any(e["kind"] not in {"switch", "turn", "battle_end"} or
+                    (e["kind"] == "switch" and e.get("slot") == item.get("slot")) or
+                    e.get("tags") or
+                    e.get("cause") == item["seq"] or e.get("field_state_seq") == item["seq"] or
+                    e.get("target_slot") == item.get("slot") for e in suffix) or
+                    sum(e["kind"] == "turn" for e in suffix) > 1):
+                continue
+            start = min(item["frame"], item.get("source_frame") or item["frame"])
+            rows = [self.frame_lookup.get(n) for n in range(start, end["frame"] + 2)]
+            if (any(row is None for row in rows) or any(
+                    not 0 < right["timestamp_ms"] - left["timestamp_ms"] <= 1_000
+                    for left, right in zip(rows, rows[1:]))):
+                continue
+            # Check the original observations too: an unparsed action or
+            # effect must not disappear merely because it has no Ledger node.
+            if any(e["kind"] not in {"switch", "turn", "message"} or
+                   (e["kind"] == "message" and str(e.get("value") or "").casefold() != forfeit.casefold())
+                   for row in rows for e in (row.get("detections") or {}).get("events", ())):
+                continue
+            if any(any(in_area(line, BATTLE_TEXT_AREAS[area]) for area in
+                       ("narration", "own_banner", "opponent_banner")) and
+                   (RAW_ACTION.search(text := str(line.get("text") or "")) or HP_NARRATION.fullmatch(text) or
+                    MEGA_NARRATION.fullmatch(text) or FAINT_NARRATION.fullmatch(text) or
+                    KNOCK_OFF_NARRATION.fullmatch(text) or re.search(r"\b(come back|went back|withdrew)\b", text, re.I) or
+                    (len(text.split()) >= 2 and re.search(r"[!.?]$", text) and
+                     not ANNOUNCED_ENTRY.search(text) and text.casefold() != forfeit.casefold()))
+                   for row in rows for line in row.get("ocr", ())):
+                continue
+            reason = "Entrada sin continuidad antes del abandono confirmado; identidad fuera de la secuencia exportable."
+            resolution = {"state": "resolved", "from": item["status"], "to": "discarded", "orphaned": True,
+                          "observed_entry": True, "identity_state": "unresolved", "reason": reason,
+                          "event_seq": item["seq"], "terminal_event_seq": end["seq"], "live_event_seqs": [],
+                          "raw_event": {key: item.get(key) for key in
+                                        ("kind", "slot", "actor_id", "species", "health", "frame", "source_frame", "confidence")},
+                          "evidence": item.get("evidence", []) + proof,
+                          "checked_frames": [row["frame"] for row in rows]}
+            item.update(status="suppressed", resolution=resolution, note=reason)
+            self.continuity_decisions.append({"frame": item["frame"], "kind": "terminal_unbound_entry",
+                                              "state": "resolved", "event_seq": item["seq"],
+                                              "hypotheses": [{"transition": "participating_identity", "status": "discarded",
+                                                              "contradiction": reason}], "evidence": proof})
+
     def _prune_orphaned_states(self) -> None:
         """Close the live state graph before exposing blocking diagnostics.
 
@@ -7175,6 +7251,7 @@ class BattleAutomaton:
         # Validate typed predecessors before consistent nodes become graph
         # roots. Sharing an actor/effect cannot reopen a closed side episode.
         self._prune_unreachable_side_ends()
+        self._prune_terminal_unbound_entries()
         nodes = {item["seq"]: item for item in self.events}
         edges: dict[int, set[int]] = collections.defaultdict(set)
         roots = {seq for seq, item in nodes.items() if item["status"] == "consistent"}
