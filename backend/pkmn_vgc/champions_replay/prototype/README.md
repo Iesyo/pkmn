@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 14491)
-Total output lines: 900
-
 # Champions Ledger · Autómata temporal de batalla
 
 > **Integración web, 28 sep 2026:** estos dos autómatas son ahora el motor de
@@ -152,12 +149,23 @@ para una persona). `battle_index` siempre es el índice de la traza y del
    descartar una variante ortográfica pequeña del mismo anuncio. No se
    crea un alias global ni se cambian PS, actores o acciones. Nombres
    conocidos distintos, otro efecto, otra acción, cambio de ocupante o
-   huecos conservan el aviso; el texto descartado mantiene su evidencia.
+   huecos impiden asociar la lectura a ese episodio; el texto mantiene su evidencia.
    Si completar un punto final modifica los PS anteriores de la siguiente
    lectura, se vuelve a comprobar la transición: PS iguales se conservan
    como observación suprimida del mismo punto final, con la transición
    original auditada. Una segunda curación o daño real se conserva.
-8. Compara la secuencia de eventos principales y episodios de PS con los
+8. Al cerrar el autómata, poda los componentes provisionales sin vínculos
+   con la secuencia viva. Los vínculos son actores persistentes, dependencias
+   causales, estados de campo/bando, turnos estructurales e hipótesis de
+   transición que siguen vivas. Una observación de acción o entrada aún sin
+   actor colocado conserva su restricción; un estado terminal no requiere
+   sucesor. Repetir texto aislado no crea continuidad. Un mensaje de PS sin
+   actor ni episodios candidatos vivos queda `discarded`, sin inventar un
+   enlace. Los sucesos huérfanos quedan `suppressed` y sus avisos pasan a
+   `resolved_issues` con `resolution.orphaned: true`: se conserva la evidencia
+   cruda, pero esos avisos no bloquean la exportación. Las dudas vinculadas
+   a estados vivos permanecen pendientes.
+9. Compara la secuencia de eventos principales y episodios de PS con los
    replays archivados de los tres jobs. Los desacuerdos se informan; un replay
    archivado puede contener una entrada espuria por Ilusión o por un ID
    provisional reutilizado.
@@ -323,7 +331,232 @@ que el replay final reproduzca fielmente el vídeo.
   anteriores repiten `18%`. Se conserva como `hp_rejected_reading` suprimido,
   con las observaciones originales y sin transición de PS.
 - La misma regla de evidencia repetida suprime los `3%` de Delphox en el
-  segundo ZIP, partida 2, frames 1694 y 1766: el `28` de ma…3491 tokens truncated…o avisos pendientes y ocho
+  segundo ZIP, partida 2, frames 1694 y 1766: el `28` de mayor confianza
+  coincide con los `28%` completos de fotogramas anteriores. Estas dos
+  decisiones provienen de la traza OCR, sin confirmación visual de esos
+  fotogramas. El `1%` de Sneasler junto a `44` en frame 2082 permanece en
+  revisión porque `44` no coincide con los PS previos registrados.
+- Recuento actual: **8 incidencias** en 12 partidas (primer ZIP: 4;
+  segundo: 4; tercero: 0), frente a 11 antes de esta corrección. Siguen
+  siendo **328 episodios de PS** propuestos y no cambia el orden principal
+  alineado con los replays archivados. Las lecturas suprimidas permanecen en
+  JSON para auditoría.
+
+## Rillaboom · 27 de septiembre
+
+- La captura aportada a las **23:17.04** muestra **88 %** en el HUD de
+  Rillaboom. No coincide exactamente con el frame 2796 (23:17.5), pero es
+  contigua: los frames 2793–2795 muestran `88%`; en 2796 el OCR leyó `88`
+  (confianza .99996) superpuesto a `0%` (.78096); en 2798 aparece otra vez
+  `88%` completo. No hay acción entre estas lecturas. El rebote inventado
+  en 2797 se conserva como `hp_rejected_reading` suprimido, con ambas
+  observaciones y evidencia antes y después. Rillaboom sigue a 88 %.
+- En los mismos 12 combates quedan **7 incidencias** (primer ZIP: 3;
+  segundo: 4; tercero: 0), **328 episodios de PS** y las mismas alineaciones
+  de eventos principales. Sólo el conflicto `1%` frente a `44` de Sneasler
+  en el segundo ZIP, partida 2, frame 2082 requiere inspección visual para
+  resolver sus PS. Seis avisos son candidatos ya suprimidos y auditables.
+
+## Cura de Sneasler por terreno · 27 de septiembre
+
+- Capturas del job `90403f16712d4d41`, partida 2: a las **17:20.50**
+  Sneasler tiene **41 %**; a las **17:21.50**, **47 %**. La pantalla muestra
+  el efecto verde y en frame 2085 (17:22) aparece «The opposing Sneasler
+  had its HP restored.» Grassy Terrain seguía activo. El `1%` del frame
+  2082 era un recorte falso; el `44` OCR coexistente tampoco fija PS nuevos.
+- Ledger guarda el fragmento como `hp_rejected_reading` suprimido y emite
+  **una cura 41 → 47 %**, causa «Grassy Terrain corroborado por HUD y
+  mensaje». Exige que el incremento corresponda a ~1/16, que el PS final
+  tenga OCR completo y que el mensaje nombre al mismo actor. Sin esas
+  pruebas conserva el conflicto para revisión.
+- Quedan **6 avisos** auditables en 12 partidas (primer ZIP: 3; segundo: 3;
+  tercero: 0), todos por candidatos suprimidos; ningún conflicto de PS
+  pendiente en estas trazas. Persisten **328 episodios de PS** y las mismas
+  alineaciones principales con los replays archivados. La prueba ciega y la
+  validación del replay generado siguen pendientes.
+
+## Pasada retrospectiva · 27 de septiembre
+
+La propuesta de Ies de mirar hacia atrás se aplica después de la primera
+reconstrucción cronológica. En estas trazas, las 89 narraciones de cura llegan
+1–2 s después del primer cambio detectado; las cinco de quemadura, 0,5–1 s
+antes. De las 19 de retroceso, cinco llegan antes, 13 en el mismo fotograma
+muestreado y una después. La asociación admite ambos órdenes.
+
+| Job | Partidas | Mensajes asociados | Episodios de PS | Avisos auditables |
+| --- | ---: | ---: | ---: | ---: |
+| `10a7fba6fda04585` | 5 | 57/57 | 146 | 3 |
+| `90403f16712d4d41` | 4 | 39/39 | 112 | 3 |
+| `331e6e783c3e45a4` | 3 | 17/17 | 70 | 0 |
+| **Total** | **12** | **113/113** | **328** | **6** |
+
+- Corrige tres asociaciones: quemadura de Indeedee-F, mensaje 369 → daño
+  371 en job `10a7`, partida 1; quemaduras de Gardevoir, mensajes 3064 y
+  3181 → daños 3067 y 3183 en job `90403`, partida 3. El primer mensaje
+  estaba en una lectura descartada y los otros dos en curaciones anteriores.
+  Los tres daños ya existían; ahora conservan la narración y causa correctas.
+- Los 19 episodios de retroceso quedan identificados explícitamente por su
+  mensaje, en lugar de depender de la última acción cercana.
+- Comparación completa con el corte anterior: idénticos actores, PS, orden,
+  estados de los eventos y seis incidencias por candidatos suprimidos. Los
+  tres enlaces corregidos eran errores de atribución que ese recuento de
+  incidencias no mostraba. Se conservan las alineaciones anteriores con los
+  replays archivados. La cura de Sneasler sigue siendo una sola, 41 → 47 %.
+- **45 pruebas aprobadas**, incluyendo los tres ZIP y escenarios de
+  ambigüedad, separación por turno/acción/reentrada, falta de identidad o PS
+  confirmados, mensajes repetidos y retroceso narrado después del faint.
+- Alcance actual: las tres frases inglesas de PS reconocidas en los ZIP.
+  Otros mensajes mantienen el tratamiento existente. Una ventana fuera de
+  3 s queda pendiente; estos resultados aún requieren prueba con vídeos
+  nuevos y validación visual independiente. Sigue siendo un prototipo fuera
+  del pipeline de producción.
+
+## Mega de Delphox · confirmación visual · 27 de septiembre
+
+- Job `90403f16712d4d41`, partida 2. Las capturas de Ies muestran una escena
+  previa a las **12:11.50** y el anuncio «The opposing Delphox's Delphoxite
+  is reacting to SirRoso's Omni Ring!» a **12:12.50 y 12:13.00**. En el lado
+  propio están Dee Dee/Indeedee-F y Suzuko/Gardevoir. Las capturas confirman
+  el bando y sujeto del anuncio; todavía muestran la forma normal durante
+  el comienzo de la animación.
+- El candidato del frame **1465 (12:12.00)** atribuyó esa Mega a `p1a`,
+  ocupado por Indeedee-F. El OCR de ese frame escribió `The oppPsing`.
+  La Mega válida de Delphox está en **1466 (12:12.50), p2a**. Los frames
+  **1466 y 1467** repiten correctamente bando, especie y Delphoxite, con
+  confianza .977 y .98175.
+- Ledger resuelve `mega_wrong_occupant` como duplicado corroborado. La
+  detección original permanece suprimida, con su especie/forma/piedra en
+  `mega_candidate`, enlazada al evento aceptado mediante `resolution`.
+  Sin un evento aceptado y texto repetido suficiente, el aviso permanece.
+- Suite completa: **48/48 pruebas**, con los tres ZIP. Pendientes **6 → 5**
+  (jobs: **3/2/0**); una incidencia Mega resuelta y auditable. Los cinco
+  pendientes son tres reentradas fantasma tras faint y dos entradas
+  duplicadas. Se conservan exactamente los eventos aceptados, actores,
+  **328 episodios de PS**, **113 enlaces narrativos** y alineaciones con los
+  replays archivados. La integración en producción sigue pendiente.
+
+## HUD durante el debilitamiento de Gori · 27 de septiembre
+
+- Ies aportó capturas de job `10a7fba6fda04585`, partida 1: **11:14.00**
+  muestra Gori con **0/207** y «It's super effective on Gori!»;
+  **11:14.50** muestra «Gori fainted!» y el mismo HUD a cero;
+  **11:15.00** continúa el anuncio durante la animación de debilitamiento.
+  La traza comienza a reconocer «Gori fainted!» en frame 1349 (11:14.00),
+  medio segundo antes del texto visible en el reproductor de las capturas.
+  Ambos muestran la misma secuencia: daño a cero, faint y retirada del HUD.
+- El supuesto `switch` de **1350 (11:14.50)** es el HUD transitorio de Gori.
+  Se conserva suprimido, con resolución enlazada al faint de 1349 y al
+  daño a cero. La regla no cambia los PS ni emite una nueva entrada.
+- La misma regla resuelve por **evidencia OCR** otros tres casos, sin
+  confirmación visual directa de esos fotogramas: Rillaboom rival/Bonkers,
+  job `10a7`, partida 5, frame **6106**; Indeedee-F/Dee Dee, job `90403`,
+  partida 2, frame **1550**; y el duplicado de Dee Dee en partida 3, frame
+  **2688**, emitido en el mismo frame que su faint. Al deslizarse o
+  desvanecerse el HUD, el cero
+  estable de los fotogramas inmediatamente anteriores conserva la evidencia
+  sin reducir los umbrales de confirmación.
+- **52/52 pruebas aprobadas**, incluidos los tres ZIP. Avisos pendientes
+  **5 → 1** (jobs **1/0/0**). Hay cinco incidencias resueltas auditables:
+  cuatro de HUD durante faint y la Mega de Delphox del corte previo.
+  Los eventos, estados de actores, **328 episodios de PS**, **113 enlaces
+  narrativos** y alineaciones con los replays conservan su resultado previo.
+- Queda `reentry_without_exit` de Kingambit en job `10a7`, partida 2,
+  frame **2668 (22:13.50)**, al terminar Grassy Terrain. No cumple los
+  criterios de faint y continúa pendiente de revisión.
+
+## Kingambit · identidad provisional al regresar el HUD · 27 de septiembre
+
+- Job `10a7fba6fda04585`, partida 2, candidato **2668 (22:13.50)**.
+  El OCR leyó `Kingamh` mientras reaparecía el HUD y produjo un `switch`
+  con `__champions_actor_p2_0001__` para el slot ya ocupado por Kingambit.
+  Los frames **2669 (22:14.00)** y **2670 (22:14.50)** resuelven ese ID y
+  alias como Kingambit, con **12 %**. Las dos capturas de Ies confirman
+  a Kingambit en campo con esos PS, primero en el menú general y luego al
+  elegir movimiento. La captura previa a 22:13.50 todavía mostraba la
+  transición sin HUD; el tiempo del detector no implica sincronía visual
+  exacta con el reproductor.
+- La evidencia anterior está en **2659 (22:09.00)**: la recuperación
+  deja a Kingambit en **12 %**. Nombre, PS y slot coinciden a ambos lados
+  de la transición. Ledger enlaza el candidato suprimido con ese episodio
+  y las dos confirmaciones posteriores; la desaparición del terreno no
+  genera otra entrada.
+- **55/55 pruebas aprobadas**, incluidas las tres integraciones. Pendientes
+  **1 → 0**; seis incidencias resueltas conservan su evidencia (Mega, cuatro
+  de faint y esta identidad provisional). La regla también se prueba con
+  otro Pokémon y mote, y rechaza continuidad incompleta o contradictoria,
+  datos del compañero, identidad/alias sin confirmar, acciones o salidas.
+- Comparación completa frente al corte previo: idénticos eventos salvo la
+  nueva `resolution`, actores, PS, orden, estados, enlaces narrativos y
+  alineaciones con los replays archivados. Sólo el aviso 2668 pasa de
+  pendiente a resuelto.
+
+| Job | Partidas | Episodios de PS | Mensajes asociados | Pendientes | Resueltos |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `10a7fba6fda04585` | 5 | 146 | 57 | 0 | 3 |
+| `90403f16712d4d41` | 4 | 112 | 39 | 0 | 3 |
+| `331e6e783c3e45a4` | 3 | 70 | 17 | 0 | 0 |
+| **Total** | **12** | **328** | **113** | **0** | **6** |
+
+Cero avisos se refiere a este corpus revisado. El siguiente paso es una
+prueba ciega con partidas nuevas y anotación manual, seguida de validación
+Showdown e integración con COL-102. El prototipo sigue fuera de producción.
+
+## Corroboración temporal general · 27 de septiembre
+
+La primera corrida del job nuevo `50808fa9e45e4ccc` produjo cinco avisos.
+El corte inicial se conserva sin modificar. Ies confirmó visualmente que a
+**01:29.00** el anuncio de Golisopite estaba entrando en pantalla, con poco
+contraste, y que a **01:30.00** ya era legible. El OCR del primer frame daba
+confianza .97762 pese a escribir `racting`: confianza alta no garantiza que
+el texto esté completo.
+
+Se generaliza el ciclo de la observación, sin condiciones por job o especie:
+
+1. **Provisional:** una lectura incompleta conserva su texto/valor original.
+2. **Confirmada:** evidencia posterior del mismo contexto confirma los PS.
+3. **Descartada:** una lectura textual defectuosa se enlaza al anuncio
+   legible y al evento aceptado que ya representa esa acción.
+4. **Revisión:** si falta corroboración o existe una contradicción, el aviso
+   permanece; la semejanza textual o una confianza baja no bastan para borrarlo.
+
+Ambas rutas usan una ventana temporal compartida de hasta **3 s**, que se
+cierra ante otra acción, entrada, retirada, Mega, cambio de turno, fin de
+batalla o huecos de muestreo mayores de un segundo. El texto puede usar el
+frame de la acción que lo confirma; los PS no toman valores posteriores a
+otra acción. Un faint del propio slot puede corroborar su cero.
+
+- **PS pendientes:** la comprobación habitual del frame y los dos siguientes
+  se mantiene. Si falla, se espera dentro del contexto temporal, con los
+  mismos criterios para números completos o porcentaje separado. Se detiene
+  ante otro nombre, otra lectura de PS o un valor completo contradictorio
+  en ese HUD. El cero también puede confirmarse con un cero visible de
+  confianza ≥0,90 junto al nombre correcto y dos anuncios de faint del mismo
+  bando/actor de confianza ≥0,95. El faint por sí solo no inventa PS.
+  `hp_support.confirmation` conserva los frames propuesto y confirmatorio.
+- **Texto transitorio:** se exige una lectura posterior de confianza ≥0,95,
+  gramática reconocida, semejanza de texto ≥0,78 y un único evento aceptado
+  con actor, bando, acción y detalle compatibles. Se conservan frases ya
+  significativas, especies/piedras contradictorias y asociaciones ambiguas.
+  La lectura original queda suprimida con `resolution` y evidencia, en vez
+  de tratarla como otra acción. La misma regla sirve para anuncios de Mega,
+  entradas, movimientos y faint; no depende de las palabras OCR defectuosas
+  concretas de este lote.
+
+| Caso nuevo | Resultado |
+| --- | --- |
+| Golisopod, frame 179 | Texto transitorio descartado y enlazado a la Mega aceptada de 181. |
+| Golisopod, frame 261 | Curación 38 → 87 % confirmada por número y porcentaje separados en 264. |
+| Golisopod, frame 493 | Daño 87 → 0 % con PS previos recuperados; desaparece el aviso derivado. |
+| Garchomp, frame 709 | Daño 100 → 0 % corroborado por HUD y anuncios de faint en 711–713. |
+| Sneasler, frame 1298 | Texto defectuoso descartado y enlazado a la entrada aceptada de 1299. |
+
+**62/62 pruebas aprobadas con los cuatro ZIP (14 partidas).** Los cinco
+avisos nuevos bajan a cero. Los dos episodios antes no confirmados pasan
+a curación/daño confirmados: el job nuevo conserva 27 episodios de PS, tres
+mensajes tipificados enlazados y dos incidencias textuales resueltas.
+Los registros completos de las 12 partidas anteriores son **idénticos** al
+corte previo, incluidos actores, PS, eventos, orden, avisos y narración.
+Totales: **355 episodios de PS, 116 enlaces, cero avisos pendientes y ocho
 incidencias resueltas auditables**. Garchomp ahora conserva cero PS confirmado
 al debilitarse; antes su salud final quedaba desconocida.
 
