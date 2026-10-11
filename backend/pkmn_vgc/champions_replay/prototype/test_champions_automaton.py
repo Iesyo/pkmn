@@ -4300,7 +4300,10 @@ class SideConditionContinuityTests(unittest.TestCase):
         for row in rows:
             row["detections"]["events"] = [e for e in row["detections"]["events"] if e["kind"] != "sidestart"]
         ledger = BattleAutomaton(0, rows).run()
-        self.assertEqual([e["status"] for e in ledger["events"] if e["kind"] == "sideend"], ["consistent", "consistent"])
+        ends = [e for e in ledger["events"] if e["kind"] == "sideend"]
+        self.assertEqual([e["status"] for e in ends], ["suppressed", "suppressed"])
+        self.assertTrue(all(e["resolution"]["orphaned"] for e in ends))
+        self.assertTrue(all(e["resolution"]["previous_start_seq"] is None for e in ends))
 
     @unittest.skipUnless(os.environ.get("CHAMPIONS_DIAGNOSTIC_777"), "Requiere diagnóstico 777")
     def test_real_side_reading_is_discarded_and_both_sides_survive(self):
