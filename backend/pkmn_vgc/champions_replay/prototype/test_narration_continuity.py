@@ -69,7 +69,7 @@ class NarrationEpisodeTests(unittest.TestCase):
         ledger = BattleAutomaton(0, rows).run()
         self.assertTrue(any(i["code"] == "hp_narration_unmatched" and i["frame"] == 5 for i in ledger["issues"]))
 
-    def test_incomplete_or_conflicting_paths_remain_open(self):
+    def test_unbound_readings_are_discarded_without_selecting_an_episode(self):
         for problem in ("single_anchor", "weak_anchor", "different_name", "known_nickname", "wrong_side",
                         "wrong_effect", "gap", "new_action", "raw_action", "turn", "replacement"):
             with self.subTest(problem=problem):
@@ -89,7 +89,97 @@ class NarrationEpisodeTests(unittest.TestCase):
                 if problem == "replacement": rows[5] = frame(6, [event("switch", "p2a", "Farigiraf", "100/100")])
                 rows[4]["ocr"][0]["text"] = bad["value"]
                 ledger = BattleAutomaton(0, rows).run()
-                self.assertTrue(any(i["code"] == "hp_narration_unmatched" and i["frame"] == 5 for i in ledger["issues"]))
+                self.assertFalse(any(i["code"] == "hp_narration_unmatched" and i["frame"] == 5 for i in ledger["issues"]))
+                link = next(link for link in ledger["narration_links"] if link["frame"] == 5)
+                self.assertEqual(link["status"], "discarded")
+                self.assertIsNone(link["event_seq"])
+
+
+class OrphanStateTests(unittest.TestCase):
+    def test_discarded_wrong_occupant_does_not_keep_a_blocking_issue(self):
+        rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"), event("turn", turn=1)]),
+                frame(2, [event("mega", "p1a", "Charizard", value="Charizardite X")]),
+                frame(3, [event("move", "p1a", "Pikachu", move="Protect")])]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual(ledger["issues"], [])
+        discarded = next(e for e in ledger["events"] if e["kind"] == "mega")
+        self.assertEqual(discarded["status"], "suppressed")
+        self.assertIsNone(next(iter(ledger["actors"].values()))["forme"])
+        self.assertEqual(ledger["resolved_issues"][0]["resolution"]["to"], "discarded")
+
+    def test_repeated_isolated_text_does_not_acquire_continuity(self):
+        text = "An unrelated and incomplete observation"
+        rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"), event("turn", turn=1)]),
+                frame(2, [event("message", value=text)], [text]),
+                frame(3, [event("message", value=text)], [text]),
+                frame(4, [event("move", "p1a", "Pikachu", move="Protect")])]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual(ledger["issues"], [])
+        node = next(e for e in ledger["events"] if e["kind"] == "unclassified_text")
+        self.assertEqual((node["status"], node["value"]), ("suppressed", text))
+        self.assertEqual(node["resolution"]["live_event_seqs"], [])
+
+    def test_named_live_actor_and_competing_episodes_still_require_resolution(self):
+        rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"), event("turn", turn=1)]),
+                frame(2, [event("message", value="Pikachu had its HP restored.")],
+                      ["Pikachu had its HP restored."]),
+                frame(3, [event("move", "p1a", "Pikachu", move="Protect")])]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual([i["code"] for i in ledger["issues"]], ["hp_narration_unmatched"])
+        self.assertEqual(ledger["narration_links"][0]["status"], "unmatched")
+
+    def test_a_terminal_battle_state_needs_no_successor(self):
+        rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"), event("turn", turn=1)]),
+                frame(2, [event("battle_end")])]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual(ledger["issues"], [])
+        self.assertEqual(ledger["events"][-1]["status"], "consistent")
+
+    def test_a_component_of_provisional_hp_states_without_an_actor_is_discarded(self):
+        rows = [frame(1, [event("turn", turn=1)]),
+                frame(2, [event("damage", "p2a", "Pikachu", "75/100")]),
+                frame(3, [event("heal", "p2a", "Pikachu", "80/100")]),
+                frame(4, [event("battle_end")])]
+        ledger = BattleAutomaton(0, rows).run()
+        self.assertEqual(ledger["issues"], [])
+        hp = [e for e in ledger["events"] if e["kind"] in {"damage", "heal"}]
+        self.assertEqual(len(hp), 2)
+        self.assertTrue(all(e["status"] == "suppressed" and e["actor_id"] is None for e in hp))
+        self.assertTrue(all(i["resolution"]["orphaned"] for i in ledger["resolved_issues"]))
+        self.assertEqual(ledger["actors"], {})
+
+    def test_a_live_descendant_keeps_its_unresolved_causal_ancestor(self):
+        rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"), event("turn", turn=1)]),
+                frame(2, [event("move", "p1a", "Pikachu", move="Protect")]),
+                frame(3, [event("damage", "p1a", "Pikachu", "75/100")])]
+        machine = BattleAutomaton(0, rows)
+        machine.run()
+        action = next(e for e in machine.events if e["kind"] == "move")
+        action.update(status="review", actor_id=None, evidence=[])
+        effect = next(e for e in machine.events if e["kind"] == "damage")
+        effect["cause"] = action["seq"]
+        machine._issue("actor_mismatch", "Acción pendiente con un efecto vivo.", action["frame"], action["seq"])
+        machine._prune_orphaned_states()
+        self.assertEqual(action["status"], "review")
+        self.assertEqual(machine.issues[0]["event_seq"], action["seq"])
+        self.assertEqual(effect["cause"], action["seq"])
+
+    def test_unbound_effect_with_a_real_source_is_connected_and_still_pending(self):
+        for source_present in (False, True):
+            with self.subTest(source_present=source_present):
+                rows = [frame(1, [event("switch", "p1a", "Pikachu", "100/100"),
+                                   event("switch", "p2a", "Tyranitar", "100/100"), event("turn", turn=1)]),
+                        frame(2, [event("move", "p2a", "Tyranitar",
+                                        move="Knock Off" if source_present else "Protect")]),
+                        frame(3, [{**event("enditem", "p1b", value="Life Orb"),
+                                   "tags": ["[from] move: Knock Off", "[of] p2a: Tyranitar"]}])]
+                ledger = BattleAutomaton(0, rows).run()
+                effect = next(e for e in ledger["events"] if e["kind"] == "enditem")
+                self.assertIsNone(effect["actor_id"])
+                self.assertEqual(effect["status"], "review" if source_present else "suppressed")
+                self.assertEqual([i["code"] for i in ledger["issues"]],
+                                 ["unbound_item_actor"] if source_present else [])
+                self.assertFalse(any(actor["item_lost"] for actor in ledger["actors"].values()))
 
 
 class CorrectedBaselineTests(unittest.TestCase):
